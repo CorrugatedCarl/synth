@@ -72,6 +72,8 @@
         <button id="tPlay" class="tb" type="button" title="Play / stop (Space)" aria-label="Play"><svg viewBox="0 0 20 20"><path class="i-play" d="M6 4l10 6-10 6z"/><path class="i-stop" d="M5 5h10v10H5z"/></svg></button>
         <button id="tRec" class="tb rec" type="button" title="Record (R)" aria-label="Record" aria-pressed="false"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="5.5"/></svg></button>
       </div>
+      <!-- Panic: every note and sequence off at once (= the keyboard bar's Panic, Esc) — always in the row, a folded keyboard too -->
+      <button id="tPanic" class="tb cv-panic" type="button" title="Panic: stop all sound (Esc)" aria-label="Panic (stop all sound)"><svg viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h7L18 6.5v7L13.5 18h-7L2 13.5v-7zM7.2 3.7 3.7 7.2v5.6l3.5 3.5h5.6l3.5-3.5V7.2l-3.5-3.5zM9.1 5.6h1.8v6H9.1zM9.1 12.9h1.8v1.8H9.1z"/></svg></button>
       <div class="tpos" title="Position (bar.beat.tick) and time"><span id="tBBT">1.1.000</span><span id="tTime">0:00.000</span></div>
       <label class="tfield cv-bpm" title="Tempo (BPM)"><span class="cv-fl">BPM</span><input id="tBpm" type="number" min="20" max="300" step="0.1" aria-label="Tempo"></label>
       <button id="tMore" class="cv-ib cv-ovf" type="button" aria-haspopup="true" aria-label="More transport controls: time signature, loop, click, count-in" title="Time signature, loop, click, count-in">⋯</button>
@@ -130,7 +132,7 @@
         </div>
       </div>
       </div>
-      <button id="gearBtn" class="cv-ib cv-gear" type="button" aria-haspopup="true" aria-label="Settings: sample rate, oversampling, drift, recording, pinch" title="Settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zM8.6 2h2.8l.4 2.2 1.6.9 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.6.9-.4 2.2H8.6l-.4-2.2-1.6-.9-2.1.8-1.4-2.4 1.7-1.5V8.2L3.1 6.7l1.4-2.4 2.1.8 1.6-.9z"/></svg></button>
+      <button id="gearBtn" class="cv-ib cv-gear" type="button" aria-haspopup="true" aria-label="Settings: sample rate, oversampling, drift, recording, pinch, performance" title="Settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zM8.6 2h2.8l.4 2.2 1.6.9 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.6.9-.4 2.2H8.6l-.4-2.2-1.6-.9-2.1.8-1.4-2.4 1.7-1.5V8.2L3.1 6.7l1.4-2.4 2.1.8 1.6-.9z"/></svg></button>
       <div id="gearPop" class="cv-pop cv-gearpop" role="dialog" aria-label="Settings" hidden>
         <h3>Engine</h3>
         <label class="field range cv-gmaster">Master level <input type="range" id="masterG" min="0" max="1" step="0.01" aria-label="Master level"></label>

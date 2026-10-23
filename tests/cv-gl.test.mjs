@@ -235,3 +235,73 @@ test('1h fix 9: a Quad\'s `gray` goes into the quad block (alpha, clipOn, gray) 
   eq(blocks[3].slice(12), [1, 0, 0, 0], 'no gray: 0');
   eq(blocks[4].slice(12), [1, 0, 0, 0], 'garbage: 0');
 });
+
+// ---- P (IMPL-P §1.1, lane T): the real MAX_TEXTURE_SIZE (≈ 25 % of Android WebGL2 devices say 4096) and gl's error flags on an
+// upload. The fake gains getParameter / getError / isContextLost only when a test asks (o.max, o.errs): every test above runs
+// without them, as main-sim's stub and tests/cv-face's fake do
+const E = { NO_ERROR: 0, INVALID_VALUE: 0x0501, INVALID_OPERATION: 0x0502, OUT_OF_MEMORY: 0x0505, CONTEXT_LOST_WEBGL: 0x9242, MAX_TEXTURE_SIZE: 0x0D33 };
+function errGL(o = {}) { // a fake with the error flags: gl.flags (pending), gl.on[call] = a flag that call raises; o.max: MAX_TEXTURE_SIZE
+  const gl = fakeGL(o);
+  Object.assign(gl, E, { flags: [], on: {}, lostNow: false });
+  if (o.max !== undefined) gl.getParameter = p => { gl.calls.push(['getParameter', p]); if (o.max === 'throw') throw new Error('no'); return p === E.MAX_TEXTURE_SIZE ? o.max : null; };
+  if (o.errs !== false) {
+    gl.getError = () => { gl.calls.push(['getError']); return gl.flags.length ? gl.flags.shift() : E.NO_ERROR; };
+    gl.isContextLost = () => gl.lostNow;
+    for (const k of ['texImage2D', 'generateMipmap', 'texParameteri']) { const f = gl[k]; gl[k] = (...a) => { const r = f(...a); if (gl.on[k]) gl.flags.push(gl.on[k]); return r; }; }
+  }
+  return gl;
+}
+test('P maxTex: GL.maxTex = gl.getParameter(MAX_TEXTURE_SIZE), read once at build; lowered — never raised — by o.maxTex (cv-world\'s ?texmax); no getParameter (the fakes), a throw or garbage: 8192', () => {
+  eq(G.MAX_TEX_DEFAULT, 8192);
+  eq(setup().GL.maxTex, 8192, 'a fake without getParameter: 8192 (today\'s TEX_MAX_DIM)');
+  const g16 = setup({ gl: errGL({ max: 16384 }) });
+  eq([g16.GL.maxTex, g16.gl.count('getParameter')], [16384, 1], 'the iPad / the Mac: 16384, read once');
+  g16.GL.upload(src(4, 4)); g16.GL.draw({ tx: 0, ty: 0, k: 1 }, 10, 10, 1, []); eq(g16.gl.count('getParameter'), 1, 'never again');
+  eq(setup({ gl: errGL({ max: 4096 }) }).GL.maxTex, 4096, 'a 4096 device');
+  const mk = (max, maxTex) => { const s = setup({ gl: errGL({ max }) }); return G.createGL(s.vp, { doc: { createElement: tag => { const el = s.d.createElement(tag); if (tag === 'canvas') el.getContext = () => s.gl; return el; } }, win: s.win, world: s.w, maxTex }).maxTex; };
+  eq([mk(16384, 4096), mk(4096, 16384), mk(16384, 0), mk(16384, 'x'), mk(16384, -5), mk(8192, 3000.7)], [4096, 4096, 16384, 16384, 16384, 3000], 'o.maxTex lowers only (garbage ignored; whole px)');
+  eq([mk('throw'), mk(0), mk('x'), mk(NaN)], [8192, 8192, 8192, 8192], 'a throw / garbage: 8192');
+});
+test('P upload errors (R2-F3: ONE getError round trip an upload): gl\'s flags read once, after the upload — clean: one call; a flag found: ours (a too-big texImage2D, an out-of-memory mipmap) or one an earlier call left (the cords\' draw, a grid uniform), told apart by one retry — a stale flag never fails a good texture, an error that stays → null (every texture made deleted, nothing counted); CONTEXT_LOST_WEBGL (or isContextLost) → null and not ready (the loss path: the event follows), never an error, never retried; no getError (the fakes): as today', () => {
+  const { gl, GL } = setup({ gl: errGL({ max: 8192 }) });
+  const n0 = gl.count('getError');
+  ok(GL.upload(src(4, 4)), 'a clean upload stands');
+  eq(gl.count('getError') - n0, 1, 'a clean upload: ONE getError round trip (it was two: a drain, a check)');
+  const n1 = gl.count('getError');
+  ok(GL.upload(src(40, 30), { mips: true }), 'with mips too');
+  eq(gl.count('getError') - n1, 1, 'mips: still one');
+  // a flag left by an earlier call: the check finds it, drains it, the retry (clean) stands — the texture is good
+  gl.flags.push(E.INVALID_OPERATION, E.INVALID_VALUE);
+  const t0 = gl.count('createTexture'), d0 = gl.count('deleteTexture'), n2 = gl.count('getError'), b00 = GL.stats().bytes;
+  const a = GL.upload(src(30, 20), { mips: true });
+  ok(a && !a.dead, 'a stale flag: the upload stands (never fails a good texture)');
+  eq([GL.stats().texes, gl.flags.length, gl.count('createTexture') - t0, gl.count('deleteTexture') - d0, GL.stats().bytes - b00], [3, 0, 2, 1, Math.round(30 * 20 * 4 * 4 / 3)], 'the flags drained; one retry (a texture made twice, the first deleted); only the retry counted');
+  eq(gl.count('getError') - n2, 4, 'the stale case, once: the check drains 2 flags + NO_ERROR (3 calls), the retry\'s check 1');
+  eq(GL.upload(src(4, 4)) && gl.count('getError') - n2, 5, 'and the next upload is clean again: one call');
+  gl.on.texImage2D = E.INVALID_VALUE; gl.on.generateMipmap = E.INVALID_OPERATION; // (a side over MAX_TEXTURE_SIZE: the level is never defined)
+  const c0 = gl.count('createTexture'), e0 = gl.count('deleteTexture'), b0 = GL.stats().bytes, tx0 = GL.stats().texes;
+  eq(GL.upload(src(9000, 10), { mips: true }), null, 'texImage2D\'s error: null (the retry fails the same way)');
+  eq([gl.count('createTexture') - c0, gl.count('deleteTexture') - e0, GL.stats().bytes, GL.stats().texes - tx0, gl.flags.length, GL.ready], [2, 2, b0, 0, 0, true], 'both textures deleted, nothing counted, every flag drained, still ready');
+  gl.on.texImage2D = 0; gl.on.generateMipmap = E.OUT_OF_MEMORY;
+  eq(GL.upload(src(40, 40), { mips: true }), null, 'generateMipmap\'s error (out of memory): null');
+  gl.on.generateMipmap = 0;
+  ok(GL.upload(src(40, 40), { mips: true }), 'and the next one stands');
+  // the context lost under the upload: CONTEXT_LOST_WEBGL in the check (a stale one too), or isContextLost
+  gl.flags.push(E.CONTEXT_LOST_WEBGL);
+  const l0 = gl.count('createTexture');
+  eq([GL.upload(src(4, 4)), GL.ready, GL.alive, gl.count('createTexture') - l0], [null, false, true, 1], 'lost (the check): null, not ready, not retried');
+  eq(GL.draw({ tx: 0, ty: 0, k: 1 }, 10, 10, 1, []), false, 'no draw until the restore');
+  made0(GL).dispatchEvent(new dom.Ev('webglcontextrestored'));
+  eq(GL.ready, true, 'the restore: ready again');
+  gl.on.texImage2D = E.CONTEXT_LOST_WEBGL;
+  eq([GL.upload(src(4, 4)), GL.ready], [null, false], 'lost (after the upload): null, not ready');
+  gl.on.texImage2D = 0; made0(GL).dispatchEvent(new dom.Ev('webglcontextrestored'));
+  gl.lostNow = true;
+  const g0 = gl.count('getError');
+  eq([GL.upload(src(4, 4)), GL.ready, gl.count('getError') - g0], [null, false, 0], 'isContextLost: null before any round trip');
+  gl.lostNow = false;
+  // a fake without getError: every upload as today (no check, no throw)
+  const p = setup({ gl: errGL({ errs: false }) });
+  ok(p.GL.upload(src(4, 4), { mips: true }) && p.gl.count('getError') === 0, 'no getError: as today');
+});
+const made0 = GL => GL.canvas;

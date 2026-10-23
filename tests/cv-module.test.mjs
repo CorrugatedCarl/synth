@@ -26,12 +26,12 @@ import * as core from '../serum-core.js?v=9';
 function fakeWorld(k = 1) {
   const L = {};
   const W = {
-    k, cam: { tx: 0, ty: 0, k }, el: null, items: new Map(), log: [], pointers: [], selected: null,
+    k, cam: { tx: 0, ty: 0, k }, el: null, items: new Map(), log: [], updates: [], pointers: [], selected: null,
     toWorld: (x, y) => ({ x: (x - W.cam.tx) / W.k, y: (y - W.cam.ty) / W.k }),
     toClient: (x, y) => ({ x: x * W.k + W.cam.tx, y: y * W.k + W.cam.ty }), hooks: {}, // (1e: the cable drag)
     add(it) { W.items.set(it.id, it); W.log.push('add ' + it.id); return () => W.remove(it.id); },
     remove(id) { W.items.delete(id); W.log.push('remove ' + id); },
-    update(id) { W.log.push('update ' + id); },
+    update(id) { W.log.push('update ' + id); W.updates.push(Array.isArray(id) ? id.slice() : id); }, // (updates: each call's argument)
     clear() { W.items.clear(); W.log.push('clear'); },
     select(id) { W.selected = id; W.emit('select', { id }); },
     focusItem(id, o) { W.log.push('focus ' + id + ' ' + JSON.stringify(o || {})); },
@@ -469,6 +469,64 @@ test('createTrackView.sync: lay changes (undo) move modules without remounting; 
   V.destroy();
 });
 
+test('createTrackView.sync (P R2-F2): ONE world.update per sync — the list of the modules kept (the made ones were added with their rect read; none kept: no call) —, never one call per module (each ran the overlap rule over every face: O(n³) on a big rack); a group move\'s drop is one update for the mover and its group', () => {
+  const doc = fresh(), W = fakeWorld(1), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4', lay: { fx1: { x: 1400, y: 200, fold: 1 } } };
+  const { V } = view(tr, W, doc);
+  assert.deepEqual(W.updates, [], 'the first build: every module made, none updated');
+  V.sync(JSON.parse(JSON.stringify(tr)));
+  assert.equal(W.updates.length, 1, 'one call for a sync of three kept modules');
+  assert.deepEqual(Array.isArray(W.updates[0]) && W.updates[0].slice().sort(), ['fx1', 'i1', 'out'], 'a list of every kept module');
+  W.updates.length = 0;
+  V.sync(Object.assign(JSON.parse(JSON.stringify(tr)), { model: 'serum' })); // the FX key swaps: i1/fx is made, fx1 goes
+  assert.equal(W.updates.length, 1);
+  assert.deepEqual(W.updates[0].slice().sort(), ['i1', 'out'], 'the made one is not listed (its rect was read by add)');
+  V.destroy();
+  // a group's drop: one update — the mover and the others it carried
+  const doc2 = fresh(), W2 = fakeWorld(1), tr2 = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4' };
+  W2.sel = ['fx1', 'out'];
+  Object.defineProperty(W2, 'selection', { get: () => W2.sel.slice() });
+  W2.select = (id, o) => { if (!(o && o.keep && W2.sel.includes(id))) W2.sel = id ? [id] : []; W2.selected = id; W2.emit('select', { id }); };
+  const { V: V2 } = view(tr2, W2, doc2), fx = V2.modules.get('fx1');
+  W2.updates.length = 0;
+  ptr(fx.bar, 'pointerdown', 1300, 20, { pointerId: 1, pointerType: 'mouse' });
+  ptr(fx.bar, 'pointermove', 1340, 100, { pointerId: 1, pointerType: 'mouse' });
+  assert.deepEqual(W2.updates, [], 'live: none');
+  ptr(fx.bar, 'pointerup', 1340, 100, { pointerId: 1, pointerType: 'mouse' });
+  assert.equal(W2.updates.length, 1, 'the drop: one call');
+  assert.deepEqual(W2.updates[0], ['fx1', 'out'], 'the mover, then the group');
+  // a lone module's drop stays the id (the single-id contract)
+  W2.sel = ['fx1'];
+  W2.updates.length = 0;
+  ptr(fx.bar, 'pointerdown', 1340, 100, { pointerId: 2, pointerType: 'mouse' });
+  ptr(fx.bar, 'pointermove', 1360, 120, { pointerId: 2, pointerType: 'mouse' });
+  ptr(fx.bar, 'pointerup', 1360, 120, { pointerId: 2, pointerType: 'mouse' });
+  assert.deepEqual(W2.updates, ['fx1'], 'alone: its id');
+  V2.destroy();
+});
+
+test('createTrackView.sync (P R2-F2): Tidy is read once per sync while its inputs hold (it was once per module: O(n²)), and again after each module whose size moved — each module still sees the sizes of the ones before it (the second one\'s new width moves the third, not the first)', () => {
+  const doc = fresh(), W = fakeWorld(1), wd = { 'i1/m1': 128, 'i1/m2': 128, 'i1/m3': 128 }, rack = { n: 0 };
+  const t = { id: 'trk_9', name: 'Bass', color: '#c0a060', prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'm900', vals: {} }, out: { kind: 'out' } }, wires: [] };
+  const pms = () => Object.keys(wd).map(k => ({ key: k, kind: 'pm', dev: 'i1', mid: k.split('/')[1], type: '921a', title: k, sub: '', fixed: { w: wd[k], h: 512 }, jacks: [] }));
+  const R = dview(t, W, doc, { patch: false, devices: x => M.devicesOf(x).concat(pms()), size: k => (k === 'i1' ? { fixed: { w: 864, h: 352 } } : null),
+    rackLayout: () => { rack.n++; return null; } }); // (the rack hook is asked once per Tidy run: a probe)
+  const xs3 = () => ['i1/m1', 'i1/m2', 'i1/m3'].map(k => R.V.modules.get(k).x + ',' + R.V.modules.get(k).y);
+  assert.deepEqual(xs3(), ['0,-512', '128,-512', '256,-512'], 'one flush row above the controller');
+  rack.n = 0;
+  R.sync(t);
+  assert.equal(rack.n, 1, 'a sync with nothing moved: Tidy once for the five modules');
+  assert.deepEqual(xs3(), ['0,-512', '128,-512', '256,-512']);
+  wd['i1/m1'] = 256; wd['i1/m2'] = 192; // two sizes move in one sync
+  rack.n = 0;
+  R.sync(t);
+  assert.deepEqual(xs3(), ['0,-512', '256,-512', '448,-512'], 'the third sees the second\'s new width (a Tidy read after each size that moved)');
+  assert.equal(rack.n, 3, 'once, then after m1\'s size and after m2\'s — not after m3, which did not move');
+  rack.n = 0;
+  R.sync(t);
+  assert.deepEqual([rack.n, ...xs3()], [1, '0,-512', '256,-512', '448,-512'], 'settled: once again');
+  R.V.destroy();
+});
+
 // a host like main.js cvLay: 'end' writes into the track the view shows now (History brings new objects: sync(t) moves
 // `cur`), and one FX entry at most (the other FX key goes)
 function view2(track, doc) {
@@ -625,8 +683,8 @@ test('song.normLay: valid entries kept (rounded, clamped), invalid ones dropped,
   assert.deepEqual(S.normLay(bad), { ok: { x: 0, y: 0 } });
   assert.equal(S.normLay(JSON.parse('{"__proto__": {"x": 1, "y": 1}}')), undefined);
   const many = {};
-  for (let i = 0; i < 300; i++) many['m' + i] = { x: i, y: 0 };
-  assert.equal(Object.keys(S.normLay(many)).length, 256, '(milestone 3, schema 7: 256 entries — a Serum in parts is up to 25 modules)');
+  for (let i = 0; i < 4200; i++) many['m' + i] = { x: i, y: 0 };
+  assert.equal(Object.keys(S.normLay(many)).length, 4096, '(milestone 3, schema 7: 256 entries — a Serum in parts is up to 25 modules; IMPL-P: 4096)');
 });
 
 test('song.normLay: an instrument\'s layout choice — ui: \'flow\' (Simple) kept, anything else dropped (absent = Hardware); no schema bump', () => {

@@ -43,8 +43,19 @@
 //   lamps still toggling), s55h (s55 with the hidden face pictures dropped); step 2 the hand protocol on hw5, s55, s55w, hw5 (s55h
 //   joins when s55 or s55w is not P+). &lamps=solid: lit lamps without the blurred glow; &lamphold=1: lamp writes held while the
 //   camera moves (the decision table's follow-ups for a passing s55 and a failing s55w, to re-measure).
+//   Presets (IMPL-P §4, review 2 F6): &perf=high|medium|low, &texmax=N (and &nogl) in this page's URL reach the app frame's own
+//   location.search (tests/ui-bench-frame.mjs: the frame is then a real page the app is written into, not a srcdoc), so the app
+//   boots at that preset; the results' env.preset says what was asked and what the world runs (a switch that did not reach the
+//   app is a validity note). With a preset asked (or &real=1; &real=0 keeps the prototype) step 1's rack scenes draw their cords
+//   with the APP's own cord layer (A.W.cords(): cv-cords at the preset's physics) behind the prototype's calls (realCords), so
+//   G5 reads cords().stats() — perf, quality, steps, stepMs, uploads, fulls — in every phase's numbers; the glue probe, the hand
+//   protocol and the free play stay the prototype's. Nothing changes without a switch: the srcdoc frame, the prototype's cords.
 // Node imports the pure part (STUDIO, seed, step, advance, shown, smooth, pluck, nearestOnPolyline, and the System 55's face55 /
 // rack55 / SYS55): no DOM at module top level.
+
+// the frame helper beside this file, with this page's own ?t= (a test page: the bench's loader gives each load a fresh URL, and the
+// helper must be as fresh as the page)
+const { frameOpts, frameQuery, mountFrame, presetInfo, presetNote } = await import('./ui-bench-frame.mjs' + (typeof location !== 'undefined' ? new URL(import.meta.url).search : ''));
 
 /* ------------------------------------------------------------------------------------------------ the Studio physics (pure) */
 /** The approved preset (LAB:132–143 `PRESETS.studio`, `damping()`, DT, EXTRA), world px. */
@@ -340,6 +351,8 @@ const BASE = IS_PAGE ? new URL('../', location.href).href : '';
 const Q = new URLSearchParams(IS_PAGE ? location.search : '');
 const S55 = Q.get('s55') === '1'; // (stage 9b, IMPL-9b §5 b2: &s55=1 is the System 55 set's own pair of pages and its own store — nothing of the stage 9 session's)
 const MODE = Q.get('hand') === '1' ? 'hand' : Q.get('cords') === '1' && !S55 ? 'cords' : 'auto';
+const FOPT = frameOpts(IS_PAGE ? location.search : ''), FQ = frameQuery(IS_PAGE ? location.search : ''), KEEP_F = FQ ? '&' + FQ.slice(1) : ''; // (P: the app frame's switches — perf, texmax, nogl — and the link that keeps them)
+const REAL = MODE === 'auto' && (Q.get('real') === '1' || (!!FOPT.perf && Q.get('real') !== '0')); // (P: step 1's rack scenes on the app's own cord layer)
 const AUTO = Q.get('auto') === '1', ONLY = Q.get('scenes') ? Q.get('scenes').split(',') : null, HOLD = Q.get('cordhold') === '1', GLTEST = Q.get('gltest') === '1';
 const LAMP_SOLID = Q.get('lamps') === 'solid', LAMP_HOLD = Q.get('lamphold') === '1', KEEP55 = (LAMP_SOLID ? '&lamps=solid' : '') + (LAMP_HOLD ? '&lamphold=1' : ''); // (the decision table's follow-ups for s55w: lit lamps without the blurred glow; lamp deliveries held while the camera moves)
 const MiB = 1024 * 1024, BAR_H = 40, READ_K = 0.5, TAP_TOUCH = 8, TAP_MOUSE = 4, SNAP_PX = 32, HIT_PX = 10;
@@ -451,7 +464,8 @@ let B = null; // the build this page measures
 function envInfo() {
   return { date: new Date().toISOString(), page: location.origin + location.pathname, build: B && B.files, deployed: B && B.deployed, stale: !!(B && B.stale),
     ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, screen: screen.width + '×' + screen.height,
-    canvas: A.W ? (r => Math.round(r.width) + '×' + Math.round(r.height))(A.W.viewport.getBoundingClientRect()) : null, gl: A.W && A.W.glStats() ? 'gl' : '2d', hold: HOLD };
+    canvas: A.W ? (r => Math.round(r.width) + '×' + Math.round(r.height))(A.W.viewport.getBoundingClientRect()) : null, gl: A.W && A.W.glStats() ? 'gl' : '2d', hold: HOLD,
+    preset: presetInfo(A.W, IS_PAGE ? location.search : ''), cordLayer: REAL ? 'app' : 'prototype' }; // ((P) the preset asked and the one the app frame runs; which cord layer step 1's scenes draw)
 }
 
 /* ------------------------------------------------------------------------------------------------ the app in the iframe */
@@ -485,7 +499,7 @@ const HEAD_JS = `window.__synthTest = {};
 const A = {}; // the app: { win, doc, api, cv, shell, W, PN, CP, MOD, FACES, MODELS, frame }
 async function boot(frame) {
   const html = await (await fetch('../index.html', { cache: 'no-store' })).text();
-  frame.srcdoc = html.replace(/<head>/i, '<head><base href="' + BASE + '"><script>' + HEAD_JS + '<\/script>');
+  await mountFrame(frame, html.replace(/<head>/i, '<head><base href="' + BASE + '"><script>' + HEAD_JS + '<\/script>'), FQ, location.href); // ((P) a real page with the query when a switch is asked: the app reads it; else the srcdoc as ever)
   let win = null;
   for (let i = 0; i < 900 && !win; i++) {
     await sleep(50);
@@ -803,7 +817,7 @@ async function build(id) {
       A.W.fit({ ids: S.fit, animate: false });
       if (!D.cold) { await raf(); await sleep(200); }
       for (const r of S.mods) A.W.update(r.id);
-      if (D.cords) { S.patch = makePatch55(S, D); S.cords = createCords(S, {}); S.cords.set(S.patch); }
+      if (D.cords) { S.patch = makePatch55(S, D); S.cords = mkCords(S, {}); S.cords.set(S.patch); }
     } else {
       const list = M15.concat(MORE).slice(0, D.n), pos = rackLayout(list), num = new Map();
       list.forEach((it, i) => {
@@ -815,7 +829,7 @@ async function build(id) {
       await raf(); await sleep(200);
       for (const r of S.mods) A.W.update(r.id);
       S.patch = makePatch(S, D.cords);
-      S.cords = createCords(S, { svg: !!D.svg });
+      S.cords = mkCords(S, { svg: !!D.svg });
       S.cords.set(S.patch);
       S.fit = S.mods.map(r => r.id);
     }
@@ -921,8 +935,42 @@ function sceneInfo(S) {
     perType: per, glFaces: faces, glMB: g ? r1((g.bytes || 0) / MiB) : null, faceMB: g ? r1((g.faceBytes || 0) / MiB) : null,
     cords: cs ? cs.cords : 0, cordMode: cs ? cs.mode : null, cordMB: cs ? r1(cs.bytes / MiB) : 0, k: r3(A.W.k), dropped: S.dropped || 0 };
   if (S.D.set) out.lamps = S.lamps ? S.lamps.stats() : null; // (the System 55 scenes only: the old scenes' results keep their shape)
+  if (cs && S.cords.real) Object.assign(out, { cordLayer: 'app', cordPerf: cs.perf, cordQuality: cs.quality, cordPts: cs.pts }); // ((P) the app's own layer: the preset's cords)
   return out;
 }
+
+/* ------------------------------------------------------------------------------------------------ the app's own cord layer (P) */
+// (IMPL-P §4 G5, review 2 F6) cv-cords through the world — A.W.cords(), at the world's preset (the physics, quality and strip builds
+// of High / Medium / Low) — behind the calls step 1 makes of the prototype below: set, all, moved, pluckAll, stats, rafReq, running,
+// mode, destroy. The jack keys are 'module.jack', the anchors one Map of world points kept up to date by moved(); the layer is the
+// world's (built once, stepped and drawn by its frame): destroy empties it. stats() = cords().stats() plus the prototype's names
+// (ropeSteps, ticks, uploadKB, dbl) so every phase's numbers read the same; the layer's own — perf, quality, pts, steps, stepMs,
+// uploads, uploadBytes, fulls, writes — ride along. rafReq counts the layer's frames and draws: at rest it must not move.
+function realCords(S) {
+  const L = A.W.cords();
+  if (!L) return null;
+  const key = (m, j) => m + '.' + j, anc = new Map();
+  let list = [];
+  const put = r => { for (const j of r.jacks.values()) anc.set(key(r.key, j.id), { x: r.m.x + j.bx, y: r.m.y + j.by }); };
+  return {
+    real: true,
+    get mode() { return L.mode; },
+    set(patch) {
+      list = patch.map(c => Object.assign({}, c, { a: Object.assign({}, c.a), b: Object.assign({}, c.b) }));
+      for (const r of S.mods) put(r);
+      L.set(list.map(c => ({ id: c.id, a: key(c.a.m, c.a.j), b: key(c.b.m, c.b.j), c: c.c, s: c.s ? 1 : 0 })));
+      L.anchors(anc);
+    },
+    all: () => list.slice(),
+    moved(r) { put(r); L.anchors(anc); },
+    pluckAll() { L.pluck(); },
+    stats(reset) { const s = L.stats(reset); return Object.assign({}, s, { ticks: s.frames, ropeSteps: s.steps, perFrame: s.frames ? r1(s.steps / s.frames) : 0, uploadKB: r1(s.uploadBytes / 1024), dbl: 0 }); },
+    rafReq: () => { const s = L.stats(); return s.frames + s.draws; },
+    running: () => !!L.stats().running,
+    destroy() { L.set([]); L.anchors(null); },
+  };
+}
+const mkCords = (S, o) => (REAL && !o.svg ? realCords(S) : null) || createCords(S, o);
 
 /* ------------------------------------------------------------------------------------------------ the prototype cord layer */
 // createCords(S, { svg }): the cords of scene S — a rope each (the Studio physics), drawn by a WebGL2 canvas after #world (or the
@@ -1502,7 +1550,8 @@ function glueSum(L) {
   return { n: L.length, busy: busy.length, miss: L.filter(x => x.miss).length, maxErr: mx(all, 'err'), maxErrBusy: mx(busy, 'err'), meanErr: all.length ? r3(all.reduce((s, x) => s + x.err, 0) / all.length) : null, maxMath: mx(all, 'math'), kMin: all.length ? Math.min(...all.map(x => x.k)) : null, kMax: all.length ? Math.max(...all.map(x => x.k)) : null, ok: busy.length > 0 && mx(busy, 'err') <= 1 };
 }
 async function glue(S) {
-  const C = S.cords; if (!C || C.mode !== 'gl') return S.cords ? { mode: C.mode, note: 'cords in #world (the same transform as the jacks): glued by construction' } : null;
+  const C = S.cords; if (C && C.real) return { note: 'the app\'s own cord layer: the prototype\'s glue probe does not apply' };
+  if (!C || C.mode !== 'gl') return S.cords ? { mode: C.mode, note: 'cords in #world (the same transform as the jacks): glued by construction' } : null;
   const j = probeJack(S); if (!j) return { note: 'no clear empty jack' };
   await fitScene(S);
   A.W.setCamera({ tx: A.W.cam.tx, ty: A.W.cam.ty, k: Math.max(0.6, A.W.k) }); await sleep(300);
@@ -1585,7 +1634,7 @@ async function m5(S, ms = 60000) {
 function selfCheck(S, rs) {
   const I = A.win.__m9in, errors = I.errs.slice(S.e0), why = [];
   const notGl = S.D.kind === 'rack' ? S.mods.filter(r => r.m.el.getAttribute('data-cv-face') !== 'gl').map(r => r.key) : [];
-  const cs = S.cords ? S.cords.stats() : null, wantMode = S.D.svg ? 'svg' : 'gl';
+  const cs = S.cords ? S.cords.stats() : null, wantMode = S.D.svg || (S.cords && S.cords.real && FOPT.nogl) ? 'svg' : 'gl';
   if (errors.length) why.push(errors.length + ' console errors');
   if (notGl.length) why.push(notGl.length + ' faces not on the GL path');
   if (cs && cs.mode !== wantMode) why.push('cords on ' + cs.mode);
@@ -1640,6 +1689,8 @@ function validity(R) {
   }
   if (R.lost && R.lost.length) v.notes.push('tab lost: ' + R.lost.map(x => x.phase).join(', '));
   const parts = [R.auto, R.hand, R.cords].filter(x => x && x.env);
+  v.preset = parts.every(x => !x.env.preset || x.env.preset.ok); // ((P) the switches the page was given reached the app frame)
+  for (const x of parts) { const n = presetNote(x.env.preset); if (n && !v.notes.includes(n)) v.notes.push(n); }
   v.stale = parts.some(x => x.env.stale);
   v.builds = [...new Set(parts.map(x => x.env.build))];
   if (v.stale) v.notes.push('a part ran on an older build than the deployed one');
@@ -1714,9 +1765,11 @@ function draw(el, R) { // the summary: per scene the scripted frames, the cords,
     }
     const m = s.m0, f = x => (x ? x.med + ' / ' + x.p95 + ' / ' + x.max : '–'), cw = s.awake && s.awake.still, gl = s.glue;
     t += '<tr><td>' + k + '</td><td class="' + (s.self.ok ? 'ok' : 'bad') + '">' + (s.self.ok ? 'ok' : s.self.why) + '</td><td>' + s.info.painted + ' · ' + s.info.modules + ' · ' + s.info.glFaces + '</td><td>' + f(m.pan) + '</td><td>' + f(m.deep)
-      + '</td><td>' + Math.max(m.pan.firstMove, m.deep.firstMove) + ' / ' + Math.max(m.settle.settle, m.deepSettle.settle) + '</td><td>' + m.total.verdict + '</td><td>' + (cw ? cw.frameP95 + ' / ' + cw.frameMax : '–') + '</td><td>' + (gl && gl.pan ? Math.max(gl.pan.maxErr || 0, gl.pinch.maxErr || 0, gl.sway.maxErr || 0) : '–') + '</td></tr>';
+      + '</td><td>' + Math.max(m.pan.firstMove, m.deep.firstMove) + ' / ' + Math.max(m.settle.settle, m.deepSettle.settle) + '</td><td>' + m.total.verdict + '</td><td>' + (cw ? (cw.frameP95 != null ? cw.frameP95 + ' / ' + cw.frameMax : 'step ' + r3(cw.stepMs) + ' ms · ' + cw.perf + ' (the app\'s layer)') : '–') + '</td><td>' + (gl && gl.pan ? Math.max(gl.pan.maxErr || 0, gl.pinch.maxErr || 0, gl.sway.maxErr || 0) : '–') + '</td></tr>';
   }
   t += '</table>';
+  const pe = [R.auto, R.hand, R.cords].map(x => x && x.env && x.env.preset).find(x => x); // ((P) the preset the app frame ran, and a switch that did not reach it)
+  if (pe) t += '<p' + (pe.ok ? '' : ' class="bad"') + '>App frame: preset ' + (pe.world || '?') + (pe.asked ? ' (asked ' + pe.asked + ')' : '') + (pe.texSide ? ' · texture side ' + pe.texSide + (pe.texmaxAsked ? ' (texmax ' + pe.texmaxAsked + ')' : '') : '') + (pe.faceBudget ? ' · face budget ' + Math.round(pe.faceBudget / 1e6) + ' MB' : '') + (pe.ok ? '' : ' — ' + presetNote(pe)) + '</p>';
   if (R.hand && R.hand.scenes) t += '<p>Hand test: ' + Object.entries(R.hand.scenes).map(([k, x]) => k + ' <b>' + x.verdict + '</b>').join(' · ') + '</p>';
   if (S55 && R.hand && R.hand.scenes) t += '<p>' + decide55(R).join('<br>') + '</p>';
   if (R.cords && R.cords.plugs) t += '<p>Plugs at 60 %: ' + R.cords.plugs.misses + ' missed of ' + R.cords.plugs.trials.length + '</p>';
@@ -1772,7 +1825,7 @@ async function pageAuto() {
   document.body.classList.add('m9-full');
   const frame = frameEl(); document.body.append(frame);
   const ui = bottomBar(), go = h('button', 'go', 'Start'), next = h('a');
-  next.href = location.pathname + '?m9=1' + (S55 ? '&s55=1' + KEEP55 : '') + '&hand=1'; next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:19px'; next.hidden = true;
+  next.href = location.pathname + '?m9=1' + (S55 ? '&s55=1' + KEEP55 : '') + KEEP_F + '&hand=1'; next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:19px'; next.hidden = true;
   ui.btns.append(go); const RP = resultsPanel(ui.btns); ui.btns.append(next);
   go.disabled = true;
   ui.sayEl.innerHTML = S55 ? 'Step 1 of 2 — <b>System 55: automatic runs</b> (about 5 minutes). Hands off until the bar says Done.' : 'Step 1 of 3 — <b>automatic runs</b> (about 7 minutes). Hands off until the bar says Done.';

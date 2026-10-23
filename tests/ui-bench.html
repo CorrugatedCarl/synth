@@ -30,6 +30,10 @@
   panels/modular.js (GL faces, live face-jack spans), scenes hw5 / m13 / m13w / m20 / m30 / m30h / m13s, a prototype cord
   layer (a second WebGL2 canvas above #world, the Studio physics), the glue probe; &hand=1 the hand protocol, &cords=1 the
   ten named plugs, the free play and the feel; one JSON for tests/bench.json "ui-m9".
+  Presets (IMPL-P §4, review 2 F6): ?perf=high|medium|low, ?texmax=N and ?nogl in this page's URL reach the app frame's own
+  location.search (tests/ui-bench-frame.mjs: with one of them the frame is a real page the app is written into, not a srcdoc), so
+  the app boots at that preset; the results (`preset`: asked / world / texmax / the texture side limit / face budget / ok) say what
+  the app frame runs, and the table's footer warns when a switch did not reach it. Without a switch nothing changes.
   Stage 9b (IMPL-9b §5 b2): ?m9=1&s55=1 (step 1, automatic) and ?m9=1&s55=1&hand=1 (step 2) are the System 55 set's pages — scenes
   s55c / s55 / s55w / s55h in a store of their own (kind "ui-m9b" → tests/bench.json "ui-m9b"); the stage 9 session above is unchanged.
 -->
@@ -80,11 +84,13 @@
   const status = t => { $('#status').textContent = t; };
   const q = a => { const s = a.slice().sort((x, y) => x - y); const at = p => +(s[Math.min(s.length - 1, Math.floor(s.length * p))] || 0).toFixed(1); return { n: a.length, med: at(0.5), p95: at(0.95), max: +(s[s.length - 1] || 0).toFixed(1), over33: a.filter(x => x > 33).length }; };
 
+  let FR = null; // tests/ui-bench-frame.mjs (the frame's switches, the preset record), loaded with the page's own fresh URL
   async function boot() { // the app in the iframe, with the test hooks (window.__synthTest set before main.js runs), same origin
+    FR = await import('./ui-bench-frame.mjs?t=' + Date.now());
     const html = await (await fetch('../index.html', { cache: 'no-store' })).text();
     const doc = html.replace(/<head>/i, '<head><base href="' + new URL('../', location.href).href + '"><script>window.__synthTest = {};<\/script>');
     const f = $('#frame');
-    f.srcdoc = doc;
+    await FR.mountFrame(f, doc, FR.frameQuery(location.search), location.href); // (P) with ?perf= / ?texmax= / ?nogl a real page carrying them, else the srcdoc
     for (let i = 0; i < 400; i++) { await sleep(50); const w = f.contentWindow; if (w && w.__synthTest && w.__synthTest.cv && w.__synthTest.api && w.__synthTest.shell && w.document.querySelector('#world')) return w; }
     throw new Error('the app did not start');
   }
@@ -188,7 +194,9 @@
     const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
     const P = R.probes, pr = !P ? '' : !P.gl ? '<p>grid: the 2D path (no GL canvas)</p>'
       : '<p>GL probes — G1 consistency: <b class="' + (P.g1.equalPx ? 'ok' : 'bad') + '">equalPx ' + P.g1.equalPx + '</b> (mid-burst diff ' + P.g1.diffMid + ', rest diff ' + P.g1.diffRest + ' of ' + P.g1.bytes + ' bytes, busy ' + P.g1.busyMid + ', same camera ' + P.g1.sameCam + ') · G3 precision: <b class="' + (P.g3.ok ? 'ok' : 'bad') + '">' + P.g3.dots + ' major dots over ' + P.g3.cams + ' cameras, max err ' + P.g3.maxErr + ' px</b> (mean ' + P.g3.meanErr + '; ' + P.g3.skipped + ' on a face skipped)</p>';
-    return h + '</table>' + pr + '<p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + ' · grid ' + (R.gl || '?') + '</p>';
+    const ps = R.preset, pset = !ps ? '' : ' · preset ' + (ps.world || '?') + (ps.asked ? ' (asked ' + ps.asked + ')' : '') + (ps.texSide ? ' · texture side ' + ps.texSide + (ps.texmaxAsked ? ' (texmax ' + ps.texmaxAsked + ')' : '') : '') + (ps.faceBudget ? ' · face budget ' + Math.round(ps.faceBudget / 1e6) + ' MB' : '');
+    return h + '</table>' + pr + '<p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + ' · grid ' + (R.gl || '?') + pset + '</p>'
+      + (ps && !ps.ok && FR ? '<p class="bad">' + FR.presetNote(ps) + '</p>' : '');
   }
   const draw = R => { $('#res').innerHTML = table(R); };
   async function run() {
@@ -220,6 +228,7 @@
         const world = cv.world();
         world.fit({ animate: false }); await sleep(400);
         R.nodes[set] = win.document.querySelectorAll('#world *').length; R.k[set] = +world.k.toFixed(3);
+        if (!R.preset) { R.preset = FR.presetInfo(world, location.search); const pn = FR.presetNote(R.preset); if (pn) status(pn); } // (P) what the app frame runs, and whether the URL's switches reached it
         if (!R.probes) { status('GL probes…'); R.probes = await probes(win, world); R.gl = R.probes.gl ? 'gl' : '2d'; world.fit({ animate: false }); await sleep(400); }
         status('measuring ' + set + '…');
         R.sets[set] = await measure(win, world);

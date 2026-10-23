@@ -544,3 +544,22 @@ test('Bells: each strike rings ≈ 1.5 s to −40 dB, held or not, with a clear 
   console.log('# Bells: ' + rep.join(' · '));
   assert.deepEqual(bad, []);
 });
+
+// IMPL-P review F2: makeSet numbers its modules past every m<k> of vals.p — and past the id ceiling (m999999) it made ids that isMid
+// refuses, so the first normPatch (a save, a load, an undo) dropped half the set without a word. Now null (no room: patch-core's own
+// "No module numbers left"); at the last seed that fits, every id is a module id and the record is normal as it stands
+test('IMPL-P review F2: makeSet stops at the id ceiling — the last seed that fits makes a normal record of valid ids, the next returns null (no ids past m999999)', () => {
+  for (const id of Object.keys(MG.SETS)) {
+    const len = MG.SETS[id].set.length, last = 999999 - len;                         // (the highest m<k> in vals.p that still leaves room: k + len ≤ 999999)
+    for (const k of [1, 4096, 123456, last - 1, last]) {
+      const s = MG.makeSet(id, { p: { ['m' + k]: { _t: '921' } } });
+      assert.ok(s !== null, id + ' seeded m' + k);
+      const ks = Object.keys(s.rec.mods);
+      assert.equal(ks.length, len);
+      assert.ok(ks.every(PT.isMid), id + ' seeded m' + k + ': every id a module id');
+      assert.ok(s.rec.nid <= 1e6, 'nid within the bound');
+      assert.deepEqual(PT.normPatch(JSON.parse(JSON.stringify(s.rec)), 'moog'), s.rec, id + ' seeded m' + k + ': normPatch keeps it whole');
+    }
+    for (const k of [last + 1, last + 2, 999998, 999999]) assert.equal(MG.makeSet(id, { p: { ['m' + k]: { _t: '921' } } }), null, id + ' seeded m' + k + ': no room');
+  }
+});

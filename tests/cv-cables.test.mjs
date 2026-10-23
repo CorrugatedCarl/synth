@@ -1151,10 +1151,10 @@ function padsFix() {
   return { t, project };
 }
 
-test('(8) keyKind / modSrcPort / srcKind of the Pads module: pd1…pd8 → \'pads\', a row src pd<n>.p0…p63 → its slot\'s jack; anything else unchanged', () => {
-  assert.deepEqual(['pd1', 'pd8', 'pd9', 'pd0', 'pd', 'pd1x', 'pd10'].map(C.keyKind), ['pads', 'pads', null, null, null, null, null]);
-  assert.deepEqual(['pd1.p0', 'pd8.p63', 'pd1.p64', 'pd1.p01', 'pd9.p1', 'pd1.out', 'pd1.k1', 'pd1'].map(C.modSrcPort),
-    [{ key: 'pd1', port: 'p0' }, { key: 'pd8', port: 'p63' }, null, null, null, { key: 'pd1', port: 'out' }, { key: 'pd1', port: 'k1' }, null]);
+test('(8) keyKind / modSrcPort / srcKind of the Pads module: pd1…pd64 → \'pads\' (IMPL-P: was pd1…pd8), a row src pd<n>.p0…p63 → its slot\'s jack; anything else unchanged', () => {
+  assert.deepEqual(['pd1', 'pd8', 'pd9', 'pd10', 'pd64', 'pd65', 'pd0', 'pd', 'pd1x', 'pd100', 'pd01'].map(C.keyKind), ['pads', 'pads', 'pads', 'pads', 'pads', null, null, null, null, null, null]);
+  assert.deepEqual(['pd1.p0', 'pd64.p63', 'pd1.p64', 'pd1.p01', 'pd65.p1', 'pd1.out', 'pd1.k1', 'pd1'].map(C.modSrcPort),
+    [{ key: 'pd1', port: 'p0' }, { key: 'pd64', port: 'p63' }, null, null, null, { key: 'pd1', port: 'out' }, { key: 'pd1', port: 'k1' }, null]);
   assert.deepEqual(['pd1.p12', 'pd3.p0'].map(C.srcKind), ['pads', 'pads']);
   assert.deepEqual([C.modSrcJack('pd1.p12'), C.modSrcKey('pd2.p5'), C.modSrcOf('pd1.p12')], ['pd1.p12', 'pd2', 'pd1.p12']);
 });

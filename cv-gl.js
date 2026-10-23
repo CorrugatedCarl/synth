@@ -10,10 +10,17 @@
 // Context loss: webglcontextlost (preventDefault) kills every Tex (free is a no-op on them) and tells the owner (onLost);
 // webglcontextrestored rebuilds the programs (onRestored: the owners re-upload); three losses within a minute destroy the
 // layer (onLost(true): cv-world falls back to the 2D grid live).
+// (P, IMPL-P §1.1) GL.maxTex: the context's MAX_TEXTURE_SIZE (cv-face sizes every texture under it), lowered by o.maxTex (the
+// ?texmax test switch); an upload reads gl's error flags ONCE, after it (R2-F3: getError is a synchronous GPU-process round trip —
+// the drain before an upload doubled it): clean → the texture; a flag → ours or one an earlier call left, told apart by one retry
+// (a stale flag never fails a good texture; an error that stays → null: cv-face's tier); a lost context → null and not ready: the
+// loss path — every such call guarded (the fakes and main-sim's stub have neither).
 import { gridBg, gridSizes, GRID_MIN_DPX, DOT, MAJOR } from './cv-world.js?v=9';
 
 /** Losses within LOSS_WINDOW_MS that give the layer up (G4). */
 export const LOSS_MAX = 3, LOSS_WINDOW_MS = 60000;
+/** (P) GL.maxTex when the context cannot say (no getParameter, a throw, garbage): cv-face's TEX_MAX_DIM, the old assumption. */
+export const MAX_TEX_DEFAULT = 8192;
 /** The grid's colour (gridDraw's rgba(233, 231, 226, …)) and the major dots' alpha; the minor alpha is 0.15 × gridBg's fade. */
 const GRID_RGB = [233 / 255, 231 / 255, 226 / 255], MAJOR_A = 0.24, MINOR_A = 0.15;
 
@@ -83,8 +90,8 @@ const FACE_FS = '#version 300 es\nprecision highp float;\n'
 /**
  * The GL layer over `viewport` (IMPL-1h §2), or null without WebGL2 (o.disabled, no context, a failed link — main-sim's
  * stub). o: { doc, win, world (#world: the canvas goes before it; else first in the viewport), test (preserveDrawingBuffer:
- * readPixels after a frame), now(), onLost(dead: boolean), onRestored() }.
- * @returns {null | {canvas: any, resize: Function, upload: Function, free: Function, draw: Function, stats: Function, destroy: Function, readonly alive: boolean}}
+ * readPixels after a frame), now(), onLost(dead: boolean), onRestored(), maxTex (P: a lower texture side limit — ?texmax) }.
+ * @returns {null | {canvas: any, resize: Function, upload: Function, free: Function, draw: Function, stats: Function, destroy: Function, readonly alive: boolean, readonly ready: boolean, readonly maxTex: number}}
  */
 export function createGL(viewport, o) {
   o = o || {};
@@ -148,6 +155,20 @@ export function createGL(viewport, o) {
   }
   try { build(); } catch (err) { try { if (typeof gl.getExtension === 'function') { const x = gl.getExtension('WEBGL_lose_context'); if (x) x.loseContext(); } } catch (e2) { /* gone */ } return null; }
 
+  /* ---- (P) the side limit: MAX_TEXTURE_SIZE, read once (≈ 25 % of Android WebGL2 devices: 4096; the iPad / Mac 16384), lowered —
+     never raised — by o.maxTex; and gl's error flags (getError: a synchronous GPU-process round trip — one an upload, at a rest) */
+  let maxTex = MAX_TEX_DEFAULT;
+  if (typeof gl.getParameter === 'function') { try { const v = +gl.getParameter(gl.MAX_TEXTURE_SIZE != null ? gl.MAX_TEXTURE_SIZE : 0x0D33); if (v > 0 && isFinite(v)) maxTex = Math.floor(v); } catch (err) { /* the default */ } }
+  if (+o.maxTex > 0 && isFinite(+o.maxTex)) maxTex = Math.min(maxTex, Math.floor(+o.maxTex));
+  const E_NONE = gl.NO_ERROR != null ? gl.NO_ERROR : 0, E_LOST = gl.CONTEXT_LOST_WEBGL != null ? gl.CONTEXT_LOST_WEBGL : 0x9242;
+  function flags() { // every pending flag cleared (≤ 8: one per kind): the first, or E_LOST when any says the context is gone (clean: ONE call)
+    if (typeof gl.getError !== 'function') return E_NONE;
+    let e = E_NONE;
+    try { for (let i = 0, f; i < 8 && (f = gl.getError()) !== E_NONE; i++) { if (f === E_LOST) return E_LOST; if (e === E_NONE) e = f; } } catch (err) { /* none */ }
+    return e;
+  }
+  const lostNow = () => { try { return typeof gl.isContextLost === 'function' && !!gl.isContextLost(); } catch (err) { return false; } };
+
   /* ---- the canvas: before #world (where the 2D grid canvas sits), CSS-sized by resize */
   canvas.className = 'cv-gl';
   try { canvas.setAttribute('aria-hidden', 'true'); } catch (err) { /* inert */ }
@@ -194,21 +215,34 @@ export function createGL(viewport, o) {
     const w = +src.width || 0, h = +src.height || 0;
     if (!(w > 0) || !(h > 0)) return null;
     const mips = !!(opt && opt.mips);
-    const id = gl.createTexture();
-    if (!id) return null;
-    try {
-      gl.bindTexture(gl.TEXTURE_2D, id);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
-      if (mips) gl.generateMipmap(gl.TEXTURE_2D);
-    } catch (err) { try { gl.deleteTexture(id); } catch (e2) { /* gone */ } return null; }
-    const bytes = Math.round(w * h * 4 * (mips ? 4 / 3 : 1));
-    const tex = { id, w, h, bytes, mips, dead: false };
-    texes.add(tex); st.bytes += bytes;
-    return tex;
+    if (lostNow()) { ready = false; return null; } // (P) lost under us (the event follows: onLost kills every texture, the restore rebuilds): not ready — the loss path, not an error
+    // (R2-F3) ONE getError after the upload (it was two: a drain before it, a check after). A flag it finds is ours (a too-big
+    // texImage2D or an out-of-memory mipmap is a flag, not a throw) or one an earlier call left (the cords' draw, a grid uniform):
+    // flags() cleared it, so one retry tells which — clean → the first was a stale flag and the texture stands; the same again →
+    // ours: null (cv-face: the tier). The retry costs only in those rare cases; CONTEXT_LOST_WEBGL never retries
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const id = gl.createTexture();
+      if (!id) return null;
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, id);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+        if (mips) gl.generateMipmap(gl.TEXTURE_2D);
+      } catch (err) { try { gl.deleteTexture(id); } catch (e2) { /* gone */ } return null; }
+      const e = flags();
+      if (e === E_NONE) {
+        const bytes = Math.round(w * h * 4 * (mips ? 4 / 3 : 1));
+        const tex = { id, w, h, bytes, mips, dead: false };
+        texes.add(tex); st.bytes += bytes;
+        return tex;
+      }
+      try { gl.deleteTexture(id); } catch (e2) { /* gone */ }
+      if (e === E_LOST) { ready = false; return null; }
+    }
+    return null;
   }
   function free(tex) { // idempotent; a no-op on a dead one (lost context)
     if (!tex || tex.dead) return;
@@ -273,5 +307,5 @@ export function createGL(viewport, o) {
     try { if (typeof gl.getExtension === 'function') { const x = gl.getExtension('WEBGL_lose_context'); if (x && typeof x.loseContext === 'function') x.loseContext(); } } catch (err) { /* gone */ }
     try { canvas.width = 0; canvas.height = 0; canvas.remove(); } catch (err) { /* gone */ }
   }
-  return { canvas, gl, resize, upload, free, draw, stats, destroy, get alive() { return !destroyed; }, get ready() { return ready; } };
+  return { canvas, gl, resize, upload, free, draw, stats, destroy, get alive() { return !destroyed; }, get ready() { return ready; }, get maxTex() { return maxTex; } };
 }

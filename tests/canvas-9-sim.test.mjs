@@ -431,9 +431,9 @@ test('§1.4 review #25: every other way to a 900 Series gives the Model 15 set a
   api.selectTrack(ID.t1); await settle();
 });
 
-test('§1.6: Save / reload identical (schema 12; the orphan knobs pruned at load, never by History); a schema-13 file opens read-only; Save as classic names the patch it loses', async () => {
+test('§1.6: Save / reload identical (schema 13 since stage P; the orphan knobs pruned at load, never by History); a schema-14 file opens read-only; Save as classic names the patch it loses', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA], [12, 12]);
+  assert.deepEqual([p2.schema, CM.SCHEMA], [13, 13]);
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id), k = CMOD.primId(t);
     if (!cv.isPatchDev(t, k)) continue;
@@ -443,8 +443,8 @@ test('§1.6: Save / reload identical (schema 12; the orphan knobs pruned at load
   }
   assert.equal(Object.keys(vals(byId(ID.t1)).p).some(k => !rec(byId(ID.t1)).mods[k]), true, 'the session still holds its orphans (§1.5)');
   const n = JSON.parse(json);
-  n.schema = 13;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 13, 'a schema-13 file: read-only');
+  n.schema = 14;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 14, 'a schema-14 file: read-only');
   const was = globalThis.confirm;
   let asked = '';
   globalThis.confirm = m => { asked = m; return false; };
@@ -498,17 +498,24 @@ test('§6: {t: ptErr} — the patch scripts missing: one notice a session; any o
   assert.deepEqual([api.nodes.get(t4.id).graphed === true, sent(t4, 'graph').length, sent(t4, 'seq').filter(m => m.s && m.s.pg).length, !!n4.po.patch], [false, 0, 0, true], 'the Minimoog track: a legacy node, no patch payload');
 });
 
-test('§4.6: the Moog tiles greyed at a patch\'s 48 modules ("A patch holds at most 48 modules"); a module knob\'s drag posts its knobs at most every 66 ms, its lift at once — no History step', async () => {
+test('§4.6: the Moog tiles greyed at a patch\'s 512 modules ("A patch holds at most 512 modules" — IMPL-P; was 48); a module knob\'s drag posts its knobs at most every 66 ms, its lift at once — no History step', async () => {
   api.selectTrack(ID.t3); await settle();
-  const n0 = cv.hist.u.length;
-  let k = 0;
-  while (Object.keys(rec().mods).length < PT.MAX_MODS && k++ < 60) cv.patch.add('995');
-  await settle();
+  // (a 511-module patch opened as a project — one sync, not 500 taps — then the 512th by the tap, and a 513th refused with its reason)
+  const snap = JSON.stringify(P()), big = JSON.parse(snap), bd = big.tracks.find(x => x.id === ID.t3).dev[dev()];
+  let br = bd.patch;
+  for (let i = Object.keys(br.mods).length; i < PT.MAX_MODS - 1; i++) br = PT.addModule(br, bd.vals, '995').rec;
+  bd.patch = br;
+  api.applyRestore(cv.loadProject(JSON.stringify(big))); await settle();
+  assert.equal(Object.keys(rec().mods).length, PT.MAX_MODS - 1);
+  cv.patch.add('995'); await settle();
   const tile = sh.shell.tiles.moogTile('911');
-  assert.deepEqual([Object.keys(rec().mods).length, tile.getAttribute('aria-disabled')], [48, 'true'], 'full: every tile greyed');
-  assert.match(tile.title, / — A patch holds at most 48 modules$/);
-  while (cv.hist.u.length > n0) cv.undo();
-  await settle();
+  assert.deepEqual([Object.keys(rec().mods).length, tile.getAttribute('aria-disabled')], [512, 'true'], 'full: every tile greyed');
+  assert.match(tile.title, / — A patch holds at most 512 modules$/);
+  const nS = cv.hist.u.length;
+  cv.patch.add('995'); await settle();
+  assert.deepEqual([Object.keys(rec().mods).length, cv.hist.u.length, note()], [512, nS, 'A patch holds at most 512 modules'], 'a 513th refused with its reason, no step');
+  api.applyRestore(cv.loadProject(snap)); await settle();
+  assert.equal(cv.hist.u.length, nS, '(the restore records nothing)');
   assert.equal(tile.getAttribute('aria-disabled'), null, 'available again');
   // the knob throttle
   const t = T(), m = 'm1';

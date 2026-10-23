@@ -1,0 +1,12 @@
+{
+  "note": "IMPL-P lane B: verbatim copies of patch-core.js and moog-core.js at 9dde7e6 (stage 9b's squashed commit = canvas before stage P), taken by lane B before its first edit. Never edit: tests/patch-core.test.mjs runs generated records inside the OLD bounds (48 modules, 128 cords, 4-digit ids) through both and asserts the new core equals it (D6), and checks ordinal / targets / freeSlot against it.",
+  "commit": "9dde7e6",
+  "files": {
+    "patch-core.js": {
+      "sha256": "e8126a718ccb9f581298be2025b165983f749128c61852c4056c20b780ad8db9"
+    },
+    "moog-core.js": {
+      "sha256": "dee450aff40ad55aa83470153a099c01719cc837730dd84b07011cc91601dec0"
+    }
+  }
+}

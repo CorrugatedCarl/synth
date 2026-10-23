@@ -112,6 +112,13 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    set tiles, seven presets) deployed** as one squashed commit on `canvas` (holding branch `wt-9b`; contract IMPL-9b; `tests/ref-9b` frozen).
    The user: no per-stage iPad sessions (one real-device pass after the features); performance presets Low / Medium / High next (ROADMAP 14:
    mid-range Android too — the iPad Pro is the ceiling), then the Master canvas (13); monetisation (15) after the features.
+11. **(2026-10-22.)** **Stage P (performance presets, ROADMAP 14) deployed** as one squashed commit "P" on `canvas` (holding branch
+   `wt-P`; contract IMPL-P). ⚙ → Canvas → Performance (High / Medium / Low; every device starts on High; visual only: face textures and
+   cord physics — never audio, the ⚙ Oversampling untouched); no artificial caps (512 modules / 4 096 cords a patch, 1 024 devices a
+   track, 64 Pads, ids to m999999; schema 13); Panic in the top bar (and Esc); the right Effects tray gone (its estimates in each rack's
+   "+"), Sources / keyboard / track list fold to pull tabs. Next: **the Master canvas** (ROADMAP 13, contract `docs/canvas/IMPL-M.md`,
+   skeptic-reviewed, the user's answers in its header) — G0 (the base's bounce hashes) by the lead from the "P" commit, then lanes D / U
+   (phase 1) and A (phase 2).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

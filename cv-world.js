@@ -57,11 +57,17 @@
 // hold rule's frame length is the tick's, frame to frame. No frame is asked for while every rope sleeps. Below READ_K a cord jack ([data-kind=cord]) sleeps like a control: it is not offered to the jack hook
 // unless its module is in edit state, and sleeper() takes it as the module's body (a press pans). The fit (toolbar, 0, the
 // empty-canvas double-tap) asks the host's setFitHook first: { ids, kMin, kMax, foot } frames those items, never below kMin.
+// Stage P (IMPL-P §1, §2; lane C): the device's performance preset — visual only, nothing here reaches a worklet — o.perf at
+// build (main.js: the pref synth.cv.perf), ?perf=high|medium|low overriding it for the session (never stored); setPerf(id)
+// live → cv-face's FACES.setPerf (the texture density) + the cord layer's setPerf (its physics); glStats() + perf and
+// FACES' budget as faceBudget. ?texmax=N (a test switch: the 25 % of Android tablets whose MAX_TEXTURE_SIZE is 4096) reaches
+// createGL as o.maxTex beside ?nogl. A device-ratio change re-checks the faces (cv-face's rest-time recheck: its plan finds
+// the bases made at the old ratio) — a ratio-only change writes no camera, so nothing else would.
 import * as wk from './wk.js?v=9';
 import { createGL } from './cv-gl.js?v=9';
 import * as FACES from './cv-face.js?v=9';
 import { PAIR_MS } from './gesture.js?v=9'; // (1i G2: a key pressed later than the two-finger layer's time rule)
-import { createCords, STUDIO } from './cv-cords.js?v=9';
+import { createCords, STUDIO, perfOf } from './cv-cords.js?v=9';
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
@@ -107,6 +113,11 @@ const MODS_LABEL = { always: 'Always', select: 'On select', never: 'Never' };
 export const MARQUEE_HOLD_MS = 250;
 /** The minimap's size (CSS px). */
 export const MAP_W = 176, MAP_H = 112;
+/** (P, IMPL-P §2) the performance presets (visual only: the cords' physics and the faces' texture density; High = today) and
+ * the device's pref (appstore; stored as synthc.cv.perf by main.js — never in a project); perfOf(v): a preset, anything else
+ * 'high' (every device starts on High). */
+export const PERFS = Object.freeze(['high', 'medium', 'low']), PERF_PREF = 'synth.cv.perf';
+export { perfOf };
 
 // momentum: px/ms to start (0.12 = 120 px/s), cap, stop; decay time constant (ms: a gentle glide); camera animation (ms);
 // a wheel / hook burst ends this long after its last event; taps: slop per pointer type, double-tap window and distance
@@ -152,7 +163,7 @@ const micro = f => (typeof queueMicrotask === 'function' ? queueMicrotask(f) : P
  *   band: () => {left: number, top: number, right: number, bottom: number},
  *   add: (item: Item) => () => void,
  *   remove: (id: string) => void,
- *   update: (id?: string) => void,
+ *   update: (id?: string | Iterable<string>) => void,
  *   clear: () => void,
  *   ids: () => string[],
  *   onScreen: (id: string) => boolean,
@@ -166,6 +177,7 @@ const micro = f => (typeof queueMicrotask === 'function' ? queueMicrotask(f) : P
  *     jack?: (e: PointerEvent, jackEl: Element) => (boolean | {cancel?: () => void}), jackCancel?: () => void},
  *   setJackHook: (fn: Function | null, cancel?: Function) => () => void,
  *   cords: () => any,
+ *   readonly perf: 'high' | 'medium' | 'low', setPerf: (id: string) => void,
  *   setFitHook: (fn: (() => ({ids?: string[], kMin?: number, kMax?: number, foot?: boolean} | null)) | null) => () => void,
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
@@ -427,6 +439,7 @@ export function createWorld(viewport, o) {
   // of those writes, its pending microtask; inside the tick; the last tick's time, the last frame's length (0: not consecutive)
   let CD = null, cdUnder = false, cdOut = -1e9, cdIv = 0, cdSoon = false, cdMoved = false, ticking = false, tickT = -1, lastFrame = 0;
   let fitHook = null; // (9) the host's fit (setFitHook)
+  let perf = perfOf(perfURL() || o.perf); // (P) the preset: ?perf= over o.perf (the device's pref), else high
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
   let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', pctLab = '', clickUntil = -1e9;
@@ -524,6 +537,11 @@ export function createWorld(viewport, o) {
      but that one draw (no gridStore, no transform). A context loss detaches FACES (every texture is dead: the faces fall
      back to their DOM tier) and a restore attaches it again; three losses in a minute end the layer: the 2D grid is
      built live (G4), FACES stays detached. */
+  // (P) the URL's test switches beside ?nogl: ?perf=high|medium|low (the preset for the session) and ?texmax=N (createGL's
+  // o.maxTex: cv-gl takes min(the GPU's MAX_TEXTURE_SIZE, N) — never a raise)
+  function urlQ() { try { return String((win.location && win.location.search) || ''); } catch (err) { return ''; } }
+  function perfURL() { const m = /[?&]perf=(high|medium|low)(?:&|$)/.exec(urlQ()); return m ? m[1] : null; }
+  function texmaxURL() { const m = /[?&]texmax=(\d{1,6})(?:&|$)/.exec(urlQ()), v = m ? +m[1] : 0; return v > 0 ? v : 0; }
   function glPref() { // 'off' | 'test' | '' from the URL (first) or the pref
     let q = '';
     try { q = String((win.location && win.location.search) || ''); } catch (err) { q = ''; }
@@ -536,9 +554,11 @@ export function createWorld(viewport, o) {
   function buildGL() {
     const pref = glPref();
     if (glDead || pref === 'off') return false;
-    const mk = typeof o.createGL === 'function' ? o.createGL : createGL;
+    const mk = typeof o.createGL === 'function' ? o.createGL : createGL, go = { doc, win, world: W, test: pref === 'test', now, onLost: glLost, onRestored: glRestored };
+    const mt = texmaxURL();
+    if (mt) go.maxTex = mt; // ((P) ?texmax)
     let gl = null;
-    try { gl = mk(viewport, { doc, win, world: W, test: pref === 'test', now, onLost: glLost, onRestored: glRestored }); } catch (err) { console.error(err); gl = null; }
+    try { gl = mk(viewport, go); } catch (err) { console.error(err); gl = null; }
     if (!gl) return false;
     GL = gl;
     glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); });
@@ -606,13 +626,22 @@ export function createWorld(viewport, o) {
     if (!GC) return;
     if (GC.c0 && (B || (GC.c0.tx === cam.tx && GC.c0.ty === cam.ty && GC.c0.k === cam.k))) gridPlace(); else drawGrid();
   }
+  // (P, IMPL-P §1.1, skeptic #13) a ratio-only change writes no camera (no 'screen', no plan): the faces re-checked now —
+  // cv-face's rest-time FACES.recheck (offsets, the overlap rule, then its plan: a base made at the old ratio is a stale
+  // level, re-rastered one a frame) —, never in a burst (its end plans them)
+  function facesRe() {
+    if (!GL || B || destroyed) return;
+    try { const F = FACES.FACES; if (F && typeof F.recheck === 'function') F.recheck(); } catch (err) { console.error(err); }
+  }
+  // (P) the preset to cv-face (the texture density: its own setPerf, lane T — guarded while it has none)
+  function facesPerf(p) { try { if (typeof FACES.setPerf === 'function') FACES.setPerf(p); } catch (err) { console.error(err); } }
   function watchDpr() { // a device-ratio change (browser zoom, another screen) re-sizes the grid's store
     try {
       if (dprMq) dprMq.m.removeEventListener('change', dprMq.f);
       dprMq = null;
       const m = typeof win.matchMedia === 'function' ? win.matchMedia('(resolution: ' + dpr() + 'dppx)') : null;
       if (!m || typeof m.addEventListener !== 'function') return;
-      const f = () => { resize(); watchDpr(); };
+      const f = () => { resize(); watchDpr(); facesRe(); };
       m.addEventListener('change', f);
       dprMq = { m, f };
     } catch (err) { dprMq = null; }
@@ -683,7 +712,7 @@ export function createWorld(viewport, o) {
     cdUnder = pref !== 'off' && !!GL && cordsPref() === 'under';
     const mk = typeof o.createCords === 'function' ? o.createCords : createCords;
     try {
-      CD = mk(viewport, { world: W, doc, win, now, mode: pref === 'off' ? 'svg' : cdUnder ? 'under' : 'gl', test: pref === 'test',
+      CD = mk(viewport, { world: W, doc, win, now, mode: pref === 'off' ? 'svg' : cdUnder ? 'under' : 'gl', test: pref === 'test', perf,
         under: () => (GL && GL.ready !== false ? GL.gl || null : null), onWake: () => { if (active && !destroyed) request(); } }) || null;
     } catch (err) { console.error(err); CD = null; }
     if (CD) { try { CD.resize(vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
@@ -884,8 +913,10 @@ export function createWorld(viewport, o) {
 
   /* ---- items: cached rects, on screen or not (Z1: never hidden, unmounted, swapped or resized) */
   function cacheRect(rec) { try { rec.rect = rec.item.rect(); } catch (err) { rec.rect = null; } }
-  function recache(id, planned) { // a layout read: only outside a burst (add / update / resize / cameraend)
-    for (const [k, r] of items) if (id == null || k === id) cacheRect(r);
+  function recache(id, planned) { // a layout read: only outside a burst (add / update / resize / cameraend); id: undefined (all), one id, or a list of ids
+    if (id == null) for (const r of items.values()) cacheRect(r);
+    else if (Array.isArray(id)) for (const k of id) { const r = items.get(k); if (r) cacheRect(r); }
+    else { const r = items.get(id); if (r) cacheRect(r); }
     mapDirty = true;
     budget();
     if (!planned && !B && stores()) { try { wk.rescaleCanvases(W); } catch (err) { console.error(err); } } // (H5: a new module's stores count)
@@ -1001,8 +1032,17 @@ export function createWorld(viewport, o) {
     budget();
   }
   function clear() { for (const id of [...items.keys()]) remove(id); selSet.clear(); sel = null; focusBack = null; editSup = false; pin = null; mapDirty = true; }
+  // (P R2-F2) update(ids): a list (array / Set / any iterable of ids) is ONE update — every known id re-read (unknown ones skipped), one
+  // budget / stores / schedule pass and ONE overlap rule below (faces × items): a track view's sync of n modules made n of them
+  // (O(n³) on a big rack); the end state is the per-id calls' (the last of which saw every rect fresh)
   function update(id) {
-    if (id == null) recache(); else if (items.has(String(id))) recache(String(id)); else return;
+    if (id == null) recache();
+    else if (typeof id === 'object' && typeof id[Symbol.iterator] === 'function') {
+      const L = [];
+      for (const x of id) { const k = String(x); if (items.has(k)) L.push(k); }
+      if (!L.length) return;
+      recache(L);
+    } else if (items.has(String(id))) recache(String(id)); else return;
     // (1h) a drop / fold / resize: the faces' overlap rule over the new rect (IMPL-1h §3.5 "on update") — not in a burst
     // (recheck reads the decos' offsets); the burst's end runs it
     if (GL && !B) { try { FACES.recheck(); } catch (err) { console.error(err); } }
@@ -1805,6 +1845,7 @@ export function createWorld(viewport, o) {
   // in-panel drags (Serum tiles / labels, the FX grip: wk.dragSource auto-scroll) pan the camera at the band's edges
   if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook({ pan: p => dragPointer(p), onCamera: cb => api.on('camera', cb) });
   buildToolbar(o.toolbar);
+  facesPerf(perf); // ((P) before the GL layer attaches the faces: their first plan at the preset's density)
   buildGrid();
   watchDpr();
   listen(viewport, 'pointerdown', onDownCap, true);
@@ -1860,7 +1901,8 @@ export function createWorld(viewport, o) {
       let f = null;
       try { f = FACES.stats(); } catch (err) { f = null; }
       const out = Object.assign({ gl: true }, s);
-      if (f) { for (const k of Object.keys(f)) out[k === 'bytes' ? 'faceBytes' : k === 'gl' ? 'glFaces' : k] = f[k]; }
+      if (f) { for (const k of Object.keys(f)) out[k === 'bytes' ? 'faceBytes' : k === 'gl' ? 'glFaces' : k === 'budget' ? 'faceBudget' : k] = f[k]; }
+      out.perf = perf; // ((P) the world's preset; cv-face adds dE, budget → faceBudget, under / underMin)
       return out;
     },
     /** (1h) an item's cached rect { x, y, w, h } (world px), null unknown — never a layout read */
@@ -1888,6 +1930,16 @@ export function createWorld(viewport, o) {
     /** (9) the cord layer (cv-cords createCords: set / anchors / live / grab / move / drop / sel / alloc / dim / stats …), built at
      * the first call (o.createCords for tests; ?nogl → its SVG), stepped and drawn by the world's frame; null once destroyed */
     cords,
+    /** (P) the performance preset in force: 'high' | 'medium' | 'low' (o.perf at build, ?perf= over it) */
+    get perf() { return perf; },
+    /** (P, IMPL-P §2.1) the preset, live (the person's ⚙ pick; anything else 'high'): cv-face's texture density and the cords'
+     * physics — visual only, no reload, nothing posted. The same preset again: nothing changes either side */
+    setPerf(id) {
+      if (destroyed) return;
+      perf = perfOf(id);
+      facesPerf(perf);
+      if (CD && typeof CD.setPerf === 'function') { try { CD.setPerf(perf); } catch (err) { console.error(err); } }
+    },
     /** (9) the host's fit: fn() → null (every item, no floor) | { ids, kMin?, kMax?, foot? } — the toolbar's fit, the 0 key and
      * the empty-canvas double-tap frame those items, never below kMin (a side that no longer fits keeps its start — or with foot
      * its bottom — in view); fit({ ids }) / fit({ all: true }) skip it. Returns a remover (only removes its own hook) */

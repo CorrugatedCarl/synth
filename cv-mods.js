@@ -42,7 +42,7 @@
 //   sweepControl(model, ctl) → { cls, fields }   the fields: normalised patch paths ('osc.lev', 'ops.R', 'mod3?' = presence)
 import { MODELS } from './models.js?v=9';
 import { DESTS, FXP_TAB } from './serum-core.js?v=9';
-import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
+import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS, PAD_ID } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
 
 export const CLASSES = ['none', 'sm', 'apply', 'proc', 'chunk', 'struct'];
 export const RANK = { none: 0, sm: 1, apply: 2, proc: 2, chunk: 3, struct: 4 };
@@ -498,9 +498,9 @@ export function perNoteOf(t, src) {
   return x.kind === 'velo' || x.kind === 'note' || x.kind === 'env';
 }
 const wheelOn = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
-// (IMPL-8 §5) the Pads modules of a project by id (pd1 … pd8; normPads'd by the host — read defensively), a module by id,
+// (IMPL-8 §5) the Pads modules of a project by id (pd1 … pd64; normPads'd by the host — read defensively), a module by id,
 // a slot's pad when its mod is on
-const padMods = p => (isObj(p) && Array.isArray(p.pads) ? p.pads.filter(M => isObj(M) && typeof M.id === 'string' && /^pd[1-8]$/.test(M.id) && Array.isArray(M.pads)).sort((a, b) => numOf(a.id) - numOf(b.id)) : []);
+const padMods = p => (isObj(p) && Array.isArray(p.pads) ? p.pads.filter(M => isObj(M) && typeof M.id === 'string' && PAD_ID.test(M.id) && Array.isArray(M.pads)).sort((a, b) => numOf(a.id) - numOf(b.id)) : []);
 const padMod = (p, id) => padMods(p).find(M => M.id === id) || null;
 const modPad = (M, i) => (M && isObj(M.pads[i]) && isObj(M.pads[i].mod) ? M.pads[i] : null);
 export const isPadSrc = src => padOfSrc(src) !== null;

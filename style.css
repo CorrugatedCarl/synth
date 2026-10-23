@@ -84,6 +84,8 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .tb.rec svg { fill: #b33a2a; }
 .tb.rec[aria-pressed="true"] { background: #3a1410; border-color: #ff4a2a; animation: recpulse 1s infinite; }
 .tb.rec[aria-pressed="true"] svg { fill: #ff4a2a; }
+.tb.cv-panic:active { background: #3a1410; border-color: #ff4a2a; } /* (P) Panic: never folds away (no narrow-window rule hides it) */
+.tb.cv-panic:active svg { fill: #ff4a2a; }
 @keyframes recpulse { 50% { box-shadow: 0 0 0 3px rgba(255,74,42,0.25); } }
 .tpos { display: flex; flex-direction: column; justify-content: center; font-family: var(--mono); line-height: 1.12; width: 88px; height: 36px; padding: 0 8px; background: #07090a; border: 1px solid #1d2a24; border-radius: 8px; overflow: hidden; }
 .tpos #tBBT { font-size: 14.5px; font-weight: 600; color: #7cffb5; white-space: nowrap; }
@@ -180,6 +182,7 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .cv-gearpop .field select { min-width: 150px; height: 30px; }
 .cv-gearpop .field.range input { width: 150px; }
 .cv-gearpop .field.cv-gmaster { display: none; } /* the top row's master level, mirrored here where that folds away (≤ 1099 px) */
+.cv-gearpop .cv-ghint { margin: -6px 0 2px; font-size: 11px; line-height: 1.4; color: var(--mute); } /* (P) a line's one-line explanation (Performance) */
 .boot { margin: 0; font-size: 13px; color: var(--label); line-height: 1.5; }
 .appbtn svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .appbtn[hidden] { display: none; }
@@ -746,6 +749,11 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .cv-meterbox { width: 44px; }
   .meter:not(.open) > #cpu, .meter:not(.open) #latL { display: none; }
 }
+@media (max-width: 800px) {
+  /* (P) the top bar's Panic takes 40 px: the position readout (display only) goes from 800 px down, not 740 — the track chip
+     keeps its finger's width beside CANVAS │ ROLL (iPad mini portrait 744, 768: 15 / 35 px of chip room left otherwise) */
+  .tpos { display: none; }
+}
 @media (max-width: 740px) {
   /* Split View, small Stage Manager windows: Power and the meter (rate · load · latency) fold into "⏻ ▾"; the position
      readout (display only) goes. CANVAS │ ROLL, Undo / Redo, ⋯ and ⚙ stay in the row */
@@ -759,6 +767,10 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .cv-ex .meter, .cv-ex .meter.open { position: static; width: auto; height: auto; inset: auto; padding: 0; gap: 3px; background: none; border: 0; box-shadow: none; }
   .cv-ex .meter > #rate, .cv-ex .meter > #cpu { display: block; white-space: normal; }
   .cv-ex .meter #latL { display: inline; }
+}
+@media (max-width: 640px) {
+  /* (P) the gaps close a little: the track chip's 44 px down to 601 px, Panic in the row (below, the row scrolls) */
+  .cv-row { gap: 3px; } .cv-transport { gap: 2px; }
 }
 @media (max-width: 600px) {
   /* Slide Over, ⅓ Split View, a phone: what still does not fit scrolls sideways; the row's popovers are placed fixed

@@ -423,15 +423,318 @@ project saved by this build opens read-only in an older, not-yet-updated copy of
   cords on the M4 — unless P-1 is taken.
 - **The 2D path** (no WebGL2, `?nogl`, three context losses): the presets change nothing there (§1.3).
 - **ModCore's fixed banks** (10 LFO, 4 ENV, … per track) and the FX rack's 48: real engine shapes, unchanged.
+- **(Reviews.)** The presets do not speed up Chrome's main thread: a cold face load and Medium's rest paints cost High's ms (review 2 F4);
+  their wins are face memory, Low's zero rest paints and cord work; whether they keep a real Android tablet's GL context alive is the
+  real-device pass's question. System 55 frame times, cold loads, big-rack pinch (DOM-bound) are the same at every preset.
+- **Feedback-heavy racks** cost more than lane B's 1.3–1.5 × at 512 modules: 2.9 × (298 nodes in loops) to 9.4 × the deadline (3 563
+  cords, 834 nodes in loops), `graph()` 5.8–8.8 ms (review 1 F3) — the device's limit, as the user wants.
+- **Opening a 511-module rack** is still O(n²) in Tidy (≈ 350 ms of a 540 ms open in node); edits are O(n) after fixer B.
+- **The evaluator's `expand`** still recurses: two chained-994 cases (511 multiples) throw at a 200 KB stack (fine at 384 KB in JSC); the
+  throw now reports `ptErr 'graph'` and the notice, the last good patch keeps playing.
+- **The Sources pull tab** at the left edge can meet iPadOS's back-swipe in a browser (review 2 F7) — the standalone app (ROADMAP 12).
 
 ## 12. Notes (the builders fill in)
 
 ### Lane T
+
+**Built** (cv-face.js, cv-gl.js, tests/cv-face.test.mjs, tests/cv-gl.test.mjs; nothing else touched, no audio file, no sw.js):
+`TEX_Q` (high: R ∞, windows, 40e6 px, 384 MB · medium: R 1.5, windows, 22.5e6 px, 216 MB · low: R 1, no windows, 96 MB), `perfId`,
+`dEOf`; `FACES.setPerf(id)` (+ the named export `setPerf`, the getter `FACES.perf`): the policy at `dE = min(dpr, R)` (base, windows,
+plan's 1:1 checks, `soft`); live: every window freed, `plan()` (in a burst: the rest's) queues every mounted drawable face at a stale
+level, one a frame, nearest first; `run` re-rasters a stale base with the old one drawn until the swap (mode stays gl: the R2a
+invariant); a stale job that fails (2D context, upload) keeps its base and sets `F.lvlTry` (no re-queue until the level changes:
+a preset, the ratio, the side limit); `side()` = min(TEX_MAX_DIM, `GL.maxTex`) into `baseLevel(d, w, h, max)` /
+`winLevelOf(d, k, sum, w, h, cap, max, budget)` (old calls unchanged); `stats()` + `perf`, `dE`, `budget`, `texSide`, `under`,
+`underMin`. cv-gl: `GL.maxTex` = `getParameter(MAX_TEXTURE_SIZE)` read once (absent / throw / garbage → `MAX_TEX_DEFAULT` 8192), lowered
+by `o.maxTex`; `upload` drains the flags, checks once after texImage2D / texParameteri / generateMipmap (an error → the texture
+deleted, null), `CONTEXT_LOST_WEBGL` or `isContextLost()` → null and `ready` false (the event follows); cv-face reads a null with
+`GL.ready === false` as the loss path (no `fail`). Every new GL call guarded: the fakes run as today.
+
+**[C] refinements (reasons)**: (1) **High's R is ∞, not 3** — D3 at any ratio: at dpr > 3 an R of 3 would cap today's windows
+(d·K_MAX); the base still stops at BASE_L_MAX 3. (2) **Rule (a) is a projection, not the job's own credit**: the budget counts
+every stale, drawable, untried base at its new level (`projB`, `enforce`'s D). The literal `enforce(need − F.base bytes)` still evicts
+a face its swap would shrink while the *others* still count at the old level (a on + b off, 4000 × 2000 at dpr 2: 170.7 MB; a's
+job: 170.7 − 42.7 = 128 > 96 → b evicted, though both shrunk are 85.3) — the §7 test pins the case; a High set too big for Low ends
+as a cold Low load (the nearest off-screen kept, the farther evicted at the first job, never re-made); Low → High counts the growth.
+At High with no stale base D = 0: today's arithmetic. (3) **A switch frees every window** (Low: for good; else the rest re-plans at
+the new level): the simplest way to put the new window policy in force — a moment of the base under 1:1 above 100 % after a switch,
+never an SVG. (4) **Two getError round trips an upload** (the drain's one NO_ERROR + one check), not one: the drain is rule (5), one
+check after the last call covers all three (a flag left behind is cleared by the next drain). (5) `lvlTry` also clears when a base
+is freed (unmount, eviction, loss, detach). (6) `under` = a base at L < dpr · min(k, 1) (its 1:1 promise holds to 100 %), a window at
+L < dpr · k; at High it counts only the recorded exemptions (the 16 M px ceiling above dpr 2.5, a `maxTex`-capped face).
+
+**High = today, proven**: a scripted scene (real face sizes, a wood case, an off-screen face, 30 → 200 % zooms and pans, a loss /
+restore, five 4000 × 2000 faces over the budget) traced — every upload's size / mips / source rect, the frees, the stats, the modes —
+and hashed **on the base's cv-face (4cc0936) at dpr 1 / 1.5 / 2 / 2.5 / 3 / 4**, committed first; the same hashes after the change
+(test "P High = today"). Every older cv-face / cv-gl test untouched.
+
+**Gates** (one file at a time, `--max-old-space-size=2048`): cv-face 40/40 · cv-gl 10/10 · cv-panel 108/108 · classic-panel 14/14 ·
+canvas-1i-sim 20/20 (peak RSS 0.94 GB) · canvas-9b-sim 14/14 (0.61 GB) · lint 161/161. **Expected reds, not T's files**:
+tests/cv-world.test.mjs:446 pins `glStats()`'s key list — lane C adds `perf`, `dE`, `faceBudget` (FACES' `budget` renamed),
+`texSide`, `under`, `underMin`; tests/pwa.test.mjs's precache hash (the lead's `node tools/precache.mjs --write`).
+
+**At size (node, M4, the fake world; recorded)**: 512 faces (128 × 472, two rows on screen; 297 bases fit High's 384 MB): a cold load
+through the queue 110 ms over 1 024 frames (0.21 ms a landing: `plan()` whole after each — O(n) each, O(n²) in all); `recheck()` 4.2 ms
+(faces × world items: **once a frame of a module drag** — ≈ 25 ms at a Low-class × 6, i.e. over a frame there: for the lead);
+`FACES.recheck()` 4.5 ms; a High → Low switch drained in 512 frames at 0.16 ms a frame. Nothing over 16 ms on the Mac.
+
+**Headless Chrome** (Chrome 155, `--headless=new --use-angle=metal --force-device-scale-factor=2`, 1440 × 900; tests/ui-bench.html
+?m9=1&s55=1 driven by CDP, `__m9.fn.build`; a scratch copy served on its own port with a **stand-in for lane C's wiring** — `?perf=` →
+`FACES.setPerf` before the attach, `?texmax=` → `createGL`'s `maxTex`, `watchDpr` → `FACES.recheck()`, `?gltest` from the parent URL
+— never committed; MB = 10⁶ bytes, MiB in brackets):
+
+| | High | Medium | Low |
+|---|---|---|---|
+| s55 at rest (fit, 25 %): faceBytes | 72.6 MB (69.3 MiB) | 40.9 (× 0.563) | 18.2 (× 0.251) |
+| s55 at 150 % | 108.8 | 61.2 | 18.2 (no window) |
+| s55 zoom 60 → 150 → 60 %, at the rests: paints · window MB | 12 · 36.2 (20.5 ms) | 12 · 20.3 (× 0.56; 18.2 ms) | **0 · 0** |
+| hw5 at rest | 180.1 MB (171.7 MiB) | 101.3 (× 0.5625) | 45.0 (× 0.25) |
+| hw5 at 150 % · paints in the cycle | 195.8 · 1 | 110.1 · 1 | 45.0 · **0** |
+| G3 `&texmax=4096` (hw5): the largest upload side · faces gl · probe | 4096 (OB-Xa 4096 × 1776, Jupiter-8 4096 × 1696, CS-80 4096 × 1657) · 5/5 · lit | 4096 · 5/5 · lit | 2432 · 5/5 · lit |
+
+The live switch on s55 at 120 % (High: 135.3 MB, 38 bases + 15 windows): → Low 18.2 MB (38 rasters, no window, the peak the start),
+→ Medium 76.1 (38 + 15, peak 76.1), → High 135.3; again with a 40-frame pinch started 3 frames after each switch: the same end
+states, the same raster counts (no thrash); **0 frames with a gl face's SVG showing** (≈ 1 000 frames watched); a forced context loss
++ restore at Low → 18.2 MB, at Medium → 76.1, every face gl; no console error anywhere. The G3 probe: each face framed in turn, 9 × 9
+GL pixels (the preserved buffer) — 77–81 of 81 lit on every face (the rest dark art), none black. Screenshots (scratchpad
+`P/t/`): s55-{high,medium,low}.png, s55-150-{high,medium,low}.png (Low visibly softer at 150 %), hw5-{…}.png, g3-hw5-{…}.png,
+switch-low-120.png; the JSON results beside them.
+
+**Interfaces for C / H**: `import * as FACES from './cv-face.js?v=9'` → `FACES.setPerf(id)` (the named export; returns changed;
+detached: kept for the next attach — so cv-world may call it before its `attach`), `FACES.FACES.perf`; `FACES.stats()` keys + `perf`,
+`dE`, `budget` (→ glStats `faceBudget`), `texSide`, `under`, `underMin`; `FACES.recheck()` re-plans after a device-ratio change (a
+stale base re-rasters at the rest). `createGL(viewport, { …, maxTex })` (positive whole px; garbage ignored; never raises), `GL.maxTex`
+(read once); `GL.ready` false after an upload saw the context lost. Pure: `TEX_Q`, `perfId`, `dEOf(dpr, id)`,
+`baseLevel(d, w, h, max)`. H: no FACES call besides `world.setPerf` (C's) is needed.
 ### Lane C
+(cords + world; base 4cc0936; `cv-cords.js`, `cv-world.js`, `tests/cv-cords.test.mjs`, `tests/cv-world.test.mjs`; scratch `P/c/`)
+Commits 78d37bd (the cords), 45576ff (the world), these notes.
+- **`cv-cords.js`** — `CORD_Q` [C names]: `high` { q 'full', N 10, SUB 4 } = STUDIO (34 drawn points), `medium` { 'light', 6, 3 }
+  (14), `low` { 'still', 6, 3 } — still = today's reduced-motion path (`motion()` false: no ticker, no step, pluck a no-op, the
+  parabola from the ends) at 6 / 3; `perfOf(id)` (anything else, `'toString'` too, → 'high'). `o.perf` at creation, `setPerf(id)`
+  live: every rope made again at the quality's N and **re-seeded asleep from its parabola** (no stale rope, no jump: A0 = the ends,
+  so the next advance wakes nothing; the live rope re-seeded awake as `live()` does), `running` false, the strip rebuilt whole,
+  one draw asked for; the same id: nothing. Per-layer `PTS`; `place` / `live` make ropes at the quality's N; `pointAt` / `pluck` read
+  it. The SVG fallback keeps STUDIO's 10 / 4 (§1.2). Prefers-reduced-motion still at every preset, at that preset's geometry (High
+  10 / 4 as today). `stats()` + `perf`, `quality`, `pts`, `fulls` (whole builds), `writes` (cords written), `runs` (bufferSubData
+  calls), `buildMs` / `buildMax`; `get perf`.
+- **P-1 (c), the fixed vertex ranges**: cord j of the drawn list (the cords' Map order, the live rope last — the one strip's
+  order) owns vertices from `off(j) = j·(2·PTS + 2) − 1` (0 for j 0): its lead join (j > 0: its first vertex twice), its 2·PTS, its
+  trail join (not the last: its last vertex again) — concatenated, **the same vertex sequence the whole build always wrote** (the
+  previous cord's last vertex, then this one's first twice); plugs at instances 2j, 2j + 1, the probe after them. A frame rewrites
+  only the queued cords (`DQ`): advance flags a rope it stepped or whose ends moved (`r.mv`, a flag only — the physics untouched);
+  a recolour, a selection change queue theirs; an `anchors` / `grab` / `live` / `set` change no advance has read yet is found by a
+  scan of the placed cords' ends against those written (`scanOwed`, once a build). **Whole** (as before) when the layout changes:
+  a cord added / removed / placed / its ends coming or going, the live rope coming, going or taken, the quality, motion (reduced
+  flipping) or the probe's presence, a growth, a context restore (`upFull`), a build never uploaded. The upload: the dirty ranges
+  sorted, neighbours within `RUN_GAP` 4 merged, past `RUN_MAX` 16 runs a buffer the gap doubled — a sway of every cord is one
+  call a buffer. `o.full` (diagnostics) = the pre-P-1 path, every build and upload whole (the equality twin, the bench's
+  "before"). [C, beyond P-1's text] **the awake-only advance**: while no end can have moved since advance last read every rope
+  (no `changed()` / relist / pluck), an asleep rope's advance is a no-op (same ends: no wake, no step, no flag), so the step
+  advances only the awake ropes (two arrays in turn, no allocation a frame) — a sway costs its awake ropes, not every cord. Both
+  proven bit for bit by the hash below.
+- **Tests (cv-cords 24 → 34)**: CORD_Q / perfOf; medium's rope = LAB's Cord at "Points per cord" 6 bit for bit (1 / 30 / 240
+  steps, difference 0); the layer at each preset (perf / quality / pts / the strip's vertex count); low = still (no step, no frames,
+  a moved end re-paths **only its range**, a live rope never stepped); setPerf with every cord swinging (each switch → asleep, the
+  next draw every cord's parabola at the new N / SUB within 1e-3 px, no rope moves after it, no frames; same id: no build; a live
+  rope re-seeded awake and taken over); reduced motion still at every preset. **High = today, byte for byte**: a scripted scene
+  (24 cords: a sway with the camera moving, a module drag, selection, a recolour, a cord removed and one added, the probe on a
+  dragged module, a live rope taken over, a pulled plug, a context loss / restore, an end unknown and back, alloc off / on, then
+  reduced motion and 'under') on a fake WebGL2 context that models its buffers (bufferData / bufferSubData into byte arrays; every
+  draw call hashes the bytes it reads + its uniforms): its hash **computed on the base 4cc0936** (scratch `P/c/scene.mjs` against
+  `git show 4cc0936:cv-cords.js`) = `26d33782…ab2b`, and the lane's code gives it (17.7 → 10.6 MB uploaded in the scene); the
+  `o.full` twin too. **Every preset = its whole-rebuild twin**: the scene at medium, at low, with live switches high → medium →
+  high → low → medium ('under' → low) — hashes equal. **4 096 cords**: one rope swaying uploads one range a frame — High 70
+  vertices + 2 plugs = **2 000 B** (before 7.8 MB), medium **880 B** (3.4 MB), 2 calls; a module drag of 8 cords 8 ranges a frame
+  (High and low); runs ≤ RUN_MAX (all 512 dirty: 1 call a buffer; 40 scattered: ≤ 32). Recorded (node, M4, `--no-sparkplug`, ms a
+  frame, before → now, KB a frame):
+
+  | one rope swaying | 128 | 512 | 2 048 | 4 096 |
+  |---|---|---|---|---|
+  | high | 0.153 → 0.009 (250 → 2) | 0.423 → 0.010 | 1.61 → 0.018 | **3.23 → 0.034** (8 000 → 2) |
+  | medium | 0.055 → 0.005 (110 → 0.9) | 0.234 → 0.007 | 0.885 → 0.016 | 1.71 → 0.027 (3 520 → 0.9) |
+  | **a module drag (8 cords)** | | | | |
+  | high | 0.139 → 0.053 | 0.48 → 0.124 | 1.87 → 0.415 | 4.05 → 0.789 (8 000 → 15.6) |
+  | medium | 0.086 → 0.059 | 0.297 → 0.108 | 1.22 → 0.398 | 2.43 → 0.716 (3 520 → 6.8) |
+  | low | 0.054 → 0.014 | 0.208 → 0.038 | 0.836 → 0.140 | 1.75 → 0.308 (3 520 → 6.8) |
+
+  A drag's remaining cost is reading every cord's ends once a frame (advance at high / medium, the scan at low): the host relays
+  the **whole** ports map at each relay (cv-module `ports()` rebuilds it, itself O(jacks)), so which cords moved is only known by
+  looking — O(changed) needs a hint from the host (the module that moved): **for the lead**, outside lane C.
+- **`cv-world.js`**: `PERFS`, `PERF_PREF` ('synth.cv.perf'), `perfOf` (cv-cords') exported; `o.perf` at build, **`?perf=high|medium|low`
+  over it** (the lead's brief: read beside `?nogl`; never stored — the world writes no pref); `world.perf`; `world.setPerf(id)` →
+  `FACES.setPerf` (guarded while cv-face has none) + the cords' `setPerf`; `FACES.setPerf(perf)` also at build, before the GL layer
+  attaches the faces (the registry is global: every world sets its own); `cords()` built with `perf`; `glStats()` + `perf` (the
+  world's), FACES' `budget` → `faceBudget` (its `dE`, `under`… pass through). `?texmax=N` (1–6 digits, > 0) → `createGL(…, { maxTex })`
+  (absent otherwise: the fakes' options unchanged). The device-ratio watch: `resize(); watchDpr(); facesRe()` — `facesRe` calls
+  **`FACES.FACES.recheck()`** (the registry object's rest-time recheck: offsets, the overlap rule, then its `plan` — where T finds a
+  base made at the old ratio), not the namespace's `recheck` (the overlap rule only); never in a burst (its end plans them).
+- **Tests (cv-world 71 → 75)**: the preset (o.perf, unknown → high, ?perf= over it in six URL forms, nothing stored, cords() built
+  with it, setPerf to the layer; with T's cv-face the FACES half: `FACES.stats().perf` follows, `faceBudget` in glStats — a
+  diagnostic until the merge); ?texmax (seven URL forms); a device-ratio change (a fake matchMedia's 'change', no camera written):
+  a registered face's offset read again, the GL buffer and the cords at 2×, the watch moved to the new ratio, nothing in a burst,
+  destroy removes it (failing without the call: checked); the real cv-cords through the world at medium / low (low: a module drag
+  is no rope-step and no frame left owed, the cord's end on its plug; setPerf mid-sway: asleep at once, one draw, no frames). The
+  glStats key pin moved to the new truth (today's keys + `perf` + FACES' own renamed — exact, not loosened).
+- **Gates** (one file at a time, 2048 MB): `cv-cords` 24 → **34** · `cv-world` 71 → **75** · `cv-patch` 28 · `canvas-9-sim` 22 ·
+  `canvas-9b-sim` 14 · `canvas-1e-sim` 24 · `gesture` 53 · `lint` 161; also `cv-face` 28, `main` 46, `canvas-1i-sim` 20, `canvas-sim`
+  24. With lane T's `cv-face.js` / `cv-gl.js` (its worktree, scratch merge `P/c/mergeT/`): `cv-world` 75 / 75, the FACES half run.
+- **Headless Chrome** (155, `--headless=new --use-angle=metal`, dpr 2; the worktree copied to `P/c/site/`, `pc.html` = index.html with
+  `window.__synthTest = {}`, served on 8971 no-store, CDP 9471, the service worker bypassed; `P/c/run.mjs`, `big.mjs`): the **System
+  55** tile (37 modules, 24 cords) at `?perf=high / medium / low` → `world.perf`, `glStats().perf`, the layer's quality / pts (1 678
+  vs 718 strip vertices). **Every cord plucked** (1× / 4× / 6×): frame intervals 16.7 / 16.7 / 16.8 ms, no frame > 33 ms, one cord
+  draw a frame (0 doubles); uploads a frame with all 24 awake **46.8 KB** (high) / **20.6 KB** (medium), 2 calls, 0 whole builds.
+  The physics in this renderer (advance, 40 ropes awake): full 0.094 / 0.343 / 0.528 ms, light 0.044 / 0.183 / 0.280 (× 0.47 / 0.53
+  / 0.53 — G5's ≤ 0.6); the layer's whole `step()` in node (high-res clock), 24 / 40 awake: 44 / 74 µs vs 23 / 39 µs (× 0.53). (The
+  in-app means — 0.066 / 0.133 / 0.21 ms high, 0.047 / 0.102 / 0.168 medium — are read on Chrome's 0.1 ms `performance.now()`: ×
+  0.7–0.8; reviewer 2's G5 should read a longer window or the physics.) **A module drag** (the 904A, 4 cords, 24 mouse moves): high
+  11.7 KB, medium / low 5.1 KB a frame; low **0 rope-steps**, 17 draws (the relays); the dragged cords' ends on their plugs (0 px);
+  **at rest after it, every preset and rate: 0 world ticks, 0 rAF requests** (but main.js's own `frame` loop, every frame, not the
+  canvas's), 0 cord steps / draws, `wants()` false. **Glue** (a cyan ring in #world at an empty jack, the layer's magenta probe disc,
+  one screenshot): mid-pinch with every cord swinging ≤ **0.411** device px (1440 × 900), ≤ **0.474** (1366 × 1024); **the live
+  switch** High → Low → Medium → High with every cord swinging: right after each, awake 0, running / wants false, no step or draw
+  in the next 0.8 s, the glue ≤ 0.348 / 0.271 device px. **4 096 cords on a second real layer** (one rope swaying; low: a drag of 8),
+  JS a frame before → now: high 2.65 → **0.051 ms** at 1×, **14.5 → 0.079 ms at 6×** (13 frames > 33 ms → 1); medium 6× 10.3 → 0.085;
+  low (drag) 6× 9.43 → 2.36 (the ends scan above). No console error or exception in any run. Screenshots `P/c/shots/`:
+  `P-s55-{high,medium,low}-rest.png`, `-dragged.png`, `-glue-pinch.png` (high at 1366 × 1024, the others 1440 × 900),
+  `P-s55-switch-to-{low,medium,high}.png`.
+- **For lane H**: pass `createWorld(…, { perf: store.get(W.PERF_PREF, 'high') })` and do **not** call `setPerf` at boot (it would
+  override `?perf=`); show `world.perf` in the select (the URL's value is never stored: store only the person's change, then
+  `world.setPerf(v)`). `W.PERFS` / `W.perfOf` for the options and the guard. ui-bench: `&perf=` / `&texmax=` must reach the app
+  frame's own `location.search` (cv-world reads it). **Note**: ui-bench-m9's s55 / s55w scenes draw their cords with the bench's
+  own prototype layer (`createCords(S, …)` in tests/ui-bench-m9.mjs, spike (c)), not cv-cords — G5 read there sees no preset; it
+  should read the app's `cords().stats()` (perf, quality, steps, stepMs, uploadBytes / uploads, fulls).
 ### Lane B
+
+Commits on the lane-B worktree branch from 4cc0936: **76b942a** (the warm payload list pinned on the base), **101ea7c** (the bounds, `isMid` / `isCid`, the linear host paths, the evaluator's guards, `WARM_C`), **6228684** (song.js, the device refusal, schema 13, the Pads bound, `setFull`, the moved pins), then the notes commit (+ the guards line in patch-dsp's header). No `sw.js` (the lead runs `node tools/precache.mjs --write`; `tests/pwa.test.mjs` is red until then).
+
+**What changed** (the contract's §3, row B; every [C] kept):
+- patch-core: `MAX_MODS` 512, `MAX_CORDS` 4096, `MAX_CONN` 8192, `MAX_NID` / `MAX_CID` 1e6 (ids m1…m999999, c1…c999999); `isMid(s)` / `isCid(s)` (the one grammar: `midNum > 0`); `canPlug`'s rules split into `verdict(…)` with the cord lookups injected, `targets()` reads the cords once (a plugged-ends set, the driven groups memoised per multiple: output-identical, linear); `ordinal` from one sorted pass per record, memoised on the record's `mods` object (a record is never mutated once handed out — every edit copies `mods`: the invariant is a test); every module id parsed once per sort (`sortKeys`, also under `payload`); `freeSlot` searches `FREE_LINES = 2 + ⌈MAX_MODS / 2⌉` lines (258).
+- patch-dsp: `MAXM` 1024, `MAXC` 8192, a third guard `MAXN` 999999 in place of `e[0] <= 4096` (also in the frozen `PatchDSP` object); nothing is sized by them. engine: `const WARM_C = 256` used at both warm sites; the warm payload list is byte-identical (119 payloads, sha256 pinned in engine-track **before** the first edit, 76b942a).
+- moog-core: makeSet's numbering uses a leaf mirror `midN` of `isMid` — **the table cannot import patch-core (a cycle: patch-core imports it)**; a test holds the two equal over a table of ids. **A site the skeptic missed**: `pvOf` (moog-core.js:534) filtered the values to `/^m\d{1,4}$/` — a module numbered ≥ 10000 would have played on its defaults; fixed with the same mirror and tested end to end (a Classic bass numbered m4096 … m999999 renders bit for bit as numbered m1…12, `tests/moog-dsp.test.mjs`).
+- cv-patch: `midOf` → `PT.isMid`.
+- song.js: `DEV_MAX` 1024, `WIRE_MAX` / `MODROW_MAX` / `LAY_MAX` 4096 (exported). cv-model: `devFull(t)` ('A track holds at most 1024 devices' | ''), `DEV_MAX`; `addModDev` / `addPanel` / `addInst` return null at the bound, `setModel` Serum → classic (it unfolds a panel: one more device) returns `{ ok: false, why }` before touching anything; `addModDev`'s per-key `new RegExp` hoisted. cv-migrate: `SCHEMA` 13, `STEPS[12]` the identity. pads-core: `MAX_MODS` 64, `PAD_ID` / `padOfSrc` built from one `PAD_NO` (pd1…pd64); cv-cables (`keyKind`, `modSrcPort` through `padOfSrc`) and cv-mods (`padMods`) use them. cv-tray: `setFull`'s default is `MAX_MODS`.
+
+**The 65th device, proved first** (scratch `P/b/dev65.mjs` on the 9dde7e6 tree): 80 `addModDev` calls → 83 live devices → **64 after `deserialize(serialize())`** (the loss is in `normDev` at a load: autosave reload, file open); **the History / undo path is unaffected** — `History._load` is `JSON.parse` and `applyRestore` runs no `normDev` (83 after undo): the contract's "or undo" does not hold. The failing test is in `tests/cv-migrate.test.mjs` (`P song.normDev …`) and `tests/cv-model.test.mjs` (`P devices …`).
+
+**Tests** (each pin moved to the new truth, none weakened): patch-core (bounds at 512 / 4096 / 8192 with the new texts; 6-digit ids; the id grammar table against moog-core's mirror; **`tests/ref-P/`** = patch-core / moog-core verbatim at 9dde7e6 + MANIFEST sha256: `ordinal`, `targets`, `title`, `freeSlot`, `payload` (± vals), `normPatch`, `canPlug`, `rackLayout`, `live` / `liveNodes`, the sets and the 13 presets equal to it over 120 generated records inside the old bounds (D6), and to their old definitions at 128 / 256 / 512 modules / up to 4096 cords; the memo-staleness invariant; the host paths timed with a loose guard; freeSlot past 64 lines; the grep test); patch-dsp (1024 modules and 8192 connections exactly, one more is 'limit'; numbers to 999999, 1000000 and non-integers 'mod'); moog-dsp (the renumbered patch); engine-track (warm hash, ≤ 256 connections and ≤ 64 modules a warm payload); cv-migrate (schema 13 against a schema-12 store gate; the 9b project through `deserialize` byte for byte — sha256 pinned on 9dde7e6, `P/b/pin9b.mjs`; devices / wires / rows / layout bounds; History); cv-model (devices); pads-core / cv-cables / cv-mods (pd64 valid, pd65 not); cv-tray (`setFull`); cv-patch (`midOf`). Sims: canvas-9-sim / canvas-9b-sim fill a patch to the bound by **opening it as a project** (`applyRestore(cv.loadProject(…))`), not 500 taps (a 474-tap loop and its undos were 70 s a test), keeping one real tap to the bound and one refused tap with its notice; canvas-7c / -8 / -9 / -9b: schema 13 / 14 pins; canvas-8: 64 Pads modules.
+
+**Timings** (M4 Max, node 24 / V8 and the macOS `jsc` shell; one process each, scratch `P/b/`; recorded, not gated). *The evaluator's `graph()`* — a plug flip (A ↔ B: one cord pulled), median (max) ms, back to back, V8 | JSC; *wide* = 3-module voices into MAIN OUT (fan-in), *deep* = one chain:
+
+| modules | wide V8 | wide JSC | deep V8 | deep JSC | a 128-frame quantum at OS 4, wide / deep, V8 (deadline 2.667 ms) |
+|---|---|---|---|---|---|
+| 128 | 0.48 (1.70) | 0.52 (1.84) | 0.31 (0.79) | 0.41 (0.54) | 0.91 / 1.04 |
+| 256 | 0.68 (1.56) | 0.86 (1.74) | 0.49 (0.87) | 0.60 (0.74) | 1.81 / 2.06 |
+| 512 | 1.21 (2.52) | 1.89 (2.72) | 0.96 (1.47) | 1.06 (1.77) | **3.61 / 4.14** |
+
+(JSC quanta 0.98 / 0.98, 1.66 / 2.00, 3.38 / 3.99.) The first `graph()` of a fresh machine at 128 wide is 3.6 / 5.0 ms (cold JIT), ≤ 1.7 ms beyond. So `graph()` is near-linear in practice (the schedule's quadratic pick does not show at 512; the contract's "≈ × 13 again at 512" fear does not materialise: 1 – 1.9 ms median at 512, 0.3 – 0.7 at 128 – 256), but the render is the limit: **a 512-live-module rack costs 1.3 – 1.5 × the quantum's deadline at OS 4 on an M4 Max, so it does not render in real time** (256 modules: 0.7 – 0.8 of it) — the user's "until their system lags", with the DSP-load safeguard lowering the Oversampling as it does today (§11).
+*Host paths of patch-core* (node, ms; records of 37 / 128 / 256 / 512 modules with 41 / 168 / 338 / 667 cords): every module's title 0.045 / 0.11 / 0.19 / **0.37** (9dde7e6: 0.16 / 1.8 / 6.9 / **26.9**); `targets()` 0.14 / 0.28 / 0.51 / **0.93** (0.22 / 1.4 / 4.3 / **14.4**); `payload` 0.18 / 0.50 / 0.92 / 1.7; `liveNodes` 0.13 / 0.56 / 0.88 / 1.7; `live` 0.12 / 0.38 / 0.71 / 1.4; `rackLayout` 0.03 / 0.08 / 0.16 / 0.32; `freeSlot` 0.06 / 0.21 / 0.24 / 0.61; `jacksOf` 0.03 / 0.03 / 0.06 / 0.14; `normPatch` (a load) 0.07 / 0.23 / 0.42 / 0.71. Nothing is over a frame at 512 on the Mac (the largest, `payload` / `liveNodes`, 1.7 ms: ≈ 12 ms at × 7). At 512 modules and 4096 cords (the test's generated record): titles 1.0–1.2 ms cold, `targets()` 0.8–0.9 ms.
+
+**For lane H**: (1) the two host `/^m\d{1,4}$/` sites (main.js:6784 `sq`, 6839 `pm` event post) → `PT.isMid`; then **delete `LEFT = { 'main.js': 2 }`** in `tests/patch-core.test.mjs`'s grep test (it allows exactly those two). (2) The device-add notice: `CMOD.devFull(t)` returns the reason ('' when there is room) — check it in `modAdd` before `hist.record` (main.js:7307ff.; `CMOD.addModDev` returns null at the bound, which today reads as "already there"), and show `why` from `CMOD.setModel`'s `{ ok: false, why }`; `addPanel` / `addInst` return null (their callers must say why — `devFull`). (3) The bound texts come from constants already (`PT.MAX_MODS`, `PC.MAX_MODS`); comments at main.js:2084 / 5336 still say 8 / 48. (4) `CMOD.DEV_MAX`, `PT.MAX_CONN`, `PT.isCid`, `S.DEV_MAX / WIRE_MAX / MODROW_MAX / LAY_MAX`, `PC.PAD_ID` are the exported names. (5) A sim that needs a full patch should open it as a project (`api.applyRestore(cv.loadProject(json))`), not tap it up. (6) Schema is 13 (`CM.SCHEMA`); tests that pin `[…, 12]` moved. (7) `tests/pwa.test.mjs` fails until `node tools/precache.mjs --write`. (8) The Pads tile / notice text reads `PC.MAX_MODS` ("64 Pads modules in this project").
 ### Lane H
+
+(host; base 6dc86f3 = T + C + B + canvas's tray / tabs change; `main.js`, `index.html`, `style.css`, `tests/canvas-P-sim.test.mjs`
+(new), `tests/main.test.mjs`, `tests/patch-core.test.mjs` (the `LEFT` line only); scratch `P/h/`.) Commits d856bf9 (the sim, failing
+first: the device-add notice, m10000's binds), 56aae26 (the host), 8c3029b (main.test's Panic, D2), 6306f70 (a refused Replace from
+the tray), 3ff1a5e (the top row's widths), these notes. No `sw.js`.
+- **The preset** (`main.js`, beside `initWorld`): `perfPref()` = `W.perfOf(store.get(W.PERF_PREF, 'high'))` — anything stored
+  but high / medium / low is High; `createWorld(…, { …, perf: perfPref() })`, never `setPerf` at boot (`?perf=` is the world's,
+  over it). ⚙ → Canvas, first under Pinch on canvas: `label.field.cv-perf` "Performance" + **`select#cvPerf`** ([C]: `#perf` is
+  the keyboard tray's id since 1b) High · Medium · Low from `W.PERFS`, then `p#cvPerfHint.cv-ghint` (the select's
+  `aria-describedby`): "Lower settings draw panels and cords more simply, for slower tablets. Sound is unaffected." (the lead's
+  line; the title says the rest — Medium / Low softer up close, cords simpler / still, visual only, Oversampling never changes).
+  `perfUI()` shows the world's `perf` (so `?perf=` shows; `cvW()`: a sim's scripted world too), else the pref — after `initWorld`
+  and at every ⚙ open; `perfPick(v)`: `store.set(PERF_PREF, perfOf(v))`, then `cvW().setPerf` — the person's own pick only is
+  stored. Nothing else: no project field, no History, no worklet message, `settings` (Oversampling) untouched.
+- **The top bar's Panic** (the user's decision): `button#tPanic.tb.cv-panic` in `#transport` after the ▶ ● group, outside the ⋯
+  fold, `aria-label` "Panic (stop all sound)", title "Panic: stop all sound (Esc)", an octagon-and-"!" icon in the row's `.tb`
+  style (the coarse-pointer hit area of every `.tb`; pressed: the record button's red); `onclick = panic` — the keyboard bar's
+  Panic (kept) and Esc are the same function. **[C] Room for it**: the row stays one row at every width (601–1440 measured), but
+  the 40 px came out of the track chip, which fell under its finger's 44 px and slid under CANVAS │ ROLL at 741–770 and 601–620
+  (chip room 15 px at 744, 25 at 601). So the position readout (display only) now folds from **800 px** (was 740: iPad mini
+  portrait 744 and 768 lose it; the chip there 95–115 px, was 53–73) and at **≤ 640 px** the row's gaps close to 3 / 2 px (chip
+  ≥ 45 px down to 601; below 600 the row scrolls, Panic near its start). `P/h/chip2.mjs` / `widths.mjs`.
+- **The bounds through the host** (B's hand-off): `modAdd` — `CMOD.devFull(t)` said before `hist.record` (the wheel is the
+  project's: not asked); `cvAddInstrument` — the same, and a null `addInst` prunes its step; `setTrackModel` — a Serum → classic
+  Replace on a full track asks setModel's rule first (`iv.model === 'serum' && id !== 'serum'` → `devFull`), says it, returns it; if
+  setModel refuses after all its `why` is said, the name put back, the step pruned; `cvDropInstrument` (the tray's Replace) sees
+  the model unchanged and shows no "Replaced …" notice. The event / sequencer binds (`ptEdit`'s `sq`, `ptEv`) read `PT.isMid`;
+  `LEFT` deleted from patch-core's grep test; the stale comments (2084 "8 Pads", 5336 "48", the Controllers tile's "8th") name the
+  constants. `addPanel` has no host caller.
+- **Tests** — `canvas-P-sim` (7, accessor-free, the real cv-world on the stub DOM — its cords on the SVG path, `glStats()` null in
+  node): the line, its options, its hint, High on a fresh device, nothing stored; a pick live in the world, `FACES.FACES.perf`
+  and the cords' quality, stored per device, the project and History untouched, **no worklet message at any switch** (a control
+  interval first), settings / Oversampling untouched, an unknown value → High; the heavy notices' lines equal at every preset; a
+  System 55 + 30 modules (opened as a project): no module or set tile greyed, a tap adds one more; a full track (1024 devices):
+  a modulator by tap and by drop, an instrument, a Serum → classic Replace (setTrackModel and the tray's) refused with
+  "A track holds at most 1024 devices", no step; room again → added; a 960 numbered **m10000** (nid 10000, by the tap): SET 1
+  posts `pe [10000, 3]`, Step bass binds it → `['pg', 'pe 10000,0']`; `?perf=low` over a stored Medium (shown, Medium kept), a pick
+  after it stored, a reload reads Medium, a stored "turbo" → High. Failing first (d856bf9 on the base): the notice ('' — a silent
+  null) and `ptEv(…'m10000'…)` false. `main.test` + 1: `#tPanic`'s markup, place and CSS (no rule hides it), `= panic`, a held key
+  on a Minimoog with the keyboard folded: sounding (0.26), `{t: panic}`, silent 0.4 s on (< 1e-5: the 5 ms fade, then the output
+  stage's DC-blocker settling ≈ × 0.08 every 100 ms); Esc posts the same.
+- **Gates** (one file at a time, `--max-old-space-size=2048`, peak RSS): canvas-P-sim 7/7 (0.40 GB) · main 47/47 (1.62) · patch-core
+  46/46 · canvas-sim 24 · canvas-1e-sim 24 · -1i 20 (0.94) · -2a 26 · -2b 23 · -3 27 (1.40) · -7a 23 · -7b 15 · -7c 13 · -8 17 · -9 22 ·
+  -9b 14 · cv-shell-sim 17 · cv-fixes-sim 5 · keyboard 14 · cv-tray 40 · integration 44 (1.72) · lint 161 · pwa 22 (after
+  `node tools/precache.mjs --write`, then `git checkout sw.js`); every golden as a guard, all green: golden-classic 8, -fx 3, -presets 8,
+  -random 1, -graph 6 (2.33 GB), canonical-stream 1, golden-drums 5, -606 11, -909 9, -sdsv 5, golden-moog 6, golden-moog-b 6.
+- **Headless Chrome** (155, `--headless=new --use-angle=metal --force-device-scale-factor=2`, CDP 9473; the worktree copied to
+  `P/h/site/`, served no-store on 8973, `pc.html` = index.html with `window.__synthTest = {}`, the service worker bypassed;
+  `P/h/run.mjs`, results `run.json`): a fresh device's System 55 (1440 × 900) **High**: faces 72.6 MB (38 gl, dE 2), cords full / 34
+  points. ⚙ open: Canvas → Pinch on canvas · **Performance** · its hint · Load estimates · New Serums open as. Each switch made
+  with **every cord swinging** (24 awake, running) through the select's change: → **Medium** 40.9 MB (dE 1.5, budget 216 MB),
+  light / 14 points; → **Low** 18.2 MB (dE 1, 96 MB), still / 14; → **High** 72.6 MB again (Low's cords are still: nothing to
+  pluck before it) — right after each, awake 0, running false; **0 frames with a gl face's SVG showing** (≈ 76 frames watched a
+  switch). Medium picked → a reload: Medium (40.9 MB, light); `?perf=low` → Low shown, 18.2 MB, the store still Medium; no
+  parameter → Medium. 1366 × 1024 touch, a fresh Minimoog: ⏻ by a click, the keyboard folded (its bar's Panic off screen), a
+  held computer key (`a`) — RMS 0.154 at an analyser on the track's node, `held` 1 — **a touch tap on the top bar's Panic**: RMS 0,
+  `held` 0. Plain `index.html?perf=low` (no hook): ⚙ shows Low. **No console error or exception** in any step. Screenshots `P/h/shots/`:
+  `h-1440-s55-high.png`, `h-1440-gear.png`, `h-1440-s55-{medium,low,high}-after-switch.png`, `h-1440-s55-medium-reloaded.png`,
+  `h-1440-s55-url-low.png`, `h-1366-panic-held-folded.png`, `h-1366-panic-after.png`, `h-1366-gear.png`, `h-1440-index-low.png`,
+  the row at `h-row-{1024,834,744,375}.png`.
+- **Not in this lane's brief, for the lead / reviewer 2**: §6's row H also lists `tests/ui-bench.html` + `tests/ui-bench-m9.mjs`
+  (`&perf=` / `&texmax=` into the app frame's own `location.search`, G9's zoom cycle, G5 read from the app's `cords().stats()` —
+  lane C's note); the brief left them out, so they are untouched.
 ### Reviews and fixes
+Two reviewers against 4f1fde1 (findings files in the lead's scratchpad: `P/review-1.md`, `P/review-2.md`).
+- **Review 1 (real engine + data)**: 1 major · 2 nits. **D1 / D2 / D6 hold**: every frozen golden, canonical-stream, the ref-9-core
+  pin, ref-P (byte-identical to 9dde7e6), the warm list (119 payloads, the same hash recomputed on 9dde7e6); a preset switch during
+  playback posts nothing (the message stream equals a run without switches); 128 / 256 / 512-module patches (wide, deep, random, up to
+  3 563 cords) normalise, round-trip and render finite; refusals at every bound with their reasons; six-digit ids end to end; 87
+  devices round-trip (the 65th-device load bug fixed), 1 024 kept; 64 Pads; a schema-13 file opens read-only in the 9dde7e6 build,
+  byte-identical after its autosave window. **F1 (major)**: the evaluator's Tarjan recursed one frame per node on the audio thread — a
+  legal 512-module 961 / CP35 chain threw RangeError at a 512 KB stack (JSC), escaping the Track's handler silently → **fixed**
+  (fixer 71e1fb5): `strong` iterative (same visiting order; 2 000 random patches × 2 densities: schedules, graphs, monitors and rendered
+  samples identical; a sabotaged copy caught), both `pm.graph` sites caught → `ptFail('graph')`; the failing test runs the chain in a
+  child `node --stack-size=200`. **F2 (nit)**: `makeSet` past m999999 → returns null (patchNew falls back to the controller alone).
+  **F3 (note)**: feedback-heavy racks cost more than lane B's figure (§11).
+- **Review 2 (headless Chrome, 1× / 4× / 6×, dpr 2 / 1.5, `?texmax=4096`)**: 2 major · 4 minor · 2 nits. **Fine**: a fresh device on
+  High, the pick stored per device, `?perf=` not stored; 0 worklet posts and no History step per switch; G2 (System 55 at rest, dpr 2:
+  72.6 / 40.9 / 18.2 MB; at 150 %: 116.4 / 65.5 / 18.2); G3 (16 panels × 3 presets at texmax 4096: all GL, every side ≤ 4096, 81 / 81
+  probes lit); G7 (≈ 4 900 watched frames, 0 with a GL face showing its SVG — cords swinging, 8 switches a frame apart, a pinch mid-queue,
+  a cold load, the ROLL tab); a forced context loss at each preset; G9 (Low: 0 paints across a zoom cycle at 1× / 4× / 6×); the pull
+  tabs, Panic (no overlap 1440 → 600 px; legible at dpr 1 / 1.5 / 2), the "+" menu's estimates, no right-hand tray, no console error.
+  **Fixed**: **F1 (major)** a rack past the face budget never idled (two off-screen faces rastered / uploaded / evicted ≈ 7 times a
+  second) → fixer A (125cb56): the budget is decided before anything is freed (`pool` / `roomFor`), a base that cannot fit is left out
+  (`F.blk`) and re-asked only on a rest / screen / preset / landing / free; 200- and 511-face repros settle to 0 paints. **F2 (major)**
+  every edit on a big rack was O(n³) (`V.sync` → `world.update(k)` per module → `FACES.recheck()` each; 3.1–3.3 s at 511 modules) →
+  fixer B (2f86d36): `world.update(ids)` batched, one update per sync, Tidy once per sync while its inputs hold (node: 511 modules 1 719 →
+  7 ms a sync). **F3 (minor)** two synchronous `getError` per upload → one, after it, a retry telling a stale flag from ours (fixer A).
+  **F5 (minor)** 4096-texture devices lost the High window from ≈ 100 to 190 % → `winFit` shrinks the margin to fit the side, `under`
+  counts a side-limited face (fixer A; 76 face / viewport cases all windowed). **F6 (minor)** ui-bench could not run per preset →
+  a real-URL frame when `&perf=` / `&texmax=` / `&nogl` is given, the app's own cord layer behind the m9 scene, the preset recorded in
+  the results (fixer C, 7511c71). And the host now **shows** `ptErr 'graph'` ("This patch is too complex to run — the last working
+  version stays in use", once per burst). **Recorded, not fixed**: **F4** — G6 is not met in Chrome: a cold face costs the same
+  main-thread ms at every preset (the SVG paint record dominates; the pixel work is the GPU process's, which CPU throttling cannot slow)
+  and Medium's rest paints cost High's ms — the presets' proven wins are memory (G2), Low's zero rest paints (G9) and the cord work;
+  §1.3's "CPU raster × 0.25" does not hold for Chrome (§11). **F7 (nit)** the Sources tab starts at x 0: in a browser a pull there can
+  start iPadOS's back-swipe — not moved (the user: never move layout for browser chrome; the standalone app owns the edge). **F8 (nit)**
+  the track chip is 45–65 px at 601–641 px wide (≥ 44, no overlap).
 ### Acceptance
+- Holding branch `wt-P` (lanes T 099f351, C 062f717, B 6c7781a, H b5ca720; fixers 71e1fb5, 2f86d36, 7511c71, 125cb56), canvas merged;
+  `node tools/precache.mjs --write`; the sweep: every test file, one at a time (§12 record in the commit). No new frozen refs (visual
+  only); `tests/bench.json` gains `"ui-P-mac"` (review 2's record at 4f1fde1, before the fixes). Squashed onto `canvas` as "P" and
+  deployed 2026-10-22.
 
 ## 13. Review log
 

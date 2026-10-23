@@ -148,15 +148,15 @@ test('placement (§1.2–§1.4): the module on every track, its fixed size the f
   n1 = cv.hist.u.length;
   await edit('Pads 1: 4 × 4', M => { M.rows = 4; });
   assert.deepEqual([cv.hist.u.length - n1, size('pd1'), JSON.stringify(mod('pd1').pads) === pads0], [1, [352, 416], true], 'back to 4 × 4');
-  // the limit: the tile greys only at the 8th; a 9th refused with the reason
+  // the limit (IMPL-P: 64 Pads modules; was 8): the tile greys only at the last; one more refused with the reason
   const tiles = sh.shell.tiles, hn = cv.hist.u.length;
-  for (let k = 2; k <= 8; k++) {
+  for (let k = 2; k <= PC.MAX_MODS; k++) {
     assert.equal(tiles.placed('pads'), null, `${k - 1} modules: the tile live`);
     cv.mod.add('pads', null); sim.raf(); await settle();
   }
-  assert.deepEqual([P().pads.length, tiles.placed('pads')], [8, '8 Pads modules in this project'], 'greyed at the 8th');
-  assert.equal(cv.mod.add('pads', null), null, 'a 9th refused');
-  assert.match(sim.$('#notice').textContent, /8 Pads modules in this project/);
+  assert.deepEqual([P().pads.length, tiles.placed('pads')], [64, '64 Pads modules in this project'], 'greyed at the 64th');
+  assert.equal(cv.mod.add('pads', null), null, 'a 65th refused');
+  assert.match(sim.$('#notice').textContent, /64 Pads modules in this project/);
   while (cv.hist.u.length > hn) cv.undo();
   sim.raf(); await settle();
   assert.deepEqual([P().pads.map(M => M.id).join(), tiles.placed('pads')], ['pd1', null]);
@@ -400,9 +400,9 @@ test('nothing left sounding (D9, review #7): Undo, the pad cleared / the module 
   assert.equal(down(62), false);
 });
 
-test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical — project.pads, its places, its rows on every track; a row of a missing module and its place dropped at load (review #28); a schema-13 file opens read-only; a track without pad rows compiles byte-identically with or without the project\'s Pads modules (D5)', async () => {
+test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical — project.pads, its places, its rows on every track; a row of a missing module and its place dropped at load (review #28); a schema-14 file opens read-only (stage P: schema 13); a track without pad rows compiles byte-identically with or without the project\'s Pads modules (D5)', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [12, 12, true], 'project.pads through the file');
+  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [13, 13, true], 'project.pads through the file');
   const padRows = t => JSON.stringify((t.mods || []).filter(r => /^pd/.test(r.src)));
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id);
@@ -414,8 +414,8 @@ test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical 
   const u3 = cv.loadProject(JSON.stringify(o)).tracks.find(x => x.id === ID.t2);
   assert.deepEqual([u3.mods.some(r => r.src === 'pd5.p0'), !!u3.lay.pd5, u3.mods.some(r => r.src === 'pd1.p2')], [false, false, true], 'pruned: pd5 is not in the file');
   const n = JSON.parse(json);
-  n.schema = 13;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 13, 'a schema-13 file: read-only');
+  n.schema = 14;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 14, 'a schema-14 file: read-only');
   const opts = { smooth: api.prefs().smooth, qr: null, ultra: 0 };
   for (const id of [ID.t1, ID.t3]) {
     const t = byId(id);

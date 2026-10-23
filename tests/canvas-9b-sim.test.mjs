@@ -301,20 +301,24 @@ test('§1.2 / §8.6: a System 55 tile on a Model 15 900 Series — one step "Loa
   cv.redo(); await settle();
   assert.equal(Object.keys(rec().mods).length, 39, 'redo');
   cv.undo(); await settle();
-  // the cap: a Model 15 + 10 more 995s (22 modules; the System 55 has one 995, the Model 15 already holds it) cannot take the
+  // the bound (IMPL-P: 512 modules; was 48): a Model 15 + 474 more 995s (486 modules; the System 55 has one 995, the Model 15 already holds it) cannot take the
   // System 55's 27 more; the System 35's fit
+  // (opened as a project — one sync, not 474 taps: the add path at the bound is canvas-9-sim's)
+  const snap = JSON.stringify(P()), big = JSON.parse(snap), bd = big.tracks.find(x => x.id === T().id).dev[dev()];
+  let br = bd.patch;
+  for (let i = 0; i < PT.MAX_MODS - 38; i++) br = PT.addModule(br, bd.vals, '995').rec;
+  bd.patch = br;
   const n1 = cv.hist.u.length;
-  for (let i = 0; i < 10; i++) cv.patch.add('995');
-  await settle();
-  assert.deepEqual([Object.keys(rec().mods).length, PT.setNeeds(rec(), 's55')], [22, 27]);
+  api.applyRestore(cv.loadProject(JSON.stringify(big))); await settle();
+  assert.deepEqual([Object.keys(rec().mods).length, PT.setNeeds(rec(), 's55')], [PT.MAX_MODS - 26, 27]);
   const S55 = sh.shell.tiles.setTile('s55'), S35 = sh.shell.tiles.setTile('s35');
   assert.deepEqual([attr(S55, 'aria-disabled'), sh.shell.tiles.setPlacedOf('s55')], ['true', 'This set needs 1 more module than the patch can hold'], 'the System 55 greyed with its reason');
   assert.deepEqual([attr(S35, 'aria-disabled'), sh.shell.tiles.setPlacedOf('s35')], [undefined, null], 'the System 35 fits');
   const n2 = cv.hist.u.length;
   tap(S55); await settle();
   assert.equal(cv.hist.u.length, n2, 'a greyed tile does nothing');
-  while (cv.hist.u.length > n1) cv.undo();
-  await settle();
+  assert.equal(cv.hist.u.length, n1);
+  api.applyRestore(cv.loadProject(snap)); await settle();
   assert.equal(sh.shell.tiles.setPlacedOf('s55'), null, 'available again');
 });
 
@@ -426,12 +430,12 @@ test('§3.4 / §3.6: ▶ steps the sequence, ■ holds it; muted (P-1) the patch
   assert.equal(stageOf(cv.patch.lampBits(T(), d, m960)), 1, '⏻ on (undo): lit again');
 });
 
-test('§1.1 / §6: Save / reload identical (schema 12: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
+test('§1.1 / §6: Save / reload identical (schema 13: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
   api.selectTrack(ID.t1); await settle();
   const t = T(), d = dev(t), m993 = midOf('993');
   cv.patch.knobSet(t, d, m993, 'e1', 1); await settle();
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.equal(p2.schema, 12);
+  assert.equal(p2.schema, 13);
   for (const x of P().tracks) {
     const u = p2.tracks.find(y => y.id === x.id), k = CMOD.primId(x);
     if (!cv.isPatchDev(x, k)) continue;

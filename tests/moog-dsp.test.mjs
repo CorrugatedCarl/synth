@@ -11,6 +11,8 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { dspScope, source, noAlloc } from './dsp-scope.mjs';
 import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
@@ -1779,4 +1781,48 @@ test('CPU per 9b type at OS 4 (node, reported; gated at three times the limits o
   rep.push(`the System 55 slice (20 modules, machine) ${time(m, 1).toFixed(4)}`);
   console.log('# CPU 9b (OS 4, node; s per s): ' + rep.join(' · '));
   assert.deepEqual(bad, []);
+});
+
+// IMPL-P §3.1 (skeptic #1): module numbers past 4096 — the evaluator takes them (its number bound is 999999), moog-core's pvOf passes the values of an
+// m10000 on — a patch numbered up there plays bit for bit as the same patch numbered m1… (the relative order kept: the schedule is by number)
+test('IMPL-P skeptic #1: a Classic bass whose modules are numbered 4096 … 999999 plays bit for bit as numbered m1…12 — payload, pvOf and the evaluator end to end (no offending item)', () => {
+  const r = PT.loadPreset(PT.fresh('moog'), {}, 'Classic bass', { ensure: MG.M15 }), old = Object.keys(r.rec.mods).sort((a, b) => +a.slice(1) - +b.slice(1));
+  const NUM = [4096, 4097, 9999, 10000, 10001, 99999, 100000, 123456, 654321, 999997, 999998, 999999], to = new Map(old.map((k, i) => [k, 'm' + NUM[i]]));
+  assert.equal(old.length, 12);
+  const mp = e => (e.startsWith('c.') ? e : to.get(e.slice(0, e.indexOf('.'))) + e.slice(e.indexOf('.')));
+  const rec2 = { v: 1, f: 'moog', nid: 1e6, cid: r.rec.cid, mods: Object.fromEntries(old.map(k => [to.get(k), Object.assign({}, r.rec.mods[k], r.rec.mods[k].drv ? { drv: to.get(r.rec.mods[k].drv) } : {})])),
+    cords: r.rec.cords.map(c => Object.assign({}, c, { a: mp(c.a), b: mp(c.b) })), name: r.rec.name };
+  const vals2 = Object.assign({}, r.vals, { p: Object.fromEntries(Object.entries(r.vals.p).map(([k, v]) => [to.get(k), v])) });
+  assert.deepEqual(PT.normPatch(JSON.parse(JSON.stringify(rec2)), 'moog'), rec2, 'a normal record');
+  const pg1 = PT.payload(r.rec, 'moog', r.vals).pg, pg2 = PT.payload(rec2, 'moog', vals2).pg;
+  assert.deepEqual(pg2.mods.map(m => m[0]), [0, ...NUM], 'the numbers in the payload');
+  assert.ok(Object.keys(vals2.p).length >= 9 && Object.keys(vals2.p).some(k => +k.slice(1) > 9999));
+  assert.deepEqual(Object.keys(MG.pvOf(vals2)).sort(), ['0', ...Object.keys(vals2.p)].sort(), 'pvOf passes every module\'s values on (m10000 and up too)');
+  const A = machine({ pg: pg1, pv: MG.pvOf(r.vals) }), B = machine({ pg: pg2, pv: MG.pvOf(vals2) });
+  eq(B.g.why, [], 'no offending item'); eq(A.g.why, [], 'no offending item (numbered m1…)');
+  const notes = [[0, 48, 0.8, true], [6000, 48, 0, false]], ya = A.render(frames(0.25), { notes }), yb = B.render(frames(0.25), { notes });
+  assert.ok(absMax(ya) > 0.01, 'it sounds (' + absMax(ya) + ')');
+  assert.equal(Buffer.compare(Buffer.from(ya.buffer), Buffer.from(yb.buffer)), 0, 'the same samples');
+  assert.deepEqual(B.errs, []);
+});
+
+// IMPL-P review F1: the schedule's strongly-connected components were found by a recursive search (a JS frame a node along a series
+// path, started at the controller) — on a worklet thread of 512 KB the 512-module bound's longest legal chain (512 961s with their five
+// sections in series: 2 561 nodes) threw a RangeError out of the message handler. A child process in a 200 KB stack (less than V8 has
+// at the 512 KB of JSC's thread: the same depth) schedules, renders and reports the chain; the parent builds the record through patch-core
+test('IMPL-P review F1: a legal 512-module chain of 961s (2 561 nodes in series) schedules and plays in a 200 KB stack — the component search is iterative (a child process)', () => {
+  const st = { rec: PT.fresh('moog'), vals: {} }, M = [];
+  for (let k = 0; k < 512; k++) { const x = PT.addModule(st.rec, st.vals, '961'); assert.ok(x.mid !== null, 'add ' + k + ': ' + x.why); st.rec = x.rec; M.push(x.mid); }
+  const plug = (a, b) => { const x = PT.plug(st.rec, a, b); assert.ok(!x.why, a + ' → ' + b + ': ' + x.why); st.rec = x.rec; };
+  plug('c.kp1', M[0] + '.a11');
+  for (let k = 0; k < 512; k++) {
+    plug(M[k] + '.s1', M[k] + '.v1i'); plug(M[k] + '.v1o', M[k] + '.a21'); plug(M[k] + '.s2', M[k] + '.v2i'); plug(M[k] + '.v2o', M[k] + '.ai');
+    plug(M[k] + '.ao1', k + 1 < 512 ? M[k + 1] + '.a11' : 'c.out');
+  }
+  const pg = PT.payload(st.rec, 'moog', st.vals).pg;
+  assert.deepEqual([pg.mods.length, pg.cords.length], [513, 5 * 512 + 1], 'the record: 512 modules, the keyboard\'s cord, five a module');
+  const r = spawnSync(process.execPath, ['--max-old-space-size=1024', '--stack-size=200', fileURLToPath(new URL('./stack-child.mjs', import.meta.url))],
+    { input: JSON.stringify(pg), encoding: 'utf8', maxBuffer: 1 << 20, timeout: 120000 });
+  assert.equal(r.status, 0, 'the child: ' + r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout.trim()), { steps: 2561, live: 2562, why: [], errs: [], finite: true });
 });

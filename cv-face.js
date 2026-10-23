@@ -11,6 +11,15 @@
 // burst; one onChange a frame; textures under FACE_BUDGET_BYTES, freed on unmount (wk.releaseCanvases through a 0 × 0 sentinel
 // canvas, at once), context loss (FACES.lost) and destroy (G6). The quads sit on the module's own left / top (+ a drag's
 // translate3d) and carry the body's dim (alpha / gray: [data-off], a mod drag's .cv-nodest).
+// (P, IMPL-P §1.1) The performance presets (visual only): FACES.setPerf('high' | 'medium' | 'low') runs the whole policy at the
+// effective ratio dE = min(dpr, TEX_Q[id].R) — High the device's own (= today), Medium ≤ 1.5, Low 1 with no windows (it never
+// re-sharpens) — under the preset's budget; applied live: the windows freed and re-planned, every base at a stale level (a preset,
+// a device-ratio change through recheck(), the side limit) re-rastered one a frame, nearest first, its old texture drawn until the
+// new one lands (never a gl face with its SVG showing); the budget counts every stale base at its new level. Every texture side ≤
+// min(TEX_MAX_DIM, cv-gl's maxTex: the context's MAX_TEXTURE_SIZE).
+// (P review 2) F1: the budget is decided before anything is freed — an off-screen face that would not fit even with every farther face
+// freed is left out of the queue (F.blk: its tier stays, nothing is freed, no re-queue) until a rest finds room: a rack past the budget
+// goes idle. F5: a window whose margin the side limit pushed past maxTex shrinks its margin (winFit) instead of being dropped.
 // Plain ES module; node imports it (tests: a fake gl of the §2 surface, a fake world of rectOf / on / onScreen / ids / cam).
 import * as wk from './wk.js?v=9';
 import { K_MAX, visibleRect, intersects, toWorld } from './cv-world.js?v=9';
@@ -33,6 +42,18 @@ export const WIN_MAX_PX = 16e6, WIN_MIN_PX = 4e6, WIN_SPLIT_PX = 8e6, PAINT_SLOW
  * ≥ 1:1 up to k = 1 anyway); its edges snap to WIN_SNAP world px (face-local) so a rebuilt window keeps the texel phase of the
  * region it shares with the old one (exact when WIN_SNAP · L is whole: the level-4 windows above 100 %). */
 export const WIN_GAIN = 1.5, WIN_SNAP = 64;
+/** (P, IMPL-P §1.1) The presets' texture policy: R caps the ratio the policy runs at (dE = min(dpr, R); High ∞: the device's own at
+ * any dpr — today, the base still ≤ BASE_L_MAX), win: windows at all (Low: none — it never re-sharpens), winBudget: all windows
+ * together (device px; Medium 40e6 · (1.5 / 2)²), budget: base + window bytes (the off-screen faces evicted over it). */
+export const TEX_Q = Object.freeze({
+  high: Object.freeze({ R: Infinity, win: true, winBudget: WIN_BUDGET_PX, budget: FACE_BUDGET_BYTES }),
+  medium: Object.freeze({ R: 1.5, win: true, winBudget: 22.5e6, budget: 216e6 }),
+  low: Object.freeze({ R: 1, win: false, winBudget: 0, budget: 96e6 }),
+});
+/** A preset id: 'high' | 'medium' | 'low'; anything else 'high' (every device starts there, IMPL-P §2). */
+export const perfId = id => (id === 'medium' || id === 'low' ? id : 'high');
+/** The effective ratio the policy runs at: min(the device's (≥ 1), the preset's R). */
+export const dEOf = (dpr, id) => Math.min(Math.max(1, +dpr || 1), TEX_Q[perfId(id)].R);
 /** The module body's bottom radii (world px; style.css .cv-body) the quads are clipped to. */
 export const BODY_R = 12;
 /** A powered-off module's body is drawn at this opacity and grayscale (style.css [data-off] > .cv-body); the quads take them as
@@ -44,21 +65,24 @@ const msNow = () => (globalThis.performance && typeof globalThis.performance.now
 const EPS = 1e-6;
 
 /* ---------------------------------------------------------------- the maths (pure, node-tested) */
-/** The base level for a dpr and a face: min(dpr, BASE_L_MAX), reduced so w·h·L² ≤ BASE_MAX_PX. */
-export function baseLevel(d, w, h) {
+const sideOf = max => (+max > 0 ? +max : TEX_MAX_DIM); // (P) the texture side limit given (the registry's side(): ≤ TEX_MAX_DIM), else TEX_MAX_DIM
+/** The base level for a dpr and a face: min(dpr, BASE_L_MAX), reduced so w·h·L² ≤ BASE_MAX_PX and no side over `max` (P: the
+ * side limit in force — min(TEX_MAX_DIM, the context's MAX_TEXTURE_SIZE); default TEX_MAX_DIM). */
+export function baseLevel(d, w, h, max) {
   let L = Math.min(BASE_L_MAX, Math.max(1, +d || 1));
   if (w * h * L * L > BASE_MAX_PX) L = Math.sqrt(BASE_MAX_PX / Math.max(1, w * h));
-  return Math.min(L, TEX_MAX_DIM / Math.max(1, w, h));
+  return Math.min(L, sideOf(max) / Math.max(1, w, h));
 }
-/** The window level: min(dpr · K_MAX, dpr · WIN_HEAD · k, the budget level √(WIN_BUDGET_PX / Σ window world area)). */
-export function winLevel(d, k, sumArea) {
-  const b = sumArea > 0 ? Math.sqrt(WIN_BUDGET_PX / sumArea) : Infinity;
+/** The window level: min(dpr · K_MAX, dpr · WIN_HEAD · k, the budget level √(budget / Σ window world area)); budget (P: the
+ * preset's window px) default WIN_BUDGET_PX. */
+export function winLevel(d, k, sumArea, budget) {
+  const b = sumArea > 0 ? Math.sqrt((fin(budget) ? budget : WIN_BUDGET_PX) / sumArea) : Infinity;
   return Math.min(d * K_MAX, d * WIN_HEAD * k, b);
 }
-/** One window's level: winLevel, then the raster ceilings (`cap` px — the effective WIN_MAX_PX — and TEX_MAX_DIM a side) for
- * its w × h world px. */
-export function winLevelOf(d, k, sumArea, w, h, cap) {
-  return Math.min(winLevel(d, k, sumArea), Math.sqrt((fin(cap) ? cap : winPx) / Math.max(1, w * h)), TEX_MAX_DIM / Math.max(1, w, h));
+/** One window's level: winLevel, then the raster ceilings (`cap` px — the effective WIN_MAX_PX — and `max` a side, default
+ * TEX_MAX_DIM) for its w × h world px. */
+export function winLevelOf(d, k, sumArea, w, h, cap, max, budget) {
+  return Math.min(winLevel(d, k, sumArea, budget), Math.sqrt((fin(cap) ? cap : winPx) / Math.max(1, w * h)), sideOf(max) / Math.max(1, w, h));
 }
 /** The visible part of a face rect R (world) in a vw × vh viewport: face-local world px, or null off screen. */
 export function visPart(R, cam, vw, vh) {
@@ -67,16 +91,42 @@ export function visPart(R, cam, vw, vh) {
   if (!(x1 > x0 && y1 > y0)) return null;
   return { x: x0 - R.x, y: y0 - R.y, w: x1 - x0, h: y1 - y0 };
 }
-/** The window of a face rect R: the visible part grown by WIN_MARGIN · the viewport on each side (world px), its edges on the
- * WIN_SNAP stride (face-local: the texel phase survives a rebuild), clipped to the face; face-local; null off screen. */
-export function winRect(R, cam, vw, vh) {
+/** The window of a face rect R: the visible part grown by `margin` (default WIN_MARGIN) · the viewport on each side (world px), its
+ * edges on the WIN_SNAP stride (face-local: the texel phase survives a rebuild), clipped to the face; face-local; null off screen. */
+export function winRect(R, cam, vw, vh, margin) {
   if (!visPart(R, cam, vw, vh)) return null;
-  const V = visibleRect(cam, vw, vh, 0), mx = WIN_MARGIN * vw / cam.k, my = WIN_MARGIN * vh / cam.k, S = WIN_SNAP;
+  const m = fin(margin) && margin >= 0 ? margin : WIN_MARGIN;
+  const V = visibleRect(cam, vw, vh, 0), mx = m * vw / cam.k, my = m * vh / cam.k, S = WIN_SNAP;
   const x0 = Math.max(0, Math.floor((V.x - mx - R.x) / S) * S), y0 = Math.max(0, Math.floor((V.y - my - R.y) / S) * S);
   const x1 = Math.min(R.w, Math.ceil((V.x + V.w + mx - R.x) / S) * S), y1 = Math.min(R.h, Math.ceil((V.y + V.h + my - R.y) / S) * S);
   if (!(x1 > x0 && y1 > y0)) return null;
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
+/** (R2-F5) The window of a face rect R and its level when the texture side limit `max` may bind (winRect at WIN_MARGIN, then winLevelOf).
+ * A window whose 25 % margin pushed a side past `max` used to be dropped (a wide face stuck at 0.67 of 1:1 from 100 % to 190 % on a
+ * 4096-texture device): when `max` alone holds the level below what the other limits allow, the margin shrinks — WIN_SHRINK steps
+ * toward the visible part — until the level reaches min(that, d · k), the 1:1 of this zoom, or the margin is gone and the level is as
+ * high as the side limit lets it. sumArea / cap / budget as winLevelOf's. → { wr, L, free (the level without the side limit), bound
+ * (the side limit holds L below free) } or null off screen. */
+export const WIN_SHRINK = 5;
+export function winFit(R, cam, vw, vh, d, sumArea, cap, max, budget) {
+  let wr = winRect(R, cam, vw, vh);
+  if (!wr) return null;
+  const free = winLevelOf(d, cam.k, sumArea, wr.w, wr.h, cap, Infinity, budget);
+  let L = winLevelOf(d, cam.k, sumArea, wr.w, wr.h, cap, max, budget);
+  if (L < free - EPS) {
+    const want = Math.min(free, d * cam.k);
+    for (let i = 1; i <= WIN_SHRINK && L < want - EPS; i++) {
+      const w2 = winRect(R, cam, vw, vh, WIN_MARGIN * (1 - i / WIN_SHRINK));
+      if (!w2) break;
+      wr = w2; L = winLevelOf(d, cam.k, sumArea, wr.w, wr.h, cap, max, budget);
+    }
+  }
+  return { wr, L, free, bound: L < free - EPS };
+}
+/** (R2-F5) A window the gain rule (WIN_GAIN) would drop is still worth its paint when the side limit is what holds it down and it
+ * brings a base that is below 1:1 at this zoom (L0 < d · k) up to 1:1 (or to all the other limits allow). */
+export const winOwed = (fit, L0, d, k) => !!fit && fit.bound && L0 < d * k - EPS && fit.L >= Math.min(fit.free, d * k) - EPS && fit.L > L0 + EPS;
 /** Is a window ({x, y, w, h, L}, face-local) kept: it still covers the visible part `vis` and its level ≥ min(dpr · k, Lw) —
  * Lw the level the planner would make now, so a window the raster ceilings capped below dpr · k is not remade for a level it
  * cannot get (it is reported `soft` instead). */
@@ -150,6 +200,7 @@ let Q = [], pumping = false, pumpGen = 0, QUAD = []; // the paint queue (one job
 let ORD = [], ordDirty = true; // the drawn faces in order (z, then registration): re-sorted on a registration / mode / z / fold change only
 let WEL = null, WMO = null; // #world (the deco's [data-cv-world]) and the observer of its data-cv-patching
 let winPx = WIN_MAX_PX, STAGE = null; // the effective window cap (px); a split window's raster waiting in the scratch { j, ms }
+let PERF = 'high', TQ = TEX_Q.high; // (P) the preset and its policy (module state: kept through a detach / an attach)
 const winOf = () => (ATT && ATT.win) || (WD && WD.viewport && WD.viewport.ownerDocument && WD.viewport.ownerDocument.defaultView) || globalThis;
 function winPxRead() { // the persisted cap (clamped); an absent / throwing storage or garbage: the start value
   winPx = WIN_MAX_PX;
@@ -167,6 +218,22 @@ const fire = () => { for (const f of [...subs]) { try { f(); } catch (err) { con
 const emit = () => { if (emDue) return; emDue = true; raf(() => { emDue = false; fire(); }); };
 const now = () => (HOOK && typeof HOOK.now === 'function' ? HOOK.now() : msNow());
 const dprOf = F => Math.max(1, +((F.env && F.env.win) || F.wnd || {}).devicePixelRatio || 1);
+const dE = F => Math.min(dprOf(F), TQ.R); // (P) the ratio the policy runs at for this face
+const side = () => { const m = GL ? +GL.maxTex : 0; return m > 0 ? Math.min(TEX_MAX_DIM, m) : TEX_MAX_DIM; }; // (P) every texture side ≤ this
+const lvl = F => baseLevel(dE(F), F.w, F.h, side()); // (P) the base level the face should have now
+// (P) a stale base (made at another preset / ratio / side limit): re-rastered at a rest unless that level already failed (lvlTry)
+const stale = F => !!F.base && Math.abs(F.base.L - lvl(F)) > EPS;
+const tried = F => F.lvlTry != null && Math.abs(F.lvlTry - lvl(F)) <= EPS;
+const drawable = F => !F.failed && !(F.a && F.a.folded) && !F.overlap; // (plan's glOk: a folded / overlapped / failed face gets no job, §1.1 (c))
+// (P) a base's bytes once the queue drains — a stale one that will be re-rastered at its new level: the budget credits the base being
+// replaced, so a switch down never evicts a face its own swap would shrink, and a switch up counts the growth
+function projB(F) {
+  if (!F.base) return 0;
+  const b = F.base.tex.bytes || 0;
+  if (!stale(F) || tried(F) || !drawable(F)) return b;
+  const L = lvl(F);
+  return texBytes(Math.max(1, Math.round(F.w * L)), Math.max(1, Math.round(F.h * L)), true);
+}
 function size() { // the viewport (CSS px): a layout read at a rest only
   if (HOOK && typeof HOOK.size === 'function') { const s = HOOK.size(); return { w: +s.w || 0, h: +s.h || 0 }; }
   const v = WD && WD.viewport;
@@ -234,11 +301,20 @@ function observe(F, el) {
 }
 let rcDue = false;
 function recheckLater() { if (rcDue) return; rcDue = true; raf(() => { rcDue = false; recheck(); }); }
+// (R2-F1) textures left with no camera move or preset change (a module unmounted, a face dropped / destroyed): a face the budget turned
+// away (blk) may fit now — one re-plan a frame later (coalesced; none while nothing waits)
+let plDue = false;
+function freed() {
+  if (plDue || !GL || !WD) return;
+  let w = false;
+  for (const G of faces) if (!G.dead && G.blk) { w = true; break; }
+  if (w) { plDue = true; raf(() => { plDue = false; plan(); }); }
+}
 function free(F, which) {
   const t = F[which];
   if (!t) return;
   F[which] = null;
-  if (which === 'base') ordDirty = true;
+  if (which === 'base') { ordDirty = true; F.lvlTry = null; }
   bytes -= t.tex.bytes || 0;
   if (GL && typeof GL.free === 'function') { try { GL.free(t.tex); } catch (err) { /* dead context */ } }
   if (bytes < 0) bytes = 0;
@@ -275,11 +351,13 @@ function sync(F, why) {
   let ch = false;
   if (!mounted) { // at home or detached: the textures go, the tier too; the SVG shows (hidden with its ancestors)
     if (F.el) { observe(F, null); F.el = null; F.a = null; }
-    F.mid = null; F.mounted = false; F.failed = false; unqueue(F);
-    if (F.base || F.win) ch = true;
+    F.mid = null; F.mounted = false; F.failed = false; F.blk = false; unqueue(F);
+    const had = !!(F.base || F.win);
+    if (had) ch = true;
     free(F, 'base'); free(F, 'win'); tierOff(F);
     if (setMode(F, 'svg')) ch = true;
     if (ch) emit();
+    if (had) freed();
     return;
   }
   if (WEL !== wel) watchWorld(wel, F);
@@ -305,7 +383,7 @@ function sync(F, why) {
 }
 /* ---- the paint queue: one job (a base or a window) per animation frame at a rest, nearest the viewport centre first */
 function needBase(F) {
-  if (!GL || LOST || F.base || F.failed || Q.some(j => j.F === F && j.kind === 'base')) return;
+  if (!GL || LOST || F.base || F.failed || F.blk || Q.some(j => j.F === F && j.kind === 'base')) return; // (R2-F1: blk — no room last asked: it waits for the next plan)
   Q.push({ F, kind: 'base', dist: dist2(F) });
   pump();
 }
@@ -319,6 +397,7 @@ function pump() {
     if (BURST) return; // never a paint in a burst: the rest's plan rebuilds the queue
     const j = Q.shift();
     if (j) { try { run(j); } catch (err) { console.error(err); } }
+    if (EVD && !BURST && !STAGE) { try { plan(); } catch (err) { console.error(err); } } // (R2-F1) the job freed faces for itself: they ask again, now, for what is left (not between the two frames of a split window: its raster waits in the scratch)
     if (Q.length) pump(); else if (scratch) { scratch.width = 0; scratch.height = 0; } // released when the queue drains
   });
 }
@@ -358,19 +437,19 @@ function fail(F, err) { // no texture for this face while mounted: the 1g tier t
 function run(j) {
   const F = j.F;
   if (F.dead || !F.mounted || !GL || LOST || F.failed) return;
-  if (j.kind === 'base' ? !!F.base : !F.base) return; // (a window before its base: never — the base's landing plans it)
+  if (j.kind === 'base' ? !!F.base && !stale(F) : !F.base) return; // (a window before its base: never — the base's landing plans it; P: a stale base is re-made)
   // (this frame starts the load; the job returns to the queue when it lands — not in a burst: the rest's plan re-adds it)
-  if (!F.img) { loadImg(F, () => { if (!F.dead && F.mounted && !F.base && GL && !LOST && !BURST) { Q.push(j); pump(); } }); return; }
-  const d = dprOf(F), doc = F.doc;
+  if (!F.img) { loadImg(F, () => { if (!F.dead && F.mounted && (!F.base || stale(F)) && GL && !LOST && !BURST) { Q.push(j); pump(); } }); return; }
+  const d = dE(F), doc = F.doc, re = j.kind === 'base' && !!F.base; // (P) re: a stale base re-rastered — the old one drawn until the swap
   if (!F.bg) { F.bg = bgOf(F.root, (F.env && F.env.win) || F.wnd); F.bg.faceW = F.w; }
   let W, H, L, win = null, ms = 0, c = null;
-  if (j.kind === 'base') { L = baseLevel(d, F.w, F.h); W = Math.max(1, Math.round(F.w * L)); H = Math.max(1, Math.round(F.h * L)); }
+  if (j.kind === 'base') { L = baseLevel(d, F.w, F.h, side()); W = Math.max(1, Math.round(F.w * L)); H = Math.max(1, Math.round(F.h * L)); }
   else { win = j.win; L = win.L; W = Math.max(1, Math.round(win.w * L)); H = Math.max(1, Math.round(win.h * L)); }
   if (STAGE && STAGE.j === j) { c = scratch; ms = STAGE.ms; STAGE = null; } // the second frame of a split window: the raster waits in the scratch
   else {
-    if (!enforce(texBytes(W, H, !win), F)) return; // an off-screen face over the budget: skipped (re-planned when it comes on)
+    if (!enforce(texBytes(W, H, !win) - (win ? 0 : projB(F)), F)) { if (!win) F.blk = true; return; } // an off-screen face over the budget: skipped, nothing freed for it (re-planned when room comes — R2-F1: not by itself; P: a stale one keeps its base)
     const t0 = now(), x = (c = scratchFor(doc, W, H)).getContext('2d');
-    if (!x) { fail(F, 'no 2D context'); return; }
+    if (!x) { if (re) { F.lvlTry = L; return; } fail(F, 'no 2D context'); return; }
     fillBg(F.bg, x, W, H, L, win ? win.x : 0, win ? win.y : 0);
     x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
     if (win) x.drawImage(F.img, win.x, win.y, win.w, win.h, 0, 0, W, H); else x.drawImage(F.img, 0, 0, W, H);
@@ -382,51 +461,101 @@ function run(j) {
   try { tex = GL.upload(c, { mips: !win }); } catch (err) { tex = null; }
   ms += now() - t1; S.paints++; S.paintMs += ms; S.paintMax = Math.max(S.paintMax, ms);
   if (win) slowPaint(W * H, ms);
-  if (!tex) { fail(F, 'upload failed'); return; }
+  if (!tex) {
+    if (GL.ready === false) return; // (P) the context went under the upload: the loss path (the world's onLost detaches FACES, the restore re-makes every base) — never a fail
+    if (re) { F.lvlTry = L; return; } // (P) a stale re-raster that fails keeps its old base (no fail: still gl) and is not re-queued at this level
+    fail(F, 'upload failed'); return;
+  }
   if (win) { free(F, 'win'); F.win = { tex, x: win.x, y: win.y, w: win.w, h: win.h, L }; } else { free(F, 'base'); F.base = { tex, L }; ordDirty = true; }
   bytes += tex.bytes || 0;
   sync(F, 'paint'); // (the base landing: 'svg' → 'gl')
   emit();
   if (!win && !BURST) plan(); // a base landed at a rest: its window (a face mounted zoomed in) joins the queue
 }
-// the budget (§3.4): room for `need` bytes — off-screen faces' windows first, then their bases farthest from the viewport
-// centre; the on-screen ones are never evicted, and an off-screen face only evicts faces farther out than itself (no
-// thrash between two off-screen faces). False when an off-screen face's paint would still not fit (it is skipped).
+// the budget (§3.4; P: the preset's): room for `need` bytes — off-screen faces' windows first, then their bases farthest from the
+// viewport centre; the on-screen ones are never evicted, and an off-screen face only evicts faces farther out than itself (no
+// thrash between two off-screen faces). False when an off-screen face's paint would still not fit (it is skipped). (P) Counted
+// as the set will be once the queue drains (D: every stale base at its new level, projB) — `need` is net of the job's own.
+// (R2-F1) Decided BEFORE anything is freed: the review's thrash was an off-screen face that freed the farther faces one by one and
+// then found it still did not fit — they re-queued, fitted again in their own room, landed, and each landing re-planned the face
+// that cannot fit, ≈ 7 rasters, uploads and frees a second, forever. pool() is the budget's view of the set: T (bytes as the set will be
+// once the queue drains) and the off-screen faces' evictable bytes (a window + a base at its projected level) farthest first with
+// running sums, so "would `need` fit if every face farther out than F were freed" (roomFor) is a lookup: the plan uses it to leave
+// such a face out of the queue (F.blk: kept in its tier — no job, no frees — until a rest finds room); enforce frees only when it can.
+function pool() { // T now (O(faces)); the sorted off-screen list only when a paint does not fit as is (offs)
+  let T = bytes;
+  for (const F of faces) if (!F.dead && F.base) T += projB(F) - (F.base.tex.bytes || 0);
+  return { T, off: null, pre: null };
+}
+function offs(P) {
+  if (P.off) return P;
+  const off = [];
+  for (const F of faces) if (!F.dead && F.mounted && (F.win || F.base) && !onScreen(F)) off.push({ F, d: dist2(F), b: (F.win ? F.win.tex.bytes || 0 : 0) + (F.base ? projB(F) : 0) });
+  off.sort((a, b) => b.d - a.d);
+  const pre = [0];
+  for (const v of off) pre.push(pre[pre.length - 1] + v.b);
+  P.off = off; P.pre = pre;
+  return P;
+}
+function roomFor(P, need, F) { // would `need` bytes fit for F: as the set is, or (off screen) with every face farther out than F freed; an on-screen paint always goes ahead (the soft bound)
+  if (P.T + need <= TQ.budget || onScreen(F)) return true;
+  const d0 = dist2(F), off = offs(P).off;
+  let lo = 0, hi = off.length; // the faces farther than F: a prefix of the far-to-near list
+  while (lo < hi) { const m = (lo + hi) >> 1; if (off[m].d > d0) lo = m + 1; else hi = m; }
+  return P.T + need - P.pre[lo] <= TQ.budget;
+}
+// the bytes a base job adds once it lands: its new level's, net of the base it replaces (projB counts a stale one at its new level: 0)
+const baseNeed = F => { const L = lvl(F); return texBytes(Math.max(1, Math.round(F.w * L)), Math.max(1, Math.round(F.h * L)), true) - projB(F); };
+let EVD = false; // an enforce freed a base: the queue re-plans after the job (the freed faces re-ask; room may be left)
 function enforce(need, forF) {
-  if (bytes + need <= FACE_BUDGET_BYTES) return true;
-  const on = onScreen(forF), d0 = on ? -1 : dist2(forF);
-  const off = faces.filter(F => !F.dead && F !== forF && F.mounted && !onScreen(F) && (F.win || F.base)).map(F => ({ F, d: dist2(F) })).filter(v => v.d > d0).sort((a, b) => b.d - a.d);
-  for (const pass of ['win', 'base']) for (const { F } of off) {
-    if (bytes + need <= FACE_BUDGET_BYTES) break;
-    if (!F[pass]) continue;
-    free(F, pass);
-    if (pass === 'base') sync(F, 'evict');
+  const B = TQ.budget, P = pool(), on = onScreen(forF);
+  if (P.T + need <= B) return true;
+  if (!on && !roomFor(P, need, forF)) return false; // (R2-F1) nothing freed for a paint that still would not fit
+  const d0 = on ? -1 : dist2(forF), out = [];
+  let T = P.T;
+  for (const pass of ['win', 'base']) for (const v of offs(P).off) {
+    if (T + need <= B) break;
+    if (v.F === forF || v.d <= d0 || !v.F[pass]) continue;
+    T -= pass === 'win' ? v.F.win.tex.bytes || 0 : projB(v.F);
+    out.push([v.F, pass]);
   }
-  return bytes + need <= FACE_BUDGET_BYTES || on;
+  for (const [F, pass] of out) {
+    free(F, pass);
+    if (pass === 'base') { F.blk = true; EVD = true; sync(F, 'evict'); } // (it lost its room to a nearer face: it re-asks at the next plan, not by itself)
+  }
+  return true;
 }
 /* ---- a rest (cameraend / screen / attach / restored): the missing bases, the windows (§3.3), the queue nearest-first */
 function plan(c) {
   if (!GL || !WD || LOST || BURST) return; // (never in a burst: the cameraend clears it first)
+  EVD = false;
   CAM = c ? { tx: +c.tx || 0, ty: +c.ty || 0, k: +c.k || 1 } : (WD.cam ? WD.cam : CAM);
   VP = size();
   const C = cam(), jobs = [], cands = [];
+  let P = null; // (R2-F1) the budget's view of the set, built when a base job first asks
   for (const F of faces) {
     if (F.dead) continue;
     sync(F, 'plan');
     if (!F.mounted) continue;
-    const d = dprOf(F), glOk = !!GL && !F.failed && !F.a.folded && !F.overlap; // (a folded face: no base, no window — its unfold brings them)
-    if (glOk && !F.base) { jobs.push({ F, kind: 'base', dist: dist2(F) }); continue; } // (its window once the base lands: run() plans again)
+    const d = dE(F), glOk = !!GL && !F.failed && !F.a.folded && !F.overlap; // (a folded face: no base, no window — its unfold brings them)
+    F.blk = false;
+    if (glOk && (!F.base || (stale(F) && !tried(F)))) { // (its window once the base lands: run() plans again; P: a stale level too)
+      // (R2-F1) a base that would not fit even with every farther face freed is not queued (and nothing is freed for it): its tier / its stale
+      // base stays until a rest finds room — the camera, a screen change, a preset, a free (freed), a landing's own re-plan
+      if (onScreen(F) || roomFor(P || (P = pool()), baseNeed(F), F)) jobs.push({ F, kind: 'base', dist: dist2(F) }); else F.blk = true;
+      continue;
+    }
     const R = faceRect(F);
-    if (!glOk || !R || !onScreen(F) || !(C.k > WIN_K0) || !(VP.w > 0 && VP.h > 0)) { if (F.win) { free(F, 'win'); emit(); } continue; }
+    if (!glOk || !R || !onScreen(F) || !TQ.win || !(C.k > WIN_K0) || !(VP.w > 0 && VP.h > 0)) { if (F.win) { free(F, 'win'); emit(); } continue; } // (P: Low has none)
     const vis = visPart(R, C, VP.w, VP.h), wr = vis ? winRect(R, C, VP.w, VP.h) : null;
     if (!wr) { if (F.win) { free(F, 'win'); emit(); } continue; }
-    cands.push({ F, vis, wr, d, dist: dist2(F) });
+    cands.push({ F, R, vis, wr, d, dist: dist2(F) });
   }
   let sum = 0;
   for (const c2 of cands) sum += c2.wr.w * c2.wr.h;
-  for (const { F, vis, wr, d, dist } of cands) {
-    const Lw = winLevelOf(d, C.k, sum, wr.w, wr.h), L0 = F.base ? F.base.L : baseLevel(d, F.w, F.h);
-    if (Lw <= L0 * WIN_GAIN + EPS) { if (F.win) { free(F, 'win'); emit(); } continue; } // the base is as fine already (within WIN_GAIN)
+  for (const { F, R, vis, d, dist } of cands) {
+    const fit = winFit(R, C, VP.w, VP.h, d, sum, undefined, side(), TQ.winBudget), wr = fit.wr, Lw = fit.L, L0 = F.base ? F.base.L : baseLevel(d, F.w, F.h, side()); // (R2-F5: the margin shrunk to fit the side limit, not the window dropped)
+    if (Lw <= L0 * WIN_GAIN + EPS && !winOwed(fit, L0, d, C.k)) { if (F.win) { free(F, 'win'); emit(); } continue; } // the base is as fine already (within WIN_GAIN; unless the side limit holds a base below 1:1 and the window brings it there)
     if (winKeep(F.win, vis, d, C.k, Lw)) continue;
     if (F.win && d * C.k <= L0 + EPS) continue; // at or below 1:1 from the base: a window the view left is not remade for coverage (the next rest above k = 1 does)
     jobs.push({ F, kind: 'win', win: Object.assign({ L: Lw }, wr), dist });
@@ -475,7 +604,7 @@ export const FACES = {
       seq: ++seq, deco, svg: deco.firstChild, root: deco.parentNode || deco, doc, wnd: win, env: o.env || null, markup: String(o.markup || ''), w: +o.w || 1, h: +o.h || 1,
       img: o.img || null, imgCb: null, moduleOf: typeof o.moduleOf === 'function' ? o.moduleOf : () => (modEl(deco) ? modEl(deco).getAttribute('data-cv-mod') : null),
       offset: typeof o.offset === 'function' ? o.offset : () => ({ x: 0, y: BAR_H }), tip: o.tip || null, mkTier: typeof o.tier === 'function' ? o.tier : null,
-      el: null, attrEl: null, mid: null, mounted: false, a: null, ox: 0, oy: BAR_H, overlap: false, failed: false, mode: '', tier: null, base: null, win: null, bg: null, mo: null, dead: false,
+      el: null, attrEl: null, mid: null, mounted: false, a: null, ox: 0, oy: BAR_H, overlap: false, failed: false, blk: false, mode: '', tier: null, base: null, win: null, bg: null, mo: null, dead: false,
       q0: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1, gray: 0 }, q1: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1, gray: 0 }, clip: { x: 0, y: 0, w: 0, h: 0, r: [0, 0, BODY_R, BODY_R] },
     };
     // unmount reaches us through wk.releaseCanvases (cv-module unmount): a 0 × 0 sentinel canvas inside the deco. The hook
@@ -487,6 +616,7 @@ export const FACES = {
       free(F, 'base'); free(F, 'win'); unqueue(F);
       if (setMode(F, 'svg') || had) emit();
       raf(() => sync(F, 'release'));
+      if (had) freed();
     };
     let offR = () => {};
     try {
@@ -502,7 +632,7 @@ export const FACES = {
     if (WD) recheckLater();
     const api = {
       refresh() { if (F.dead) return; sync(F, 'refresh'); recheck(); if (GL && WD) plan(); },
-      drop() { if (F.dead) return; const had = !!(F.base || F.win); free(F, 'base'); free(F, 'win'); unqueue(F); if (F.tier) F.tier.drop(); if (F.mode === 'gl') setMode(F, 'svg'); if (had) emit(); },
+      drop() { if (F.dead) return; const had = !!(F.base || F.win); free(F, 'base'); free(F, 'win'); unqueue(F); if (F.tier) F.tier.drop(); if (F.mode === 'gl') setMode(F, 'svg'); if (had) { emit(); freed(); } },
       destroy() {
         if (F.dead) return;
         F.dead = true; offS(); offR(); observe(F, null); unqueue(F);
@@ -512,7 +642,7 @@ export const FACES = {
         if (F.attrEl) { try { F.attrEl.removeAttribute('data-cv-face'); } catch (err) { /* gone */ } F.attrEl = null; }
         if (F.sentinel) { try { F.sentinel.remove(); } catch (err) { /* gone */ } }
         const i = faces.indexOf(F); if (i >= 0) faces.splice(i, 1);
-        if (had) emit();
+        if (had) { emit(); freed(); }
       },
       /** 'gl' | 'dom' (the 1g tier: its bitmap below 100 %, the SVG at / above — `shown` tells) | 'svg'; = data-cv-face */
       get mode() { return F.mode; },
@@ -532,7 +662,7 @@ export const FACES = {
     if (GL) this.detach();
     o = o || {};
     ATT = o;
-    GL = o.gl || null; WD = o.world || null; LOST = false; emDue = false; rcDue = false; // (a frame queue dropped between: nothing owed)
+    GL = o.gl || null; WD = o.world || null; LOST = false; emDue = false; rcDue = false; plDue = false; // (a frame queue dropped between: nothing owed)
     HOOK = { raf: o.raf, size: o.size, now: o.now, offs: [] };
     winPxRead(); // (o.win, else the viewport's window: the persisted window cap)
     if (WD && typeof WD.on === 'function') {
@@ -547,17 +677,18 @@ export const FACES = {
     if (!GL) return;
     for (const f of HOOK.offs) { try { f(); } catch (err) { /* gone */ } }
     Q = []; pumping = false; pumpGen++;
-    for (const F of faces) { free(F, 'base'); free(F, 'win'); }
-    GL = null; WD = null; HOOK = null; ATT = null; CAM = null; LOST = false; BURST = false; STAGE = null;
+    for (const F of faces) { free(F, 'base'); free(F, 'win'); F.blk = false; }
+    GL = null; WD = null; HOOK = null; ATT = null; CAM = null; LOST = false; BURST = false; STAGE = null; EVD = false;
     if (scratch) { scratch.width = 0; scratch.height = 0; }
     for (const F of faces) sync(F, 'detach');
-    emDue = false; rcDue = false; emit();
+    emDue = false; rcDue = false; plDue = false; emit();
   },
   /** Context loss: every texture is dead (nothing goes through the GL); the faces show their SVG until restored() rebuilds
    * the bases lazily (one per frame, nearest first). */
   lost() {
     LOST = true; Q = [];
-    for (const F of faces) { F.base = null; F.win = null; }
+    for (const F of faces) { F.base = null; F.win = null; F.lvlTry = null; F.blk = false; }
+    EVD = false;
     bytes = 0;
     for (const F of faces) sync(F, 'lost');
     emit();
@@ -585,21 +716,50 @@ export const FACES = {
   onChange(fn) { if (typeof fn !== 'function') return () => {}; subs.add(fn); return () => subs.delete(fn); },
   /** The overlap rule and the offsets re-read (a re-mount main.js made without a camera move): a rest-time call. */
   recheck() { for (const F of faces) sync(F, 'refresh'); recheck(); if (GL && WD) plan(); },
-  /** + soft: windows sampled below 1:1 at the current camera (L < dpr · k: the raster ceilings), softMin their worst L / (dpr · k)
-   * (1 when none); winPx the effective window cap. */
+  /** + soft: windows sampled below 1:1 at the current camera (L < dE · k: the raster ceilings), softMin their worst L / (dE · k)
+   * (1 when none); winPx the effective window cap. (P) perf, dE (the effective ratio), budget (bytes), texSide (the side limit);
+   * under / underMin: textures below the screen's own 1:1 (Medium / Low by design; a window at L < dpr · k, a base at
+   * L < dpr · min(k, 1); R2-F5: above k = 1 an on-screen base with no window is held to L < dpr · k — what the screen shows) and
+   * their worst ratio (1 when none). */
   stats(reset) {
-    let gl = 0, dom = 0, base = 0, windows = 0, soft = 0, softMin = 1;
-    const k = cam().k;
+    let gl = 0, dom = 0, base = 0, windows = 0, soft = 0, softMin = 1, under = 0, underMin = 1;
+    const k = cam().k, low = r => { if (r < 1 - EPS) { under++; underMin = Math.min(underMin, r); } };
     for (const F of faces) {
       if (F.dead) continue;
       if (F.mode === 'gl') gl++; else if (F.tier) dom++;
-      if (F.base) base++;
-      if (F.win) { windows++; const r = F.win.L / (dprOf(F) * k); if (r < 1 - EPS) { soft++; softMin = Math.min(softMin, r); } }
+      // (R2-F5) a base drawn above k = 1 with no window is what the screen shows: L < dpr · k counts (the side limit that dropped
+      // the window, a viewport too wide for any, Low / Medium by design) — only a face the world shows (gl, unfolded, on screen)
+      if (F.base) { base++; low(F.base.L / (dprOf(F) * (!F.win && k > 1 + EPS && F.mode === 'gl' && !(F.a && F.a.folded) && onScreen(F) ? k : Math.min(k, 1)))); }
+      if (F.win) { windows++; const r = F.win.L / (dE(F) * k); if (r < 1 - EPS) { soft++; softMin = Math.min(softMin, r); } low(F.win.L / (dprOf(F) * k)); }
     }
-    const s = { faces: faces.length, gl, dom, bytes, base, windows, soft, softMin, winPx, paints: S.paints, paintMs: S.paintMs, paintMax: S.paintMax, queued: Q.length };
+    const F0 = faces.find(F => !F.dead), w0 = winOf();
+    const s = { faces: faces.length, gl, dom, bytes, base, windows, soft, softMin, winPx, paints: S.paints, paintMs: S.paintMs, paintMax: S.paintMax, queued: Q.length,
+      perf: PERF, dE: F0 ? dE(F0) : dEOf(w0 && w0.devicePixelRatio, PERF), budget: TQ.budget, texSide: side(), under, underMin };
     if (reset) { S.paints = 0; S.paintMs = 0; S.paintMax = 0; }
     return s;
   },
+  /**
+   * (P, IMPL-P §1.1) The preset, live: 'high' | 'medium' | 'low' (else 'high'). The windows go (Low: for good; else re-planned at
+   * the new level), the budget becomes the preset's, and the rest's plan queues every mounted, drawable face whose base is at a
+   * stale level — one a frame, nearest the viewport centre first, none in a burst; its old texture drawn until the new one lands
+   * (still gl, the SVG hidden). A folded / overlapped / failed face keeps its stale base until drawable (then its first rest).
+   * Detached: taken by the next attach. @returns {boolean} changed
+   */
+  setPerf(id) {
+    const p = perfId(id);
+    if (p === PERF) return false;
+    PERF = p; TQ = TEX_Q[p];
+    for (const F of faces) { F.lvlTry = null; F.blk = false; } // (the budget changed: every face asks again)
+    if (!GL || !WD || LOST) return true;
+    let ch = false;
+    STAGE = null;
+    for (const F of faces) if (F.win) { free(F, 'win'); unqueue(F, 'win'); ch = true; }
+    if (ch) emit();
+    if (BURST) Q = []; else plan(); // (in a burst: the rest's plan)
+    return true;
+  },
+  /** (P) the preset in force */
+  get perf() { return PERF; },
   get attached() { return !!GL; },
   /** The { gl, world } object attach() was given; null while detached. */
   attachment() { return ATT; },
@@ -607,5 +767,5 @@ export const FACES = {
 // (integration) the same surface as named exports: cv-world imports the namespace (`import * as FACES`), cv-panel the object
 export const register = (deco, o) => FACES.register(deco, o), attach = o => FACES.attach(o), detach = () => FACES.detach(),
   lost = () => FACES.lost(), restored = () => FACES.restored(), quads = (rectOf, cam) => FACES.quads(rectOf, cam),
-  onChange = fn => FACES.onChange(fn), stats = reset => FACES.stats(reset), attachment = () => FACES.attachment();
+  onChange = fn => FACES.onChange(fn), stats = reset => FACES.stats(reset), attachment = () => FACES.attachment(), setPerf = id => FACES.setPerf(id);
 export { recheck };

@@ -21,6 +21,7 @@ import * as wk from './wk.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
 import { classicOf } from './models.js?v=9';
 import * as MG from './moog-core.js?v=9';
+import { MAX_MODS } from './patch-core.js?v=9';
 
 /** Top tray heights (px): the collapsed row, the arrangement toolbar, the ruler, one track row (= arrange.js rowHeight). */
 export const TOP_ROW = 48, ARR_BAR = 32, RULER = 24, ROW_H = 56;
@@ -483,7 +484,7 @@ export const SRC_VIEWS = [
  * o.sets (or o.sets: true). */
 export const SET_TILES = Object.freeze(['s35', 's55'].map(id => Object.freeze({ id, name: MG.SETS[id].name, modules: MG.SETS[id].set.length, starter: MG.SETS[id].starter })));
 /** (9b) A set tile's reason at the module cap (patch-core setNeeds: the modules loadSet would add): null while count + needs ≤ max. */
-export function setFull(count, needs, max = 48) {
+export function setFull(count, needs, max = MAX_MODS) {
   const n = (count | 0) + (needs | 0) - max;
   return needs >= 0 && n > 0 ? `This set needs ${n} more module${n === 1 ? '' : 's'} than the patch can hold` : null;
 }
@@ -715,7 +716,7 @@ export function sourcesTray(el, o) {
   // section of its own in o.secEl, else after the synths in el. A tap: (o.moogPick || o.pick)(id, mode); a drag through
   // (o.moogDrag || o.drag) with info.moog = true, info.over 'canvas' | 'tracks' | null, info.at the world point; the ghost hides over
   // the canvas while o.moogCanvasGhost() says the world draws the outline. o.moogCost(id) → its label (refreshMoog() re-reads);
-  // setPlaced(id, reason) / setMoogPlaced(reason) grey tiles (a full patch: "A patch holds at most 48 modules")
+  // setPlaced(id, reason) / setMoogPlaced(reason) grey tiles (a full patch: "A patch holds at most 512 modules")
   const gtiles = new Map(), gheads = [];
   let gsec = null, ginEl = false;
   const GT = Array.isArray(o.moog) ? o.moog : o.moog === true ? MOOG_TILES : null;

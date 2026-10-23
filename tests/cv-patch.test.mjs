@@ -119,6 +119,15 @@ test('ends ↔ jack keys: the controller is its instrument\'s module (iN), a mod
   assert.deepEqual([CP.TAP_TOUCH, CP.TAP_MOUSE, CP.SNAP_PX], [8, 4, 32]);
 });
 
+test('IMPL-P skeptic #1: midOf / endOf take patch-core\'s id grammar — a module numbered 4096, 10000 or 999999 is a patch module (size, title, menu, jacks), m0 / m01 / m1000000 are not', () => {
+  for (const n of ['m4096', 'm9999', 'm10000', 'm99999', 'm999999']) {
+    assert.equal(CP.midOf('i1', 'i1/' + n), n, n);
+    assert.equal(CP.endOf('i1', CP.jackKey('i1', n + '.saw')), n + '.saw', n);
+    assert.equal(CP.keyOf('i1', n), 'i1/' + n);
+  }
+  for (const bad of ['m0', 'm01', 'm1000000', 'm12345678', 'm-1', 'mx', 'c']) assert.equal(CP.midOf('i1', 'i1/' + bad), null, bad);
+});
+
 test('faceJacks: every face (the 25 modules — 9b: their rear terminals never on a face — and the console) — one spec per face jack of its type, id j-<port>, module-local (geometry\'s body px + BAR_H), "<title> · <legend>", sig / dir from the table, its hit circle ≤ the pitch; [] without a layout', () => {
   for (const ty of MG.ORDER) {
     const L = cvPanel.moduleLayout(ty), model = cvPanel.moduleModel(ty), g = cvPanel.geometry(L, model), J = CP.faceJacks(L, model, ty.toUpperCase() + ' 1'), T = MG.TYPES[ty];

@@ -178,6 +178,7 @@ function patchNew(t, dev, type = null, set = null) {
   const d = t.dev[dev], f = PT.familyOf(d.model);
   if (type) { const r = PT.addModule(PT.fresh(f), d.vals, type); d.patch = r.mid ? r.rec : PT.fresh(f); return; }
   const r = (set && MG.makeSet(set, d.vals)) || MG.model15(d.vals);
+  if (!r) { d.patch = PT.fresh(f); return; }                          // (no module numbers left in vals.p's range: the controller alone, as the module tile's refusal above)
   d.patch = r.rec; d.vals = r.vals;
 }
 function drumOf(t, dev) {
@@ -1876,8 +1877,12 @@ function setTrackModel(tr0, id, o = null) {
   const tr = trOf(tr0), dev = dvOf(tr0), iv = instView(tr, dev), prim = dev === CMOD.primId(tr);
   const ui = S.isDrum(id) || PT.isPatchModel(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null; // ((7a §8) a drum machine: Hardware only; (9) a 900 Series too)
   if (id === iv.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
+  // (P, §3.1) a Serum replaced by a classic unfolds its own FX into a panel — one more device: at CMOD.DEV_MAX cv-model setModel
+  // refuses ({ ok: false, why }, nothing touched) — its rule asked here before the step, said; its why if it refuses after all
+  const full = iv.model === 'serum' && id !== 'serum' ? CMOD.devFull(tr) : '';
+  if (full) { notice(full, 4000); return full; }
   flush(); // a pending save of the outgoing model's values must not be dropped
-  const old = modelById(iv.model), m = modelById(id);
+  const old = modelById(iv.model), m = modelById(id), name0 = tr.name;
   hist.record(project, 'Replace ' + old.name);
   seqToggle(tr, false, true, dev);
   postTo(tr, { t: 'panic' });
@@ -1885,7 +1890,8 @@ function setTrackModel(tr0, id, o = null) {
   const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'Serum'); // ((U10) the device being replaced, by its name)
   const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev);
   if (wasPatch) { PATCH.cancel(); PATCH.lamps(tr, dev, null); } // ((9b) its lamps' queue goes with it)
-  CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
+  const sm = CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
+  if (sm && sm.ok === false) { tr.name = name0; hist.prune(project); notice(sm.why, 4000); updateUndoUI(); renderHeads(); return sm.why; } // ((P) refused: nothing changed, no step)
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
   // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
   // too: a switch away and to, the new machine's own record (normDrum(·, id)), its payload forced after the patch below (the
@@ -2081,7 +2087,7 @@ function padRowsOf(src) {
 }
 // after a Pads edit (its History step taken before it): the rows of a pad whose Modulation went off, in the same step (review
 // #31: those tracks' payloads); a mod pad's rest value / range to the tables of the tracks holding it (no repost); the canvas
-// (the module's fixed size, its jacks, title and cables; the tray's "8 Pads modules"), the save
+// (the module's fixed size, its jacks, title and cables; the tray's "<PC.MAX_MODS> Pads modules"), the save
 function padsChanged(o) {
   const hit = new Set();
   for (const s of o && Array.isArray(o.drop) ? o.drop : []) for (const x of CMOD.dropPadRows(project, s).byTrack) hit.add(x.trackId);
@@ -3495,10 +3501,20 @@ function patchSend(t, dev, force = false) {
   return true;
 }
 // {t: 'ptErr', why, i?} (E9): 'load' — the patch scripts missing in the worklet: that 900 Series is silent (one notice a
-// session); any other why — a payload item the machine dropped (a newer file's module, a cord it refused): a console line
-let ptErrSaid = false;
+// session); 'graph' (P, review F1 / R2) — the evaluator could not build the patch (a throw on an extreme one: the machine keeps
+// its previous graph): a notice once a burst — every report keeps the burst open, so edits that keep failing say it once, and a
+// new one after PT_GRAPH_QUIET_MS without any; any other why — a payload item the machine dropped (a newer file's module, a
+// cord it refused): a console line
+const PT_GRAPH_QUIET_MS = 30000;
+let ptErrSaid = false, ptGraphAt = -Infinity;
 function ptErr(t, d) {
   console.warn('900 Series: the patch engine ' + (d.why === 'load' ? 'did not load' : 'dropped a payload item (' + d.why + ')') + ' — track “' + t.name + '”');
+  if (d.why === 'graph') {
+    const T0 = Date.now(), fresh = T0 - ptGraphAt > PT_GRAPH_QUIET_MS;
+    ptGraphAt = T0;
+    if (fresh) notice('This patch is too complex to run — the last working version stays in use', 10000);
+    return;
+  }
   if (d.why !== 'load' || ptErrSaid) return;
   ptErrSaid = true;
   notice('The patch engine did not load: this 900 Series is silent', 10000);
@@ -5083,7 +5099,7 @@ function initShell() {
   // the menus: ≡ (file, app, help), ⚙ (settings), the transport's ⋯ and the arrangement's Bars ▾ (narrow windows), tracks
   shell.menus = [
     cvTray.menuPop($('#appMenuBtn'), $('#appMenu')),
-    cvTray.menuPop($('#gearBtn'), $('#gearPop'), { pick: false, onOpen: () => { $('#masterG').value = $('#master').value; } }),
+    cvTray.menuPop($('#gearBtn'), $('#gearPop'), { pick: false, onOpen: () => { $('#masterG').value = $('#master').value; perfUI(); } }),
     cvTray.menuPop($('#tMore'), $('#tMorePop'), { attr: 'data-open', pick: false }),
     cvTray.menuPop($('#aBars'), $('#aEdit'), { attr: 'data-open' }),
     cvTray.menuPop($('#trkChip'), $('#trkPop'), { onOpen: trkListUI }),
@@ -5128,6 +5144,17 @@ function initShell() {
   // ⚙ → Measure this device (its line in the Canvas section): the Sources tiles' and the "+" menus' load labels follow this device's speed
   const gp = $('#gearPop');
   if (gp) {
+    // (P, IMPL-P §2.3) "Performance: High · Medium · Low" first under Pinch on canvas, its one-line hint below (the select's
+    // description); the world's preset shown (perfUI: ?perf= too), a pick stored and applied live (perfPick)
+    const pf = h('label', 'field cv-perf'), ps = h('select'), ph = h('p', 'cv-ghint', PERF_HINT);
+    ps.id = 'cvPerf'; ph.id = 'cvPerfHint'; ps.setAttribute('aria-describedby', ph.id);
+    ps.title = 'High: the panels and cords as designed. Medium and Low, for slower tablets: panels softer up close, cords swinging more simply (Medium) or hanging still (Low). Visual only: the sound and the Oversampling setting never change';
+    for (const v of cvWorld.PERFS) { const op = h('option', null, PERF_LABEL[v]); op.value = v; ps.append(op); }
+    ps.value = perfPref();
+    ps.onchange = () => perfPick(ps.value);
+    pf.append('Performance ', ps);
+    gp.append(pf, ph);
+    shell.perfSel = ps;
     const f = h('div', 'field'), b = h('button', 'tt', 'Measure this device'), st = h('span', 'cv-measure');
     b.type = 'button'; b.title = 'Render a few standard voices off-line to learn this device’s speed: the load estimates (the Sources tray, the effects’ “+” menus) and the instrument limits use it';
     const fv = +store.get(DEV_FACTOR, 0);
@@ -5177,9 +5204,27 @@ function initWorld() {
   if (!vp || !w) { world = null; return; }
   try {
     world = cvWorld.createWorld(vp, { world: w, overlay: $('#overlay'), toolbar: $('#cvToolbar'), layer: $('#ov'),
-      isBackground: el => cvModule.isBackground(el), onTidy: () => cvTidy(), store });
+      isBackground: el => cvModule.isBackground(el), onTidy: () => cvTidy(), store, perf: perfPref() }); // ((P) built at the device's preset — ?perf= over it, the world's — never setPerf at boot)
     world.on('movestart', () => hideTip()); // (the kit's popups and tip close in the world: wk.closeTransient)
   } catch (err) { world = null; console.warn('Canvas camera unavailable — the panels stay where they are', err); }
+  perfUI();
+}
+// (P, IMPL-P §1–§2) the performance preset — visual only: the cords' physics and the panel faces' texture density (cv-world
+// setPerf → cv-face + cv-cords); nothing reaches a worklet and ⚙ Oversampling stays the person's (D1, D2). A device pref
+// (synth.cv.perf: 'high' | 'medium' | 'low'; absent or anything else High — every device starts on High, no detection), never
+// in a project or its History; cv-world's ?perf= over it for the session, never stored. Applied live, no reload
+const PERF_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
+const PERF_HINT = 'Lower settings draw panels and cords more simply, for slower tablets. Sound is unaffected.';
+const perfPref = () => cvWorld.perfOf(store.get(cvWorld.PERF_PREF, 'high'));
+function perfUI() { // ⚙'s select: the preset the world runs (?perf= shows), else the pref
+  const s = shell.perfSel, W = cvW();
+  if (s) s.value = W && cvWorld.PERFS.includes(W.perf) ? W.perf : perfPref();
+}
+function perfPick(v) { // the person's own pick: stored, then live
+  const p = cvWorld.perfOf(v), W = cvW();
+  store.set(cvWorld.PERF_PREF, p);
+  if (W && typeof W.setPerf === 'function') W.setPerf(p);
+  perfUI();
 }
 // Escape: ends a canvas drag, leaves edit state, then deselects → true — only while focus is on the canvas (the viewport, a
 // module root or its bar; = cv-world canvasFocus, SPEC §4.8), as the roll's own selection does: with focus anywhere else
@@ -5357,7 +5402,7 @@ function cvRender() {
   cvPartsSig = sxPartsSig(trk()); // ((3) cvRelabel: a part set changed by an edit makes the modules again)
   sxSettleSoon(); // ((3) parts placed with Tidy's height guesses: moved clear once measured)
   sxHeavySoon(); // ((3) touch: a Serum in parts past sx1's painted elements says so once, at rest; (9) a 900 Series' modules too)
-  ptTray(); // ((9) the Moog tiles greyed at the patch's 48 modules)
+  ptTray(); // ((9) the Moog tiles greyed at the patch's PT.MAX_MODS modules — 512 since P, was 48)
 }
 // (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
 // Serum, a model without hardware keys). The default camera keeps it on screen
@@ -5765,6 +5810,8 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
   if (!m || m.id === iv.model) return false;
   const old = modelById(iv.model), id = t.id;
   const why = setTrackModel(iv, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
+  const nd = CMOD.instOf(trOf(iv), dev);
+  if (!nd || nd.model !== m.id) return true; // ((P, §3.1) refused — a full track: setTrackModel said why; no Replace notice)
   // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
   // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
   // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
@@ -5856,12 +5903,15 @@ function cvAddInstrument(modelId, at, o = null) {
   const t = trk(), m = MODELS.find(x => x.id === modelId);
   if (!m || !t.dev) return null;
   if (CMOD.instIds(t).length >= CG.LIMITS.inst) { notice(`At most ${CG.LIMITS.inst} instruments per track`, 4000); return null; }
+  const full = CMOD.devFull(t); // ((P, §3.1) addInst refuses at CMOD.DEV_MAX devices: said, before the step)
+  if (full) { notice(full, 4000); return null; }
   const vals = loadVals(m), cap = COSTM.softCap(t, { kind: 'synth', model: m.id, vals }, { touch: touchDev, factor: devFactor() });
   if (cap.confirm && !confirm(cap.confirm)) return null;
   flush();
   hist.record(project, 'Add ' + m.name);
   const lay = cvPinned(t), ui = o && o.ui === 'flow' && isClassicModel(m) ? 'flow' : null;
   const id = CMOD.addInst(t, m.id, { vals, fx: m.custom ? newFx(m) : undefined });
+  if (!id) { hist.prune(project); updateUndoUI(); return null; } // (refused after all: no step, nothing placed)
   if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) lay[id] = Object.assign({ x: cvDot(at.x), y: cvDot(at.y) }, ui ? { ui } : null);
   else if (ui) lay[id] = { x: 0, y: 0, ui };
   t.lay = lay;
@@ -6759,7 +6809,7 @@ function ptEdit(t, dev, label, r) {
   flush();
   hist.record(project, label);
   const step = hist.u[hist.u.length - 1], d = t.dev[dev];
-  const sq = Array.isArray(r.seq) ? r.seq.filter(m => /^m\d{1,4}$/.test(m)) : []; // ((9b, review 2 F1) the sequencers the step binds: their clocks started after the graph, on its undo / redo too)
+  const sq = Array.isArray(r.seq) ? r.seq.filter(m => PT.isMid(m)) : []; // ((9b, review 2 F1) the sequencers the step binds: their clocks started after the graph, on its undo / redo too; (P, skeptic #1) any module number the core takes, m1…m999999)
   const bk = r.back && Array.isArray(r.back.f) && r.back.f.length;
   if (step && (bk || sq.length)) step.meta = { pt: 1, trackId: t.id, dev, f: bk ? clone(r.back.f) : [], seq: sq };
   d.patch = r.rec;
@@ -6814,7 +6864,7 @@ function pmUnmount(key) { const B = pmBodies.get(key); if (!B) return false; pmB
 function ptEv(t, dev, mid, id) {
   const rec = t && nodes.get(t.id) && isPatchDev(t, dev) ? patchOf(t, dev) : null, m = rec && mid !== PT.CTL ? rec.mods[mid] : null;
   const T = m ? PT.FAMILIES[rec.f].types[m.t] : null, k = T && Array.isArray(T.ev) ? T.ev.findIndex(e => e.id === id) : -1;
-  if (k < 0 || !/^m\d{1,4}$/.test(mid)) return false;
+  if (k < 0 || !PT.isMid(mid)) return false; // ((P, skeptic #1) the core's grammar: an m10000 posts too)
   postTo(t, { t: 'seq', s: { pe: [+mid.slice(1), k] } }, dev);
   return true;
 }
@@ -7200,7 +7250,7 @@ function cvModDecor() {
   if (T && typeof T.setPlaced === 'function') {
     T.setPlaced('wheel', CMOD.hasWheel(project) ? 'already in this project' : null);
     for (const k of ['velo', 'at', 'bend', 'note']) T.setPlaced(k, t.dev && t.dev[CMOD.MOD_DEV[k]] ? 'already on this track' : null); // (multi kinds ignore it)
-    T.setPlaced('pads', padMods().length >= PC.MAX_MODS ? PADS_FULL : null); // ((8, §1.2) the Controllers tile greys at the project's 8th, never before)
+    T.setPlaced('pads', padMods().length >= PC.MAX_MODS ? PADS_FULL : null); // ((8, §1.2) the Controllers tile greys at the project's PC.MAX_MODS-th — 64 since P, was 8 —, never before)
   }
   const W = modBodies.get('wheel');
   if (W) W.setOthers(modOthers());
@@ -7287,6 +7337,8 @@ function modAdd(kind, at) {
   const t = trk(), multi = CMOD.MOD_MULTI.includes(kind), key0 = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
   if (!name || !t.dev || (!multi && !key0)) return null;
   if (!multi && (kind === 'wheel' ? CMOD.hasWheel(project) : key0 in t.dev)) { notice(name + (kind === 'wheel' ? ' is already in this project' : ' is already on this track'), 3500); return null; }
+  const full = kind === 'wheel' ? '' : CMOD.devFull(t); // ((P, §3.1) a track holds CMOD.DEV_MAX devices: said before the step — addModDev's null is no "already there"; the wheel is the project's)
+  if (full) { notice(full, 3500); return null; }
   hist.record(project, kind === 'wheel' ? 'Place Mod Wheel' : 'Add ' + name);
   const lay = cvPinned(t), spot = tap => (tap ? modSpot(t, kind) : modClear(t, kind, { x: cvDot(at.x), y: cvDot(at.y) })); // (the spot before the device is there: its siblings; (3) a drop never covers an instrument)
   const tap = !(at && Number.isFinite(at.x) && Number.isFinite(at.y)), at2 = spot(tap);
@@ -8032,6 +8084,8 @@ function boot() {
   $('#octdn').onclick = () => setOctave(octave - 1);
   $('#octup').onclick = () => setOctave(octave + 1);
   $('#panic').onclick = panic;
+  const tp = $('#tPanic');
+  if (tp) tp.onclick = panic; // ((P, the user's decision) the top bar's Panic: always there — a folded keyboard hides the bar's; Esc as ever)
   $('#hold').onclick = () => setSustain(!sustain);
   initKbView();
   setBendUI = wheel('bend', true, v => ctl('bend', v * 2 - 1, 0));

@@ -1323,3 +1323,38 @@ test('8 (IMPL-8 §4.1–§4.3, §14.1): noteOn\'s explicit targets — a \'pd<k>
   s.$('#tPlay').onclick(); await s.settle(3);
   assert.deepEqual(api.project().tracks.find(t => t.id === b.id).notes.map(x => x.n), [67], 'the unarmed target recorded the pad\'s note');
 });
+
+// (P, the user's decision 2026-10-22) folding the keyboard hides its bar's Panic: the top bar's transport row has its own, always
+const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8'), CSS = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+test('P: the top bar\'s Panic (#tPanic) — in the transport row, aria-labelled, the .tb style, never folded away; its tap = the keyboard bar\'s Panic = Esc: a held note stops with the keyboard folded', async () => {
+  const tag = (/<button id="tPanic"[^>]*>/.exec(HTML) || [''])[0], at = HTML.indexOf('id="tPanic"');
+  assert.match(tag, /\sclass="tb cv-panic"/); assert.match(tag, /\stype="button"/);
+  assert.match(tag, /\saria-label="Panic \(stop all sound\)"/); assert.match(tag, /\stitle="Panic: stop all sound \(Esc\)"/);
+  assert.deepEqual([(HTML.match(/\sid="tPanic"/g) || []).length, at > HTML.indexOf('id="transport"'), at > HTML.indexOf('id="tRec"'), at < HTML.indexOf('id="tMorePop"'), at < HTML.indexOf('id="trkChip"')], [1, true, true, true, true], 'once, in #transport after Record, outside the ⋯ fold');
+  assert.equal(HTML.includes('id="panic"'), true, 'the keyboard bar\'s Panic kept');
+  assert.deepEqual(CSS.split('\n').filter(l => /tPanic|cv-panic/.test(l) && /display:\s*none|visibility:\s*hidden/.test(l)), [], 'no rule hides it');
+  const s = await bootMain({ hash: '#minimoog' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, t = api.project().tracks[0], N = s.nodeOf(t.id), sh = globalThis.__synthTest.shell;
+  assert.equal(typeof s.$('#tPanic').onclick, 'function');
+  assert.equal(s.$('#tPanic').onclick === s.$('#panic').onclick, true, 'the same action as the keyboard bar\'s Panic (panic())');
+  s.key('KeyA', true); await s.settle(2);
+  sh.setKbHidden(true); s.raf(); await s.settle(2);
+  assert.equal(sh.kbGone(), true, 'the keyboard folded');
+  const on = peak(s.run(12000).get(N).L);
+  assert.ok(on > 1e-3, 'the held note sounds with the keyboard folded: ' + on);
+  N.posted.length = 0;
+  s.$('#tPanic').onclick(); s.raf();
+  assert.deepEqual(N.posted.map(x => x.m.t).filter(k => k === 'panic'), ['panic'], '{t: panic} to the node');
+  s.run(19200); // (the 5 ms fade, then the output stage's DC-blocker settling: ≈ × 0.08 every 100 ms)
+  const off = peak(s.run(12000).get(N).L);
+  assert.ok(off < 1e-5, 'silent after it (0.4 s on): ' + off);
+  s.key('KeyA', false);
+  sh.setKbHidden(false); s.raf();
+  // Esc (focus outside the canvas): the same panic
+  s.key('KeyS', true); await s.settle(2);
+  N.posted.length = 0;
+  s.key('Escape', true, { key: 'Escape' }); s.key('Escape', false, { key: 'Escape' });
+  assert.deepEqual(N.posted.map(x => x.m.t).filter(k => k === 'panic'), ['panic'], 'Esc: the same');
+  s.key('KeyS', false);
+});

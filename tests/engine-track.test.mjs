@@ -21,6 +21,7 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { dspScope, noAlloc } from './dsp-scope.mjs';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
@@ -2050,6 +2051,51 @@ test('9 scripts missing (§3.1): no PatchDSP, or no family table — {t: ptErr, 
   assert.ok(peakOf(own.subarray(5 * 128, 20 * 128)) > 0.05, 'a good payload plays');
 });
 
+// IMPL-P review F1: a graph() that throws (the evaluator's RangeError on a deep chain in a small stack; here a stand-in, `boom` on the payload)
+// never escapes the message handler silently — the machine keeps its previous graph, the host gets the one ptErr (why 'graph'), and
+// setPatch (ptOn adopting a payload that waited in pmPend) still finishes: the values bound, the Inst on the patch kind
+test('9 a graph() that throws (IMPL-P review F1): caught on both paths — ptMsg and ptOn — one {t: ptErr, why: graph}, the previous graph keeps playing, setPatch finishes (its values bound), a good payload then lands', () => {
+  const wrap = src => src + `;(function () {
+    const PD = globalThis.PatchDSP, cr = PD.create;
+    globalThis.SETN = 0;
+    globalThis.PatchDSP = Object.freeze(Object.assign({}, PD, { create(inst, f) {
+      const m = cr(inst, f);
+      if (m !== null) {
+        const g = m.graph, st = m.set;
+        m.graph = function (pg) { if (pg && pg.boom === 1) throw new RangeError('Maximum call stack size exceeded'); return g.call(this, pg); };
+        m.set = function (pv) { globalThis.SETN++; return st.call(this, pv); };
+      }
+      return m;
+    } }));
+  })();`;
+  const boom = { pg: Object.assign({}, PAY15.pg, { boom: 1 }), pk: 'boom' }, errs = sent => JSON.stringify(sent.filter(m => m.t === 'ptErr')), ONE = '[{"t":"ptErr","why":"graph"}]';
+  // ptMsg: a sine playing on the kept machine, then the throwing payload (twice: one report)
+  {
+    const D = p9Scope({ overrides: { 'patch-dsp.js': wrap } }), { p, sent } = mk(D, NODE, ptPatch(SINEP.vals)), I = p.i0, own = ownOut(I, 80);
+    p.msg({ t: 'seq', s: SINEPAY }); play(D, p, 20);
+    assert.deepEqual([I.kind, I.pm.mon().mods.length], ['patch', 2]);
+    assert.doesNotThrow(() => { p.msg({ t: 'seq', s: boom }); p.msg({ t: 'seq', s: boom }); });
+    assert.equal(errs(sent), ONE, 'one report');
+    assert.equal(I.pm.mon().mods.length, 2, 'the previous graph kept');
+    play(D, p, 30);
+    assert.ok(peakOf(own.subarray(40 * 128, 50 * 128)) > 0.05, 'it plays on');
+    p.msg({ t: 'seq', s: UNPATCHED });
+    assert.equal(I.pm.mon().mods.length, 1, 'a good payload lands after it');
+  }
+  // ptOn: the throwing payload waits in pmPend, the patch kind arrives
+  {
+    const D = p9Scope({ overrides: { 'patch-dsp.js': wrap } }), { p, sent } = mk(D, NODE, classic('juno60')), I = p.i0, own = ownOut(I, 80);
+    p.msg({ t: 'seq', s: boom });
+    assert.ok(I.pmPend !== null && I.kind === 'analog', 'waiting');
+    const n0 = D.global('SETN');
+    assert.doesNotThrow(() => p.msg({ t: 'patch', p: ptPatch(SINEP.vals) }));
+    assert.equal(errs(sent), ONE, 'one report');
+    assert.deepEqual([I.kind, I.pmPend, I.pm.mon().mods.length, D.global('SETN') - n0], ['patch', null, 0, 1], 'setPatch finished: the kind, the values bound; no graph');
+    p.msg({ t: 'seq', s: SINEPAY }); play(D, p, 40);
+    assert.ok(I.pm.live() && peakOf(own.subarray(20 * 128, 40 * 128)) > 0.05, 'its good payload plays');
+  }
+});
+
 test('9 idle and power (§3.6, P-1): MAIN OUT unpatched → the 2 s idle skip; patched → never quiet, stats voices 1; powered off (a muted track) → its tail, the machine reset, skipped at once; on again → the held key restruck, faded in', () => {
   const D = p9Scope(), { p, sent } = gnode(D, G1(), { i1: ptPatch(SINEP.vals) }, { fx1: fxOf() }, Object.assign({}, NODE, { trackId: 'm9' })), x = p.insts[0];
   const rs = x.renderSpan;
@@ -2234,7 +2280,15 @@ test('9 warmPatch (§3.1, spike (a) decision 4; 9b §3.1): the first Track\'s wa
   const parts = gs.filter(e => e.pg.mods.length < MG.ORDER_ALL.length);
   assert.ok(parts.length >= 6 && big.length >= 100, `the warm graphs (${parts.length} of the parts, ${big.length} of the whole table)`);
   assert.deepEqual(E.filter(e => e.r && e.r.why.length).map(e => e.r.why), [], 'no offending item');
-  assert.deepEqual(gs.filter(e => e.pg.cords.length > MAXC).length, 0, `every payload within ${MAXC} connections`);
+  // IMPL-P §3.2 (skeptic #16): the evaluator's MAXC / MAXM are lifted (8192 / 1024) but the warm-up keeps the old shapes: engine.js's
+  // WARM_C (a script-scope const of the worklet file: pinned here as a literal) splits the table by 256 connections, and every warm
+  // payload holds ≤ 64 modules (the old MAXM: the table's types + the controller) — so the warm payload list is the 9dde7e6 one
+  // byte for byte (hashed on that base before lane B's first edit: 119 payloads)
+  assert.equal(gs.filter(e => e.pg.cords.length > 256).length, 0, 'every payload within 256 connections (WARM_C)');
+  assert.equal(gs.filter(e => e.pg.mods.length > 64).length, 0, 'every payload within 64 modules (the old MAXM)');
+  assert.ok(MAXC >= 256, 'the evaluator\'s bound is at least the warm-up\'s');
+  assert.equal(E.filter(e => e.pg).length, 119);
+  assert.equal(createHash('sha256').update(E.filter(e => e.pg).map(e => JSON.stringify(e.pg)).join('\n')).digest('hex'), '1963f9f9d7b81f0f449909c4f9cd437af7fa57100c75e8a5380637e9d597c601', 'the warm payload list: byte-identical to 9dde7e6');
   assert.ok(new Set(parts.map(e => e.pg.mods.map(m => m[1]).join())).size >= 2, 'the table in parts');
   // each part's graph a: the first payload of each module list that no other list contains (c is a's less a module)
   const key = e => JSON.stringify(e.pg.mods), sub = (x, y) => x.pg.mods.length < y.pg.mods.length && x.pg.mods.every(m => y.pg.mods.some(q => q.join() === m.join()));

@@ -199,11 +199,11 @@ test('IMPL-8 addPads: the lowest free id pd1…pd8, the module normalised (pads-
   assert.deepEqual(MO.addPads(p, o), { ok: true, id: 'pd2', why: '' });
   assert.deepEqual([p.pads[1].name, p.pads[1].rows, p.pads[1].cols, p.pads[1].pads[0].t, 'junk' in p.pads[1], p.pads[1].id], ['Kit', 1, 5, [{ k: 'drum', tr: 'trk_1', s: 'bd' }], false, 'pd2'], 'o\'s id never wins');
   assert.equal(MO.addPads(p, { id: 'pd7' }).id, 'pd3');
-  for (let k = 4; k <= 8; k++) assert.equal(MO.addPads(p).id, 'pd' + k);
-  assert.deepEqual([MO.addPads(p), p.pads.length], [{ ok: false, id: null, why: '8 Pads modules in this project' }, 8]);
+  for (let k = 4; k <= 64; k++) assert.equal(MO.addPads(p).id, 'pd' + k);
+  assert.deepEqual([MO.addPads(p), p.pads.length], [{ ok: false, id: null, why: '64 Pads modules in this project' }, 64], '(IMPL-P §3.1: 64 Pads modules; was 8)');
   assert.deepEqual(PC.normPads(jclone(p.pads)), p.pads, 'normalised');
   MO.removePads(p, 'pd3');
-  assert.deepEqual([MO.addPads(p).id, p.pads.map(M => M.id)], ['pd3', ['pd1', 'pd2', 'pd4', 'pd5', 'pd6', 'pd7', 'pd8', 'pd3']], 'a deleted id comes round again (its rows went with it)');
+  assert.deepEqual([MO.addPads(p).id, p.pads.map(M => M.id)], ['pd3', [...Array.from({ length: 64 }, (_, i) => 'pd' + (i + 1)).filter(x => x !== 'pd3'), 'pd3']], 'a deleted id comes round again (its rows went with it)');
   assert.deepEqual([MO.addPads(null).ok, MO.addPads({ pads: 'x' }).id], [false, 'pd1'], '(a non-list: a fresh list)');
 });
 
@@ -280,4 +280,34 @@ test('IMPL-8 prunePads (H at load after normPads, review #28; after any p.pads e
   delete p.pads;
   assert.deepEqual([MO.prunePads(p).byTrack, a.t.mods.map(r => r.id), Object.keys(a.t.lay)], [[{ trackId: 'trk_1', rows: ['r1', 'r5'] }], ['r4'], ['i1']], 'no p.pads: every pad row and lay entry');
   assert.deepEqual([MO.prunePads(null), MO.prunePads({})], [{ ok: false, byTrack: [] }, { ok: false, byTrack: [] }]);
+});
+
+/* ---------------------------------------------------------------- IMPL-P §3.1: a track's devices are bounded at 1024, every add refused with its reason */
+test('P devices: 1024 a track — addModDev / addPanel / addInst / setModel refuse at the bound with a reason (9dde7e6 let a 65th device in, and dropped it silently at the next load); a removal makes room', () => {
+  const p = MO.adopt(S.newProject({ model: 'juno60', name: 'many', trackName: 'Many' }), { guard: true }), t = p.tracks[0];
+  assert.equal(S.DEV_MAX, 1024); assert.equal(MO.DEV_MAX, 1024);
+  assert.equal(MO.devFull(t), '', 'room');
+  let n = 0;
+  while (MO.addModDev(t, n % 2 ? 'macro' : 'lfo')) n++;
+  assert.equal(Object.keys(t.dev).length, 1024, 'filled to the bound (the Juno, its panel, OUT and ' + n + ' modulators)');
+  assert.equal(MO.devFull(t), 'A track holds at most 1024 devices');
+  assert.deepEqual([MO.addModDev(t, 'lfo'), MO.addModDev(t, 'env'), MO.addModDev(t, 'velo'), MO.addPanel(t, {}), MO.addInst(t, 'minimoog', { vals: {} })], [null, null, null, null, null], 'every add refused, the track untouched');
+  assert.equal(Object.keys(t.dev).length, 1024); assert.equal(t.wires.length, 2);
+  // a 65th device through save / load: kept (the failing test of IMPL-P §3.1) — and all 1024
+  const back = S.deserialize(S.serialize(p)).tracks[0];
+  assert.equal(Object.keys(back.dev).length, 1024, 'a save and a load keep every device');
+  // a removal makes room again; the next number is past every one used (the highest + 1)
+  assert.equal(MO.removeModDev(t, 'l1').ok, true);
+  assert.equal(MO.devFull(t), '');
+  assert.equal(MO.addModDev(t, 'lfo'), 'l' + (Math.max(...Object.keys(t.dev).filter(k => /^l\d+$/.test(k)).map(k => +k.slice(1)))), 'the highest + 1');
+  // setModel Serum → classic adds a panel: refused at the bound, nothing moved; classic → Serum needs no room
+  const q = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0];
+  while (MO.addModDev(q, 'macro')) { /* fill */ }
+  const before = JSON.stringify(q);
+  assert.equal(Object.keys(q.dev).length, 1024);
+  assert.deepEqual(MO.setModel(q, 'i1', 'juno60', { vals: {} }), { ok: false, why: 'A track holds at most 1024 devices' });
+  assert.equal(JSON.stringify(q), before, 'untouched');
+  MO.removeModDev(q, 'm1');
+  assert.equal(MO.setModel(q, 'i1', 'juno60', { vals: {} }).ok, true, 'with room: the panel unfolds');
+  assert.equal(Object.keys(q.dev).length, 1024);
 });

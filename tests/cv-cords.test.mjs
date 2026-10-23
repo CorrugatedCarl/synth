@@ -7,9 +7,15 @@ import './v8-guard.mjs';
 // draws, no upload on a camera-only frame, the S-trigger plug, selection, dim, the live rope taken over by its cord, a pulled
 // plug, context loss → SVG after three), the SVG fallback's paths, reduced motion (no ticker, parabolas), 'under' (cv-gl's
 // context, no clear). The cord body takes no press (no hit / pull API). Never a fake-DOM node or the fake gl into assert.*.
+// Stage P (docs/canvas/IMPL-P.md §1.2, §7 C; the lead's P-1 (c)): CORD_Q (full / light / still), the light rope = LAB's at 6
+// points bit for bit, still never steps, setPerf mid-sway re-seeds asleep (the parabola at the next draw, no jump), reduced
+// motion still at every preset; the fixed vertex ranges — a scripted scene's drawn GPU bytes hashed: at High equal to the base
+// (4cc0936, before P-1: every frame rebuilt and uploaded whole), and at every preset equal to the whole-rebuild twin (o.full);
+// 4 096 cords: one swaying cord uploads its own range; the rebuild timed at 128 … 4 096 cords per preset (recorded).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-cords.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import * as dom from './wk-dom.mjs';
 import * as C from '../cv-cords.js?v=9';
 import * as PT from '../patch-core.js?v=9';
@@ -554,4 +560,297 @@ test('(R2b F6) alloc(false) with no cords frees the vertex buffers (bufferData t
   ok(H.L.stats().bytes > 0, 'under: grown');
   H.L.set([]); H.L.alloc(false);
   eq([H.L.stats().bytes, H.L.stats().verts, host.calls.filter(c => c[0] === 'bufferData' && c[2] === 0).length], [0, 0, 2], 'under: the host\'s buffers emptied');
+});
+
+/* ------------------------------------------------------------------ (P) the presets' cords and the fixed vertex ranges (P-1 (c)) */
+test('(P) CORD_Q: high \'full\' = STUDIO (10 points, SUB 4: 34 drawn), medium \'light\' = 6 / 3 (14 drawn), low \'still\' = 6 / 3 with no simulation; perfOf: anything else is high', () => {
+  eq(Object.keys(C.CORD_Q), ['high', 'medium', 'low']);
+  eq([C.CORD_Q.high, C.CORD_Q.medium, C.CORD_Q.low], [{ q: 'full', N: 10, SUB: 4, still: false }, { q: 'light', N: 6, SUB: 3, still: false }, { q: 'still', N: 6, SUB: 3, still: true }]);
+  eq([C.CORD_Q.high.N, C.CORD_Q.high.SUB], [C.STUDIO.N, C.STUDIO.SUB], 'High = the Studio');
+  eq(Object.values(C.CORD_Q).map(q => 2 + (q.N - 2) * q.SUB), [34, 14, 14], 'drawn points a cord (× 0.4 the strip below High)');
+  eq(['high', 'medium', 'low', 'Low', '', null, undefined, 'toString', '__proto__', 7].map(C.perfOf), ['high', 'medium', 'low', 'high', 'high', 'high', 'high', 'high', 'high', 'high']);
+  ok(Object.isFrozen(C.CORD_Q) && Object.isFrozen(C.CORD_Q.medium));
+});
+
+test('(P) medium\'s rope = LAB\'s Cord with "Points per cord" 6, bit for bit (the physics reads the rope\'s n): plucked, ends moving, after 1, 30 and 240 steps', () => {
+  LS.segs = 6;
+  try {
+    let a = { x: 80, y: 120 }, b = { x: 520, y: 200 };
+    const lab = new LabCord(() => ({ x: a.x, y: a.y }), () => ({ x: b.x, y: b.y })), r = C.seed(C.makeRope(6), a.x, a.y, b.x, b.y, true);
+    eq([lab.p.length, r.n, maxDiff(lab, r)], [6, 6, 0], 'the seed');
+    labPluck(lab, rng(11)); ourPluck(r, rng(11));
+    for (let s = 1; s <= 240; s++) {
+      a = { x: 80 + 25 * Math.sin(s / 11), y: 120 }; b = { x: 520 - s * 0.3, y: 200 + (s % 30) };
+      lab.step(a, b, DT); C.step(r, a.x, a.y, b.x, b.y, DT);
+      if (s === 1 || s === 30 || s === 240) { ok(maxDiff(lab, r) <= 1e-9, 'step ' + s + ': ' + maxDiff(lab, r)); eq([r.L, r.quiet, r.awake], [lab.L, lab.quiet, lab.awake]); }
+    }
+  } finally { LS.segs = 10; }
+});
+
+test('(P) the layer at each preset: stats().perf / quality / pts, the strip\'s vertices (two cords: 2·(2·34) + 2 at High, 2·(2·14) + 2 below); o.perf unknown → high', () => {
+  for (const [perf, q, pts] of [['high', 'full', 34], ['medium', 'light', 14], ['low', 'still', 14], ['fast', 'full', 34], [undefined, 'full', 34]]) {
+    const S = setup(perf === undefined ? {} : { opts: { perf } }), gl = S.gl;
+    S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 800, 600, 1);
+    const s = S.L.stats();
+    eq([S.L.perf, s.perf, s.quality, s.pts, s.verts, gl.last('drawArrays')[3]], [C.perfOf(perf), C.perfOf(perf), q, pts, 2 * 2 * pts + 2, 2 * 2 * pts + 2], String(perf));
+  }
+});
+
+// the worst distance of the last whole strip upload's vertices from the cords' parabolas (motion off) at n / sub
+function parabolaStrip(gl, ends, n, sub) {
+  const sb = gl.calls.filter(c => c[0] === 'bufferSubData' && c[2] === 0).at(-2), strip = sb[3];
+  const X = new Float64Array(n), Y = new Float64Array(n), out = new Float64Array(80);
+  let k = 0, worst = 0;
+  ends.forEach(([ax, ay, bx, by], j) => {
+    C.shown(n, ax, ay, bx, by, X, Y);
+    const m = C.smooth(X, Y, n, sub, out);
+    if (j) k++; // (the trail join of the cord before, then this cord's lead)
+    for (let i = 0; i < m; i++) {
+      if (j && i === 0) k++;
+      for (let side = 0; side < 2; side++, k++) worst = Math.max(worst, Math.abs(strip[k * 7] - out[2 * i]), Math.abs(strip[k * 7 + 1] - out[2 * i + 1]));
+    }
+  });
+  return worst;
+}
+const ENDS = [[100, 100, 400, 140], [120, 500, 300, 300]];
+
+test('(P) low = still: never steps, no ticker, wants() false at rest; a moved end re-paths (the 6 / 3 parabola); pluck a no-op; a live rope drawn, never stepped; nothing awake', () => {
+  const S = setup({ opts: { perf: 'low' } }), gl = S.gl;
+  S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 800, 600, 1);
+  ok(parabolaStrip(gl, ENDS, 6, 3) < 1e-3, 'the parabolas at 6 / 3');
+  eq([S.L.wants(), S.L.stats().running, S.L.stats().awake], [false, false, 0], 'at rest: nothing');
+  S.L.pluck();
+  eq([S.L.stats().running, S.L.wants()], [false, false], 'pluck: nothing (no motion)');
+  const P = PORTS(); P.set('i1/m2.j-in', { x: 500, y: 300 });
+  const w0 = S.wakes.n;
+  S.L.anchors(P);
+  eq([S.wakes.n > w0, S.L.stats().running, S.L.owed()], [true, false, true], 'an end moved: one redraw, no ticker');
+  S.L.step(S.tick(16.7), false); S.L.draw(cam, 800, 600, 1);
+  const sb = gl.calls.filter(c => c[0] === 'bufferSubData').at(-2), strip = sb[3];
+  const X = new Float64Array(6), Y = new Float64Array(6), out = new Float64Array(40);
+  C.shown(6, 100, 100, 500, 300, X, Y);
+  const m = C.smooth(X, Y, 6, 3, out);
+  eq([sb[2], sb[5], m], [0, (2 * 14 + 1) * 7, 14], 'only the moved cord\'s range went up (its 28 vertices + its trail join)');
+  for (const i of [0, 5, m - 1]) { near(strip[2 * i * 7], out[2 * i], 1e-3, 'x ' + i); near(strip[2 * i * 7 + 1], out[2 * i + 1], 1e-3, 'y ' + i); }
+  eq([S.L.stats().steps, S.L.wants()], [0, false], 'no step, no frames');
+  S.L.live({ a: { x: 0, y: 0 }, b: { x: 60, y: 40 }, c: 0, s: 0 });
+  eq([S.L.stats().live, S.L.stats().awake, S.L.stats().running], [true, 0, false], 'a live rope: drawn, never stepped');
+});
+
+test('(P) setPerf with every cord swinging: each rope re-seeded asleep — the next draw is every cord\'s parabola at the new quality, no rope moves after it (no jump), no frames; the same id again does nothing; a live rope re-seeded awake; reduced motion is still at every preset', () => {
+  const S = setup(), gl = S.gl;
+  S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 800, 600, 1);
+  S.L.pluck();
+  for (let i = 0; i < 10; i++) { S.L.step(S.tick(16.7), false); S.L.draw(cam, 800, 600, 1); }
+  eq(S.L.stats().awake, 2, 'swinging');
+  ok(parabolaStrip(gl, ENDS, 10, 4) > 1, 'mid-sway: not the parabola');
+  for (const [perf, n, sub] of [['medium', 6, 3], ['low', 6, 3], ['high', 10, 4], ['medium', 6, 3]]) {
+    const w0 = S.wakes.n;
+    S.L.setPerf(perf);
+    const s = S.L.stats();
+    eq([s.perf, s.awake, s.running, S.L.owed(), S.wakes.n > w0], [perf, 0, false, true, true], perf + ': asleep, a draw asked for');
+    S.L.draw(cam, 800, 600, 1);
+    ok(parabolaStrip(gl, ENDS, n, sub) < 1e-3, perf + ': the parabola at ' + n + ' / ' + sub);
+    const st0 = S.L.stats().steps;
+    for (let i = 0; i < 5; i++) { S.L.step(S.tick(16.7), false); S.L.draw(cam, 800, 600, 1); }
+    eq([S.L.stats().steps - st0, S.L.stats().awake, S.L.wants()], [0, 0, false], perf + ': nothing moves after the switch');
+    if (perf !== 'low') {
+      S.L.pluck('c1');
+      for (let i = 0; i < 3; i++) { S.L.step(S.tick(16.7), false); S.L.draw(cam, 800, 600, 1); }
+      eq(S.L.stats().awake, 1, perf + ': a rope at its N swings');
+    }
+  }
+  const b0 = S.L.stats().builds;
+  S.L.setPerf('medium');
+  eq([S.L.owed(), S.L.stats().builds], [false, b0], 'the same preset: nothing');
+  S.L.setPerf('nope');
+  eq(S.L.perf, 'high', 'unknown: high');
+  // a live rope mid-drag: seeded awake at the new quality, taken over by its cord as before
+  S.L.live({ a: { x: 100, y: 100 }, b: { x: 200, y: 200 }, c: 2 });
+  S.L.setPerf('medium');
+  eq([S.L.stats().live, S.L.stats().running], [true, true], 'the live rope awake at 6 points');
+  S.L.step(S.tick(16.7), false);
+  S.L.set(LIST.concat([{ id: 'c9', a: 'i1/m1.j-saw', b: 'i1/m9.j-x', c: 2 }]));
+  eq([S.L.stats().cords, S.L.stats().awake >= 1], [3, true], 'taken over, swinging');
+  // reduced motion: still at every preset, at that preset's geometry
+  for (const [perf, n, sub] of [['high', 10, 4], ['medium', 6, 3], ['low', 6, 3]]) {
+    const R = setup({ opts: { perf, reduced: () => true } });
+    R.L.anchors(PORTS()); R.L.set(LIST); R.L.pluck(); R.L.draw(cam, 800, 600, 1);
+    eq([R.L.stats().running, R.L.stats().awake], [false, 0], perf + ' reduced: no motion');
+    ok(parabolaStrip(R.gl, ENDS, n, sub) < 1e-3, perf + ' reduced: the parabola at ' + n + ' / ' + sub);
+  }
+});
+
+/* the scripted scene: its drawn GPU bytes hashed — a fake WebGL2 context that models its buffers (bufferData / bufferSubData
+   land in byte arrays; every draw call hashes the bytes it would read with its uniforms). Frozen on the base (4cc0936: every
+   frame rebuilt and uploaded whole) by the same code; `extra` reaches every layer (perf, full), sw switches presets mid-scene */
+const BASE_SCENE = '26d33782a661190f23112097efa920e52518383662913a1fdfbb8120cd56ab2b';
+function gpuGL(H, acc) {
+  const g = { ext: null };
+  ['COMPILE_STATUS', 'LINK_STATUS', 'VERTEX_SHADER', 'FRAGMENT_SHADER', 'ARRAY_BUFFER', 'STATIC_DRAW', 'DYNAMIC_DRAW', 'FLOAT', 'TRIANGLE_STRIP',
+    'BLEND', 'ONE', 'ONE_MINUS_SRC_ALPHA', 'COLOR_BUFFER_BIT', 'DEPTH_TEST'].forEach((k, i) => { g[k] = 3000 + i; });
+  let arr = null, vao = null, prog = null;
+  const nop = () => {};
+  for (const k of ['shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'deleteProgram', 'enableVertexAttribArray', 'vertexAttribDivisor',
+    'uniform3fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear']) g[k] = nop;
+  g.createShader = () => ({}); g.createProgram = () => ({ u: new Map() }); g.createBuffer = () => ({ data: new Uint8Array(0) }); g.createVertexArray = () => ({ at: [] });
+  g.getUniformLocation = (p, name) => ({ p, name }); g.getShaderParameter = () => true; g.getProgramParameter = () => true;
+  g.getExtension = n => (n === 'WEBGL_lose_context' ? (g.ext = g.ext || { loseContext() {} }) : null);
+  g.useProgram = p => { prog = p; }; g.bindVertexArray = v => { vao = v; }; g.bindBuffer = (t, b) => { arr = b; };
+  g.vertexAttribPointer = (loc, size, type, norm, stride, off) => { vao.at[loc] = { b: arr, stride, off }; };
+  g.uniform4fv = (l, a) => { l.p.u.set(l.name, Array.from(a)); };
+  g.bufferData = (t, x, u) => { if (typeof x === 'number') arr.data = new Uint8Array(x); else arr.data = new Uint8Array(x.buffer.slice(x.byteOffset, x.byteOffset + x.byteLength)); };
+  g.bufferSubData = (t, dst, src, so = 0, n) => {
+    const e = src.BYTES_PER_ELEMENT, len = n == null ? src.length - so : n, B = new Uint8Array(src.buffer, src.byteOffset + so * e, len * e);
+    if (dst + B.length > arr.data.length) throw new Error('bufferSubData past the buffer: ' + (dst + B.length) + ' > ' + arr.data.length);
+    arr.data.set(B, dst); acc.ups++; acc.bytes += B.length;
+  };
+  const uni = () => JSON.stringify([prog.u.get('cam'), prog.u.get('vp')]);
+  g.drawArrays = (m, first, count) => { const a = vao.at[0]; if (H) { H.update('S' + first + ':' + count + uni()); H.update(a.b.data.subarray(first * a.stride, (first + count) * a.stride)); } acc.draws++; };
+  g.drawArraysInstanced = (m, first, count, inst) => { const a = vao.at[1]; if (H) { H.update('P' + inst + uni()); H.update(a.b.data.subarray(0, inst * a.stride)); } acc.draws++; };
+  return g;
+}
+function cordScene(extra = {}, sw = false) {
+  const H = createHash('sha256'), acc = { ups: 0, bytes: 0, draws: 0 };
+  let T = 1000;
+  const mk = (opts, gl) => {
+    const d = dom.fresh(), win = d.defaultView, vp = d.createElement('div'), w = d.createElement('div');
+    vp.append(w); d.body.append(vp);
+    const made = [];
+    const doc = { createElement: t => { const el = d.createElement(t); if (t === 'canvas') { made.push(el); el.getContext = k => (k === 'webgl2' ? gl : null); } return el; }, createElementNS: (ns, t) => d.createElementNS(ns, t) };
+    return { L: C.createCords(vp, Object.assign({ world: w, doc, win, now: () => T, onWake: () => {} }, opts, extra)), made };
+  };
+  // 24 cords between 48 jacks (a 6 × 8 grid of jacks, 'mX' modules of 4 jacks), colours and S plugs mixed
+  const P = new Map();
+  for (let i = 0; i < 48; i++) P.set('m' + (i >> 2) + '.j' + (i & 3), { x: 60 + (i % 8) * 130 + (i >> 3) * 7, y: 80 + (i >> 3) * 90 });
+  const J = [...P.keys()], list = [];
+  for (let i = 0; i < 24; i++) list.push({ id: 'c' + i, a: J[i], b: J[47 - ((i * 7) % 24)], c: i % 8, s: i % 5 === 0 ? 1 : 0 });
+  const camAt = f => ({ tx: Math.round(Math.sin(f / 13) * 40), ty: Math.round(Math.cos(f / 17) * 30), k: 0.6 + 0.05 * (f % 7) });
+  let f = 0;
+  const frame = (L, still) => { T += 16.7; f++; L.step(T, false); L.draw(still ? { tx: 0, ty: 0, k: 1 } : camAt(f), 1000, 600, 2); };
+  const drag = (L, mod, dx, dy) => { for (const k of J) if (k.startsWith(mod + '.')) { const p = P.get(k); P.set(k, { x: p.x + dx, y: p.y + dy }); } L.anchors(new Map(P)); };
+  const swap = (L, p) => { if (sw) L.setPerf(p); };
+
+  // A: the GL layer, the Studio motion
+  const A = mk({}, gpuGL(H, acc)), L = A.L;
+  L.anchors(new Map(P)); L.set(list); L.draw({ tx: 0, ty: 0, k: 1 }, 1000, 600, 2);
+  L.pluck();
+  for (let i = 0; i < 90; i++) { if (i === 40) swap(L, 'medium'); if (i === 60 && sw) { swap(L, 'high'); L.pluck(); } frame(L, i % 10 !== 0); }
+  for (let i = 0; i < 15; i++) { drag(L, 'm3', 32, i % 3 === 0 ? 32 : 0); frame(L, true); } // (a module drag: a 32 px snap a frame)
+  L.sel('c5'); frame(L, true); L.sel('c9'); L.draw({ tx: 0, ty: 0, k: 1 }, 1000, 600, 2);
+  const l2 = list.filter(c => c.id !== 'c7').map(c => (c.id === 'c2' ? Object.assign({}, c, { c: 6 }) : c)).concat([{ id: 'c30', a: J[30], b: J[31], c: 3, s: 0 }]);
+  L.set(l2); for (let i = 0; i < 5; i++) frame(L, false);
+  L.probe(J[0]); frame(L, true); for (let i = 0; i < 5; i++) { drag(L, 'm0', -32, 0); frame(L, true); } L.probe(null); frame(L, true);
+  const a1 = P.get(J[1]);
+  for (let i = 0; i < 12; i++) { if (i === 6) swap(L, 'low'); L.live({ a: { x: a1.x, y: a1.y }, b: { x: a1.x + 20 * i, y: a1.y + 140 - 6 * i }, c: 4, s: 0 }); frame(L, i % 2 === 0); }
+  const l3 = l2.concat([{ id: 'c31', a: J[1], b: J[40], c: 4, s: 0 }]);
+  L.set(l3); L.live(null); for (let i = 0; i < 20; i++) frame(L, false);
+  swap(L, 'medium');
+  const pb = P.get(list[3].b);
+  L.grab('c3', 'b', { x: pb.x + 5, y: pb.y + 5 });
+  for (let i = 0; i < 10; i++) { L.move({ x: pb.x + 5 + 25 * i, y: pb.y + 5 + 9 * i }); frame(L, true); }
+  L.drop(); for (let i = 0; i < 10; i++) frame(L, true);
+  const cv = A.made[0], fire = t => { const e = new dom.Ev(t); e.preventDefault = () => {}; cv.dispatchEvent(e); };
+  fire('webglcontextlost'); frame(L, true); fire('webglcontextrestored'); for (let i = 0; i < 3; i++) frame(L, true);
+  const P2 = new Map(P); P2.delete(J[4]); L.anchors(P2); for (let i = 0; i < 3; i++) frame(L, true);
+  L.anchors(new Map(P)); for (let i = 0; i < 3; i++) frame(L, true);
+  let n = 0; while (L.wants() && n++ < 1500) frame(L, true);
+  for (let i = 0; i < 3; i++) L.draw(camAt(i), 1000, 600, 2);
+  L.set([]); L.draw({ tx: 0, ty: 0, k: 1 }, 1000, 600, 2); L.alloc(false); L.alloc(true); L.set(list); L.anchors(new Map(P)); frame(L, true);
+  L.pluck('c11'); for (let i = 0; i < 30; i++) frame(L, i % 4 === 0);
+
+  // B: reduced motion — the parabolas re-pathed as their ends move
+  const B = mk({ reduced: () => true }, gpuGL(H, acc)), R = B.L;
+  R.anchors(new Map(P)); R.set(list); R.draw({ tx: 0, ty: 0, k: 1 }, 1000, 600, 2);
+  for (let i = 0; i < 10; i++) { drag(R, 'm5', 32, -32 * (i & 1)); frame(R, true); }
+  R.sel('c1'); frame(R, true);
+
+  // C: 'under' — drawn into the host's context
+  const host = gpuGL(H, acc), U = mk({ mode: 'under', under: () => host }, null).L;
+  U.anchors(new Map(P)); U.set(list); U.pluck();
+  for (let i = 0; i < 30; i++) { if (i > 10 && i < 20) drag(U, 'm7', 0, 32); if (i === 15) swap(U, 'low'); frame(U, i % 3 === 0); }
+  U.reset(); for (let i = 0; i < 3; i++) frame(U, true);
+  return { hash: H.digest('hex'), ...acc };
+}
+
+test('(P-1 (c)) High = today, byte for byte: the scripted scene (a sway with the camera moving, a module drag, selection, a recolour, a cord removed and one added, the probe, a live rope taken over, a pulled plug, a context loss, an end unknown, alloc, reduced motion, \'under\') draws exactly the bytes the base drew rebuilding and uploading every cord every frame — with far fewer bytes uploaded', () => {
+  const now = cordScene(), whole = cordScene({ full: true });
+  eq(now.hash, BASE_SCENE, 'the base\'s hash (4cc0936)');
+  eq([whole.hash, whole.draws], [BASE_SCENE, now.draws], 'o.full (the pre-P-1 path) too');
+  ok(now.bytes < 0.7 * whole.bytes, 'uploaded ' + now.bytes + ' B vs ' + whole.bytes + ' B whole');
+});
+
+test('(P-1 (c)) the fixed ranges at every preset: the scene\'s drawn bytes equal the whole-rebuild twin\'s (o.full) at medium and low, and through live preset switches (high → medium → high → low → medium; \'under\' → low)', () => {
+  for (const [extra, sw] of [[{ perf: 'medium' }, false], [{ perf: 'low' }, false], [{}, true], [{ perf: 'low' }, true]]) {
+    const a = cordScene(extra, sw), b = cordScene(Object.assign({ full: true }, extra), sw), tag = JSON.stringify([extra, sw]);
+    eq([a.hash, a.draws], [b.hash, b.draws], tag);
+    ok(a.hash !== BASE_SCENE, tag + ': not High\'s scene');
+    ok(a.bytes <= b.bytes, tag + ': ' + a.bytes + ' ≤ ' + b.bytes);
+  }
+});
+
+// a big rack: n cords, each between its own two jacks on a grid, on the buffer-modelling fake gl (no call log: the arrays are MBs)
+function bigRack(n, opts = {}) {
+  const acc = { ups: 0, bytes: 0, draws: 0, subs: 0 };
+  const g = gpuGL(null, acc), bsd = g.bufferSubData;
+  g.bufferSubData = (...a) => { acc.subs++; bsd(...a); };
+  const S = setup({ gl: g, opts: Object.assign({ hold: false }, opts) });
+  const P = new Map(), list = [];
+  for (let i = 0; i < n; i++) { P.set('a' + i, { x: (i % 64) * 40, y: Math.floor(i / 64) * 50 }); P.set('b' + i, { x: (i % 64) * 40 + 300, y: Math.floor(i / 64) * 50 + 120 }); list.push({ id: 'c' + i, a: 'a' + i, b: 'b' + i, c: i & 7 }); }
+  S.L.alloc(true); S.L.set(list); S.L.anchors(P); S.L.draw(cam, 1440, 900, 2);
+  // a module drag: 8 cords' a ends (one every n / 8) a 32 px snap a frame
+  const drag = () => { for (let i = 0; i < 8; i++) { const k = 'a' + Math.floor(i * n / 8), p = P.get(k); P.set(k, { x: p.x + 32, y: p.y }); } S.L.anchors(P); };
+  return { S, P, acc, drag };
+}
+
+test('(P-1 (c)) 4 096 cords: one swaying cord uploads its own range a frame (High 70 vertices + 2 plugs = 2 000 B, medium 30 + 2 = 880 B) — not every cord (7.3 MB a frame before); a module drag of 8 cords uploads 8 ranges (low too: 8 parabolas, no step)', () => {
+  for (const [perf, want] of [['high', (2 * 34 + 2) * 28 + 2 * 20], ['medium', (2 * 14 + 2) * 28 + 2 * 20]]) {
+    const { S, acc } = bigRack(4096, { perf });
+    S.L.pluck('c2000');
+    acc.bytes = 0; acc.subs = 0;
+    for (let f = 0; f < 60; f++) { S.L.step(S.tick(16.7), false); S.L.draw(cam, 1440, 900, 2); }
+    const s = S.L.stats();
+    eq([s.awake, acc.bytes / 60, acc.subs / 60, s.fulls], [1, want, 2, 1], perf + ': one range a frame (strip + plugs), one whole build (the first)');
+  }
+  for (const [perf, want] of [['high', 2000], ['low', 880]]) {
+    const { S, acc, drag } = bigRack(4096, { perf });
+    acc.bytes = 0;
+    for (let f = 1; f <= 10; f++) { drag(); S.L.step(S.tick(16.7), false); S.L.draw(cam, 1440, 900, 2); }
+    const s = S.L.stats();
+    eq([perf === 'low' ? s.steps : s.awakeMax, acc.bytes / 10], [perf === 'low' ? 0 : 8, 8 * want - 28], perf + ': the drag\'s 8 cords\' ranges a frame (cord 0 has no lead join: one vertex less)');
+  }
+});
+
+test('(P-1 (c)) every cord swaying: the dirty ranges go up in ≤ RUN_MAX runs a buffer (neighbours within RUN_GAP merged, past RUN_MAX the gap doubled)', () => {
+  eq([C.RUN_GAP, C.RUN_MAX], [4, 16]);
+  const { S, acc } = bigRack(512);
+  S.L.pluck();
+  acc.subs = 0;
+  for (let f = 0; f < 20; f++) { S.L.step(S.tick(16.7), false); S.L.draw(cam, 1440, 900, 2); }
+  ok(acc.subs / 20 <= 2, 'all 512 dirty: one run a buffer (' + acc.subs / 20 + ' calls a frame)');
+  const B = bigRack(480);
+  for (let i = 0; i < 480; i += 12) B.S.L.pluck('c' + i); // (40 scattered ropes)
+  B.acc.subs = 0; B.acc.bytes = 0;
+  B.S.L.step(B.S.tick(16.7), false); B.S.L.draw(cam, 1440, 900, 2);
+  ok(B.acc.subs <= 2 * C.RUN_MAX && B.acc.subs >= 2, 'scattered: ' + B.acc.subs + ' calls');
+  ok(B.acc.bytes < 480 * 2000, B.acc.bytes + ' B');
+});
+
+test('(P-1 (c), recorded) the cord layer a frame at 128 / 512 / 2 048 / 4 096 cords per preset — one rope swaying, and a module drag (8 cords) — the whole rebuild (o.full: before) vs the fixed ranges (now): frame ms, build ms, step ms, upload KB (node, this machine)', t => {
+  const run = (n, perf, full, kind) => {
+    const { S, acc, drag } = bigRack(n, { perf, full, now: () => performance.now() });
+    if (kind === 'sway') S.L.pluck('c' + (n >> 1));
+    S.L.stats(true); acc.bytes = 0;
+    const F = 40, t0 = performance.now();
+    for (let f = 0; f < F; f++) { if (kind === 'drag') drag(); S.L.step(t0 + 16.7 * (f + 1), false); S.L.draw(cam, 1440, 900, 2); }
+    const ms = (performance.now() - t0) / F, s = S.L.stats();
+    return { frameMs: +ms.toFixed(3), buildMs: +s.buildMs.toFixed(3), stepMs: +s.stepMs.toFixed(3), KB: +(acc.bytes / F / 1024).toFixed(1) };
+  };
+  let rows = 0;
+  for (const kind of ['sway', 'drag']) for (const perf of ['high', 'medium', 'low']) for (const n of [128, 512, 2048, 4096]) {
+    if (kind === 'sway' && perf === 'low') continue; // (still: nothing sways)
+    t.diagnostic(JSON.stringify({ kind, perf, cords: n, before: run(n, perf, true, kind), now: run(n, perf, false, kind) }));
+    rows++;
+  }
+  eq(rows, 20);
 });

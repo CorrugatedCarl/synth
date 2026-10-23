@@ -18,11 +18,12 @@ import './v8-guard.mjs';
 // Run alone: node --max-old-space-size=2048 --test tests/patch-core.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as PT from '../patch-core.js?v=9';
 import * as MG from '../moog-core.js?v=9';
 import * as OLD from './ref-9-core/patch-core.js?v=9';                  // stage 9's patch core, verbatim (IMPL-9b §1.1, §8.2)
+import * as REF from './ref-P/patch-core.js?v=9';                       // 9dde7e6's, verbatim (IMPL-P: ref-P, taken by lane B before its first edit)
 
 const SRC = readFileSync(new URL('../patch-core.js', import.meta.url), 'utf8');
 const T = MG.TYPES;
@@ -67,15 +68,19 @@ test('normPatch: valid records unchanged; idempotent; anything else → a fresh 
   assert.deepEqual(PT.normPatch(cyc, 'moog').mods, { m1: { t: '902' } });
 });
 
-test('normPatch: modules — ids, types, the 48 lowest, names, the controller type refused, nid ≥ 1 + every number', () => {
+test('normPatch: modules — ids, types, the 512 lowest, names, the controller type refused, nid ≥ 1 + every number', () => {
   const mods = {};
-  for (let i = 60; i >= 1; i--) mods['m' + i] = { t: '902' };
-  Object.assign(mods, { m0: { t: '902' }, m4096: { t: '902' }, m01: { t: '902' }, x1: { t: '902' }, m70: { t: 'ctl' }, m71: { t: 9 }, m72: { t: 'BAD!' }, m73: null });
+  for (let i = 520; i >= 1; i--) mods['m' + i] = { t: '902' };
+  Object.assign(mods, { m0: { t: '902' }, m4096: { t: '902' }, m1000000: { t: '902' }, m01: { t: '902' }, x1: { t: '902' }, m700: { t: 'ctl' }, m701: { t: 9 }, m702: { t: 'BAD!' }, m703: null });
   const r = PT.normPatch({ mods, nid: 3 }, 'moog');
-  assert.deepEqual(Object.keys(r.mods), Array.from({ length: 48 }, (_, i) => 'm' + (i + 1)));
-  assert.equal(r.nid, 49);
+  assert.deepEqual(Object.keys(r.mods), Array.from({ length: 512 }, (_, i) => 'm' + (i + 1)));
+  assert.equal(r.nid, 513);
   assert.equal(PT.normPatch({ mods: { m7: { t: '911' } }, nid: 2 }, 'moog').nid, 8);
-  assert.equal(PT.normPatch({ mods: {}, nid: 99999 }, 'moog').nid, 4096);
+  assert.equal(PT.normPatch({ mods: {}, nid: 99999999 }, 'moog').nid, 1e6);
+  // IMPL-P §3.1: numbers to 999999 (m4096, m10000, m999999 are modules now; m1000000 and m0 are not)
+  const hi = PT.normPatch({ mods: { m4096: { t: '911' }, m10000: { t: '911' }, m999999: { t: '911' }, m1000000: { t: '911' }, m0: { t: '911' } } }, 'moog');
+  assert.deepEqual(Object.keys(hi.mods), ['m4096', 'm10000', 'm999999']);
+  assert.equal(hi.nid, 1e6);
   assert.equal(PT.normPatch({ mods: {}, nid: 2.5 }, 'moog').nid, 1);
   const n = PT.normPatch({ mods: { m1: { t: '911', name: 'x'.repeat(30), junk: 1 }, m2: { t: '911', name: '' }, m3: { t: '911', name: 5 } }, name: 'y'.repeat(50) }, 'moog');
   assert.deepEqual(n.mods, { m1: { t: '911', name: 'x'.repeat(24) }, m2: { t: '911' }, m3: { t: '911' } });
@@ -101,7 +106,8 @@ test('normPatch: connections — ids, ends, one plug per jack, plugs, direction 
   const N = cords => PT.normPatch(Object.assign({}, base, { cords }), 'moog').cords;
   // ids: canonical, unique (later duplicates dropped), cid ≥ 1 + every number
   assert.deepEqual(N([{ id: 'c1', a: 'm1.saw', b: 'm2.in' }, { id: 'c1', a: 'm1.sin', b: 'm4.i1' }, { id: 'c01', a: 'm1.tri', b: 'm4.i2' },
-    { id: 'c0', a: 'm1.tri', b: 'm4.i2' }, { id: 'c65535', a: 'm1.tri', b: 'm4.i2' }, { id: 7, a: 'm1.tri', b: 'm4.i2' }]).map(c => c.id), ['c1']);
+    { id: 'c0', a: 'm1.tri', b: 'm4.i2' }, { id: 'c1000000', a: 'm1.tri', b: 'm4.i2' }, { id: 7, a: 'm1.tri', b: 'm4.i2' }]).map(c => c.id), ['c1']);
+  assert.deepEqual(N([{ id: 'c65535', a: 'm1.saw', b: 'm2.in' }, { id: 'c999999', a: 'm1.sin', b: 'm4.i1' }]).map(c => c.id), ['c65535', 'c999999']);   // (IMPL-P §3.1: cord numbers to 999999)
   assert.equal(PT.normPatch(Object.assign({}, base, { cords: [{ id: 'c40', a: 'm1.saw', b: 'm2.in' }], cid: 3 }), 'moog').cid, 41);
   // ends: a missing module, a port the type lacks, malformed
   assert.deepEqual(N([{ id: 'c1', a: 'm9.saw', b: 'm2.in' }, { id: 'c2', a: 'm1.zz', b: 'm2.in' }, { id: 'c3', a: 'm1saw', b: 'm2.in' }, { id: 'c4', a: 'c.kp9', b: 'm2.c1' },
@@ -124,14 +130,16 @@ test('normPatch: connections — ids, ends, one plug per jack, plugs, direction 
   assert.deepEqual(N([{ id: 'c1', a: 'm1.saw', b: 'm2.in', g: 7 }, { id: 'c2', a: 'm1.sin', b: 'm4.i1', g: -1 }, { id: 'c3', a: 'm1.tri', b: 'm4.i2', g: 1 },
     { id: 'c4', a: 'm1.rec', b: 'm4.c1', g: NaN }, { id: 'c5', a: 'm1.xp', b: 'm4.c2', g: 0.5, via: 'pin' }, { id: 'c6', a: 'm1.xm', b: 'm4.c3', g: '2' }]).map(c => c.g),
   [4, 0, undefined, undefined, 0.5, undefined]);
-  // ≤ 128 connections (48 921s, 200 valid cords out → in)
+  // ≤ 4096 cords (IMPL-P §3.1: was 128): 512 921s, 3072 plugged cords (every out once, into every in once) + 2000 pins, all valid
   const mods = {}, cords = [], outs = ['sin', 'tri', 'saw', 'rec', 'xm', 'xp'], ins = ['f1', 'f2', 'f3', 'w1', 'w2', 'cv'];
-  for (let i = 1; i <= 48; i++) mods['m' + i] = { t: '921' };
-  for (let k = 0; k < 200; k++) cords.push({ id: 'c' + (k + 1), a: `m${(k % 48) + 1}.${outs[Math.floor(k / 48) % 6]}`, b: `m${((k + 7) % 48) + 1}.${ins[Math.floor(k / 48) % 6]}`, c: k % 8 });
+  for (let i = 1; i <= 512; i++) mods['m' + i] = { t: '921' };
+  for (let k = 0; k < 3072; k++) cords.push({ id: 'c' + (k + 1), a: `m${Math.floor(k / 6) + 1}.${outs[k % 6]}`, b: `m${(Math.floor(k / 6) + 7) % 512 + 1}.${ins[k % 6]}`, c: k % 8 });
+  for (let k = 3072; k < 5072; k++) cords.push({ id: 'c' + (k + 1), a: 'm1.saw', b: 'm2.w1', via: 'pin' });
   const big = PT.normPatch({ mods, cords }, 'moog');
-  assert.equal(big.cords.length, 128);
-  assert.deepEqual(big.cords.map(c => c.id), cords.slice(0, 128).map(c => c.id));
-  assert.equal(big.cid, 129);
+  assert.equal(big.cords.length, 4096);
+  assert.deepEqual(big.cords.map(c => c.id), cords.slice(0, 4096).map(c => c.id));
+  assert.equal(big.cid, 4097);
+  assert.deepEqual(PT.normPatch(J(big), 'moog'), big);                       // (idempotent at the bound)
 });
 
 // the invariants every normalised record keeps
@@ -139,10 +147,10 @@ function invariants(r) {
   const bad = [], ok = (c, m) => { if (!c) bad.push(m); };
   ok(r.v === 1 && r.f === 'moog', 'v / f');
   const ks = Object.keys(r.mods), nums = ks.map(k => +k.slice(1));
-  ok(ks.length <= 48 && ks.every(k => /^m[1-9]\d{0,3}$/.test(k)), 'mods ids / count');
-  ok(Number.isInteger(r.nid) && r.nid >= 1 && r.nid <= 4096 && nums.every(n => n < r.nid), 'nid');
-  ok(Number.isInteger(r.cid) && r.cid >= 1 && r.cid <= 65535 && r.cords.every(c => +c.id.slice(1) < r.cid), 'cid');
-  ok(r.cords.length <= 128 && new Set(r.cords.map(c => c.id)).size === r.cords.length, 'cords ids / count');
+  ok(ks.length <= 512 && ks.every(k => /^m[1-9]\d{0,5}$/.test(k) && PT.isMid(k)), 'mods ids / count');
+  ok(Number.isInteger(r.nid) && r.nid >= 1 && r.nid <= 1e6 && nums.every(n => n < r.nid), 'nid');
+  ok(Number.isInteger(r.cid) && r.cid >= 1 && r.cid <= 1e6 && r.cords.every(c => PT.isCid(c.id) && +c.id.slice(1) < r.cid), 'cid');
+  ok(r.cords.length <= 4096 && new Set(r.cords.map(c => c.id)).size === r.cords.length, 'cords ids / count');
   const occ = new Set();
   for (const c of r.cords) {
     // an end on a module of a newer type: kept by shape only (port syntax); else a jack of its type
@@ -165,11 +173,11 @@ test('normPatch fuzz: 600 hostile records — never throws, idempotent, every in
   const jacksOf = t => (T[t] ? T[t].jacks.map(j => j.id) : ['out', 'in', 'zz']);
   for (let it = 0; it < 600; it++) {
     const mods = {}, nm = Math.floor(R() * 60);
-    for (let i = 0; i < nm; i++) mods[R() < 0.95 ? 'm' + Math.floor(R() * 70) : pick(['x', 'm0', 'm01', 'm5000'])] = R() < 0.95 ? { t: pick(types), drv: R() < 0.3 ? 'm' + Math.floor(R() * 70) : undefined, name: R() < 0.1 ? 'n'.repeat(Math.floor(R() * 40)) : undefined } : pick([null, 5, [], 'x']);
+    for (let i = 0; i < nm; i++) mods[R() < 0.95 ? 'm' + Math.floor(R() * 70) : pick(['x', 'm0', 'm01', 'm5000', 'm1000000', 'm999999'])] = R() < 0.95 ? { t: pick(types), drv: R() < 0.3 ? 'm' + Math.floor(R() * 70) : undefined, name: R() < 0.1 ? 'n'.repeat(Math.floor(R() * 40)) : undefined } : pick([null, 5, [], 'x']);
     const ms = ['c', ...Object.keys(mods)], cords = [], nc = Math.floor(R() * 220);
     const end = () => { const m = pick(ms), t = m === 'c' ? 'ctl' : mods[m] && mods[m].t; return m + '.' + pick(jacksOf(t)); };
     for (let k = 0; k < nc; k++) cords.push(R() < 0.95 ? { id: R() < 0.9 ? 'c' + Math.floor(R() * 300) : pick([5, 'c0', 'x']), a: R() < 0.97 ? end() : 5, b: end(), c: pick([0, 3, 7, 8, -1, 'x', undefined]), via: R() < 0.1 ? pick(['pin', 'x']) : undefined, g: R() < 0.2 ? pick([0, 0.5, 1, 4, 7, -2, NaN]) : undefined } : pick([null, 1, 'x']));
-    const rec = { v: pick([1, 2, undefined]), f: pick(['moog', undefined, 'moog', 'arp']), nid: pick([1, 50, 9999, -1, 'x']), mods, cid: pick([1, 400, 70000, undefined]), cords, name: pick([undefined, 'P', 'q'.repeat(50), 5]) };
+    const rec = { v: pick([1, 2, undefined]), f: pick(['moog', undefined, 'moog', 'arp']), nid: pick([1, 50, 9999, -1, 'x', 5e6]), mods, cid: pick([1, 400, 70000, 5e6, undefined]), cords, name: pick([undefined, 'P', 'q'.repeat(50), 5]) };
     const a = PT.normPatch(rec, 'moog'), b = PT.normPatch(J(a), 'moog');
     assert.deepEqual(b, a, 'idempotent #' + it);
     assert.deepEqual(invariants(a), [], 'invariants #' + it);
@@ -178,7 +186,7 @@ test('normPatch fuzz: 600 hostile records — never throws, idempotent, every in
     const vp = {};
     for (const k of Object.keys(a.mods)) if (R() < 0.6 && T[a.mods[k].t]) { const e = { _t: R() < 0.9 ? a.mods[k].t : 'x' }; for (const c of T[a.mods[k].t].params) if (R() < 0.5) e[c.id] = pick([0, 1, 1, 0.6, -3, 9]); vp[k] = e; }
     const vals = { p: vp }, P = PT.payload(a, 'moog', vals), rows = PT.busRows(a, 'moog', vals);
-    assert.ok(P.pg.cords.length <= 256 && P.pg.cords.length === PT.payload(a).pg.cords.length + rows.length, 'rows bounded #' + it);
+    assert.ok(P.pg.cords.length <= 8192 && P.pg.cords.length === PT.payload(a).pg.cords.length + rows.length, 'rows bounded #' + it);
     for (const x of rows) { const ja = jackAt(a, x.a), jb = jackAt(a, x.b); assert.ok(ja && jb && ja.dir === 'out' && jb.dir === 'in' && ja.sig === jb.sig && !jb.norm, 'row #' + it); }
     PT.live(a, 'moog', vals); PT.liveNodes(a, 'moog', vals);
   }
@@ -222,12 +230,14 @@ test('canPlug (§1.3): every rule with its reason, oriented ends', () => {
   // a newer module type cannot be patched
   const u = PT.normPatch({ mods: { m1: { t: '999' }, m2: { t: '902' } } }, 'moog');
   assert.equal(PT.canPlug(u, 'm1.out', 'm2.i1').why, 'This module needs a newer version of the app');
-  // ≤ 128 connections
-  let big = PT.normPatch({ mods: Object.fromEntries(Array.from({ length: 48 }, (_, i) => ['m' + (i + 1), { t: '921' }])) }, 'moog');
-  const outs = ['sin', 'tri', 'saw'], ins = ['f1', 'f2', 'f3'];
-  for (let k = 0; k < 128; k++) big = PT.plug(big, `m${(k % 48) + 1}.${outs[Math.floor(k / 48)]}`, `m${((k + 1) % 48) + 1}.${ins[Math.floor(k / 48)]}`).rec;
-  assert.equal(big.cords.length, 128);
-  assert.equal(PT.canPlug(big, 'm40.xp', 'm41.w1').why, 'A patch holds at most 128 cords');
+  // ≤ 4096 cords (IMPL-P §3.1; was 128): canPlug counts cords only, so the bound is reached on a record built past MAX_MODS (1366 921s, 3 cords each)
+  const manyMods = {}, manyCords = [];
+  for (let i = 1; i <= 1366; i++) manyMods['m' + i] = { t: '921' };
+  for (let k = 0; k < 4096; k++) manyCords.push({ id: 'c' + (k + 1), a: `m${Math.floor(k / 3) + 1}.${['sin', 'tri', 'saw'][k % 3]}`, b: `m${Math.floor(k / 3) + 1}.${['f1', 'f2', 'f3'][k % 3]}` });
+  const big = { v: 1, f: 'moog', nid: 1367, mods: manyMods, cid: 4097, cords: manyCords };   // (a record past MAX_MODS: canPlug does not count modules)
+  assert.equal(big.cords.length, 4096);
+  assert.equal(PT.canPlug(big, 'm1300.xp', 'm1300.w1').why, 'A patch holds at most 4096 cords');
+  assert.equal(PT.canPlug({ ...big, cords: manyCords.slice(0, 4095) }, 'm1300.xp', 'm1300.w1').ok, true);
   assert.equal(PT.canPlug(null, 'm1.saw', 'm2.in').why, 'No patch');
 });
 
@@ -280,9 +290,12 @@ test('§1.5 numbering (review #2): a new module never takes an orphan\'s number'
   assert.equal(PT.nextId(PT.fresh('moog'), null), 1);
   // the cap and the numbers' end
   let full = PT.fresh('moog');
-  for (let i = 0; i < 48; i++) full = PT.addModule(full, {}, '995').rec;
-  assert.equal(PT.addModule(full, {}, '995').why, 'A patch holds at most 48 modules');
-  assert.equal(PT.addModule(PT.fresh('moog'), { p: { m4095: {} } }, '995').why, 'No module numbers left');
+  for (let i = 0; i < 512; i++) full = PT.addModule(full, {}, '995').rec;
+  assert.equal(PT.addModule(full, {}, '995').why, 'A patch holds at most 512 modules');
+  assert.equal(PT.addModule(full, {}, '995').rec, full);
+  assert.equal(PT.addModule(PT.fresh('moog'), { p: { m999999: {} } }, '995').why, 'No module numbers left');
+  assert.equal(PT.addModule(PT.fresh('moog'), { p: { m4095: {} } }, '995').mid, 'm4096');           // (IMPL-P: numbers past 4095 are modules)
+  assert.equal(PT.addModule(PT.fresh('moog'), { p: { m999998: {} } }, '995').mid, 'm999999');
   // the duplicate and a preset's added modules take numbers the same way
   assert.equal(PT.duplicateModule(before, vals, 'm2').mid, 'm4');
   assert.deepEqual(PT.loadPreset(before, vals, 'Wind').added, ['m4', 'm5', 'm6', 'm7']);
@@ -452,9 +465,13 @@ test('loadPreset: roles bind to the lowest free numbers; the topology replaced; 
   assert.equal(d.rec.mods.m2.drv, undefined); assert.equal(d.rec.mods.m3.drv, undefined); assert.equal(d.rec.mods.m4.drv, 'm1');
   // no room for the modules a preset needs: nothing changes
   let full = PT.fresh('moog');
-  for (let i = 0; i < 48; i++) full = PT.addModule(full, {}, '995').rec;
+  for (let i = 0; i < 512; i++) full = PT.addModule(full, {}, '995').rec;
   const f = PT.loadPreset(full, { a: 1 }, 'Classic bass');
-  assert.equal(f.why, 'A patch holds at most 48 modules'); assert.equal(f.rec, full);
+  assert.equal(f.why, 'A patch holds at most 512 modules'); assert.equal(f.rec, full);
+  let f2 = PT.fresh('moog');
+  for (let i = 0; i < 510; i++) f2 = PT.addModule(f2, {}, '995').rec;            // 510: the preset's 12 modules do not fit either
+  const g = PT.loadPreset(f2, { a: 1 }, 'Classic bass');
+  assert.equal(g.why, 'A patch holds at most 512 modules'); assert.equal(g.rec, f2);
 });
 
 test('payload (§3.2): numbers, driver links, port indices, g; stable order; pk with topology only', () => {
@@ -762,24 +779,26 @@ test('IMPL-9b §1.4: payload / live / liveNodes with vals — rows after the sor
   assert.equal(PT.live(c2, 'moog', {}), true);
 });
 
-test('IMPL-9b §1.4 (skeptic #33; R2a F5): the rows\' bound — cords + merged rows ≤ 256, the rest skipped with their reason, in panel order; never into a normalled input', () => {
-  // 44 CP4As (10 rows each: the six through c.kp1 / c.kw / c.ka / c.ks1 are one set for all, each panel's own CV / TRIGGER (REAR) rows 4 of its own — 182
-  // connections) after 128 cords (the controller's PITCH 1 / PITCH 2 / WHEEL → the panels' CV INs, built in the record: the bound reads cords, not the one-plug rule)
-  let r = recOf('904a', '911', '911', '911');
-  for (let i = 0; i < 44; i++) r = PT.addModule(r, {}, 'cp4a').rec;
+test('IMPL-9b §1.4 (skeptic #33; R2a F5; IMPL-P §3.1): the rows\' bound — cords + merged rows ≤ 8192, the rest skipped with their reason, in panel order; never into a normalled input', () => {
+  assert.equal(PT.MAX_CONN, 8192);
+  // 1366 CP4As (10 rows each: the six through c.kp1 / c.kw / c.ka / c.ks1 are one set for all, each panel's own CV / TRIGGER (REAR) rows 4 of its own — 4406
+  // connections) after 4096 cords (the controller's PITCH 1 / PITCH 2 / WHEEL → the panels' CV INs, built in the record — past MAX_MODS, which the rows' scan
+  // does not count —: the bound reads cords, not the one-plug rule). Was 44 CP4As and 128 cords at 256.
+  const mods = { m1: { t: '904a' }, m2: { t: '911' }, m3: { t: '911' }, m4: { t: '911' } };
+  for (let m = 5; m <= 1370; m++) mods['m' + m] = { t: 'cp4a' };
   const cords = [];
-  for (const src of ['c.kp1', 'c.kp2', 'c.kw']) for (let m = 5; m <= 48; m++) if (cords.length < 128) cords.push({ id: 'c' + (cords.length + 1), a: src, b: 'm' + m + '.ci', c: 0 });
-  r = Object.assign({}, r, { cords, cid: 129 });
+  for (const src of ['c.kp1', 'c.kp2', 'c.kw']) for (let m = 5; m <= 1370; m++) if (cords.length < 4096) cords.push({ id: 'c' + (cords.length + 1), a: src, b: 'm' + m + '.ci', c: 0 });
+  const r = { v: 1, f: 'moog', nid: 1371, mods, cid: 4097, cords };
   let v = {};
   for (const k of Object.keys(r.mods)) { const t = T[r.mods[k].t]; if (t.bus) v = lit(v, r, k, ...t.params.filter(c => c.t === 's').map(c => c.id)); }
   const rows = PT.busRows(r, 'moog', v), P = PT.payload(r, 'moog', v).pg;
-  assert.equal(rows.length, 128);                                           // 256 − 128 cords
-  assert.equal(P.cords.length, 256);
-  assert.equal(new Set(P.cords.map(x => x.slice(0, 4).join())).size, 256, 'every connection a distinct pair');
-  // m5 takes its 10 rows (the shared six included), each later panel its own 4: 10 + 29 × 4 = 126 (m5 … m34); m35's CV (REAR) and its first TRIGGER (REAR) make 128
-  assert.equal(rows.at(-1).panel, 'm35'); assert.deepEqual(rows.filter(x => x.panel === 'm35').map(x => x.i), [3, 5]);
-  const dup = 'Already routed by CP4A 1', cap = 'A patch holds at most 256 connections';
-  const first = PT.busInfo(r, 'moog', v, 'm5'), mid = PT.busInfo(r, 'moog', v, 'm20'), edge = PT.busInfo(r, 'moog', v, 'm35'), late = PT.busInfo(r, 'moog', v, 'm48');
+  assert.equal(rows.length, 4096);                                          // 8192 − 4096 cords
+  assert.equal(P.cords.length, 8192);
+  assert.equal(new Set(P.cords.map(x => x.slice(0, 4).join())).size, 8192, 'every connection a distinct pair');
+  // m5 takes its 10 rows (the shared six included), each later panel its own 4: 10 + 1021 × 4 = 4094 (m5 … m1026); m1027's CV (REAR) and its first TRIGGER (REAR) make 4096
+  assert.equal(rows.at(-1).panel, 'm1027'); assert.deepEqual(rows.filter(x => x.panel === 'm1027').map(x => x.i), [3, 5]);
+  const dup = 'Already routed by CP4A 1', cap = 'A patch holds at most 8192 connections';
+  const first = PT.busInfo(r, 'moog', v, 'm5'), mid = PT.busInfo(r, 'moog', v, 'm20'), edge = PT.busInfo(r, 'moog', v, 'm1027'), late = PT.busInfo(r, 'moog', v, 'm1370');
   assert.ok(first.every(x => x.ok), 'the first panel holds the shared rows');
   assert.deepEqual(mid.map(x => x.ok), [false, false, false, true, false, true, false, true, false, true], 'a later panel: its own rear wires only');
   assert.ok(mid.filter(x => !x.ok).every(x => x.why === dup));
@@ -881,9 +900,9 @@ test('IMPL-9b §1.2: the sets — makeSet = loadPreset(fresh, vals, starter, { e
   assert.deepEqual(PT.loadSet(m.rec, m.vals), PT.loadSet(m.rec, m.vals, 'm15'));
   assert.equal(PT.loadSet(m.rec, m.vals, 'nope').why, 'No such set'); assert.equal(PT.loadSet(m.rec, m.vals, 'nope').rec, m.rec);
   let full = m.rec;
-  for (let i = 0; i < 30; i++) full = PT.addModule(full, {}, '995').rec;                 // 42 modules: 27 more would pass 48
+  for (let i = 0; i < 480; i++) full = PT.addModule(full, {}, '995').rec;                // 492 modules: 27 more would pass 512
   assert.equal(PT.setNeeds(full, 's55'), 27);
-  assert.equal(PT.loadSet(full, m.vals, 's55').why, 'A patch holds at most 48 modules');
+  assert.equal(PT.loadSet(full, m.vals, 's55').why, 'A patch holds at most 512 modules');
 });
 
 test('IMPL-9b §4.4: Tidy — the console row flush above the controller, the cabinet rows above it, the wide rack; freeSlot on those lines', () => {
@@ -966,4 +985,205 @@ test('skeptic #1 (IMPL-9b §8.2): the Model 15 records frozen — model15, makeS
   const M = JSON.parse(readFileSync(new URL('./ref-9-core/MANIFEST.json', import.meta.url), 'utf8'));
   assert.deepEqual(M.records, FROZEN);
   for (const f of ['patch-core.js', 'moog-core.js']) assert.equal(sha(readFileSync(new URL('./ref-9-core/' + f, import.meta.url), 'utf8')), M.files[f].sha256, f);
+});
+
+/* ------------------------------------------------------------------------------------------------------------------------------------
+   IMPL-P lane B (§3, §7 B): no artificial caps — the bounds, the one id grammar, the two linear host paths, freeSlot.
+   ref-P = patch-core.js / moog-core.js verbatim at 9dde7e6 (tests/ref-P/MANIFEST.json); inside the old bounds the new code equals it. */
+
+// a random valid record: nMods modules of random types, plugged at random through canPlug until nPlug cords, then nPin pins (copies of
+// cords' ends, outside the one-plug rule); every id < 4096
+function bigRec(seed, nMods, nPlug, nPin = 0) {
+  const R = rng(seed), pick = a => a[Math.floor(R() * a.length)], types = MG.ORDER.filter(t => !['960', '961', '962'].includes(t));
+  let r = PT.fresh('moog');
+  for (let i = 0; i < nMods; i++) r = PT.addModule(r, {}, pick(types)).rec;
+  const ends = PT.jacksOf(r).map(j => j.end);
+  for (let tries = 0; r.cords.length < nPlug && tries < 60 * nPlug + 2000; tries++) { const x = PT.plug(r, pick(ends), pick(ends)); if (!x.why) r = x.rec; }
+  if (nPin) {
+    const cords = r.cords.slice();
+    for (let k = 0; k < nPin; k++) { const c = r.cords[k % r.cords.length]; cords.push({ id: 'c' + (r.cid + k), a: c.a, b: c.b, via: 'pin' }); }
+    r = Object.assign({}, r, { cords, cid: r.cid + nPin });
+  }
+  return r;
+}
+const nowMs = () => Number(process.hrtime.bigint()) / 1e6;
+const best = (n, f) => { let m = Infinity; for (let i = 0; i < n; i++) { const t = nowMs(); f(); m = Math.min(m, nowMs() - t); } return m; };
+
+test('IMPL-P §3.1: the bounds — 512 modules, 4096 cords, 8192 connections, numbers to 999999, the evaluator\'s guards above them', () => {
+  assert.deepEqual([PT.MAX_MODS, PT.MAX_CORDS, PT.MAX_CONN, PT.MAX_NID, PT.MAX_CID], [512, 4096, 8192, 1e6, 1e6]);
+  const src = readFileSync(new URL('../patch-dsp.js', import.meta.url), 'utf8');
+  const [m, c, n] = ['MAXM', 'MAXC', 'MAXN'].map(k => +new RegExp('\\b' + k + ' = (\\d+)').exec(src)[1]);
+  assert.ok(m >= PT.MAX_MODS + 1 && c >= PT.MAX_CONN && n === PT.MAX_NID - 1, `the evaluator holds ${m} modules / ${c} connections / numbers to ${n}`);
+  // a refusal at the bound says the new number; one below it still works
+  let r = PT.fresh('moog');
+  for (let i = 0; i < 511; i++) r = PT.addModule(r, {}, '995').rec;
+  const last = PT.addModule(r, {}, '995');
+  assert.equal(Object.keys(last.rec.mods).length, 512);
+  assert.equal(PT.addModule(last.rec, {}, '995').why, 'A patch holds at most 512 modules');
+  assert.equal(PT.duplicateModule(last.rec, {}, 'm1').why, 'A patch holds at most 512 modules');
+  assert.equal(PT.loadSet(last.rec, {}, 's55').why, 'A patch holds at most 512 modules');
+  assert.equal(PT.setNeeds(PT.fresh('moog'), 's55'), 37);
+});
+
+test('IMPL-P §3.1 (skeptic #1): isMid / isCid are the one id grammar — m1…m999999, c1…c999999; normPatch and the table\'s mirror agree', () => {
+  const ok = ['m1', 'm9', 'm10', 'm99', 'm4095', 'm4096', 'm9999', 'm10000', 'm99999', 'm100000', 'm999999'];
+  const bad = ['m0', 'm01', 'm1000000', 'm-1', 'm1.5', ' m1', 'm1 ', 'M1', 'c', 'c1', 'm', 'mx', '', 'm1e3', 'm12345678'];
+  for (const k of ok) { assert.equal(PT.isMid(k), true, k); assert.equal(PT.isCid(k.replace('m', 'c')), true, k); }
+  for (const k of [...bad, 5, null, undefined, {}, ['m1']]) assert.equal(PT.isMid(k), false, String(k));
+  for (const k of ['c0', 'c01', 'c1000000', 'm1', 'c', 'cx', 7, null]) assert.equal(PT.isCid(k), false, String(k));
+  // normPatch keeps exactly the ids isMid accepts (a module of type 995 under each)
+  for (const k of [...ok, ...bad]) assert.equal(Object.keys(PT.normPatch({ mods: { [k]: { t: '995' } } }, 'moog').mods).length, PT.isMid(k) ? 1 : 0, k);
+  // moog-core is a leaf (patch-core imports it): its makeSet numbering and pvOf mirror isMid — held equal here (review F2: a set whose last
+  // id would pass m999999 is null, no longer numbered past the ceiling for normPatch to drop; nid ≤ 1e6 is "the last id ≤ 999999")
+  for (const k of [...ok, ...bad]) {
+    const n = PT.isMid(k) ? +k.slice(1) : 0, nid = 12 + Math.max(1, n + 1), S = MG.makeSet('m15', { p: { [k]: { _t: '995' } } });
+    assert.equal(S === null ? null : S.rec.nid, nid <= 1e6 ? nid : null, 'makeSet after ' + k);
+    assert.equal(Object.keys(MG.pvOf({ p: { [k]: { _t: '995' } } })).includes(k), PT.isMid(k), 'pvOf ' + k);
+  }
+});
+
+test('IMPL-P §3.1 (skeptic #1): a module numbered past 4096 and one past 9999 are modules end to end in the core — normPatch, payload, jacks, numbering', () => {
+  const mods = { m3: { t: '921' }, m4096: { t: '921a' }, m10000: { t: '902' }, m999999: { t: '911' } };
+  const rec = PT.normPatch({ mods, cords: [{ id: 'c1', a: 'm3.saw', b: 'm10000.i1' }, { id: 'c999999', a: 'm10000.o1', b: 'm4096.f1' }, { id: 'c70000', a: 'm999999.out', b: 'm3.f1', c: 2 }, { id: 'c5', a: 'c.ks1', b: 'm999999.trg' }], nid: 5 }, 'moog');
+  assert.deepEqual(Object.keys(rec.mods), ['m3', 'm4096', 'm10000', 'm999999']);
+  assert.equal(rec.nid, 1e6); assert.equal(rec.cid, 1e6);
+  assert.equal(rec.cords.length, 4, 'all four cords kept');
+  const P = PT.payload(rec).pg;
+  assert.deepEqual(P.mods.map(x => x[0]), [0, 3, 4096, 10000, 999999]);
+  assert.deepEqual(P.cords.map(c => [c[0], c[2]]), [[0, 999999], [3, 10000], [10000, 4096], [999999, 3]]);
+  assert.equal(PT.jacksOf(rec).filter(j => j.mid === 'm10000').length, T['902'].jacks.filter(j => j.rear !== 1).length);
+  assert.equal(PT.title(rec, 'm10000'), T['902'].short + ' 1');
+  assert.equal(PT.ordinal(rec, 'm999999'), 1);
+  assert.deepEqual(PT.cordAt(rec, 'm10000.o1'), { id: 'c999999', which: 'a' });
+  // numbering: the next number past the highest (also in vals.p), up to 999999, then "no numbers left"
+  assert.equal(PT.addModule(PT.fresh('moog'), { p: { m4095: {} } }, '995').mid, 'm4096');
+  assert.equal(PT.nextId(PT.fresh('moog'), { p: { m12344: {} } }), 12345);
+  assert.equal(PT.nextId(PT.fresh('moog'), { p: { m999998: {} } }), 999999);
+  assert.equal(PT.nextId(PT.fresh('moog'), { p: { m999999: {} } }), 0);
+  assert.equal(MG.makeSet('m15', { p: { m5000: {} } }).rec.mods.m5001.t, '921');
+  // cord numbers: the last one is c999999, then "no cord numbers left"
+  const r2 = Object.assign({}, recOf('911', '902'), { cid: 999999 });
+  const pl = PT.plug(r2, 'm1.out', 'm2.i1');
+  assert.equal(pl.id, 'c999999'); assert.equal(pl.rec.cid, 1e6);
+  assert.equal(PT.plug(Object.assign({}, r2, { cid: 1e6 }), 'm1.out', 'm2.i1').why, 'No cord numbers left');
+});
+
+test('IMPL-P §3.2: ordinal / title / targets are output-identical to 9dde7e6 (ref-P) inside the old bounds, and to their old definitions at 512 modules / 4096 cords', () => {
+  const oldTargets = (rec, from) => PT.jacksOf(rec).filter(j => j.end !== from).map(j => { const k = PT.canPlug(rec, from, j.end); return { end: j.end, mid: j.mid, label: j.label, ok: k.ok, why: k.why }; });
+  const oldOrdinal = (rec, mid) => (mid === 'c' ? 1 : !Object.prototype.hasOwnProperty.call(rec.mods, mid) ? 0
+    : Object.keys(rec.mods).sort((a, b) => (+a.slice(1) || 0) - (+b.slice(1) || 0)).filter(k => rec.mods[k].t === rec.mods[mid].t).indexOf(mid) + 1);
+  const R = rng(5);
+  for (const [seed, nm, nc, np] of [[11, 3, 2, 0], [12, 16, 20, 0], [13, 30, 60, 6], [14, 48, 110, 12]]) {      // inside the old bounds: the 9dde7e6 functions themselves
+    const r = bigRec(seed, nm, nc, np);
+    assert.ok(Object.keys(r.mods).length <= 48 && r.cords.length <= 127);
+    for (const k of [...Object.keys(r.mods), 'c', 'm99', 'x']) assert.equal(PT.ordinal(r, k), REF.ordinal(r, k), `ordinal ${seed} ${k}`);
+    for (const k of [...Object.keys(r.mods), 'c', 'm99']) assert.equal(PT.title(r, k), REF.title(r, k), `title ${seed} ${k}`);
+    const ends = ['c.kp1', 'c.a1', 'c.b2', ...PT.jacksOf(r).map(j => j.end)];
+    for (let i = 0; i < 25; i++) { const from = ends[Math.floor(R() * ends.length)]; assert.deepEqual(PT.targets(r, from), REF.targets(r, from), `targets ${seed} ${from}`); assert.deepEqual(PT.targets(r, from), oldTargets(r, from)); }
+    assert.deepEqual(PT.targets(r, 'nonsense'), REF.targets(r, 'nonsense'));
+    assert.deepEqual(PT.targets(null, 'c.kp1'), REF.targets(null, 'c.kp1'));
+  }
+  for (const [seed, nm, nc, np] of [[21, 128, 250, 0], [22, 256, 500, 100], [23, 512, 1000, 3000]]) {           // past them: the old definitions, composed from the exports
+    const r = bigRec(seed, nm, nc, np);
+    assert.equal(Object.keys(r.mods).length, nm); assert.ok(r.cords.length >= 0.8 * nc + np && r.cords.length <= 4096, 'cords ' + r.cords.length);
+    assert.deepEqual(PT.normPatch(J(r), 'moog'), r, 'a valid record');
+    for (const k of Object.keys(r.mods)) assert.equal(PT.ordinal(r, k), oldOrdinal(r, k), `ordinal ${seed} ${k}`);
+    const ends = PT.jacksOf(r).map(j => j.end);
+    for (let i = 0; i < 6; i++) { const from = ends[Math.floor(R() * ends.length)]; assert.deepEqual(PT.targets(r, from), oldTargets(r, from), `targets ${seed} ${from}`); }
+  }
+});
+
+test('IMPL-P §3.2: the ordinal memo cannot go stale — every edit that changes the modules returns a new mods object (a record is never mutated once handed out)', () => {
+  const r = recOf('921', '921a', '921b', '902', '902'), vals = {};
+  const before = r.mods, ordsBefore = ['m1', 'm2', 'm3', 'm4', 'm5'].map(k => PT.ordinal(r, k));
+  assert.deepEqual(ordsBefore, [1, 1, 1, 1, 2]);
+  const edits = {
+    addModule: () => PT.addModule(r, vals, '902').rec, removeModule: () => PT.removeModule(r, 'm4').rec, duplicateModule: () => PT.duplicateModule(r, vals, 'm5').rec,
+    setDriver: () => PT.setDriver(r, 'm3', null).rec, setName: () => PT.setName(r, 'm1', 'A').rec, loadPreset: () => PT.loadPreset(r, vals, 'Wind').rec,
+    loadSet: () => PT.loadSet(r, vals, 's35').rec, initPatch: () => PT.initPatch(r, vals).rec, normPatch: () => PT.normPatch(r, 'moog'),
+  };
+  for (const [n, f] of Object.entries(edits)) { const x = f(); assert.notEqual(x.mods, before, n + ' returns a new mods object'); assert.equal(r.mods, before, n + ' leaves its input'); }
+  assert.deepEqual(['m1', 'm2', 'm3', 'm4', 'm5'].map(k => PT.ordinal(r, k)), ordsBefore, 'the input\'s ordinals are as they were');
+  const x = PT.removeModule(r, 'm4').rec;
+  assert.deepEqual(['m1', 'm2', 'm3', 'm4', 'm5'].map(k => PT.ordinal(x, k)), [1, 1, 1, 0, 1], 'a removal shifts the later ones');
+  assert.deepEqual(['m1', 'm4', 'm5'].map(k => PT.ordinal(freeze(J(r)), k)), [1, 1, 2], 'a frozen clone answers the same');
+});
+
+test('IMPL-P §3.2: the host paths at size — titles of 512 modules and targets() at 512 modules / 4096 cords stay linear (timed; recorded)', t => {
+  const r = bigRec(31, 512, 1300, 2796);
+  const mid = Object.keys(r.mods), ends = PT.jacksOf(r).map(j => j.end);
+  const tWarm = best(5, () => { for (const k of mid) PT.title(r, k); });
+  const tCold = best(5, () => { const c = J(r); for (const k of mid) PT.title(c, k); });
+  const tTargets = best(5, () => PT.targets(r, ends[7]));
+  const tOld = best(2, () => { for (const k of mid) REF.title(r, k); });
+  t.diagnostic(`512 modules: every title ${tCold.toFixed(2)} ms cold (memo hits ${tWarm.toFixed(3)} ms; 9dde7e6 ${tOld.toFixed(1)} ms); targets() at ${r.cords.length} cords, ${ends.length} jacks ${tTargets.toFixed(2)} ms`);
+  // a generous guard against the quadratic paths coming back (the old ones: 25 ms each at this size on the M4)
+  assert.ok(tCold < 12, 'titles ' + tCold);
+  assert.ok(tTargets < 12, 'targets ' + tTargets);
+  assert.ok(tCold * 3 < tOld, 'at least 3x under 9dde7e6');
+});
+
+test('IMPL-P §3.1 (skeptic #18): freeSlot past 64 lines — the 65th line and beyond are searched (9dde7e6 dropped every further tile on one spot)', () => {
+  const fam = PT.FAMILIES.moog, H = Math.max(...fam.order.filter(t => !(fam.console || []).includes(t)).map(t => fam.types[t].h)), n = fam.rows.length;
+  let r = PT.fresh('moog');
+  for (let i = 0; i < 102; i++) r = PT.addModule(r, {}, '995').rec;        // m1…m101 the blockers, m102 the tile
+  const sizes = mid => (mid === 'm102' ? { w: 128, h: H } : { w: 2816, h: H });
+  const y0 = PT.freeSlot(r, 'moog', 'm102', {}, sizes).y;
+  const placed = { m1: { x: 0, y: y0 } };
+  for (let k = 1; k <= 100; k++) placed['m' + (k + 1)] = { x: 0, y: -(n + k) * H };
+  assert.deepEqual(PT.freeSlot(r, 'moog', 'm102', placed, sizes), { x: 0, y: -(n + 101) * H }, 'the first line past the 101 blocked ones');
+  assert.deepEqual(REF.freeSlot(r, 'moog', 'm102', placed, sizes), { x: 0, y: -(n + 65) * H }, '(9dde7e6: the fixed spot past 64 lines)');
+  // inside the old bounds the answer is 9dde7e6's, for any placement
+  const R = rng(8);
+  for (let it = 0; it < 40; it++) {
+    const q = bigRec(40 + it, 2 + Math.floor(R() * 40), 0), pl = {};
+    for (const k of Object.keys(q.mods)) if (R() < 0.8) pl[k] = { x: 32 * Math.floor(R() * 60), y: -Math.floor(R() * 30) * 128 };
+    for (const k of Object.keys(q.mods)) assert.deepEqual(PT.freeSlot(q, 'moog', k, pl), REF.freeSlot(q, 'moog', k, pl), `freeSlot #${it} ${k}`);
+  }
+});
+
+test('IMPL-P D6: inside the old bounds the core is 9dde7e6\'s — normPatch, payload (with and without vals), live, liveNodes, jacksOf, canPlug, rackLayout, sets, over generated records', () => {
+  const R = rng(77), pick = a => a[Math.floor(R() * a.length)];
+  for (let it = 0; it < 120; it++) {
+    const r = bigRec(100 + it, 1 + Math.floor(R() * 47), Math.floor(R() * 100), Math.floor(R() * 10));
+    assert.ok(Object.keys(r.mods).length <= 48 && r.cords.length <= 127);
+    const raw = J(r);
+    assert.deepEqual(PT.normPatch(raw, 'moog'), REF.normPatch(raw, 'moog'), 'normPatch #' + it);
+    assert.deepEqual(PT.payload(r), REF.payload(r), 'payload #' + it);
+    const vp = {};
+    for (const k of Object.keys(r.mods)) if (R() < 0.5 && T[r.mods[k].t]) { const e = { _t: r.mods[k].t }; for (const c of T[r.mods[k].t].params) if (R() < 0.4) e[c.id] = pick([0, 1, 1, 0.6, 2]); vp[k] = e; }
+    const vals = { p: vp };
+    assert.deepEqual(PT.payload(r, 'moog', vals), REF.payload(r, 'moog', vals), 'payload+vals #' + it);
+    assert.deepEqual(PT.busRows(r, 'moog', vals), REF.busRows(r, 'moog', vals));
+    assert.deepEqual([PT.live(r, 'moog', vals), PT.liveNodes(r, 'moog', vals)], [REF.live(r, 'moog', vals), REF.liveNodes(r, 'moog', vals)]);
+    assert.deepEqual(PT.jacksOf(r), REF.jacksOf(r));
+    assert.deepEqual(PT.rackLayout(r, 'moog'), REF.rackLayout(r, 'moog'));
+    const ends = ['c.kp1', ...PT.jacksOf(r).map(j => j.end)];
+    for (let i = 0; i < 12; i++) { const a = pick(ends), b = pick(ends); assert.deepEqual(PT.canPlug(r, a, b), REF.canPlug(r, a, b), `canPlug #${it} ${a} ${b}`); }
+    assert.equal(PT.nextId(r, vals), REF.nextId(r, vals)); assert.equal(PT.nextColor(r), REF.nextColor(r));
+    for (let i = 0; i < 4; i++) { const e = pick(ends); assert.deepEqual(PT.cordAt(r, e), REF.cordAt(r, e)); }
+  }
+  for (const s of [undefined, 'm15', 's35', 's55']) assert.deepEqual(PT.loadSet(PT.fresh('moog'), {}, s), REF.loadSet(PT.fresh('moog'), {}, s), 'loadSet ' + s);
+  for (const n of PT.presetNames('moog')) assert.deepEqual(PT.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), REF.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), n);
+});
+
+test('IMPL-P: ref-P is the 9dde7e6 core verbatim and untouched', () => {
+  const sha = x => createHash('sha256').update(x).digest('hex'), M = JSON.parse(readFileSync(new URL('./ref-P/MANIFEST.json', import.meta.url), 'utf8'));
+  for (const f of ['patch-core.js', 'moog-core.js']) assert.equal(sha(readFileSync(new URL('./ref-P/' + f, import.meta.url), 'utf8')), M.files[f].sha256, f);
+});
+
+// skeptic #1 (a grep test, IMPL-P §7 B): no module-id pattern of 4 digits or fewer in the site files — the sites that parse a module id use
+// PT.isMid (or, in the leaf table moog-core, the mirror held equal above) — and the evaluator's number bound is its constant, not 4096
+test('IMPL-P skeptic #1: no 4-digit module-id pattern and no 4096 id bound left in the site files', () => {
+  const root = new URL('../', import.meta.url), bad = [];
+  const SITE = readdirSync(root).filter(f => /\.js$/.test(f) && f !== 'sw.js');
+  const ID4 = /\/\^[mc](\\d\{[01],[0-4]\}|\(\[1-9\]\\d\{0,[0-4]\}\))/;                        // /^m\d{1,4}$/ · /^m([1-9]\d{0,3})$/ · /^c([1-9]\d{0,4})$/
+  for (const f of SITE) {
+    const hits = [];
+    readFileSync(new URL(f, root), 'utf8').split('\n').forEach((l, i) => { if (!/^\s*(\/\/|\*|\/\*)/.test(l) && ID4.test(l.replace(/\s\/\/\s.*$/, ''))) hits.push(i + 1); });
+    if (hits.length) bad.push(f + ': lines ' + hits.join(', '));
+  }
+  assert.deepEqual(bad, []);
+  assert.equal(/e\[0\] <= 4096/.test(readFileSync(new URL('patch-dsp.js', root), 'utf8')), false);
+  assert.ok(ID4.test('x = /^m\\d{1,4}$/.test(k)') && ID4.test('x = /^m([1-9]\\d{0,3})$/.exec(k)'), 'the pattern finds what it looks for');
 });

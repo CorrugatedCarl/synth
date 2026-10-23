@@ -4,10 +4,10 @@
 //
 // The record (`dev.patch`, §1.2), normalised by normPatch(rec, f) (exact shapes, every bound, every §1.3 rule — a violating cord
 // dropped —, unknown fields dropped; idempotent, never throws; anything else → fresh(f)):
-//   { v: 1, f, nid 1…4096 (≥ 1 + every module's number), mods: { m<n> (1…4095): { t, drv?: m<k>, name? ≤ 24 } } (≤ 48, the lowest
+//   { v: 1, f, nid 1…1e6 (≥ 1 + every module's number), mods: { m<n> (1…999999): { t, drv?: m<k>, name? ≤ 24 } } (≤ 512, the lowest
 //     numbers kept; a type unknown to the family is KEPT as data — a newer file — and plays silent: payload leaves it out),
-//     cid 1…65535 (≥ 1 + every cord's number), cords: [{ id c<n>, a: end (source), b: end (destination), c 0…7 } |
-//     { id, a, b, via: 'pin' } (a matrix pin: no colour, outside the one-plug rule) — each + g 0…4 when ≠ 1] (≤ 128, in order),
+//     cid 1…1e6 (≥ 1 + every cord's number), cords: [{ id c<n> (1…999999), a: end (source), b: end (destination), c 0…7 } |
+//     { id, a, b, via: 'pin' } (a matrix pin: no colour, outside the one-plug rule) — each + g 0…4 when ≠ 1] (≤ 4096, in order),
 //     name? ≤ 40 }   end = '<mid>.<port>' | 'c.<port>' (`c` the controller: never in mods, never deleted)
 // Knob values live in the device's vals (§1.2): the controller's flat ids and vals.p = { m<n>: { _t: <type>, <param>: number } };
 //   getKnob / setKnob read / write them (`_t` checked: a mismatch reads the defaults, a write starts the entry afresh), pruneVals
@@ -15,7 +15,7 @@
 // canPlug(rec, from, to, f) → { ok, why, a, b } (§1.3; a / b the cord's ends oriented source → destination): same plug kind
 //   (1/4" ↔ 1/4", S ↔ S), one cord per jack, out → in; a multiple (`dir: 'any'`) takes the direction its other end implies; two
 //   multiples (P-3) only when exactly one group is driven (a group is driven when some connection ends in it), from the driven one;
-//   feedback allowed; ≤ 128 connections. why = the reason the drag shows on a dimmed jack.
+//   feedback allowed; ≤ 4096 cords. why = the reason the drag shows on a dimmed jack.
 // Edits — pure: a new record (and vals) back, the inputs untouched; nothing changed → the SAME rec object (the host records no
 //   step). Those that create a module take vals (numbering: nextId(rec, vals) = max(nid, 1 + every m<k> of mods and vals.p) — an
 //   orphan's number is never reused while its values live, §1.5); those that write knobs return `back` = { f: [[path, before,
@@ -44,7 +44,10 @@
 import * as MG from './moog-core.js?v=9';
 
 /* ---------------------------------------------------------------- bounds and tables */
-export const MAX_MODS = 48, MAX_CORDS = 128, MAX_NID = 4096, MAX_CID = 65535, MOD_NAME = 24, PATCH_NAME = 40, G_MAX = 4;
+// IMPL-P §3: safety bounds, not product caps — a person adds racks until their system lags (a corrupt or hostile file, runaway memory
+// are what these stop): ≥ an order of magnitude above anything built (the biggest set is 37 modules, 3 cords a module). Ids are never
+// reused, so their range is the rack's lifetime: 6 digits each. The evaluator's guards (patch-dsp MAXM / MAXC / MAXN) are ≥ these.
+export const MAX_MODS = 512, MAX_CORDS = 4096, MAX_NID = 1e6, MAX_CID = 1e6, MOD_NAME = 24, PATCH_NAME = 40, G_MAX = 4;
 export const CTL = 'c';                                                // the controller's module id (reserved)
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const k of Object.keys(o)) deepFreeze(o[k]); } return o; };
 /** The cord colours (cord lab LAB:143, §4.3); a cord stores its index `c`. */
@@ -58,12 +61,18 @@ const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = o => !!o && typeof o === 'object' && !Array.isArray(o);
 const famOf = f => (typeof f === 'string' && own(FAMILIES, f) ? FAMILIES[f] : null);
 const typeOf = (fam, t) => (typeof t === 'string' && own(fam.types, t) ? fam.types[t] : null);
-const MID_RE = /^m([1-9]\d{0,3})$/, CID_RE = /^c([1-9]\d{0,4})$/, PORT_RE = /^[a-z][a-z0-9]{0,7}$/, TYPE_RE = /^[a-z0-9]{1,8}$/;
+const MID_RE = /^m([1-9]\d{0,5})$/, CID_RE = /^c([1-9]\d{0,5})$/, PORT_RE = /^[a-z][a-z0-9]{0,7}$/, TYPE_RE = /^[a-z0-9]{1,8}$/;
 const midNum = s => { const m = typeof s === 'string' ? MID_RE.exec(s) : null, n = m ? +m[1] : 0; return n < MAX_NID ? n : 0; };
 const cidNum = s => { const m = typeof s === 'string' ? CID_RE.exec(s) : null, n = m ? +m[1] : 0; return n < MAX_CID ? n : 0; };
+/** A module / cord id the core accepts — 'm<1…999999>' / 'c<1…999999>' (the controller 'c' is neither): the ONE grammar every site uses
+ *  (the evaluator's number bound, the view's midOf, the host's event / sequencer binds, makeSet's numbering). */
+export const isMid = s => midNum(s) > 0;
+export const isCid = s => cidNum(s) > 0;
 const num = mid => (mid === CTL ? 0 : midNum(mid));
 const byNum = (a, b) => midNum(a) - midNum(b);
-const mids = rec => Object.keys(rec.mods).sort(byNum);
+// (every id's number parsed once, then a stable sort: the order of Object.keys(M).sort(byNum), without a regex a comparison)
+const sortKeys = M => { const d = Object.keys(M).map(k => [midNum(k), k]); d.sort((a, b) => a[0] - b[0]); return d.map(x => x[1]); };
+const mids = rec => sortKeys(rec.mods);
 const endMid = e => e.slice(0, e.indexOf('.'));
 const same = (a, b) => a === b || (a == null && b == null) || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-9);
 const clampP = (c, x) => (c.t === 's' ? Math.max(0, Math.min(c.opts.length - 1, Math.round(x))) : Math.max(c.min, Math.min(c.max, x)));
@@ -252,22 +261,20 @@ export function ptBack(vals, back, redo) {
 }
 
 /* ---------------------------------------------------------------- canPlug */
-export function canPlug(rec, from, to, f) {
+// canPlug's rules on two resolved ends; the cords' lookups injected (occ(end): a plug on it; drv(E): E's multiple group is driven) — canPlug
+// asks the cord list (O(cords) a call), targets one set for the whole drag (O(1))
+function verdict(fam, cords, A, B, from, to, occ, drv) {
   const no = why => ({ ok: false, why, a: from, b: to });
-  const fam = famOf(f) || famOf(rec && rec.f);
-  if (!fam || !isObj(rec) || !isObj(rec.mods)) return no('No patch');
-  const cords = Array.isArray(rec.cords) ? rec.cords : [];
-  const A = endOf(fam, rec.mods, from), B = endOf(fam, rec.mods, to);
   if (!A || !B) return no('No such jack');
   if (!A.T || !B.T) return no('This module needs a newer version of the app');
   if (A.end === B.end) return no('Pick another jack');
-  if (occupied(cords, B.end) || occupied(cords, A.end)) return no('This jack has a cord — pull it first');
+  if (occ(B.end) || occ(A.end)) return no('This jack has a cord — pull it first');
   if (A.j.sig !== B.j.sig) return no(fam.plugs[B.j.sig] + ' — ' + fam.conv);
   const da = A.j.dir, db = B.j.dir;
   let s, d;
   if (da === 'any' && db === 'any') {
     if (A.mid === B.mid && A.j.sec === B.j.sec) return no('These jacks are one multiple already');
-    const ga = driven(cords, A), gb = driven(cords, B);
+    const ga = drv(A), gb = drv(B);
     if (ga === gb) return no(ga ? 'Both multiples are driven — pull one’s source first' : 'Neither multiple is driven — patch a signal into one first');
     [s, d] = ga ? [A, B] : [B, A];
   } else if (da === db) return no(da === 'out' ? 'Two outputs — connect an output to an input' : 'Two inputs — connect an output to an input');
@@ -275,6 +282,12 @@ export function canPlug(rec, from, to, f) {
   else { s = B; d = A; }                                                // in ← out · in ← multiple · multiple ← out
   if (cords.length >= MAX_CORDS) return no(`A patch holds at most ${MAX_CORDS} cords`);
   return { ok: true, why: '', a: s.end, b: d.end };
+}
+export function canPlug(rec, from, to, f) {
+  const fam = famOf(f) || famOf(rec && rec.f);
+  if (!fam || !isObj(rec) || !isObj(rec.mods)) return { ok: false, why: 'No patch', a: from, b: to };
+  const cords = Array.isArray(rec.cords) ? rec.cords : [];
+  return verdict(fam, cords, endOf(fam, rec.mods, from), endOf(fam, rec.mods, to), from, to, end => occupied(cords, end), E => driven(cords, E));
 }
 /** The cord plugged at a jack: { id, which: 'a' | 'b' } | null (pins are not plugs). */
 export function cordAt(rec, end) {
@@ -294,7 +307,25 @@ export function jacksOf(rec, f) {
 }
 /** "Connect to…" and the drag's halos (§4.4): every other jack with canPlug's verdict, [{ end, mid, label, ok, why }]. */
 export function targets(rec, from, f) {
-  return jacksOf(rec, f).filter(j => j.end !== from).map(j => { const k = canPlug(rec, from, j.end, f); return { end: j.end, mid: j.mid, label: j.label, ok: k.ok, why: k.why }; });
+  const fam = famOf(f) || famOf(rec && rec.f), J = jacksOf(rec, f);
+  if (!fam || !J.length) return [];                                    // (jacksOf: no patch → none)
+  // canPlug's verdict per jack with the cords read once (IMPL-P §3.2: O(jacks + cords), was O(jacks × cords)): the plugged ends, the ends cords reach
+  const cords = Array.isArray(rec.cords) ? rec.cords : [], plugged = new Set(), reached = new Set();
+  for (const c of cords) if (c) { if (!c.via) { plugged.add(c.a); plugged.add(c.b); } reached.add(c.b); }
+  const A = endOf(fam, rec.mods, from), grp = new Map();               // grp: 'mid:sec' → whether some cord ends in that multiple group
+  const drv = E => {
+    const k = E.mid + ':' + E.j.sec;
+    let v = grp.get(k);
+    if (v === undefined) { v = E.T.jacks.some(j => j.dir === 'any' && j.sec === E.j.sec && reached.has(E.mid + '.' + j.id)); grp.set(k, v); }
+    return v;
+  };
+  const out = [];
+  for (const j of J) {
+    if (j.end === from) continue;
+    const k = verdict(fam, cords, A, endOf(fam, rec.mods, j.end), from, j.end, end => plugged.has(end), drv);
+    out.push({ end: j.end, mid: j.mid, label: j.label, ok: k.ok, why: k.why });
+  }
+  return out;
 }
 /** The colour a new cord takes (Q3): the least used of PALETTE among the patch's cords, ties in palette order. */
 export function nextColor(rec) {
@@ -532,7 +563,7 @@ export function initPatch(rec, vals) {
 // ordinal among its type). Rows are taken by panel number then row, after the cords, up to MAX_CONN connections in all. Two connections
 // of one source to one input are one (R2a F5: a duplicated lit panel, a switch closing a cord's own pair): a row whose (source, input)
 // is a cord's or an earlier row's is skipped — the first keeps its gain — and the bound counts the merged connections.
-export const MAX_CONN = 256;                                           // the evaluator's connections (cords + rows)
+export const MAX_CONN = 8192;                                          // the evaluator's connections (cords + rows; was 256, IMPL-P §3.1)
 const BUS_RE = /^([a-z0-9]{1,8}(?:\|[a-z0-9]{1,8})*)#([1-9]\d{0,2}|=)\.([a-z][a-z0-9]{0,7})$/;
 const BX = new WeakMap();                                              // TYPE → its bus switches (params, unique, table order)
 function busSw(T) {
@@ -614,7 +645,7 @@ function fnv(s) {
 export function payload(rec, f, vals) {
   const fam = famOf(f) || famOf(rec && rec.f) || MG.FAMILY;
   const M = isObj(rec) && isObj(rec.mods) ? rec.mods : {}, mods = [[0, fam.ctl, -1]];
-  for (const mid of Object.keys(M).sort(byNum)) {
+  for (const mid of sortKeys(M)) {
     const n = midNum(mid), m = M[mid];
     if (!n || !isObj(m) || !typeOf(fam, m.t) || m.t === fam.ctl) continue;
     const d = typeof m.drv === 'string' && own(M, m.drv) && typeOf(fam, M[m.drv].t) ? midNum(m.drv) : 0;
@@ -752,6 +783,9 @@ export function rackLayout(rec, f, sizes) {
   }
   return out;
 }
+// the lines above the rack a tapped tile may take: a line holds ≥ 2 of the widest module (864 at rackWide 2816), so a full patch (MAX_MODS)
+// fills ≤ MAX_MODS / 2 of them — one free line always remains (IMPL-P §3.1, skeptic #18; was 64)
+const FREE_LINES = 2 + Math.ceil(MAX_MODS / 2);
 /** A tapped tile's place (§4.5): the first free slot (32 px steps, within the rack's width) on its row's line, else on a line above
  *  the rack, clear of `placed` ({ mid: { x, y } } relative to the controller, sized by `sizes`). The lines follow Tidy's stacking
  *  (IMPL-9b §4.4, skeptic #13): a console module's flush above the controller, the cabinet rows' above the console row's height
@@ -766,16 +800,29 @@ export function freeSlot(rec, f, mid, placed, sizes) {
     .map(k => { const [kw, kh] = sz(k); return [placed[k].x, placed[k].y, kw, kh]; });
   const free = (x, y) => rects.every(([rx, ry, rw, rh]) => x >= rx + rw || x + w <= rx || y >= ry + rh || y + h <= ry);
   const lines = [isCon(fam, t) ? -hc : r >= 0 ? -hc - (n - r) * H : -hc - n * H];
-  for (let k = 1; k <= 64; k++) lines.push(-hc - (n + k) * H);
+  for (let k = 1; k <= FREE_LINES; k++) lines.push(-hc - (n + k) * H);
   for (const y of lines) for (let x = 0; x + w <= Math.max(W, w); x += 32) if (free(x, y)) return { x, y };
-  return { x: 0, y: -hc - (n + 65) * H };
+  return { x: 0, y: -hc - (n + FREE_LINES + 1) * H };
 }
 /** A module's ordinal among its type, by number (1…); 1 for the controller; 0 when absent. */
 export function ordinal(rec, mid) {
   if (mid === CTL) return 1;
   if (!isObj(rec) || !isObj(rec.mods) || !own(rec.mods, mid)) return 0;
-  const t = rec.mods[mid].t;
-  return mids(rec).filter(k => rec.mods[k].t === t).indexOf(mid) + 1;
+  return ordinals(rec.mods).get(mid) || 0;
+}
+// every module's ordinal from one sorted pass, memoised on the record's mods object (IMPL-P §3.2: a title per module on every sync was
+// O(n² log n), 25 ms at 512). Valid because a record is never mutated once handed out — every edit copies `mods` (copyRec) — which the
+// tests hold (an edit that changes a module returns a new mods object)
+const ORD = new WeakMap();
+function ordinals(M) {
+  let o = ORD.get(M);
+  if (o === undefined) {
+    o = new Map();
+    const n = new Map();
+    for (const k of sortKeys(M)) { const t = M[k].t, c = (n.get(t) || 0) + 1; n.set(t, c); o.set(k, c); }
+    ORD.set(M, o);
+  }
+  return o;
 }
 /** The bar's title (§4.1): '<short> <ordinal>' (the type's short name); the controller's name; a newer type its id upper-cased. */
 export function title(rec, mid, f) {

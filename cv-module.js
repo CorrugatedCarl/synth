@@ -1022,6 +1022,11 @@ export function createTrackView(world, track, host) {
     if (DEV) for (const dd of DL) if ((dd.kind === 'mod' || dd.kind === 'pm') && !o[dd.key]) { const s = sizeOf(dd.key), f = s && s.fixed; if (f && fin(f.w) && fin(f.h) && f.h > BAR_H) o[dd.key] = { w: f.w, h: f.h }; }
     return DEV ? tidy(T, o, DL, typeof H.rackLayout === 'function' ? k => call(H.rackLayout, k) : null) : tidy1(T, o); // ((9) the patch modules: the host's rack)
   };
+  // (P R2-F2) Tidy once per sync, not once per module (each was O(n) in the modules plus Tidy itself: O(n²) on a big rack): the result
+  // is kept while its inputs hold — td = null at every change of them (a module made / removed, a width / fixed size / fold moved,
+  // a measured module's size set again) — so each module still sees exactly the sizes of the ones before it
+  let td = null;
+  const tidyNow = () => td || (td = tidied());
   // the lay entry of a module as it stands: never a width (each module's is fixed: a stored w from before is dropped
   // here, on its next write), z only once brought to front
   const entryOf = key => {
@@ -1112,7 +1117,7 @@ export function createTrackView(world, track, host) {
     // An untouched track keeps no lay key (its History snapshots stay the same)
     if (phase === 'end') for (const k of mods.keys()) if (k !== key && !(isObj(T.lay) && okEntry(T.lay[k]))) H.lay(k, entryOf(k), 'end', 'pin');
   };
-  const update = key => { if (world && typeof world.update === 'function') world.update(key); };
+  const update = key => { if (world && typeof world.update === 'function') world.update(key); }; // (a key, or a list of keys: one world update)
   let grp = null; // a group move: { key (the mover), x0, y0, list: [{ k, m, x0, y0 }] }
   const groupOf = key => {
     const ids = world && Array.isArray(world.selection) ? world.selection : null, m = mods.get(key);
@@ -1160,7 +1165,7 @@ export function createTrackView(world, track, host) {
     if (c) m.el.style.setProperty('--mc', c);
   }
   function make(key) {
-    const kind = kindOf(key), M1 = meta(key), M0 = kind === 'part' ? partMeta(key, M1) : M1, L = layOf(T, key, tidied(), keys()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
+    const kind = kindOf(key), M1 = meta(key), M0 = kind === 'part' ? partMeta(key, M1) : M1, L = layOf(T, key, tidyNow(), keys()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
     const jk = jacksOf(key, M0.title);
     const ext = {};
     if (DEV) {
@@ -1198,7 +1203,7 @@ export function createTrackView(world, track, host) {
         if (G2 && phase === 'end') for (const g of G2.list) if (H.lay) H.lay(g.k, entryOf(g.k), 'end', 'group');
         quiet = phase === 'start' || phase === 'move';
         try { relay(); } finally { quiet = false; }
-        if (phase === 'end' || phase === 'cancel') { update(key); if (G2) { for (const g of G2.list) update(g.k); grp = null; } }
+        if (phase === 'end' || phase === 'cancel') { update(G2 ? [key].concat(G2.list.map(g => g.k)) : key); if (G2) grp = null; } // (a group's drop: one world update — one overlap pass)
       },
       onFold: f => { DC.delete(key); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
       onScreen: () => { if (H.shown) H.shown(key); },
@@ -1209,6 +1214,7 @@ export function createTrackView(world, track, host) {
     decorate(key, m);
     if (root) root.append(m.el);
     mods.set(key, m);
+    td = null;
     if (world && typeof world.add === 'function') world.add(m);
     return m;
   }
@@ -1260,7 +1266,7 @@ export function createTrackView(world, track, host) {
   // (2a) a zoom's end: the mod cables' ends are END_PX screen px again
   const zoomOff = world && typeof world.on === 'function' ? world.on('cameraend', () => cables.rezoom()) : null;
   const drags = []; // (1e) the cable drags made through V.cableDrag
-  const removeMod = k => { const m = mods.get(k); if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); mods.delete(k); };
+  const removeMod = k => { const m = mods.get(k); if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); mods.delete(k); td = null; };
   const V = {
     trackId: T.id, modules: mods, cables,
     /** applies lay / title / model changes without remounting bodies (an FX key swap moves the FX body to the new module);
@@ -1269,30 +1275,36 @@ export function createTrackView(world, track, host) {
       T = track || T;
       readDevs();
       DC.clear();
+      td = null;
       V.trackId = T.id;
       const want = keys();
       // ((3) a module whose jacks changed — a Serum switched between bundled and parts view — is made again)
       for (const k of [...mods.keys()]) if (!want.includes(k) || (DEV && (mods.get(k).kind !== kindOf(k) || mods.get(k).jsig !== jsig(k)))) removeMod(k);
       let vis = false; // a fold changed (an undo / redo restore): host.shown once, after every module is in its state
+      const kept = []; // (P R2-F2) the modules that stayed: ONE world update for them after the loop (one per module ran the overlap rule over every face each: O(n³))
       for (const k of want) { // (instrument first: Tidy places the others from its new width — a model change on an untouched track)
         let m = mods.get(k);
         if (!m) { make(k); continue; }
         const kind = kindOf(k), M0 = kind === 'part' ? partMeta(k, meta(k)) : meta(k), SZ = kind === 'inst' || DEV ? sizeOf(k) : null;
+        const w0 = m.w, f0 = m.fixed;
         m.relayout();
-        if (SZ || (DEV && m.fixed)) m.setFixed(SZ ? SZ.fixed : null); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
+        if (SZ || (DEV && f0)) m.setFixed(SZ ? SZ.fixed : null); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
         if (DEV && !SZ) m.setW(kindW(kind, modelOf(k)));
-        const L = layOf(T, k, tidied(), want);
+        const f1 = m.fixed; // (a measured module — a part, a Serum-faithful modulator — is measured again after a setFixed: Tidy is read again)
+        if (m.w !== w0 || (f0 ? !f1 || f0.w !== f1.w || f0.h !== f1.h : !!f1) || (DEV && (kind === 'part' || (kind === 'mod' && SX_MODS.has(mkOf(k)))))) td = null;
+        const L = layOf(T, k, tidyNow(), want);
         if (!m.dragging()) {
           m.setPos(L.x, L.y, false);
-          if (m.fold !== !!L.fold) { m.setFold(!!L.fold); vis = true; }
+          if (m.fold !== !!L.fold) { m.setFold(!!L.fold); vis = true; td = null; }
         }
         m.zSet = fin(L.z);
         m.setZ(fin(L.z) ? L.z : 1);
         m.setTitle(M0.title || '', M0.sub);
         if (M0.chip !== undefined) m.setChip(M0.chip);
         if (DEV) decorate(k, m); else if (T.color) m.el.style.setProperty('--mc', T.color);
-        update(k);
+        kept.push(k);
       }
+      if (kept.length) update(kept);
       cables.set(cablesNow());
       hl(); members();
       relay();

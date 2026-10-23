@@ -102,7 +102,7 @@ export const keyOf = (dev, mid) => (mid === PT.CTL ? dev : dev + '/' + mid);
 /** The patch module of a canvas module key ('c' for the instrument's own), else null. */
 export function midOf(dev, key) {
   if (key === dev) return PT.CTL;
-  return typeof key === 'string' && key.startsWith(dev + '/') && /^m\d{1,4}$/.test(key.slice(dev.length + 1)) ? key.slice(dev.length + 1) : null;
+  return typeof key === 'string' && key.startsWith(dev + '/') && PT.isMid(key.slice(dev.length + 1)) ? key.slice(dev.length + 1) : null;
 }
 /** A patch end's jack key ('m3.saw' → 'i1/m3.j-saw', 'c.out' → 'i1.j-out'). */
 export function jackKey(dev, end) { const i = String(end).indexOf('.'); return keyOf(dev, end.slice(0, i)) + '.' + JACK_PRE + end.slice(i + 1); }

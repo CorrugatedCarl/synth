@@ -15,6 +15,7 @@ import { BAR_H } from '../cv-module.js?v=9';
 import { K_MAX } from '../cv-world.js?v=9';
 import * as wk from '../wk.js?v=9';
 import { fresh, raf } from './wk-dom.mjs';
+import { createHash } from 'node:crypto';
 
 const { FACES, WIN_K0, WIN_MARGIN, WIN_HEAD, WIN_BUDGET_PX, WIN_MAX_PX, TEX_MAX_DIM, FACE_BUDGET_BYTES, BASE_MAX_PX, OFF_ALPHA, baseLevel, winLevel, winLevelOf, visPart, winRect, winKeep } = CF;
 const eq1 = (a, b, m) => assert.equal(JSON.stringify(a), JSON.stringify(b), m);
@@ -24,9 +25,10 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 /* ---- the fakes */
 function fakeGL() {
   const G = {
-    texes: new Set(), ups: [], frees: 0, fail: false,
+    texes: new Set(), ups: [], frees: 0, fail: false, tries: 0, // (P: fail may be a predicate of the source; maxTex / ready set by a test)
     upload(src, o) {
-      if (G.fail) return null;
+      G.tries++;
+      if (G.fail === true || (typeof G.fail === 'function' && G.fail(src))) return null;
       const t = { w: src.width, h: src.height, bytes: Math.round(src.width * src.height * 4 * (o && o.mips ? 4 / 3 : 1)), mips: !!(o && o.mips), src: src.localName, calls: src.getContext('2d').calls.splice(0) }; // (the scratch is reused: this paint's calls)
       G.texes.add(t); G.ups.push(t);
       return t;
@@ -101,7 +103,7 @@ function rig(o = {}) {
   const frames = n => raf.flush(n || 1);
   const st = M => ({ mode: M.face.mode, svg: M.svg.style.visibility || 'visible', attr: M.mod.getAttribute('data-cv-face'), bm: M.bm(), shown: M.face.shown });
   const attach = () => FACES.attach({ gl: G, world: W });
-  const done = () => { for (const M of mods) M.face.destroy(); FACES.detach(); raf.uninstall(); };
+  const done = () => { for (const M of mods) M.face.destroy(); FACES.detach(); FACES.setPerf('high'); raf.uninstall(); }; // (P: the preset is module state)
   return { d, win, world, home, R, G, W, env, panel, shell, mo, land, landAll, frames, st, attach, done, mods };
 }
 // one queued base: a frame starts the load, the load lands (the job is re-queued at the front), a frame paints
@@ -926,4 +928,467 @@ test('1h fix R5: the window origin snaps to WIN_SNAP world px (face-local) so a 
   const v = visPart(CS80, cam, 1366, 1024);
   assert.ok(w1.x <= v.x && w1.y <= v.y && w1.x + w1.w >= v.x + v.w && w1.y + w1.h >= v.y + v.h, 'covers the visible part');
   assert.ok(w1.x <= v.x - WIN_MARGIN * 1366 / 1.6 + 1e-9 && w1.x + w1.w >= v.x + v.w + WIN_MARGIN * 1366 / 1.6 - 1e-9, 'and the margin');
+});
+
+/* ---- (P, IMPL-P §1.1, lane T) High = today: a scripted scene (real face sizes, a wood case, an off-screen face, zooms 30 → 200 %,
+   pans, a loss / restore, then five 4000 × 2000 faces over the budget) traced at dpr 1 / 1.5 / 2 / 2.5 / 3 / 4 — every upload (size,
+   mips, the drawImage source / dest), the frees, the stats, the modes — hashed; the hashes were taken at 4cc0936 (before P) */
+function trace(dpr, pre) {
+  const g = rig({ dpr, vw: 1366, vh: 1024 });
+  const out = [], seen = { u: 0, f: 0 };
+  try {
+    if (pre) pre(g);
+    const P = [g.panel('cs', { w: 2432, h: 984 }), g.panel('mod', { x: 2600, w: 2176, h: 1240 }), g.panel('960', { y: 1100, w: 864, h: 472 }), g.panel('m1', { x: 1000, y: 1100, w: 128, h: 472 }),
+      g.panel('wd', { x: 1300, y: 1400, w: 1408, h: 696, wood: true }), g.panel('far', { x: 20000, w: 1856, h: 1304, on: false })];
+    let L = P;
+    const rec = tag => {
+      const ups = g.G.ups.slice(seen.u).map(t => { const di = t.calls.filter(c => c[0] === 'drawImage')[0]; return [t.w, t.h, t.mips ? 1 : 0, di ? di.slice(2).map(v => +(+v).toFixed(4)) : null]; });
+      seen.u = g.G.ups.length;
+      const s = FACES.stats(), fr = g.G.frees - seen.f; seen.f = g.G.frees;
+      out.push([tag, ups, fr, [s.faces, s.gl, s.dom, s.bytes, s.base, s.windows, s.soft, +s.softMin.toFixed(6), s.winPx, s.queued], L.map(M => M.face.mode + (M.svg.style.visibility === 'hidden' ? 'h' : ''))]);
+    };
+    FACES.attach({ gl: g.G, world: g.W, now: () => 0, win: g.win }); settle(g); rec('attach');
+    for (const c of [{ k: 0.6 }, { k: 0.8 }, { k: 1 }, { k: 1.25, tx: -300, ty: -100 }, { k: 1.6, tx: 0, ty: 0 }, { k: 2, tx: -900, ty: -400 }, { k: 2, tx: -2400, ty: -400 }, { k: 1.4, tx: -3000, ty: -200 }, { k: 0.4, tx: 0, ty: 0 }, { k: 1.1, tx: -500, ty: -900 }]) {
+      g.W.end(c); settle(g); rec('cam ' + JSON.stringify(c));
+    }
+    g.W.set('far', { x: 20000, y: 0, w: 1856, h: 1304 + BAR_H }, true); g.W.emit('screen', { on: ['far'], off: [] }); settle(g); rec('far on');
+    FACES.lost(); rec('lost'); FACES.restored(); settle(g); rec('restored');
+    for (const M of P) { M.face.destroy(); g.W.del(M.id); }
+    g.W.end({ k: 0.3, tx: 0, ty: 0 }); settle(g); rec('gone');
+    const B = L = []; for (const [id, x, on] of [['a', 0, true], ['b', 4100, true], ['c', 8200, true], ['d', 20000, false], ['e', 40000, false]]) B.push(g.panel(id, { x, w: 4000, h: 2000, on }));
+    settle(g); g.frames(4); rec('budget');
+    g.W.set('e', { x: 40000, y: 0, w: 4000, h: 2000 + BAR_H }, true); g.W.emit('screen', { on: ['e'], off: [] }); settle(g); rec('e on');
+    for (const M of B) M.face.destroy();
+  } finally { g.done(); }
+  return out;
+}
+const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 16);
+const HIGH_TODAY = { 1: '3dcb43782d4cb7a8', 1.5: '1491d63848fb4daa', 2: 'a9562aafb819e37a', 2.5: '6f3ccc7ed3b42917', 3: '8ea1db0fcbef5bff', 4: 'ba6c603915adbad2' };
+test('P High = today: the scripted scene\'s trace at dpr 1 / 1.5 / 2 / 2.5 / 3 / 4 hashes as at 4cc0936 (the uploads, frees, stats, modes)', () => {
+  const got = {};
+  for (const d of Object.keys(HIGH_TODAY)) { const t = trace(+d); got[d] = hash(t); if (process.env.TRACE) console.log(d, JSON.stringify(t)); }
+  if (process.env.TRACE) console.log(JSON.stringify(got));
+  eq1(got, HIGH_TODAY);
+});
+
+/* ---- (P, IMPL-P §1.1 / §7 T) the presets: the table, dE, the bases × (dE / dpr)², Low's no windows, Medium's windows, the budgets,
+   the live switch (the stale-level re-raster and its rules (a)–(c)), the side limit (4096), the loss path, a device-ratio change,
+   under / soft, the at-size timings */
+const { TEX_Q, perfId, dEOf } = CF;
+const PERFS = ['high', 'medium', 'low'];
+const bad = g => g.mods.filter(M => M.face.mode === 'gl' && M.svg.style.visibility !== 'hidden').map(M => M.id); // R2a: never a gl face with its SVG
+test('P presets: TEX_Q — High (R ∞: the device\'s own ratio; windows; 40e6 px; 384 MB) · Medium (R 1.5; windows; 22.5e6 px; 216 MB) · Low (R 1; no windows; 96 MB); perfId (else high); dE = min(dpr, R) at dpr 1 / 1.5 / 2 / 3 — pure and in the registry (stats: perf, dE, budget), live or detached, through FACES and the named export', () => {
+  eq1([TEX_Q.high.R === Infinity, TEX_Q.high.win, TEX_Q.high.winBudget, TEX_Q.high.budget], [true, true, WIN_BUDGET_PX, FACE_BUDGET_BYTES]);
+  eq1([TEX_Q.medium.R, TEX_Q.medium.win, TEX_Q.medium.winBudget, TEX_Q.medium.budget], [1.5, true, 22.5e6, 216e6]);
+  eq1([TEX_Q.low.R, TEX_Q.low.win, TEX_Q.low.budget], [1, false, 96e6]);
+  near(TEX_Q.medium.winBudget, WIN_BUDGET_PX * (1.5 / 2) ** 2, 'Medium\'s window px = 40e6 · (1.5 / 2)²');
+  eq1(['high', 'medium', 'low', 'auto', '', null, undefined, 'LOW'].map(perfId), ['high', 'medium', 'low', 'high', 'high', 'high', 'high', 'high']);
+  const tab = d => PERFS.map(p => dEOf(d, p));
+  eq1([1, 1.5, 2, 3].map(tab), [[1, 1, 1], [1.5, 1.5, 1], [2, 1.5, 1], [3, 1.5, 1]], 'dE at dpr 1 / 1.5 / 2 / 3 (high, medium, low)');
+  eq1([dEOf(0.5, 'high'), dEOf(4, 'high'), dEOf('x', 'medium')], [1, 4, 1], '≥ 1; High uncapped');
+  for (const d of [1, 1.5, 2, 3]) {
+    const g = rig({ dpr: d });
+    try {
+      g.panel('a');
+      eq1([FACES.perf, FACES.stats().perf, FACES.stats().dE], ['high', 'high', d], 'dpr ' + d + ': High to start');
+      eq1([FACES.setPerf('medium'), FACES.stats().dE, FACES.stats().budget, FACES.setPerf('medium')], [true, Math.min(d, 1.5), 216e6, false], 'detached: taken; the same id: no change');
+      g.attach(); settle(g);
+      eq1([CF.setPerf('low'), FACES.perf, FACES.stats().dE, FACES.stats().budget], [true, 'low', 1, 96e6], 'live, the named export');
+      eq1([FACES.setPerf('nonsense'), FACES.stats().perf, FACES.stats().dE, FACES.stats().budget], [true, 'high', d, 384e6], 'anything else: High');
+    } finally { g.done(); }
+  }
+});
+
+test('P bases per preset: the base level is baseLevel(dE) — its bytes × (dE / dpr)² of High\'s (BASE_MAX_PX binding only the biggest faces); a scene started at a preset paints each base once, at that level (dpr 1 / 1.5 / 2 / 3)', () => {
+  const S = [['a', 400, 200], ['cs', 2432, 984], ['mod', 2176, 1240], ['big', 4000, 2000]];
+  for (const d of [1, 1.5, 2, 3]) {
+    const hi = {};
+    for (const p of PERFS) {
+      const g = rig({ dpr: d });
+      try {
+        FACES.setPerf(p);
+        S.forEach(([id, w, h], i) => g.panel(id, { x: i * 5000, w, h }));
+        g.attach(); settle(g);
+        const L = S.map(([, w, h]) => baseLevel(dEOf(d, p), w, h)), want = S.map(([, w, h], i) => [Math.round(w * L[i]), Math.round(h * L[i])]);
+        eq1(g.G.ups.map(t => [t.w, t.h]), want, `dpr ${d} ${p}: one base each at baseLevel(dE ${dEOf(d, p)})`);
+        const by = g.G.ups.map(t => t.bytes);
+        if (p === 'high') S.forEach(([id], i) => { hi[id] = by[i]; });
+        S.forEach(([id, w, h], i) => { if (w * h * Math.max(d, 1) ** 2 <= BASE_MAX_PX && d <= 3) assert.ok(Math.abs(by[i] / hi[id] - (dEOf(d, p) / d) ** 2) < 0.01, `${id} dpr ${d} ${p}: × ${(by[i] / hi[id]).toFixed(3)} ≈ (dE / dpr)²`); });
+        eq1(FACES.stats().bytes, by.reduce((a, b) => a + b, 0));
+      } finally { g.done(); }
+    }
+  }
+  const s55 = ['ctl', ...(['902', '902', '902', '902', '904a', '904b', '907a', '911', '911', '911', '911', '911a', '914', '921', '921', '921', '921', '921', '921a', '921a', '921b', '921b', '921b', '923', '995', '960', '962', '992', '993', '994', '903a', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '961'])];
+  const mb = (p, d) => s55.reduce((a, t) => { const [w, H] = FACES_9[t], h = H - BAR_H, L = baseLevel(dEOf(d, p), w, h); return a + Math.round(w * L) * Math.round(h * L) * 4 * 4 / 3; }, 0);
+  const r = [mb('medium', 2) / mb('high', 2), mb('low', 2) / mb('high', 2)];
+  assert.ok(r[0] <= 0.6 && r[1] <= 0.27, 'a System-55-sized set at dpr 2: Medium × ' + r[0].toFixed(3) + ' (G2 ≤ 0.6), Low × ' + r[1].toFixed(3) + ' (≤ 0.27)');
+});
+
+test('P windows: Low makes none at any zoom (no paint at a rest after a zoom-in — it never re-sharpens; its quads the bases alone); Medium\'s at ≤ dE · K_MAX, ≤ dE · WIN_HEAD · k, all together within 22.5e6 px (its budget level), only when they beat the base by WIN_GAIN', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    FACES.setPerf('low');
+    const A = g.panel('a', { w: 2432, h: 728 }), B = g.panel('b', { y: 800, w: 2432, h: 728 }), C = g.panel('c', { y: 1600, w: 2432, h: 728 });
+    g.attach(); settle(g);
+    eq1([g.G.ups.length, g.G.ups.map(t => t.w)], [3, [2432, 2432, 2432]], 'three bases at level 1');
+    const p0 = FACES.stats().paints;
+    for (const c of [{ k: 0.6 }, { k: 0.8 }, { k: 1 }, { k: 1.25, tx: -300 }, { k: 1.6, tx: 0 }, { k: 2, tx: -900, ty: -400 }, { k: 0.4, tx: 0, ty: 0 }, { k: 2 }]) {
+      g.W.end(c); settle(g);
+      eq1([FACES.stats().windows, FACES.stats().paints - p0, FACES.quads(g.W.rectOf, g.W.cam).length], [0, 0, 3], 'Low at ' + JSON.stringify(c) + ': no window, no paint');
+    }
+    void A; void B; void C;
+  } finally { g.done(); }
+  const h = rig({ vw: 1366, vh: 1024 });
+  try {
+    FACES.setPerf('medium');
+    const A = h.panel('a', { w: 2432, h: 728 }), B = h.panel('b', { y: 800, w: 2432, h: 728 }), C = h.panel('c', { y: 1600, w: 2432, h: 728 });
+    h.attach(); settle(h);
+    eq1(h.G.ups.map(t => t.w), [3648, 3648, 3648], 'bases at 1.5');
+    h.W.end({ k: 0.7 }); settle(h);
+    eq1(FACES.stats().windows, 0, '70 %: 1.5 · 2 · 0.7 = 2.1 ≤ 1.5 · WIN_GAIN — none');
+    const k = 0.9, cx = 1216, cy = 800 + BAR_H + 364;
+    h.W.end({ k, tx: 1366 / 2 - cx * k, ty: 1024 / 2 - cy * k }); settle(h);
+    const cam = h.W.cam, rects = [0, 800, 1600].map(y => ({ x: 0, y: y + BAR_H, w: 2432, h: 728 })), wins = rects.map(r => winRect(r, cam, 1366, 1024));
+    const sum = wins.reduce((a, w) => a + w.w * w.h, 0), Lw = winLevel(1.5, k, sum, 22.5e6);
+    assert.ok(Lw < 1.5 * WIN_HEAD * k && Lw > 2.25, 'three CS-80s at 90 %: Medium\'s budget level binds (' + Lw.toFixed(3) + ' < ' + (1.5 * WIN_HEAD * k) + ')');
+    const ws = h.G.ups.filter(t => !t.mips);
+    let px = 0; for (const t of ws) px += t.w * t.h;
+    eq1(ws.length, 3);
+    assert.ok(px <= 22.5e6 * 1.001, 'all windows within 22.5e6 px: ' + px);
+    const want = wins.map(w => { const L = winLevelOf(1.5, k, sum, w.w, w.h, undefined, TEX_MAX_DIM, 22.5e6); assert.ok(L <= Lw + 1e-9 && L <= 1.5 * K_MAX, 'L ' + L); return [Math.round(w.w * L), Math.round(w.h * L)].join('x'); }).sort();
+    eq1(ws.map(t => t.w + 'x' + t.h).sort(), want, 'each window at winLevelOf(dE 1.5, …, 22.5e6) — ≤ the budget level, ≤ dE · K_MAX');
+    h.W.end({ k: 2, tx: -300, ty: -100 }); settle(h);
+    const w2 = h.G.ups.at(-1);
+    eq1([w2.mips, FACES.stats().windows >= 1, w2.w <= Math.ceil(winRect(rects[0], h.W.cam, 1366, 1024).w * 1.5 * K_MAX) + 1], [false, true, true], '200 %: the window at ≤ dE · K_MAX = 3');
+    void A; void B; void C;
+  } finally { h.done(); }
+});
+
+test('P budgets: each preset\'s FACE_BUDGET (384 / 216 / 96 MB) — over it the off-screen faces are skipped / evicted farthest first, an on-screen face painted regardless', () => {
+  for (const p of PERFS) {
+    const g = rig({ vw: 1366, vh: 1024 });
+    try {
+      FACES.setPerf(p);
+      const L = baseLevel(dEOf(2, p), 4000, 2000), per = Math.round(Math.round(4000 * L) * Math.round(2000 * L) * 4 * 4 / 3), fit = Math.floor(TEX_Q[p].budget / per);
+      const P = [];
+      [['a', 0, true], ['b', 8000, false], ['c', 16000, false], ['d', 24000, false], ['e', 32000, false]].forEach(([id, x, on]) => P.push(g.panel(id, { x, w: 4000, h: 2000, on })));
+      g.attach(); settle(g); g.frames(4);
+      const s = FACES.stats(), want = P.map((M, i) => (i < fit ? 'gl' : 'svg'));
+      eq1([s.base, s.bytes <= TEX_Q[p].budget, P.map(M => g.st(M).mode)], [Math.min(fit, 5), true, want], `${p}: ${fit} of ${(per / 1e6).toFixed(1)} MB fit (nearest first), the rest skipped`);
+      // the farthest comes on screen: painted; the farthest off-screen face with a base evicted
+      g.W.set('e', { x: 32000, y: 0, w: 4000, h: 2000 + BAR_H }, true); g.W.emit('screen', { on: ['e'], off: [] }); settle(g);
+      const m = P.map(M => g.st(M).mode);
+      eq1([m[4], FACES.stats().bytes <= TEX_Q[p].budget || fit >= 5], ['gl', true], p + ': e on screen: painted');
+      if (fit < 5) eq1(m[fit - 1], 'svg', p + ': the farthest off-screen face with a base evicted');
+    } finally { g.done(); }
+  }
+});
+
+test('P live switch High → Low → Medium → High (§1.1): the windows go, every stale drawable base re-rastered one a frame, nearest the centre first, its old texture drawn until the new one lands — never a gl face with its SVG showing (a folded, an overlapped pair, a decode-failed and a stale-failing face in the set); a folded / overlapped face keeps its stale base until drawable, then its first rest; a burst defers; a stale upload that fails keeps its base (no fail) and is not re-queued; ≤ the preset\'s budget once drained; back at High = the start', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    const at = {}, mk = (id, p) => { at[id] = [p.x || 0, (p.y || 0) + BAR_H]; return g.panel(id, p); };
+    const B = mk('b', { x: 480, y: 380 }), Xs = mk('xs', { x: 100, y: 700, w: 300, h: 150 }), A = mk('a', { x: 950, y: 0 }), F = mk('f', { x: 0, y: 0 }),
+      O1 = mk('o1', { x: 0, y: 300 }), O2 = mk('o2', { x: 1000, y: 300 }), C = mk('c', { x: 20000, y: 0, on: false });
+    const qw = M => { const q = FACES.quads(g.W.rectOf, { k: 0.5 }).find(x => x.x === at[M.id][0] && x.y === at[M.id][1]); return q ? q.tex.w : 0; }; // its drawn base's width (0: no quad)
+    g.W.setCam({ k: 1, tx: 0, ty: 0 }); g.attach(); settle(g);
+    const warn = console.warn; console.warn = () => {};
+    let Xd;
+    try { Xd = mk('xd', { x: 500, y: 700 }); g.frames(); g.land(false); } finally { console.warn = warn; } // (its decode fails: the tier for good)
+    settle(g);
+    const s0 = FACES.stats();
+    eq1([s0.base, s0.windows, s0.gl, g.st(Xd).mode, qw(A), qw(B), qw(Xs), qw(C), bad(g)], [7, 6, 7, 'dom', 800, 800, 600, 800, []], 'High at 100 %: seven bases at L 2, a window for each on-screen face');
+    F.mod.setAttribute('data-cv-fold', ''); F.face.refresh();
+    g.W.set('o2', { x: 50, y: 320, w: 400, h: 200 + BAR_H }); O2.mod.style.left = '50px'; O2.mod.style.top = '320px'; at.o2 = [50, 320 + BAR_H]; O2.face.refresh();
+    settle(g);
+    eq1([g.st(F).mode, g.st(O1).mode, g.st(O2).mode, FACES.stats().base, FACES.stats().windows, bad(g)], ['gl', 'dom', 'dom', 7, 3, []], 'folded (gl, no quad); the pair overlapping (dom, the bases kept)');
+    // → Low: the windows go at once, nothing painted in the call; the stale drawable faces queued: B, Xs, A, then C (off screen)
+    g.G.fail = src => src.width === 300; // (Xs's level-1 raster: 300 × 150 — its upload fails)
+    let u = g.G.ups.length, t = g.G.tries;
+    const f0 = g.G.frees;
+    eq1(FACES.setPerf('low'), true);
+    eq1([FACES.stats().windows, FACES.stats().queued, g.G.ups.length - u, g.G.frees - f0, qw(B), qw(A), bad(g)], [0, 4, 0, 3, 800, 800, []], 'Low: the windows freed, four stale bases queued, the old textures drawn');
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const n = g.G.ups.length, tr = g.G.tries;
+      g.frames();
+      eq1([g.G.tries - tr, bad(g)], [1, []], 'frame ' + i + ': one raster, no gl face with its SVG showing');
+      seen.push(g.G.ups.length > n ? g.G.ups.at(-1).w : 'failed');
+      if (i === 0) eq1([qw(B), qw(Xs), qw(A)], [400, 600, 800], 'B swapped; the others still on their old textures');
+      if (i === 1) eq1([qw(Xs), g.st(Xs).mode, !!Xs.face.tier], [600, 'gl', false], 'Xs\'s re-raster failed: its old base kept, still gl (no fail, no tier)');
+    }
+    eq1(seen, [400, 'failed', 400, 400], 'B (nearest the centre), Xs, A, then C (off screen)');
+    let s = FACES.stats();
+    eq1([s.queued, s.base, s.windows, qw(B), qw(Xs), qw(A), qw(C), s.bytes <= TEX_Q.low.budget, bad(g)], [0, 7, 0, 400, 600, 400, 400, true, []], 'drained: within Low\'s budget; Xs on its level-2 base');
+    t = g.G.tries;
+    for (const k of [1, 1.6, 2, 0.6, 1]) { g.W.end({ k }); settle(g); }
+    eq1([g.G.tries - t, FACES.stats().windows], [0, 0], 'rests and a zoom-in at Low: nothing rastered (no window; Xs\'s level tried, not re-queued)');
+    // the folded face unfolds: its stale base drawn at once, re-rastered at its rest; the pair parts: likewise
+    F.mod.removeAttribute('data-cv-fold'); F.face.refresh();
+    eq1([g.st(F).mode, qw(F), bad(g)], ['gl', 800, []], 'unfolded: the stale base drawn (no SVG)');
+    g.frames(); eq1([qw(F), bad(g)], [400, []], 'its rest: re-rastered');
+    g.W.set('o2', { x: 1000, y: 300, w: 400, h: 200 + BAR_H }); O2.mod.style.left = '1000px'; O2.mod.style.top = '300px'; at.o2 = [1000, 300 + BAR_H]; g.W.emit('screen', { on: [], off: [] });
+    eq1([g.st(O1).mode, g.st(O2).mode, qw(O1), qw(O2), bad(g)], ['gl', 'gl', 800, 800, []], 'apart: gl at once on the stale bases');
+    g.frames(2); eq1([qw(O1), qw(O2), FACES.stats().queued, bad(g)], [400, 400, 0, []], 'their rest: one a frame');
+    // → Medium, a pinch starting mid-queue: deferred to the rest
+    u = g.G.ups.length;
+    FACES.setPerf('medium'); g.frames();
+    eq1([g.G.ups.length - u, g.G.ups.at(-1).w], [1, 600], 'Medium: B first, at L 1.5');
+    g.W.emit('movestart', {}); g.frames(3); g.landAll();
+    eq1([g.G.ups.length - u, FACES.stats().queued, bad(g)], [1, 0, []], 'a burst: nothing more (the queue dropped)');
+    t = g.G.tries;
+    g.W.end({ k: 1 }); settle(g);
+    s = FACES.stats();
+    eq1([qw(B), qw(Xs), qw(A), qw(F), qw(O1), qw(O2), qw(C), s.windows, s.queued, s.bytes <= TEX_Q.medium.budget, g.G.tries - t, bad(g)], [600, 450, 600, 600, 600, 600, 600, 6, 0, true, 12, []], 'drained at the rest: every base at L 1.5 (Xs too: a new level is tried again), a window per on-screen face — 6 bases + 6 windows, no more');
+    eq1(g.G.ups.filter(x => !x.mips).slice(-6).every(x => x.w <= 1200 && x.h <= 600), true, 'the windows at ≤ dE · K_MAX = 3');
+    // → High: as at the start
+    t = g.G.tries;
+    FACES.setPerf('high'); settle(g);
+    s = FACES.stats();
+    eq1([qw(B), qw(Xs), qw(A), qw(F), qw(C), s.windows, s.bytes, g.G.tries - t, bad(g)], [800, 600, 800, 800, 800, 6, s0.bytes, 13, []], 'High: every base at L 2, the windows at L 4 — the bytes of the start; 7 bases + 6 windows');
+  } finally { g.done(); }
+});
+
+test('P the budget counts every stale base at its new level (§1.1 (a)): High → Low over an off-screen face evicts none it would shrink (crediting only the job\'s own base, the first swap would have); Low → High grows within the budget; a High set too big for Low ends as a cold Low load — the nearest kept, the farther off-screen evicted, never an on-screen one', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    const P = [], mk = (id, x, on) => P.push(g.panel(id, { x, w: 4000, h: 2000, on }));
+    const per = Lv => Math.round(Math.round(4000 * Lv) * Math.round(2000 * Lv) * 4 * 4 / 3), Lh = baseLevel(2, 4000, 2000);
+    mk('a', 0, true); mk('b', 8000, false);
+    g.attach(); settle(g);
+    eq1([FACES.stats().bytes, FACES.stats().base], [2 * per(Lh), 2]);
+    assert.ok(2 * per(Lh) - per(Lh) + per(1) > TEX_Q.low.budget && 2 * per(1) <= TEX_Q.low.budget, 'the fixture: a\'s swap with b still at its High level is over 96 MB; both shrunk are not');
+    let f0 = g.G.frees;
+    FACES.setPerf('low'); settle(g);
+    eq1([FACES.stats().base, g.G.frees - f0, P.map(M => g.st(M).mode), FACES.stats().bytes], [2, 2, ['gl', 'gl'], 2 * per(1)], 'both re-rastered, nothing evicted (the two frees: their own old bases)');
+    mk('c', 16000, false); mk('d', 24000, false); settle(g);
+    eq1([P.map(M => g.st(M).mode), FACES.stats().bytes], [['gl', 'gl', 'svg', 'svg'], 2 * per(1)], 'at Low the two farther off-screen faces do not fit');
+    FACES.setPerf('high'); settle(g);
+    eq1([FACES.stats().base, FACES.stats().bytes, P.map(M => g.st(M).mode)], [4, 4 * per(Lh), ['gl', 'gl', 'gl', 'gl']], 'Low → High: two grow, two come (≤ 384 MB)');
+    f0 = g.G.frees;
+    FACES.setPerf('low'); settle(g);
+    eq1([FACES.stats().base, FACES.stats().bytes, P.map(M => g.st(M).mode), g.G.frees - f0], [2, 2 * per(1), ['gl', 'gl', 'svg', 'svg'], 4], 'High → Low with four: a cold Low load — a, b shrunk; c, d evicted at a\'s job (four frees), never re-made');
+  } finally { g.done(); }
+});
+
+test('P the loss path: an upload that returns null with the context not ready (cv-gl: lost under the upload) is no fail — a cold face stays on its SVG (no tier), a stale one keeps its base — and the next rest after the restore makes them', () => {
+  const g = rig();
+  try {
+    const A = g.panel('a');
+    g.attach(); settle(g);
+    g.G.fail = true; g.G.ready = false;
+    const B = g.panel('b', { x: 1000 }); settle(g); // B's cold base: lost under the upload
+    eq1([g.st(A).mode, g.st(B).mode, !!B.face.tier, FACES.stats().base, g.G.tries], ['gl', 'svg', false, 1, 2], 'cold: no fail (no tier), the SVG');
+    FACES.setPerf('low'); g.frames(2); // A's stale re-raster: lost too
+    eq1([g.st(A).mode, !!A.face.tier, g.G.ups.at(-1).w, bad(g)], ['gl', false, 800, []], 'stale: the base kept, no fail');
+    g.G.fail = false; g.G.ready = true;
+    FACES.restored(); settle(g);
+    eq1([g.st(A).mode, g.st(B).mode, g.G.ups.slice(-2).map(x => x.w).sort().join()], ['gl', 'gl', '400,400'], 'restored: both made at Low');
+  } finally { g.done(); }
+});
+
+test('P the side limit (G3): every real face (the keyboards, the 900 Series / System 55 modules, the authored layouts) through baseLevel(dE, w, h, 4096) at each preset × dpr 1 / 1.5 / 2 / 3 — every side ≤ 4096 (the wide four at dpr 2 a level lower, the OB-Xa / DX7 exactly 4096); through a fake gl whose maxTex is 4096 every upload (bases, windows) ≤ 4096; texSide = min(TEX_MAX_DIM, maxTex)', async () => {
+  const P = await import('../cv-panel.js?v=9'), { MODELS } = await import('../models.js?v=9');
+  const all = [...Object.entries(FACES_1I), ...Object.entries(FACES_9)].map(([id, [w, H]]) => [id, w, H - BAR_H]);
+  for (const id of P.HW_IDS) { const L = P.layoutOf(id), m = MODELS.find(x => x.id === id); if (L && m) { const s = P.sizeOf(L, m); all.push([id + ' (authored)', s.w, s.h - BAR_H]); } }
+  for (const [id, w, h] of all) for (const d of [1, 1.5, 2, 3]) for (const p of PERFS) {
+    const L = baseLevel(dEOf(d, p), w, h, 4096);
+    assert.ok(Math.round(w * L) <= 4096 && Math.round(h * L) <= 4096, `${id} at dpr ${d} ${p}: ${Math.round(w * L)} × ${Math.round(h * L)}`);
+  }
+  const at2 = id => { const [w, H] = FACES_1I[id]; return [Math.round(w * 2), +baseLevel(2, w, H - BAR_H, 4096).toFixed(4), Math.round(w * baseLevel(2, w, H - BAR_H, 4096))]; };
+  eq1(['modular', 'cs80', 'jupiter8', 'juno60', 'obxa', 'dx7'].map(at2), [[4352, 1.8824, 4096], [4864, 1.6842, 4096], [4288, 1.9104, 4096], [4288, 1.9104, 4096], [4096, 2, 4096], [4096, 2, 4096]], 'the wide four a level lower; OB-Xa / DX7 exactly 4096');
+  eq1([baseLevel(2, 2176, 1240), baseLevel(2, 2176, 1240, 0), baseLevel(2, 2176, 1240, 'x')], [2, 2, 2], 'no side limit given: TEX_MAX_DIM (today)');
+  near(winLevelOf(2, 2, 0, 2432, 300, 16e6, 4096), 4096 / 2432, 'a window\'s side too');
+  for (const p of PERFS) {
+    const g = rig({ vw: 1366, vh: 1024 });
+    try {
+      FACES.setPerf(p);
+      g.G.maxTex = 4096;
+      Object.entries(FACES_1I).forEach(([id, [w, H]], i) => g.panel(id, { x: (i % 3) * 3000, y: Math.floor(i / 3) * 1600, w, h: H - BAR_H }));
+      g.attach(); settle(g);
+      eq1([FACES.stats().base, FACES.stats().texSide, g.G.ups.every(t => t.w <= 4096 && t.h <= 4096)], [12, 4096, true], p + ': twelve bases, every side ≤ 4096');
+      for (const c of [{ k: 1, tx: 0, ty: 0 }, { k: 2, tx: -100, ty: -100 }, { k: 1.3, tx: -3000, ty: -200 }]) { g.W.end(c); settle(g); }
+      eq1(g.G.ups.every(t => t.w <= 4096 && t.h <= 4096), true, p + ': the windows too (' + g.G.ups.filter(t => !t.mips).length + ')');
+      g.G.maxTex = 16384; eq1(FACES.stats().texSide, TEX_MAX_DIM, 'a 16384 device: still TEX_MAX_DIM');
+    } finally { g.done(); }
+  }
+});
+
+test('P a device-ratio change (cv-world\'s watchDpr → FACES.recheck()) re-rasters every stale base at the new ratio, one a frame (today a face kept the ratio it was made at); a level that failed is tried again only when the preset or the level changes', () => {
+  const g = rig({ dpr: 2 });
+  try {
+    const A = g.panel('a'), B = g.panel('b', { x: 1000 });
+    g.attach(); settle(g);
+    eq1(g.G.ups.map(t => t.w), [800, 800]);
+    g.win.devicePixelRatio = 1; FACES.recheck();
+    g.frames(); eq1(g.G.ups.length, 3, 'one a frame');
+    g.frames(); eq1([g.G.ups.slice(2).map(t => t.w), FACES.stats().bytes, bad(g)], [[400, 400], 2 * Math.round(400 * 200 * 4 * 4 / 3), []], 'both at level 1');
+    FACES.setPerf('medium'); g.win.devicePixelRatio = 3; FACES.recheck(); settle(g);
+    eq1(g.G.ups.slice(4).map(t => t.w), [600, 600], 'dpr 3 at Medium: dE 1.5');
+    g.G.fail = true; FACES.setPerf('high'); settle(g);
+    eq1([FACES.stats().queued, g.st(A).mode, g.G.ups.length], [0, 'gl', 6], 'level 3 fails: the level-1.5 bases kept');
+    g.G.fail = false; g.W.end({ k: 0.3 }); settle(g); FACES.recheck(); settle(g);
+    eq1(g.G.ups.length, 6, 'tried: not re-queued at a rest or a recheck');
+    g.win.devicePixelRatio = 2; FACES.recheck(); settle(g);
+    eq1(g.G.ups.slice(6).map(t => t.w), [800, 800], 'a new ratio, a new level: made');
+    void B;
+  } finally { g.done(); }
+});
+
+test('P stats: under / underMin count the textures below the screen\'s own 1:1 (a base at L < dpr · min(k, 1), a window at L < dpr · k): none at High, Medium / Low by design; soft / softMin stay relative to dE (the raster ceilings only)', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    g.panel('a'); g.panel('b', { x: 600 });
+    g.attach(); settle(g);
+    for (const k of [0.3, 1, 1.6]) { g.W.end({ k }); settle(g); const s = FACES.stats(); eq1([s.under, s.underMin, s.soft], [0, 1, 0], 'High at ' + k); }
+    FACES.setPerf('low'); g.W.end({ k: 0.3 }); settle(g);
+    eq1([FACES.stats().under, FACES.stats().underMin], [0, 1], 'Low at 30 %: 1 / (2 · 0.3) ≥ 1');
+    g.W.end({ k: 1 }); settle(g);
+    eq1([FACES.stats().under, FACES.stats().underMin, FACES.stats().soft], [2, 0.5, 0], 'Low at 100 %: both bases at half the screen\'s ratio');
+    FACES.setPerf('medium'); g.W.end({ k: 2 }); settle(g);
+    const s = FACES.stats();
+    eq1([s.windows, s.soft, s.under, s.underMin], [2, 0, 4, 0.75], 'Medium at 200 %: the windows at dE · k = 3 (not soft), under the screen\'s 4 (0.75), the bases 1.5 / 2');
+  } finally { g.done(); }
+});
+
+/* ---- (P review 2, F1) a rack whose faces exceed the budget settles. The review's repro (200 modules, dpr 2, every preset): an
+   off-screen face that cannot fit — even with every farther face freed — evicted the farther ones anyway, they re-queued, fitted
+   again in their own freed room, and each landing re-planned the face that cannot fit: ≈ 7 rasters, uploads and frees a second, forever.
+   The fixture at Low (96 MB; dE 1 at dpr 2): two on-screen faces of 25.6 MB, X (nearer, off screen, 46.1 MB: 51.2 + 46.1 > 96 even
+   with every farther face gone) and S (farther, 5.3 MB, fits beside the two) — the cycle's exact shape */
+const idle = (g, n = 120) => { // n quiet frames (loads landed): what the page does at a rest — the counters must not move
+  const a = [FACES.stats().paints, g.G.ups.length, g.G.frees, g.G.tries];
+  for (let i = 0; i < n; i++) { g.frames(); g.landAll(); }
+  const b = [FACES.stats().paints, g.G.ups.length, g.G.frees, g.G.tries];
+  return b.map((v, i) => v - a[i]);
+};
+function rackF1(g) {
+  FACES.setPerf('low');
+  const P = { o1: g.panel('o1', { x: 0, w: 2400, h: 2000 }), o2: g.panel('o2', { x: 3000, w: 2400, h: 2000 }), x: g.panel('x', { x: 6000, w: 3600, h: 2400, on: false }), s: g.panel('s', { x: 40000, w: 1000, h: 1000, on: false }) };
+  const by = (w, h) => Math.round(w * h * 4 * 4 / 3);
+  assert.ok(2 * by(2400, 2000) + by(1000, 1000) <= TEX_Q.low.budget && 2 * by(2400, 2000) + by(3600, 2400) > TEX_Q.low.budget, 'the fixture: O1 + O2 + S fit, O1 + O2 + X do not (even without S)');
+  return P;
+}
+test('R2-F1 a rack past the face budget goes idle: an off-screen face that cannot fit frees nothing and is not re-queued — after the queue drains, 120 frames make 0 paints / 0 uploads / 0 frees and S keeps its base; a rest re-asks without a paint; a bigger budget (setPerf) brings X, then back to Low it ends as it started; a free (O2 unmounted) brings it too', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    const P = rackF1(g), modes = () => Object.values(P).map(M => g.st(M).mode).join();
+    g.attach(); settle(g, 60);
+    eq1([modes(), FACES.stats().queued, FACES.stats().base], ['gl,gl,svg,gl', 0, 3], 'o1, o2, s have their bases; x (it cannot fit) shows its SVG');
+    eq1(idle(g), [0, 0, 0, 0], 'a rest: no paint, no upload, no free, no try');
+    eq1([modes(), FACES.stats().queued, !raf.pending], ['gl,gl,svg,gl', 0, true], 'S kept its base; nothing queued, no frame pending');
+    // a camera rest: the plan asks again — still no room: still nothing made (S not freed for an X that cannot fit)
+    g.W.end({ k: 0.3, tx: -20 }); settle(g, 20);
+    eq1([idle(g), modes()], [[0, 0, 0, 0], 'gl,gl,svg,gl'], 'a camera rest: idle again');
+    // a budget change: High (384 MB, dE 2) — every base re-rastered at its new level and X now fits
+    FACES.setPerf('high'); settle(g, 60);
+    eq1([modes(), FACES.stats().base, FACES.stats().queued], ['gl,gl,gl,gl', 4, 0], 'High: all four');
+    eq1(idle(g), [0, 0, 0, 0], 'and idle');
+    // back to Low: the two on-screen faces shrink (their job frees the farther ones: the budget), S fits again, X does not
+    FACES.setPerf('low'); settle(g, 60);
+    eq1([modes(), FACES.stats().base, FACES.stats().bytes <= TEX_Q.low.budget], ['gl,gl,svg,gl', 3, true], 'Low again: as at the start');
+    eq1(idle(g), [0, 0, 0, 0], 'idle');
+    // a free: O2 unmounted (no camera move, no preset change) — X fits beside O1 and S
+    P.o2.face.destroy(); g.W.del('o2'); settle(g, 60);
+    eq1([g.st(P.x).mode, g.st(P.s).mode, g.st(P.o1).mode, FACES.stats().bytes <= TEX_Q.low.budget], ['gl', 'gl', 'gl', true], 'a free brings X');
+    eq1(idle(g), [0, 0, 0, 0], 'idle');
+  } finally { g.done(); }
+});
+
+test('R2-F1 enforce frees only when the freeing makes the room (the guard under the plan): X\'s image lands after the plan left it out — its job re-queues itself from the load — S keeps its base, nothing is freed, X waits on its SVG; and no re-queue after', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    const P = rackF1(g);
+    g.attach();
+    g.frames(4); // the four loads start, one a frame, nearest first: o1, o2, x, s
+    eq1(g.R.imgs.length, 4, 'four images pending');
+    for (const i of [0, 1, 3]) g.R.imgs[i].onload(); // x's stays pending
+    g.frames(12);
+    eq1([g.st(P.o1).mode, g.st(P.o2).mode, g.st(P.s).mode, g.st(P.x).mode, FACES.stats().base], ['gl', 'gl', 'gl', 'svg', 3], 'o1, o2, s landed; x waits for its image');
+    const f0 = g.G.frees, p0 = FACES.stats().paints;
+    g.R.imgs[2].onload(); // the late image: x's job (queued before the plan excluded it) runs into the budget
+    g.frames(6);
+    eq1([g.G.frees - f0, FACES.stats().paints - p0, g.st(P.s).mode, g.st(P.x).mode, FACES.stats().base], [0, 0, 'gl', 'svg', 3], 'nothing freed for an x that cannot fit; s keeps its base');
+    eq1(idle(g), [0, 0, 0, 0], 'idle');
+  } finally { g.done(); }
+});
+
+/* ---- (P review 2, F5) the side limit shrinks a window, never drops it: ?texmax=4096 on High — a wide face at 150 % had no window
+   (the 25 % margin pushed its side past 4096: 4096 / 1440 = 2.84 ≤ 1.5 × the base) and sat at 0.67 of 1:1 with under = 0 */
+test('R2-F5 a 4096-texture device at High (dpr 2): every real face (the keyboards, the 900 Series / System 55 modules) gets a window at k = 1.5 with the camera on the middle of the face (1366 × 1024 and 1440 × 900 viewports: the 25 % margin both sides) — every side ≤ 4096, its level ≥ dpr · k (1:1) — where it was none for the wide faces', () => {
+  const all = [...Object.entries(FACES_1I), ...Object.entries(FACES_9)].map(([id, [w, H]]) => [id, w, H - BAR_H]);
+  const lvlOf = t => { const di = t.calls.find(c => c[0] === 'drawImage'); return t.w / +di[4]; }; // (the window raster: drawImage(img, sx, sy, sw, sh, 0, 0, W, H))
+  const miss = [];
+  for (const [vw, vh] of [[1366, 1024], [1440, 900]]) for (const [id, w, h] of all) {
+    const g = rig({ vw, vh });
+    try {
+      g.G.maxTex = 4096;
+      const M = g.panel(id, { w, h });
+      g.attach(); settle(g);
+      g.W.end({ k: 1.5, tx: vw / 2 - 1.5 * w / 2, ty: vh / 2 - 1.5 * (BAR_H + h / 2) }); settle(g); // (the middle of the face at the middle of the viewport)
+      const s = FACES.stats(), wins = g.G.ups.filter(t => !t.mips);
+      const ok1 = s.windows === 1 && wins.length >= 1 && g.G.ups.every(t => t.w <= 4096 && t.h <= 4096) && lvlOf(wins.at(-1)) >= 3 - 1e-9 && g.st(M).mode === 'gl';
+      if (!ok1) miss.push(`${id} ${vw}×${vh}: windows ${s.windows}, ${wins.length ? 'L ' + lvlOf(wins.at(-1)).toFixed(3) : 'none'}`);
+    } finally { g.done(); }
+  }
+  eq1(miss, [], 'every face has its window');
+});
+
+test('R2-F5 maths: winRect takes a margin (default WIN_MARGIN); winFit shrinks it — in WIN_SHRINK steps toward the visible part — only when the side limit alone holds the level below min(what the other limits allow, dpr · k), else it is winRect + winLevelOf as before; the review\'s Prophet-5 (1920 × 824, 1440 × 900, k 1.5, dpr 2, 4096): the 25 % window is 1536 wide (2.67 < 3), the fit 1280 wide at 3.2; winOwed waives the gain rule only for a side-limited window that brings a sub-1:1 base to 1:1', () => {
+  const R = { x: 0, y: 0, w: 1920, h: 824 }, cam = { tx: 720 - 1.5 * 960, ty: 450 - 1.5 * 412, k: 1.5 }, VW = 1440, VH = 900;
+  const w0 = winRect(R, cam, VW, VH), w1 = winRect(R, cam, VW, VH, WIN_MARGIN), w2 = winRect(R, cam, VW, VH, 0.15), w3 = winRect(R, cam, VW, VH, 0);
+  eq1([w0.w, w1.w, w2.w, w3.w], [1536, 1536, 1280, 1024], 'the margin: default = WIN_MARGIN; 0.15; none (the visible part snapped outward)');
+  eq1(winRect(R, cam, VW, VH, -1).w, 1536, 'a negative / garbage margin: the default');
+  const sum = w0.w * w0.h, f = CF.winFit(R, cam, VW, VH, 2, sum, undefined, 4096, WIN_BUDGET_PX);
+  assert.ok(winLevelOf(2, 1.5, sum, w0.w, w0.h, undefined, 4096, WIN_BUDGET_PX) < 3, 'before: the 25 % window\'s level 2.67 < 1:1 (3) and ≤ 1.5 × the base (3)');
+  eq1([f.wr.w, +f.L.toFixed(4), f.bound, Math.round(f.wr.w * f.L) <= 4096, f.L >= 3], [1280, 3.2, true, true, true], 'after: the margin shrunk to 0.15, level 4096 / 1280');
+  assert.ok(CF.winOwed(f, 2, 2, 1.5), 'a side-limited window bringing the 2.0 base to 1:1 (3.0): worth its paint although 3.2 ≤ 1.5 × 2');
+  assert.ok(!CF.winOwed(f, 2, 2, 1), 'at k = 1 the base is 1:1 already (L0 ≥ d · k): the gain rule decides');
+  assert.ok(!CF.winOwed(CF.winFit(R, cam, VW, VH, 2, sum, undefined, 8192, WIN_BUDGET_PX), 2, 2, 1.5), 'not bound at 8192: no waiver');
+  // nothing binds (8192, none): exactly as before — the same rect, the same level, not bound
+  for (const max of [8192, undefined, 0]) {
+    const u = CF.winFit(R, cam, VW, VH, 2, sum, undefined, max, WIN_BUDGET_PX);
+    eq1([u.wr, u.L === winLevelOf(2, 1.5, sum, w0.w, w0.h, undefined, max, WIN_BUDGET_PX), u.bound], [w0, true, false], 'max ' + max + ': winRect + winLevelOf as before');
+  }
+  // a viewport too wide for any window to reach 1:1 (2400 css px: 1600 world px visible = 4800 device px): the margin gone, as high as the limit lets it
+  const cam2 = { tx: 1200 - 1.5 * 1000, ty: 0, k: 1.5 }, R2 = { x: 0, y: 0, w: 2000, h: 400 }, n = winRect(R2, cam2, 2400, 1000, 0), s2 = n.w * n.h;
+  const g = CF.winFit(R2, cam2, 2400, 1000, 2, s2, undefined, 4096, WIN_BUDGET_PX);
+  eq1([g.wr, g.bound, g.L < 3, Math.round(g.wr.w * g.L) <= 4096], [n, true, true, true], 'no margin reaches 1:1: the visible part alone, as high as the side limit lets it');
+  eq1(CF.winFit(R, { tx: 1e6, ty: 0, k: 1.5 }, VW, VH, 2, 1, undefined, 4096, WIN_BUDGET_PX), null, 'off screen: null');
+});
+
+test('R2-F5 under counts a base drawn above k = 1 with no window (L < dpr · k): High on a viewport too wide for the side limit (2400 css px: the visible part at 150 % is 4800 device px > 4096, so no window reaches 1:1 or the base\'s 1.5 ×) at 150 % — the face sits at 0.67 of 1:1 and under / underMin say so; an off-screen face is not counted; at 100 % the base is 1:1: not under', () => {
+  const g = rig({ vw: 2400, vh: 1000 });
+  try {
+    g.G.maxTex = 4096;
+    g.panel('a', { w: 2000, h: 400 }); g.panel('b', { x: 20000, w: 2000, h: 400, on: false });
+    g.attach(); settle(g);
+    g.W.end({ k: 1.5, tx: 0, ty: 0 }); settle(g);
+    const s = FACES.stats();
+    eq1([s.windows, s.under, +s.underMin.toFixed(3)], [0, 1, 0.667], 'a: no window worth its paint (the visible part alone is 1600 world px: level 2.56 < 3); under 1 (b is off screen), 2 / 3 of 1:1');
+    g.W.end({ k: 1 }); settle(g);
+    eq1([FACES.stats().under, FACES.stats().underMin], [0, 1], 'at 100 % the base is 1:1: not under');
+  } finally { g.done(); }
+});
+
+test('P at size (§3.2, recorded): 512 faces — a cold load through the queue (a plan after every landing), recheck() (the overlap pass), FACES.recheck() (refresh + overlap + plan), a High → Low switch drained; timed (ms), reported past a frame', (t) => {
+  const g = rig({ vw: 1440, vh: 900 });
+  try {
+    const N = 512, cols = 32;
+    for (let i = 0; i < N; i++) g.panel('m' + i, { x: (i % cols) * 140, y: Math.floor(i / cols) * 520, w: 128, h: 472, on: Math.floor(i / cols) < 2 });
+    const T = f => { const t0 = performance.now(); f(); return performance.now() - t0; };
+    let cold = 0, frames = 0;
+    cold = T(() => { g.attach(); for (; frames < 4 * N && (FACES.stats().queued || raf.pending); frames++) { g.frames(); g.landAll(); } });
+    const nb = FACES.stats().base;
+    assert.ok(nb >= 2 * cols && FACES.stats().bytes <= FACE_BUDGET_BYTES, 'the on-screen bases, the rest to the budget: ' + nb);
+    const rc = T(() => CF.recheck()), frc = T(() => FACES.recheck());
+    const f1 = T(() => { g.frames(); });
+    FACES.setPerf('low');
+    let sw = 0, sf = 0; for (; sf < 4 * N && FACES.stats().queued; sf++) sw += T(() => { g.frames(); });
+    eq1([FACES.stats().queued, FACES.stats().bytes <= TEX_Q.low.budget], [0, true], 'the switch drained');
+    const r = { faces: N, bases: nb, coldMs: +cold.toFixed(1), coldFrames: frames, perLanding: +(cold / N).toFixed(3), recheckMs: +rc.toFixed(2), facesRecheckMs: +frc.toFixed(2), frameMs: +f1.toFixed(2), switchMs: +sw.toFixed(1), switchFrames: sf, switchPerFrame: +(sw / Math.max(1, sf)).toFixed(3) };
+    t.diagnostic('P at size: ' + JSON.stringify(r));
+    if (process.env.TRACE) console.log(JSON.stringify(r));
+    assert.ok(isFinite(r.coldMs) && isFinite(r.switchMs), 'recorded');
+  } finally { g.done(); }
 });

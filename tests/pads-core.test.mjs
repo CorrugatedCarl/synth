@@ -31,15 +31,16 @@ function project() {
 }
 
 /* ---------------------------------------------------------------- normPads */
-test('normPads: anything not an array → []; a module → every field at its default; ids pd1…pd8 (a bad / duplicate id the lowest free); ≤ 8 modules', () => {
+test('normPads: anything not an array → []; a module → every field at its default; ids pd1…pd64 (a bad / duplicate id the lowest free); ≤ 64 modules (IMPL-P §3.1; was 8)', () => {
   for (const x of [undefined, null, 0, 'pads', {}, { length: 3 }, true]) assert.deepEqual(P.normPads(x), []);
   const [M] = P.normPads([{}]);
   assert.deepEqual(Object.keys(M), ['id', 'name', 'rows', 'cols', 'size', 'vel', 'fv', 'light', 'shape', 'out', 'pads']);
   assert.deepEqual([M.id, M.name, M.rows, M.cols, M.size, M.vel, M.fv, M.light, M.shape, M.out], ['pd1', 'Pads 1', 4, 4, 1, 'pos', 100, 'both', 'sq', { prof: 'off', port: '' }]);
   assert.deepEqual([M.pads.length, M.pads.every(p => p === null)], [64, true]);
-  const nine = P.normPads(range(9).map(i => ({ id: 'pd' + (i + 1), name: 'M' + i })));
-  assert.deepEqual(nine.map(m => m.id), ['pd1', 'pd2', 'pd3', 'pd4', 'pd5', 'pd6', 'pd7', 'pd8'], '9 modules: the first 8');
-  const ids = P.normPads([{ id: 'pd3' }, { id: 'pd3' }, { id: 'pd9' }, { id: 'x' }, 7, null, [], { id: 'pd1' }, { id: 'PD2' }]);
+  const nine = P.normPads(range(70).map(i => ({ id: 'pd' + (i + 1), name: 'M' + i })));
+  assert.deepEqual(nine.map(m => m.id), range(64).map(i => 'pd' + (i + 1)), '70 modules: the first 64');
+  assert.equal(P.MAX_MODS, 64);
+  const ids = P.normPads([{ id: 'pd3' }, { id: 'pd3' }, { id: 'pd65' }, { id: 'x' }, 7, null, [], { id: 'pd1' }, { id: 'PD2' }]);
   assert.deepEqual(ids.map(m => m.id), ['pd3', 'pd2', 'pd4', 'pd5', 'pd1', 'pd6'], 'valid unique ids kept; others the lowest free; non-objects dropped');
   assert.deepEqual(ids.map(m => m.name), ['Pads 3', 'Pads 2', 'Pads 4', 'Pads 5', 'Pads 1', 'Pads 6']);
   assert.equal(P.freeId(ids), 'pd7');
@@ -130,7 +131,7 @@ test('normPads: idempotent over hostile and random input; never throws (getters 
     const a = P.normPads(x), b = P.normPads(a);
     assert.deepEqual(b, a, 'idempotent, run ' + r);
     assert.deepEqual(JSON.parse(JSON.stringify(a)), a, 'JSON-stable, run ' + r);
-    assert.ok(a.length <= 8 && new Set(a.map(m => m.id)).size === a.length && a.every(m => P.PAD_ID.test(m.id)));
+    assert.ok(a.length <= 64 && new Set(a.map(m => m.id)).size === a.length && a.every(m => P.PAD_ID.test(m.id)));
     const keys = new Set();
     for (const m of a) {
       assert.ok(m.rows >= 1 && m.rows <= 8 && m.cols >= 1 && m.cols <= 8 && [0, 1, 2].includes(m.size) && m.fv >= 1 && m.fv <= 127 && m.pads.length === 64);
@@ -377,8 +378,11 @@ test('modValue (§5.2): every mode × press / pressure / release — gate hi / h
   assert.deepEqual(run(mk('tog', 0.25, 0.5), [{ e: 'press' }, { e: 'press' }]), [[0.5, true], [0.25, false]]);
   assert.deepEqual(P.modValue(mk('gate'), { e: 'nope' }, { v: 0.4, on: true }), { v: 0.4, on: true });
   assert.deepEqual([P.modBright(mk('vel'), 0), P.modBright(mk('vel'), 1), +P.modBright(mk('vel', 0.2, 0.6), 0.4).toFixed(6), P.modBright(mk('vel', 0.5, 0.5), 0.5)], [0.22, 1, 0.61, 0.22]);
-  assert.deepEqual([P.padSrc('pd1', 12), P.padOfSrc('pd1.p12'), P.padOfSrc('pd8.p63'), P.padOfSrc('pd9.p1'), P.padOfSrc('pd1.p64'), P.padOfSrc('pd1.p07'), P.padOfSrc('pd1.k1')],
-    ['pd1.p12', { id: 'pd1', i: 12 }, { id: 'pd8', i: 63 }, null, null, null, null]);
+  assert.deepEqual([P.padSrc('pd1', 12), P.padOfSrc('pd1.p12'), P.padOfSrc('pd64.p63'), P.padOfSrc('pd65.p1'), P.padOfSrc('pd1.p64'), P.padOfSrc('pd1.p07'), P.padOfSrc('pd1.k1')],
+    ['pd1.p12', { id: 'pd1', i: 12 }, { id: 'pd64', i: 63 }, null, null, null, null]);
+  // IMPL-P §3.1: pd1…pd64 are modules (PAD_ID, padOfSrc), pd0 / pd65 / pd01 are not
+  for (const n of [1, 9, 10, 11, 16, 17, 32, 59, 60, 63, 64]) assert.deepEqual([P.PAD_ID.test('pd' + n), P.padOfSrc('pd' + n + '.p0')], [true, { id: 'pd' + n, i: 0 }], 'pd' + n);
+  for (const x of ['pd0', 'pd65', 'pd99', 'pd100', 'pd01', 'pd1x', 'PD1', 'pd', 'pd-1', 'xpd1']) assert.deepEqual([P.PAD_ID.test(x), P.padOfSrc(x + '.p0')], [false, null], x);
 });
 
 /* ---------------------------------------------------------------- colours */

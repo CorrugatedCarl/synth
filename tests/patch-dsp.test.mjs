@@ -542,7 +542,7 @@ test('schedule: hostile payloads — each offending item dropped with its reason
   const { sched, F } = SC;
   const P = port.bind(null, F);
   for (const bad of [null, 7, 'x', {}, { mods: 3, cords: [] }, { mods: [], cords: null }]) assert.deepEqual(sched(bad, F).why, ['graph']);
-  const pg = { v: 1, f: 'stub', mods: [[0, 'ctl', -1], [1, 'osc', -1], [1, 'vcf', -1], [2, 'nope', -1], 'x', [-1, 'osc'], [5000, 'osc'], [3, 'gn', 7], [4, 'slv', 1], [5, 'vca', -1]],
+  const pg = { v: 1, f: 'stub', mods: [[0, 'ctl', -1], [1, 'osc', -1], [1, 'vcf', -1], [2, 'nope', -1], 'x', [-1, 'osc'], [1000000, 'osc'], [3, 'gn', 7], [4, 'slv', 1], [5, 'vca', -1]],
     cords: [[1, P('osc', 'saw'), 5, P('vca', 'i1'), 1], [9, 0, 5, 0, 1], [2, 0, 5, 0, 1], [1, 99, 5, 0, 1], [1, P('osc', 'f1'), 5, P('vca', 'i1'), 1],
       [1, P('osc', 'saw'), 5, P('vca', 'o1'), 1], [0, P('ctl', 'ks'), 5, P('vca', 'c1'), 1], [1, P('osc', 'saw'), 5, P('vca', 'c1'), NaN], 'c',
       [1, P('osc', 'sq'), 5, P('vca', 'c1'), 9], [5, P('vca', 'o2'), 0, P('ctl', 'out')], [0, P('ctl', 'a1'), 0, P('ctl', 'a2'), 1]] };
@@ -554,13 +554,38 @@ test('schedule: hostile payloads — each offending item dropped with its reason
   assert.deepEqual([...new Set(s.nodes.map(x => x[0]))], [0, 1, 3, 4, 5], 'the duplicate n, the unknown type and the bad entries dropped');
   const e = s.edges.map(([u, v]) => s.nodes[u].join('.') + '>' + s.nodes[v].join('.')).sort();
   assert.deepEqual(e, ['1.0>5.0', '5.0>0.5'], 'saw → i1 and sq → c1 (g 9 → 4) kept, the rest dropped');
-  // limits: 64 modules, 256 connections
+  // limits (IMPL-P §3: guards, nothing is sized by them): 1024 modules, 8192 connections (was 64 / 256); the number bound 999999 (was 4096)
   const big = { mods: [[0, 'ctl', -1]], cords: [] };
-  for (let k = 1; k < 80; k++) big.mods.push([k, 'gn', -1]);
-  for (let k = 0; k < 300; k++) big.cords.push([1 + (k % 60), P('gn', 'y'), 1 + ((k * 7) % 60), P('gn', 'x1'), 1]);
+  for (let k = 1; k < 1100; k++) big.mods.push([k, 'gn', -1]);
+  for (let k = 0; k < 8300; k++) big.cords.push([1 + (k % 1000), P('gn', 'y'), 1 + ((k * 7 + 1) % 1000), P('gn', 'x1'), 1]);
   const sb = sched(big, F);
-  assert.equal(new Set(sb.nodes.map(x => x[0])).size, 64);
-  assert.equal(sb.why.filter(w => w === 'limit').length, 16 + 44);
+  assert.equal(new Set(sb.nodes.map(x => x[0])).size, 1024);
+  assert.equal(sb.why.filter(w => w === 'limit').length, 76 + 108);
+});
+
+test('schedule (IMPL-P §3.1, skeptic #1): the guards — module numbers to 999999 (1000000 and a non-integer are \'mod\'), 1024 modules and 8192 connections exactly, one more is \'limit\'', () => {
+  const { sched, F } = SC;
+  const P = port.bind(null, F), mk = (nm, nc, num = k => k) => {
+    const pg = { mods: [[0, 'ctl', -1]], cords: [] };
+    for (let k = 1; k < nm; k++) pg.mods.push([num(k), 'gn', -1]);
+    for (let k = 0; k < nc; k++) pg.cords.push([num(1 + (k % (nm - 1))), P('gn', 'y'), num(1 + ((k * 7 + 3) % (nm - 1))), P('gn', 'x1'), 1]);
+    return pg;
+  };
+  for (const n of [4095, 4096, 4097, 5000, 9999, 10000, 123456, 999999]) {                // a module numbered n: kept, its cords kept, no reason
+    const pg = pgOf(F, [[0, 'ctl'], [1, 'osc'], [n, 'vca']], [[1, 'saw', n, 'i1'], [n, 'o1', 0, 'out']]), s = sched(pg, F);
+    assert.deepEqual(s.why, [], 'm' + n);
+    assert.deepEqual(s.nodes.filter(x => x[0] === n).length > 0, true, 'm' + n + ' scheduled');
+  }
+  for (const n of [1000000, 1e9, -1, 1.5, '7', null, NaN]) assert.deepEqual(sched({ mods: [[0, 'ctl', -1], [n, 'osc', -1]], cords: [] }, F).why, ['mod'], String(n));
+  const all = sched(mk(1024, 8192), F);
+  assert.deepEqual(all.why.filter(w => w === 'limit'), [], '1024 modules (the controller included) and 8192 connections: no limit');
+  assert.equal(new Set(all.nodes.map(x => x[0])).size, 1024);
+  assert.deepEqual(sched(mk(1025, 8192), F).why.filter(w => w === 'limit'), ['limit'], 'the 1025th module');
+  assert.deepEqual(sched(mk(1024, 8193), F).why.filter(w => w === 'limit'), ['limit'], 'the 8193rd connection');
+  // sparse high numbers: 1024 modules numbered up to 999999
+  const hi = sched(mk(1024, 300, k => (k === 0 ? 0 : 976 * k)), F);
+  assert.deepEqual(hi.why.filter(w => w === 'limit' || w === 'mod'), []);
+  assert.equal(new Set(hi.nodes.map(x => x[0])).size, 1024);
 });
 
 /* ------------------------------------------------------------------ the chunk loop */

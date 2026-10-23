@@ -42,6 +42,9 @@
 //  12  stage 9: patchable modules (IMPL-9 §1.6) — an 'm900' instrument device (the 900 Series) and its `patch` record (modules, cords: song.normDev → patch-core
 //      normPatch) with its knobs in `vals.p`: additive, nothing to convert (an 11 opens as before; a 12 in a schema-11 build opens read-only — that build would
 //      read 'm900' as a Minimoog, modelById's fallback, drop `patch` and autosave the loss). toV1 keeps the track's notes and names the patch in `lost`
+//  13  stage P (IMPL-P §3): no artificial caps — a 900 Series patch of up to 512 modules / 4096 cords, a track of up to 1024 devices (4096 wires / mod rows / layout entries),
+//      up to 64 Pads modules: the same fields, bounded higher, so STEPS[12] is the identity (every 12 reads unchanged). A schema-12 build normalises to the old
+//      bounds (48 modules, a track's 64th device, 8 Pads) and would autosave the cut: it opens a 13 read-only
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -99,7 +102,7 @@ import { isDrum } from './song.js?v=9';
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
 
 export { schemaOf };
-export const SCHEMA = 12;
+export const SCHEMA = 13;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -143,6 +146,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 11 }),
   // 11 → 12: patchable modules (stage 9, IMPL-9 §1.6: an 'm900' device, its `patch` record and `vals.p`) — additive
   p => Object.assign({}, p, { schema: 12 }),
+  // 12 → 13: the lifted bounds (stage P, IMPL-P §3): nothing stored changes — the identity; the bump keeps an older build from truncating a bigger project
+  p => Object.assign({}, p, { schema: 13 }),
 ]);
 
 export function upgrade(o) {

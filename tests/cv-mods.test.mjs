@@ -357,11 +357,11 @@ test('IMPL-8 §5.1 pad sources: srcOf / srcDev / perNoteOf of pd<n>.p<i> (kind p
   assert.deepEqual(V.srcOf('pd1.p12'), { dev: 'pd1', port: 'p12', link: '' });
   for (const t of [{ dev: {} }, null, undefined, { dev: { pd1: { kind: 'lfo' } } }]) {
     assert.deepEqual(V.srcDev(t, 'pd1.p12'), { q: { dev: 'pd1', port: 'p12', link: '' }, dev: null, kind: 'pad' }, 'the wheel\'s pattern: no track lookup');
-    assert.equal(V.perNoteOf(t, 'pd8.p63'), false, 'GLOBAL');
+    assert.equal(V.perNoteOf(t, 'pd8.p63'), false, 'GLOBAL'); assert.equal(V.perNoteOf(t, 'pd64.p63'), false, 'GLOBAL');
   }
-  for (const s of ['pd0.p1', 'pd9.p1', 'pd1.p64', 'pd1.p07', 'pd1.out', 'pd1.k1', 'pd1/lfo1.p1', 'pd12.p1', 'pd.p1', 'Pd1.p1'])
+  for (const s of ['pd0.p1', 'pd65.p1', 'pd1.p64', 'pd1.p07', 'pd1.out', 'pd1.k1', 'pd1/lfo1.p1', 'pd120.p1', 'pd.p1', 'Pd1.p1'])
     assert.deepEqual([V.srcDev({ dev: {} }, s), V.perNoteOf({ dev: {} }, s), V.isPadSrc(s)], [null, null, false], s);
-  assert.deepEqual(['pd1.p0', 'pd8.p63', 'pd3.p9'].map(V.isPadSrc), [true, true, true]);
+  assert.deepEqual(['pd1.p0', 'pd8.p63', 'pd3.p9', 'pd12.p1', 'pd64.p0'].map(V.isPadSrc), [true, true, true, true, true], '(IMPL-P: pd1…pd64)');
   assert.deepEqual([V.kindOfId('pd1'), V.MOD_LABEL.pad, V.MOD_LABEL.pads, V.MOD_ORDER.includes('pads')], [null, undefined, undefined, false], 'the track-device tables stay (IMPL-8 §1.1)');
   assert.deepEqual(V.destOk({ kind: 'pads' }, 'x'), { ok: false, why: 'This knob can’t be modulated', stage: null }, 'a Pads module has no [data-dest]');
 });

@@ -1,9 +1,9 @@
 // pads-core.js — the pad controller's pure model (IMPL-8 §1.3, §2.2, §3, §5.2, §6.4, §8, §10.1; lane K). Leaf ES module: imports
 // only drum-core (song.js imports it as it imports drum-core); no DOM / timers / storage; node-tested (tests/pads-core.test.mjs).
 //
-// project.pads (§10.1), normalised by normPads (exact lengths, every field bounded, ids unique in pd1…pd8, a hardware binding unique
+// project.pads (§10.1), normalised by normPads (exact lengths, every field bounded, ids unique in pd1…pd64, a hardware binding unique
 // across the project — later duplicates dropped —, unknown fields dropped; idempotent, never throws; anything else → []):
-//   [≤ 8 × { id 'pd1'…'pd8', name ≤ 24, rows 1–8, cols 1–8, size 0 S | 1 M | 2 L, vel 'pos' | 'fixed', fv 1–127,
+//   [≤ 64 × { id 'pd1'…'pd64', name ≤ 24, rows 1–8, cols 1–8, size 0 S | 1 M | 2 L, vel 'pos' | 'fixed', fv 1–127,
 //            light 'hit' | 'follow' | 'both', shape 'sq' | 'hex', out: { prof 'off' | 'gen', port ≤ 64 }, pads: [64 × pad | null] }]
 //   pad (§3.1): { c 0–15, l ≤ 12, t: [≤ 4 × target], mod: null | { m 'gate' | 'vel' | 'press' | 'tog', lo 0–1, hi 0–1 },
 //                 v null | 1–127, latch 0 | 1, hw: null | { port ≤ 64, ch 1–16, n 0–127, cc 0 | 1 } }
@@ -23,7 +23,8 @@
 import { PERS, normDrum } from './drum-core.js?v=9';
 
 /* ---------------------------------------------------------------- bounds and tables */
-export const MAX_MODS = 8, MAX_T = 4, MAX_NS = 8, N_SLOTS = 64, MAX_NAME = 24, MAX_LABEL = 12, MAX_PORT = 64;
+// IMPL-P §3.1: 64 Pads modules a project (was 8) — a safety bound, not a product cap; PAD_ID below is pd1…pd<MAX_MODS>
+export const MAX_MODS = 64, MAX_T = 4, MAX_NS = 8, N_SLOTS = 64, MAX_NAME = 24, MAX_LABEL = 12, MAX_PORT = 64;
 /** §1.3: pad sizes S / M / L, the gap, the body's padding, the footer, the module bar (= cv-module BAR_H) — world px. */
 export const PAD_PX = Object.freeze([56, 72, 96]), GAP = 8, PADDING = 16, FOOTER = 32, BAR_H = 40;
 /** §3.2: chord qualities → semitones from the root (the third, or its stand-in, second). */
@@ -54,7 +55,9 @@ const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 /** song.js's track id rule (validId). */
 export const validId = id => typeof id === 'string' && id !== '__proto__' && /^[\w.:-]{1,64}$/.test(id);
 const SND = /^[a-z]{2}$/;
-export const PAD_ID = /^pd[1-8]$/;
+const PAD_NO = '(?:[1-9]|[1-5]\\d|6[0-4])';                       // 1…64 (= MAX_MODS; tests/pads-core.test.mjs holds them equal)
+export const PAD_ID = new RegExp('^pd' + PAD_NO + '$');
+const PAD_SRC = new RegExp('^(pd' + PAD_NO + ')\\.p(\\d{1,2})$');
 /** 'C3' style (C4 = 60, = cv-keys noteName). */
 export const noteName = n => NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
 
@@ -368,7 +371,7 @@ export function normPads(x) {
     return [];
   }
 }
-/** The lowest free module id (null at 8). */
+/** The lowest free module id (null at MAX_MODS). */
 export function freeId(pads) {
   const have = new Set(Array.isArray(pads) ? pads.map(m => (isObj(m) ? m.id : null)) : []);
   for (let n = 1; n <= MAX_MODS; n++) if (!have.has('pd' + n)) return 'pd' + n;
@@ -379,7 +382,7 @@ export const newModule = (id, o) => normPads([Object.assign({}, isObj(o) ? o : {
 /** The mod source of slot i of module id (§5.1): 'pd1.p12'; padOfSrc parses one → { id, i } | null. */
 export const padSrc = (id, i) => id + '.p' + i;
 export function padOfSrc(src) {
-  const m = typeof src === 'string' ? /^(pd[1-8])\.p(\d{1,2})$/.exec(src) : null;
+  const m = typeof src === 'string' ? PAD_SRC.exec(src) : null;
   return m && +m[2] < N_SLOTS && String(+m[2]) === m[2] ? { id: m[1], i: +m[2] } : null;
 }
 

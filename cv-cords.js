@@ -21,6 +21,15 @@
 //   > JUMP_PX in a frame takes ⌈Δ / JUMP_PX⌉ steps (≤ 8, a module dragged with the 32 px snap); the hold rule (§4.3, on
 //   unless o.hold === false; the world measures its frames): in a camera burst a frame after one longer than HOLD_MS steps
 //   nothing (the ropes freeze and resume). prefers-reduced-motion: the parabola from the ends on every draw, no ticker.
+// Stage P (docs/canvas/IMPL-P.md §1.2, §6 lane C; the lead's P-1 (c)): the cord quality follows the device's performance
+//   preset (visual only — nothing here reaches the audio): high = the Studio rope above (today, step for step and byte for
+//   byte), medium = the same physics at 6 points (SUB 3), low = still (no simulation, no ticker: the reduced-motion path)
+//   at medium's geometry — CORD_Q; o.perf at creation, setPerf(id) live (every rope re-seeded asleep from its parabola: a
+//   switch never shows a stale rope jump). And each drawn cord owns a fixed vertex range of the strip (its lead and trail
+//   joins included: the same vertices in the same order as one strip built whole) — a frame rewrites and uploads
+//   (bufferSubData) only the cords whose rope or ends moved, so a drag or a sway costs its own cords, not every cord
+//   (4 096 cords: 2.7 ms + 7.3 MB a frame before, one cord's ≈ 2 KB after); a cord added / removed / placed, a quality or
+//   motion change, the live rope coming or going rebuild the strip whole, as before.
 // Rules: plain ES module, no DOM / window access at module top level (node imports it: tests); imports nothing; every GL and
 //   DOM call guarded (a stub DOM, a fake or lost context: the layer degrades, never throws into its caller); no allocation
 //   per frame on the GL path (typed arrays kept, grown ×1.5).
@@ -34,6 +43,17 @@
  * rope segment drawn. */
 export const STUDIO = Object.freeze({ N: 10, DT: 1 / 120, SLACK: 0.10, EXTRA: 24, DAMP: 0.90 + 0.095 * (62 / 100), G: 6000, PASSES: 5, EASE: 5,
   QUIET_N: 30, QUIET_PX: 0.02, WAKE_PX: 0.01, MAX_STEPS: 8, DT_MAX: 0.05, BUDGET: 160, JUMP_PX: 16, HOLD_MS: 24, SUB: 4 });
+/** [C] (P, IMPL-P §1.2) the cords of a performance preset: q its name in stats(), N points a rope, SUB smoothed points a
+ * segment (2 + (N − 2)·SUB drawn), still = no simulation. high 'full' = STUDIO (today); medium 'light' = the Studio physics at
+ * 6 points (the lab's own "Points per cord" trade: slack, wobble, weight, stiffness, DT and the sleep rules unchanged — step()
+ * reads the rope's n); low 'still' = the settled parabola (the reduced-motion path) at medium's 6 / 3 (14 drawn points: × 0.4
+ * the strip; within ≈ 4.5 % of the sag of the 10 / 4 one). Prefers-reduced-motion is still at every preset; the SVG fallback
+ * keeps STUDIO's 10 / 4. */
+export const CORD_Q = Object.freeze({ high: Object.freeze({ q: 'full', N: STUDIO.N, SUB: STUDIO.SUB, still: false }),
+  medium: Object.freeze({ q: 'light', N: 6, SUB: 3, still: false }), low: Object.freeze({ q: 'still', N: 6, SUB: 3, still: true }) });
+/** [C] (P-1 (c)) a frame's partial upload: dirty cords this few ranges apart go up as one bufferSubData (the gap's bytes are
+ * cheaper than a call), and past RUN_MAX runs a buffer the smallest gaps merge — so a sway of every cord is a few calls. */
+export const RUN_GAP = 4, RUN_MAX = 16;
 /** The lab's eight cord colours (LAB:143; patch-core PALETTE's hex, one order): a cord stores its index. */
 export const PALETTE = Object.freeze(['#d8432f', '#e6b83a', '#3f80d8', '#41a75c', '#e9e5da', '#e27c2f', '#9060c9', '#2f3033']);
 /** The lab's look ×1.4 (its plug covers its r 10 jack; a 900-series jack nut is r 14 world px): the shadow (+SH_DX, +SH_DY,
@@ -95,7 +115,9 @@ export function step(r, ax, ay, bx, by, dt) {
  * 1) / n); a rope wakes on an end moving > WAKE_PX (Σ|Δ|). ends(r, E) fills E = [ax, ay, bx, by] → false: unknown (the rope is
  * left as it is). [C] ours: at most `budget` rope-steps (beyond it every awake rope takes ⌊budget / awake⌋, ≥ 1: the ropes slow,
  * the frame does not); a rope whose end jumped Δ > JUMP_PX takes ≥ ⌈Δ / JUMP_PX⌉ steps (≤ MAX_STEPS, within the budget's
- * share); `hold`: no step this frame (its time dropped). sim = { acc, last } (ms). Pure but for the ropes and sim.
+ * share); `hold`: no step this frame (its time dropped). sim = { acc, last } (ms). Pure but for the ropes and sim. (P-1) r.mv
+ * set on a rope stepped or whose ends moved (its drawn range is stale: the layer rewrites it, then clears the flag); r.skip
+ * on one whose ends are unknown. Neither touches the physics.
  * @returns {{steps: number, per: number, awake: number, left: number, ropeSteps: number, moved: boolean}}
  */
 export function advance(sim, ropes, t, ends, o) {
@@ -112,8 +134,8 @@ export function advance(sim, ropes, t, ends, o) {
     r.skip = !ends(r, E);
     if (r.skip) continue;
     r.A1x = E[0]; r.A1y = E[1]; r.B1x = E[2]; r.B1y = E[3];
-    if (Math.abs(r.A1x - r.A0x) + Math.abs(r.A1y - r.A0y) + Math.abs(r.B1x - r.B0x) + Math.abs(r.B1y - r.B0y) > S.WAKE_PX) { r.awake = true; moved = true; }
-    else if (r.A1x !== r.A0x || r.A1y !== r.A0y || r.B1x !== r.B0x || r.B1y !== r.B0y) moved = true;
+    if (Math.abs(r.A1x - r.A0x) + Math.abs(r.A1y - r.A0y) + Math.abs(r.B1x - r.B0x) + Math.abs(r.B1y - r.B0y) > S.WAKE_PX) { r.awake = true; moved = true; r.mv = true; }
+    else if (r.A1x !== r.A0x || r.A1y !== r.A0y || r.B1x !== r.B0x || r.B1y !== r.B0y) { moved = true; r.mv = true; }
     if (r.awake) awake++;
   }
   const cap = awake ? Math.max(1, Math.floor(budget / awake)) : 0, per = Math.min(steps, cap);
@@ -129,6 +151,7 @@ export function advance(sim, ropes, t, ends, o) {
         step(r, r.A0x + (r.A1x - r.A0x) * f, r.A0y + (r.A1y - r.A0y) * f, r.B0x + (r.B1x - r.B0x) * f, r.B0y + (r.B1y - r.B0y) * f, S.DT);
         n++;
       }
+      if (m > 0) r.mv = true;
       if (r.awake) left++;
     }
     r.A0x = r.A1x; r.A0y = r.A1y; r.B0x = r.B1x; r.B0y = r.B1y;
@@ -230,7 +253,11 @@ const PLUG_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
   + 'c=ov(vec4(1.0)*' + f1(LOOK.PLUG_HA) + '*cv(sH),c);'
   + 'if(sl>0.5)c=ov(vec4(vec3(' + f1(LOOK.SEL) + '),1.0)*0.9*cv(abs(sR-2.0*px)-px),c);'
   + 'o=c*vp.w;}';
-const FPV = 7, FPI = 5, PTS = 2 + (STUDIO.N - 2) * STUDIO.SUB; // floats a strip vertex / a plug instance; points a smoothed cord
+// floats a strip vertex / a plug instance; points a smoothed Studio cord (the most of any quality: the scratch arrays, the SVG's)
+const FPV = 7, FPI = 5, PTS_S = 2 + (STUDIO.N - 2) * STUDIO.SUB;
+const ptsOf = Q => 2 + (Q.N - 2) * Q.SUB;
+/** (P) a preset id CORD_Q knows ('high' | 'medium' | 'low'), anything else 'high' (every device starts on High). */
+export const perfOf = id => (typeof id === 'string' && Object.prototype.hasOwnProperty.call(CORD_Q, id) ? id : 'high');
 /** The colour tables (0…1 rgb, 8 × 3 each): body = the palette, rim / hi / ring = LAB's shade of it. */
 export function colourTables() {
   const T = { body: new Float32Array(24), rim: new Float32Array(24), hi: new Float32Array(24), ring: new Float32Array(24) };
@@ -248,11 +275,13 @@ const fin = v => typeof v === 'number' && isFinite(v);
 /**
  * The cord layer over `viewport` (#viewport; o.world = #world: the canvas goes right after it). o: { world, doc, win, now(),
  * onWake() (asks the world for a frame), mode: 'gl' (default) | 'svg' (?nogl) | 'under', under() → the host's WebGL2 context
- * (mode 'under': cv-gl's), test (preserveDrawingBuffer), reduced() → prefers-reduced-motion, hold (the hold rule; default on) }.
+ * (mode 'under': cv-gl's), test (preserveDrawingBuffer), reduced() → prefers-reduced-motion, hold (the hold rule; default on),
+ * perf: 'high' (default; anything else unknown) | 'medium' | 'low' (P: CORD_Q), full (diagnostics: every build whole and
+ * every upload whole — the pre-P path, for the equality tests and the bench) }.
  * @returns {{set: Function, anchors: Function, live: Function, grab: Function, move: Function, drop: Function, sel: Function,
  *   alloc: Function, dim: Function, resize: Function, step: Function, owed: Function, wants: Function, draw: Function,
- *   pointAt: Function, pluck: Function, probe: Function, reset: Function, svg: Function, stats: Function, destroy: Function,
- *   readonly mode: string}}
+ *   pointAt: Function, pluck: Function, probe: Function, reset: Function, svg: Function, setPerf: Function, stats: Function,
+ *   destroy: Function, readonly mode: string, readonly perf: string}}
  */
 export function createCords(viewport, o) {
   o = o || {};
@@ -267,21 +296,43 @@ export function createCords(viewport, o) {
     if (typeof o.reduced === 'boolean') return o.reduced;
     try { if (!mq && win && typeof win.matchMedia === 'function') mq = win.matchMedia('(prefers-reduced-motion: reduce)'); return !!(mq && mq.matches); } catch (err) { return false; }
   };
-  const HOLD = o.hold !== false;
+  const HOLD = o.hold !== false, FULL = !!o.full;
   let mode = o.mode === 'svg' || o.mode === 'under' ? o.mode : 'gl'; // ('none': nothing can draw — a stub DOM)
+  let perf = perfOf(o.perf), CQ = CORD_Q[perf], PTS = ptsOf(CQ); // (P) the preset's cords
 
   /* ---- state */
-  const cords = new Map(); // id → { id, a, b, c, s, r (rope), seeded }
+  const cords = new Map(); // id → { id, a, b, c, s, r (rope), seeded; (P-1) j its range, lv the layout it is in, e its ends as written, dq queued }
   let ropes = []; // the ropes stepped (the cords' + the live one's), rebuilt on add / remove — never per frame
   let anch = null, LV = null, GB = null, sel = null, probeKey = null, allocOn = false, dimOn = false, dead = false;
   let running = false, owedF = false, geomV = 1;
   const sim = { acc: 0, last: 0 };
   const st = { frames: 0, ropeSteps: 0, stepMs: 0, stepMax: 0, awakeMax: 0, holds: 0, draws: 0, drawMs: 0, drawMax: 0, uploads: 0, uploadBytes: 0,
-    builds: 0, lost: 0, restored: 0, svgPaths: 0 };
+    builds: 0, lost: 0, restored: 0, svgPaths: 0, fulls: 0, writes: 0, runs: 0, buildMs: 0, buildMax: 0 };
   let VW = 0, VH = 0, VD = 1, lastCam = null;
   const E4 = new Float64Array(4);
-  const relist = () => { ropes = []; for (const c of cords.values()) if (c.r && c.seeded) ropes.push(c.r); if (LV && LV.r && !LV.taken) ropes.push(LV.r); };
-  const motion = () => (mode === 'gl' || mode === 'under') && !reduced();
+  // (P-1 (c)) the strip's layout: lay = the drawn cords in draw order (the cords' Map order, the live rope last: one strip's
+  // order), cord j at vertex off(j) — its lead join (j > 0: its first vertex again), its 2·PTS, its trail join (not the last:
+  // its last vertex again) — and plug instances 2j, 2j + 1 (the probe after them); layV its version (a cord's lv), layOK
+  // false = rebuild whole; layStill / layProbe what it was built with; DQ the cords to rewrite; scanOwed: ends may have
+  // moved since advance last read them (an anchors / grab / live / set) — the next partial build compares them; RJ / RS the
+  // build's dirty ranges → the upload's runs; upFull: the GPU copy is stale (a context, a growth, a missed upload)
+  const lay = [], DQ = [], RJ = [], RS = [];
+  let layV = 0, layOK = false, layStill = false, layProbe = false, scanOwed = true, upFull = true, nRun = 0;
+  // (P-1) the step's list: while no end can have moved since advance last read every rope (no changed(), relist, pluck —
+  // endsDirty false) an asleep rope's advance is a no-op (the same ends: no wake, no step, no flag), so only the awake ones
+  // (act: two arrays in turn, no allocation a frame) are advanced — a sway costs its awake ropes, not every cord
+  let endsDirty = true, act = [], act2 = [];
+  const off = j => (j ? j * (2 * PTS + 2) - 1 : 0);
+  const mark = c => { if (c && !c.dq && c.lv === layV) { c.dq = true; DQ.push(c); } };
+  // the stepped list: a change of its members or order (a cord added, removed, placed, the live rope come, gone or taken)
+  // is a new layout; the same list (a set() that changed colours or ends only) keeps it
+  const relist = () => {
+    const was = ropes;
+    endsDirty = true;
+    ropes = []; for (const c of cords.values()) if (c.r && c.seeded) ropes.push(c.r); if (LV && LV.r && !LV.taken) ropes.push(LV.r);
+    if (ropes.length !== was.length) layOK = false; else for (let i = 0; i < ropes.length; i++) if (ropes[i] !== was[i]) { layOK = false; break; }
+  };
+  const motion = () => (mode === 'gl' || mode === 'under') && !CQ.still && !reduced();
   // an end's point: the plug in the finger (grab), a live end, else the jack's anchor
   function endOf(c, which) {
     if (c === LV) return which === 'a' ? LV.a : LV.b;
@@ -294,7 +345,7 @@ export function createCords(viewport, o) {
   // commit's set: its fixed end on the live rope's), that rope taken over awake, so it swings into place
   function place(c) {
     if (c.seeded || !endsOf(c, E4)) return false;
-    const r = c.r || (c.r = makeRope());
+    const r = c.r && c.r.n === CQ.N ? c.r : (c.r = makeRope(CQ.N));
     r.cd = c;
     const L = LV && LV.r && !LV.taken ? LV : null, near = (p, x, y) => Math.abs(p.x - x) + Math.abs(p.y - y) < 1;
     const rev = L && near(L.a, E4[2], E4[3]), same = L && near(L.a, E4[0], E4[1]);
@@ -316,8 +367,10 @@ export function createCords(viewport, o) {
   };
   const dirty = () => { geomV++; owedF = true; if (SV) SV.dirty = true; };
   // after an anchors / set / grab / live change: a rope whose ends left its last frame's wakes the ticker; motion off, the SVG:
-  // a redraw (re-path) owed
+  // a redraw (re-path) owed. (P-1) Which cords moved is found where it is cheapest: advance reads every rope's ends anyway
+  // (r.mv), else the next partial build compares them (scanOwed)
   function changed() {
+    scanOwed = true; endsDirty = true;
     let any = false;
     for (const r of ropes) {
       if (!endsOf(r.cd, E4)) continue;
@@ -331,7 +384,7 @@ export function createCords(viewport, o) {
   /* ---- GL: its own canvas after #world ('gl'), or the host's context ('under') */
   let cv = null, gl = null, P = null, ready = false, loss = [];
   let cap = 0, capP = 0, strip = new Float32Array(0), plugs = new Float32Array(0), nStrip = 0, nPlug = 0, builtV = 0, upV = -1, BW = 0, BH = 0, blank = true;
-  const pts = new Float64Array(PTS * 2), sX = new Float64Array(STUDIO.N), sY = new Float64Array(STUDIO.N);
+  const pts = new Float64Array(PTS_S * 2), sX = new Float64Array(STUDIO.N), sY = new Float64Array(STUDIO.N);
   const U = { cam: new Float32Array(4), vp: new Float32Array(4) }, CT = colourTables();
   const ctxOf = () => (mode === 'under' ? (typeof o.under === 'function' ? (() => { try { return o.under() || null; } catch (err) { return null; } })() : null) : gl);
   function glBuild(g) { // the two programs, the strip's VAO / buffer, the plugs' quad + instance buffer (once, after a restore / reset)
@@ -354,7 +407,7 @@ export function createCords(viewport, o) {
     g.enableVertexAttribArray(2); g.vertexAttribPointer(2, 1, g.FLOAT, false, FPI * 4, 16); g.vertexAttribDivisor(2, 1);
     g.bindVertexArray(null);
     if (mode === 'gl') { g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.ONE, g.ONE_MINUS_SRC_ALPHA); g.clearColor(0, 0, 0, 0); } // ('under': cv-gl's state, the same blend)
-    cap = 0; capP = 0; upV = -1;
+    cap = 0; capP = 0; upV = -1; upFull = true;
     return Q;
   }
   const isGL = g => !!g && typeof g.createShader === 'function' && typeof g.getProgramParameter === 'function' && typeof g.createVertexArray === 'function' && typeof g.vertexAttribDivisor === 'function';
@@ -413,49 +466,132 @@ export function createCords(viewport, o) {
       } catch (err) { /* lost */ }
     }
     cap = capP = 0; strip = new Float32Array(0); plugs = new Float32Array(0); nStrip = nPlug = 0; builtV = 0; upV = -1;
+    lay.length = 0; layOK = false; upFull = true; for (const c of DQ) c.dq = false; DQ.length = 0;
   }
   // the geometry (world px): every placed cord's smoothed polyline (the rope, or motion off its parabola) as one triangle strip
-  // with degenerate joins; the plugs as instances (at the ends' points: LAB draws them at endPos)
+  // with degenerate joins; the plugs as instances (at the ends' points: LAB draws them at endPos). (P-1 (c)) Whole (full) when
+  // the layout changed — a cord added, removed, placed or unplaced, the live rope come or gone, the quality, motion or the
+  // probe —, else only the queued cords' ranges (part); the same bytes either way (tests: the twin layer with o.full)
   function build() {
+    const t0 = now(), still = !motion(), pa = probeKey ? anchorIn(anch, probeKey) : null;
+    if (upV !== builtV) upFull = true; // (the last build never went up: the GPU copy is stale)
+    RJ.length = 0; RS.length = 0; nRun = 0;
+    if (FULL || !layOK || still !== layStill || !!pa !== layProbe) full(still, pa); else part(still, pa);
+    builtV = geomV; st.builds++;
+    const ms = now() - t0; st.buildMs += ms; if (ms > st.buildMax) st.buildMax = ms;
+  }
+  // cord c (its ends in E4) into range j: its lead join (j > 0: its first vertex twice), a vertex pair a smoothed point, its
+  // trail join (trail: its last vertex again — a whole build writes cord j − 1's when it reaches j, as one strip always did);
+  // its plugs at instances 2j, 2j + 1; c remembers its range, its layout and the ends written
+  function put(c, j, still, trail) {
+    let X = c.r.X, Y = c.r.Y;
+    if (still) { shown(CQ.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
+    const m = smooth(X, Y, CQ.N, CQ.SUB, pts), s = c.id != null && c.id === sel ? 1 : 0, col = c.c | 0;
+    let k = off(j) * FPV, kp = 2 * j * FPI;
+    for (let i = 0; i < m; i++) {
+      const i0 = i > 0 ? i - 1 : 0, i1 = i < m - 1 ? i + 1 : m - 1;
+      let tx = pts[2 * i1] - pts[2 * i0], ty = pts[2 * i1 + 1] - pts[2 * i0 + 1];
+      const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = -1; strip[k++] = col; strip[k++] = s;
+      if (j && i === 0) { strip.copyWithin(k, k - FPV, k); k += FPV; } // (the lead join: this vertex twice)
+      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = 1; strip[k++] = col; strip[k++] = s;
+    }
+    if (trail) strip.copyWithin(k, k - FPV, k);
+    for (let e = 0; e < 4; e += 2) { plugs[kp++] = E4[e]; plugs[kp++] = E4[e + 1]; plugs[kp++] = col; plugs[kp++] = c.s ? 1 : 0; plugs[kp++] = s; }
+    const w = c.e || (c.e = new Float64Array(4));
+    w[0] = E4[0]; w[1] = E4[1]; w[2] = E4[2]; w[3] = E4[3];
+    c.j = j; c.lv = layV; st.writes++;
+  }
+  const putProbe = (pa, n) => { let kp = 2 * n * FPI; plugs[kp++] = pa.x; plugs[kp++] = pa.y; plugs[kp++] = 0; plugs[kp++] = 2; plugs[kp++] = 0; };
+  function full(still, pa) {
+    layV++; lay.length = 0;
+    for (const c of DQ) c.dq = false;
+    DQ.length = 0;
     const n = cords.size + (LV ? 1 : 0), need = n * (PTS * 2 + 2) * FPV;
     if (strip.length < need) strip = new Float32Array(Math.ceil(need * 1.5));
     const needP = (n * 2 + 1) * FPI;
     if (plugs.length < needP) plugs = new Float32Array(Math.ceil(needP * 1.5));
-    const still = !motion();
-    let k = 0, kp = 0, first = true;
     const one = c => {
       if (!c.r || (c !== LV && !c.seeded) || !endsOf(c, E4)) return;
-      let X = c.r.X, Y = c.r.Y;
-      if (still) { shown(STUDIO.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
-      const m = smooth(X, Y, STUDIO.N, STUDIO.SUB, pts), s = c.id != null && c.id === sel ? 1 : 0, col = c.c | 0;
-      for (let i = 0; i < m; i++) {
-        const i0 = i > 0 ? i - 1 : 0, i1 = i < m - 1 ? i + 1 : m - 1;
-        let tx = pts[2 * i1] - pts[2 * i0], ty = pts[2 * i1 + 1] - pts[2 * i0 + 1];
-        const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-        if (!first && i === 0) { strip.copyWithin(k, k - FPV, k); k += FPV; } // (the degenerate join: the last vertex again …)
-        strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = -1; strip[k++] = col; strip[k++] = s;
-        if (!first && i === 0) { strip.copyWithin(k, k - FPV, k); k += FPV; } // (… and this one twice)
-        strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = 1; strip[k++] = col; strip[k++] = s;
-      }
-      first = false;
-      for (let e = 0; e < 4; e += 2) { plugs[kp++] = E4[e]; plugs[kp++] = E4[e + 1]; plugs[kp++] = col; plugs[kp++] = c.s ? 1 : 0; plugs[kp++] = s; }
+      const j = lay.length;
+      if (j) { const k = off(j) * FPV; strip.copyWithin(k - FPV, k - 2 * FPV, k - FPV); } // (cord j − 1's trail join: its last vertex again)
+      put(c, j, still, false); lay.push(c);
     };
     for (const c of cords.values()) one(c);
     if (LV && !LV.taken) one(LV);
-    const pa = probeKey ? anchorIn(anch, probeKey) : null;
-    if (pa) { plugs[kp++] = pa.x; plugs[kp++] = pa.y; plugs[kp++] = 0; plugs[kp++] = 2; plugs[kp++] = 0; }
-    nStrip = k / FPV; nPlug = kp / FPI; builtV = geomV; st.builds++;
+    const L = lay.length;
+    if (pa) putProbe(pa, L);
+    nStrip = L ? off(L - 1) + (L > 1 ? 1 : 0) + 2 * PTS : 0; nPlug = 2 * L + (pa ? 1 : 0);
+    layOK = true; layStill = still; layProbe = !!pa; scanOwed = false; upFull = true; st.fulls++;
+  }
+  // (P-1) every placed cord's ends against those it was written with (a change no advance has read yet): a moved one queued;
+  // one whose ends came or went → false (a new layout)
+  function scan() {
+    scanOwed = false;
+    for (const r of ropes) {
+      const c = r.cd, inL = c.lv === layV;
+      if (!endsOf(c, E4)) { if (inL) return false; continue; }
+      if (!inL) return false;
+      const e = c.e;
+      if (E4[0] !== e[0] || E4[1] !== e[1] || E4[2] !== e[2] || E4[3] !== e[3]) mark(c);
+    }
+    return true;
+  }
+  function part(still, pa) {
+    if (scanOwed && !scan()) { full(still, pa); return; }
+    const L = lay.length;
+    for (const c of DQ) {
+      if (!c.dq) continue;
+      c.dq = false;
+      if (c.lv !== layV) continue;
+      if (!endsOf(c, E4)) { full(still, pa); return; }
+      put(c, c.j, still, c.j < L - 1); RJ.push(c.j);
+    }
+    DQ.length = 0;
+    if (pa) putProbe(pa, L);
+    // the runs: sorted, neighbours within RUN_GAP ranges as one, past RUN_MAX runs the gap doubled
+    if (!RJ.length) return;
+    RJ.sort((a, b) => a - b);
+    for (let gap = RUN_GAP; ; gap *= 2) {
+      RS.length = 0;
+      let a = RJ[0], b = RJ[0];
+      for (let i = 1; i < RJ.length; i++) { const j = RJ[i]; if (j - b <= gap) b = j; else { RS.push(a, b); a = b = j; } }
+      RS.push(a, b);
+      if (RS.length <= 2 * RUN_MAX) break;
+    }
+    nRun = RS.length / 2;
   }
   function upload(g) {
     if (upV === builtV) return;
-    g.bindBuffer(g.ARRAY_BUFFER, P.sb);
-    const bs = nStrip * FPV, bp = nPlug * FPI;
-    if (bs > cap) { cap = Math.ceil(bs * 1.5); g.bufferData(g.ARRAY_BUFFER, cap * 4, g.DYNAMIC_DRAW); }
-    if (bs) g.bufferSubData(g.ARRAY_BUFFER, 0, strip, 0, bs);
-    g.bindBuffer(g.ARRAY_BUFFER, P.ib);
-    if (bp > capP) { capP = Math.ceil(bp * 1.5); g.bufferData(g.ARRAY_BUFFER, capP * 4, g.DYNAMIC_DRAW); }
-    if (bp) g.bufferSubData(g.ARRAY_BUFFER, 0, plugs, 0, bp);
-    st.uploads++; st.uploadBytes += (bs + bp) * 4;
+    if (upFull || FULL) { // whole (as every frame did before P-1)
+      g.bindBuffer(g.ARRAY_BUFFER, P.sb);
+      const bs = nStrip * FPV, bp = nPlug * FPI;
+      if (bs > cap) { cap = Math.ceil(bs * 1.5); g.bufferData(g.ARRAY_BUFFER, cap * 4, g.DYNAMIC_DRAW); }
+      if (bs) g.bufferSubData(g.ARRAY_BUFFER, 0, strip, 0, bs);
+      g.bindBuffer(g.ARRAY_BUFFER, P.ib);
+      if (bp > capP) { capP = Math.ceil(bp * 1.5); g.bufferData(g.ARRAY_BUFFER, capP * 4, g.DYNAMIC_DRAW); }
+      if (bp) g.bufferSubData(g.ARRAY_BUFFER, 0, plugs, 0, bp);
+      st.uploads++; st.uploadBytes += (bs + bp) * 4; st.runs += (bs ? 1 : 0) + (bp ? 1 : 0);
+      upFull = false;
+    } else if (nRun || layProbe) { // (P-1) the runs' ranges only (the probe's instance after the plugs: its own, or the last run's tail)
+      const L = lay.length;
+      let b = 0, tail = false;
+      if (nRun) {
+        g.bindBuffer(g.ARRAY_BUFFER, P.sb);
+        for (let i = 0; i < RS.length; i += 2) {
+          const v0 = off(RS[i]), v1 = RS[i + 1] < L - 1 ? off(RS[i + 1] + 1) : nStrip;
+          g.bufferSubData(g.ARRAY_BUFFER, v0 * FPV * 4, strip, v0 * FPV, (v1 - v0) * FPV); b += (v1 - v0) * FPV; st.runs++;
+        }
+      }
+      g.bindBuffer(g.ARRAY_BUFFER, P.ib);
+      for (let i = 0; i < RS.length; i += 2) {
+        const p0 = 2 * RS[i], p1 = 2 * RS[i + 1] + 2 + (layProbe && RS[i + 1] === L - 1 ? 1 : 0);
+        if (p1 > 2 * L) tail = true;
+        g.bufferSubData(g.ARRAY_BUFFER, p0 * FPI * 4, plugs, p0 * FPI, (p1 - p0) * FPI); b += (p1 - p0) * FPI; st.runs++;
+      }
+      if (layProbe && !tail) { g.bufferSubData(g.ARRAY_BUFFER, 2 * L * FPI * 4, plugs, 2 * L * FPI, FPI); b += FPI; st.runs++; }
+      st.uploads++; st.uploadBytes += b * 4;
+    }
     upV = builtV;
   }
   // one frame at the camera (≤ 3 draw calls: the shadows, the cords, the plugs); 'under': into cv-gl's frame, no clear
@@ -512,7 +648,7 @@ export function createCords(viewport, o) {
     // (a 1 px box, the cords overflowing it: an outer <svg> 0 wide or high renders nothing — found in headless Chrome)
     try { root.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none;z-index:10001;'; } catch (err) { /* inert */ }
     WL.append(root);
-    const els = new Map(), X = new Float64Array(STUDIO.N), Y = new Float64Array(STUDIO.N), Pp = new Float64Array(PTS * 2);
+    const els = new Map(), X = new Float64Array(STUDIO.N), Y = new Float64Array(STUDIO.N), Pp = new Float64Array(PTS_S * 2);
     const mk = (tag, at) => { const e = doc.createElementNS(NS, tag); for (const k in at) e.setAttribute(k, String(at[k])); return e; };
     const rgb = c => 'rgb(' + c.join(',') + ')';
     const plug = (col, s) => (s
@@ -577,7 +713,7 @@ export function createCords(viewport, o) {
         seen.add(id); n++;
         let c = cords.get(id);
         if (!c) { c = { id, a: x.a, b: x.b, c: x.c | 0, s: x.s ? 1 : 0, r: null, seeded: false }; cords.set(id, c); }
-        else { c.a = x.a; c.b = x.b; c.c = x.c | 0; c.s = x.s ? 1 : 0; }
+        else { if (c.c !== (x.c | 0) || c.s !== (x.s ? 1 : 0)) mark(c); c.a = x.a; c.b = x.b; c.c = x.c | 0; c.s = x.s ? 1 : 0; } // ((P-1) a recolour: its range again; new ends: changed()'s)
         place(c);
       }
       for (const id of [...cords.keys()]) if (!seen.has(id)) { cords.delete(id); if (GB && GB.id === id) GB = null; if (sel === id) sel = null; }
@@ -605,7 +741,7 @@ export function createCords(viewport, o) {
       if (!x || !x.a || !x.b || !fin(x.a.x) || !fin(x.a.y) || !fin(x.b.x) || !fin(x.b.y)) { if (LV) { LV = null; relist(); dirty(); wakeW(); if (SV) SV.paint(); } return; }
       if (LV && LV.taken) LV = null; // (the last one became a cord: a new drag)
       if (!LV) {
-        LV = { id: null, a: { x: x.a.x, y: x.a.y }, b: { x: x.b.x, y: x.b.y }, c: x.c | 0, s: x.s ? 1 : 0, r: makeRope(), taken: false };
+        LV = { id: null, a: { x: x.a.x, y: x.a.y }, b: { x: x.b.x, y: x.b.y }, c: x.c | 0, s: x.s ? 1 : 0, r: makeRope(CQ.N), taken: false };
         LV.r.cd = LV;
         seed(LV.r, x.a.x, x.a.y, x.b.x, x.b.y, true);
         if (mode === 'gl') ensure();
@@ -623,7 +759,7 @@ export function createCords(viewport, o) {
     /** The pulled end let go: it springs to its jack's anchor (after a re-patch's set: the new jack; a cancel: its own). */
     drop() { if (dead || !GB) return; GB = null; dirty(); changed(); if (SV) SV.paint(); },
     /** The selected cord (its menu open): a light outline; null none. */
-    sel(id) { const v = id == null ? null : String(id); if (v === sel || dead) return; sel = v; dirty(); wakeW(); if (SV) SV.paint(); },
+    sel(id) { const v = id == null ? null : String(id); if (v === sel || dead) return; mark(cords.get(sel)); sel = v; mark(cords.get(v)); dirty(); wakeW(); if (SV) SV.paint(); },
     /** The drawing buffer while a patched instrument is shown (the host's; also while any cord exists) — 0 × 0 otherwise. */
     alloc(on) {
       if (dead) return;
@@ -642,9 +778,19 @@ export function createCords(viewport, o) {
       if (!motion()) { running = false; return owedF; }
       const t0 = now(), hold = HOLD && !!h;
       if (hold) st.holds++;
-      const r = advance(sim, ropes, T, ropeEnds, { hold });
+      const all = endsDirty, list = all ? ropes : act;
+      endsDirty = false;
+      const r = advance(sim, list, T, ropeEnds, { hold });
       st.frames++; st.ropeSteps += r.ropeSteps; if (r.awake > st.awakeMax) st.awakeMax = r.awake;
       if (r.ropeSteps || r.moved) dirty();
+      // (P-1) the ropes advance moved (stepped, an end moved) queued for their ranges; one whose ends came or went: a new
+      // layout. When it read every rope's ends, nothing is left for a scan. The awake ones are the next step's list
+      if (layOK) for (const q of list) { const c = q.cd; if (q.skip ? c.lv === layV : c.lv !== layV) layOK = false; if (q.mv) { q.mv = false; mark(c); } }
+      else for (const q of list) q.mv = false;
+      if (all) scanOwed = false;
+      const nx = list === act ? act2 : act;
+      nx.length = 0; for (const q of list) if (q.awake) nx.push(q);
+      act2 = nx === act ? act2 : act; act = nx;
       running = r.left > 0;
       const ms = now() - t0; st.stepMs += ms; if (ms > st.stepMax) st.stepMax = ms;
       return owedF;
@@ -667,13 +813,14 @@ export function createCords(viewport, o) {
       const c = cords.get(String(id));
       if (!c || !c.seeded || !endsOf(c, E4)) return null;
       let X = c.r.X, Y = c.r.Y;
-      if (!motion()) { shown(STUDIO.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
-      return along(pts, smooth(X, Y, STUDIO.N, STUDIO.SUB, pts), t);
+      if (!motion()) { shown(CQ.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
+      return along(pts, smooth(X, Y, CQ.N, CQ.SUB, pts), t);
     },
     /** (diagnostics: the bench / the harness set cords swinging — no input reaches it) pluck cord id, or every cord. */
     pluck(id) {
       if (dead || !motion()) return;
-      for (const c of cords.values()) if ((id == null || c.id === String(id)) && c.seeded) pluck(c.r, (STUDIO.N - 1) / 2);
+      for (const c of cords.values()) if ((id == null || c.id === String(id)) && c.seeded) pluck(c.r, (c.r.n - 1) / 2);
+      endsDirty = true; // (woken outside advance: the next step reads every rope)
       kick();
     },
     /** (diagnostics: the glue probe, IMPL-9 §5 (c)) a magenta 4-device-px disc at a jack key's anchor; null off. */
@@ -682,6 +829,26 @@ export function createCords(viewport, o) {
     reset() { if (mode === 'under') { P = null; dirty(); } },
     /** To the SVG fallback now (cv-gl given up, 'under'). */
     svg() { if (mode !== 'svg') toSvg(); },
+    /** (P, IMPL-P §1.2) the device's performance preset: 'high' | 'medium' | 'low' (anything else 'high') → the cords' quality
+     * (CORD_Q). Every rope made again at its N and re-seeded asleep from the parabola of its ends — a switch never shows a
+     * stale rope's jump (the look of a project just opened; the live rope awake, as live() seeds it); still: no ticker; the
+     * strip rebuilt whole at the next draw (one is asked for). */
+    setPerf(id) {
+      const p = perfOf(id);
+      if (dead || p === perf) return;
+      perf = p; CQ = CORD_Q[p]; PTS = ptsOf(CQ);
+      for (const c of cords.values()) {
+        if (!c.r) continue;
+        c.r = makeRope(CQ.N); c.r.cd = c;
+        if (c.seeded) { if (endsOf(c, E4)) seed(c.r, E4[0], E4[1], E4[2], E4[3], false); else c.seeded = false; } // (ends unknown: placed when known)
+      }
+      if (LV && !LV.taken) { LV.r = makeRope(CQ.N); LV.r.cd = LV; seed(LV.r, LV.a.x, LV.a.y, LV.b.x, LV.b.y, true); }
+      running = false; sim.acc = 0;
+      relist(); layOK = false; dirty();
+      if (LV && !LV.taken && motion()) kick(); else wakeW();
+      if (SV) SV.paint();
+    },
+    get perf() { return perf; },
     stats(reset) {
       let awake = 0;
       if (motion()) for (const r of ropes) if (r.awake) awake++; // (R2b F6: the SVG / motion off never move a rope)
@@ -689,8 +856,11 @@ export function createCords(viewport, o) {
         stepMs: st.frames ? st.stepMs / st.frames : 0, stepMax: st.stepMax, awakeMax: st.awakeMax, holds: st.holds, draws: st.draws,
         drawMs: st.draws ? st.drawMs / st.draws : 0, drawMax: st.drawMax, uploads: st.uploads, uploadBytes: st.uploadBytes, builds: st.builds, lost: st.lost,
         restored: st.restored, svgPaths: st.svgPaths, alloc: allocOn, buffer: BW > 0 ? BW + '×' + BH : '0×0',
-        bytes: (BW > 0 ? BW * BH * 4 : 0) + (cap + capP) * 4, verts: nStrip, plugs: nPlug };
-      if (reset) Object.assign(st, { frames: 0, ropeSteps: 0, stepMs: 0, stepMax: 0, awakeMax: 0, holds: 0, draws: 0, drawMs: 0, drawMax: 0, uploads: 0, uploadBytes: 0, builds: 0, svgPaths: 0 });
+        bytes: (BW > 0 ? BW * BH * 4 : 0) + (cap + capP) * 4, verts: nStrip, plugs: nPlug,
+        // (P) the preset, its quality and drawn points a cord; (P-1) whole builds, cords written, upload calls, build ms
+        perf, quality: CQ.q, pts: PTS, fulls: st.fulls, writes: st.writes, runs: st.runs, buildMs: st.builds ? st.buildMs / st.builds : 0, buildMax: st.buildMax };
+      if (reset) Object.assign(st, { frames: 0, ropeSteps: 0, stepMs: 0, stepMax: 0, awakeMax: 0, holds: 0, draws: 0, drawMs: 0, drawMax: 0, uploads: 0, uploadBytes: 0, builds: 0, svgPaths: 0,
+        fulls: 0, writes: 0, runs: 0, buildMs: 0, buildMax: 0 });
       return s;
     },
     destroy() {

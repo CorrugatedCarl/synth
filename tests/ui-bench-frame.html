@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SYNTH Canvas — UI bench app frame</title>
+<!-- The bench pages' app frame when the bench URL carries ?perf= / ?texmax= / ?nogl (tests/ui-bench-frame.mjs): this page is loaded
+     with that query in the iframe, says ready to the bench and writes the app's page, sent in a message, into itself — so the
+     app's cv-world reads the query from its own location.search (a srcdoc frame has none). Blank until then. -->
+<script type="module">
+  import { installMount } from './ui-bench-frame.mjs';
+  installMount(window);
+</script>
+</head>
+<body style="margin:0;background:#000"></body>
+</html>

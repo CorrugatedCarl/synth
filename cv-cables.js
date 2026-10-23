@@ -34,7 +34,7 @@
 // Serum's colour. A track.mods link row from 'iN/lfo3.out' / 'iN/env1.out' is drawn from the same jacks (no module in
 // bundled view: no cable, as before). A knob end the host marks hidden (cv-module ports(): {hid, tag}) is dashed and its
 // badge carries the tag ('OSC B · LEVEL · hidden'). [data-twin] controls are never a drag's target.
-// Stage 7d + 8 (IMPL-8 §5.4, §9; lane U): the Pads module ('pd1' … 'pd8', keyKind 'pads') — a mod pad's row src 'pd<n>.p<i>'
+// Stage 7d + 8 (IMPL-8 §5.4, §9; lane U): the Pads module ('pd1' … 'pd64' since IMPL-P, keyKind 'pads') — a mod pad's row src 'pd<n>.p<i>'
 // (modSrcPort: ports p0…p63) leaves from the pad's inline jack in the PAD's colour (opts.project.pads); note cables (kind
 // 'note', derived, a tap cable: no Disconnect) from the module's 'notes' jack to each instrument of this track a visible pad
 // plays, ending at a fixed point of the instrument's left edge (b '<dev>.' + NOTE_END: no jack there, review #13 —
@@ -42,7 +42,7 @@
 import { DESTS, DEST_INDEX, moduleOf } from './serum-core.js?v=9';
 import * as wk from './wk.js?v=9';
 import { routeLabel, serumEdges, jackOf, partLabel, partOn } from './sx-edges.js?v=9';
-import { COLORS as PAD_COLORS, visibleSlots, targetNotes, drumNote } from './pads-core.js?v=9';
+import { COLORS as PAD_COLORS, visibleSlots, targetNotes, drumNote, PAD_ID, padOfSrc } from './pads-core.js?v=9';
 import { PERS, normDrum } from './drum-core.js?v=9';
 /** (milestone 3) a stub's length (world px) */
 export const STUB_PX = 56;
@@ -79,7 +79,7 @@ const PREFIX_KIND = Object.freeze(Object.keys(MOD_PREFIX).reduce((o, k) => { o[M
  * → 'cc', 'h1' → 'chaos', 'e1' → 'env'; anything else null). Pure. */
 export function keyKind(key) {
   if (typeof key !== 'string' || !key) return null;
-  if (/^pd[1-8]$/.test(key)) return 'pads'; // ((8) a project Pads module: no track device, no MOD_PREFIX entry)
+  if (PAD_ID.test(key)) return 'pads'; // ((8) a project Pads module: no track device, no MOD_PREFIX entry)
   if (PREFIX_KIND[key] && MOD_PREFIX[PREFIX_KIND[key]] === key && !/^[lemch]$/.test(key)) return PREFIX_KIND[key];
   const m = /^([lemch])([1-9]\d*)$/.exec(key);
   return m ? PREFIX_KIND[m[1]] : null;
@@ -114,8 +114,8 @@ const text1 = (el, t) => { if (el.textContent !== t) el.textContent = t; };
  * {key: 'i1/lfo3', port: 'out'}; (8) a mod pad 'pd1.p12' → {key: 'pd1', port: 'p12'} (p0…p63) (else null). Pure. */
 export function modSrcPort(src) {
   if (src === 'wheel') return { key: 'wheel', port: 'out' };
-  const q = typeof src === 'string' ? /^(pd[1-8])\.(p(?:[0-9]|[1-5][0-9]|6[0-3]))$/.exec(src) : null; // ((8) a mod pad: its slot's inline jack)
-  if (q) return { key: q[1], port: q[2] };
+  const q = padOfSrc(src); // ((8) a mod pad: its slot's inline jack, p0…p63)
+  if (q) return { key: q.id, port: 'p' + q.i };
   const m = typeof src === 'string' ? /^([a-z][a-z0-9]*(?:\/[a-z][a-zA-Z0-9]*)?)\.(out|k[1-8])$/.exec(src) : null;
   return m ? { key: m[1], port: m[2] } : null;
 }

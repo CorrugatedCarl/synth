@@ -14,6 +14,7 @@ import { fresh, raf, ptr, fire, key, place, advance } from './wk-dom.mjs';
 import * as T from '../cv-tray.js?v=9';
 import { MODELS, classicOf } from '../models.js?v=9';
 import * as MG from '../moog-core.js?v=9';
+import * as PT from '../patch-core.js?v=9';
 import * as cvArt from '../cv-art.js?v=9';
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -1271,7 +1272,7 @@ test('sourcesTray (9): a Moog module tile drags out as a module — info.moog, o
   R3.S.destroy();
   // greyed: a full patch
   let cost = '~1 %';
-  const R4 = moogRig({ moogCost: () => cost }), p = R4.S.moogTile('902'), why = 'A patch holds at most 48 modules';
+  const R4 = moogRig({ moogCost: () => cost }), p = R4.S.moogTile('902'), why = `A patch holds at most ${PT.MAX_MODS} modules`;
   R4.S.setMoogPlaced(why);
   assert.deepEqual(R4.S.moogTiles().map(b => b.classList.contains('cv-placed') && b.getAttribute('aria-disabled')), Array(25).fill('true'));
   assert.deepEqual([p.children[3].hidden, p.children[3].textContent, p.title, R4.S.placed('902')], [false, why, '902 Amplifier — ' + why, why]);
@@ -1294,7 +1295,9 @@ test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — S
   assert.deepEqual(T.SET_TILES.map(x => [x.id, x.name, x.modules, x.starter]), [['s35', 'System 35', 22, 'Swept band'], ['s55', 'System 55', 37, 'Sequence']]);
   assert.ok(Object.isFrozen(T.SET_TILES) && T.SET_TILES.every(Object.isFrozen));
   assert.deepEqual(T.SET_TILES.map(x => cvArt.SET_ART[x.id].modules), [22, 37], 'the art\'s count is the set\'s');
-  assert.deepEqual([T.setFull(11, 27), T.setFull(21, 27), T.setFull(22, 27), T.setFull(40, 27), T.setFull(48, 0), T.setFull(30, -1)],
+  const MX = PT.MAX_MODS;                                                  // (IMPL-P: the default is the patch's bound, 512 — was 48)
+  assert.equal(MX, 512);
+  assert.deepEqual([T.setFull(MX - 37, 27), T.setFull(MX - 27, 27), T.setFull(MX - 26, 27), T.setFull(MX - 8, 27), T.setFull(MX, 0), T.setFull(30, -1)],
     [null, null, 'This set needs 1 more module than the patch can hold', 'This set needs 19 more modules than the patch can hold', null, null]);
   const sp = [], sd = [];
   let cost = { s35: '~3 %', s55: '~6 %' };
@@ -1339,7 +1342,7 @@ test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — S
   ptr(b, 'pointermove', 201, 50, at(tp)); ptr(b, 'pointerup', 201, 50, at(tp));
   assert.equal(sd.at(-1), 'drop s35 tracks set @402,-50');
   // greyed at the cap: its reason; no pick, no drag; null: available again
-  const why = T.setFull(40, MG.S55.length - 12);
+  const why = T.setFull(PT.MAX_MODS - 8, MG.S55.length - 12);
   R.S.setSetPlaced('s55', why);
   assert.deepEqual([b5.classList.contains('cv-placed'), b5.getAttribute('aria-disabled'), b5.children[4].hidden, b5.children[4].textContent, b5.title, b5.getAttribute('aria-label'), R.S.setPlacedOf('s55'), R.S.setPlacedOf('s35')],
     [true, 'true', false, why, 'System 55 · 37 modules — ' + why, 'System 55 · 37 modules — ' + why, why, null]);

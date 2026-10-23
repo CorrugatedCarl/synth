@@ -485,6 +485,9 @@ export const FAMILY = Object.freeze({
   console: CONSOLE, sets: SETS, rackWide: 2816, rackN: 16,             // rackW while ≤ rackN modules and no console module, else rackWide
 });
 
+// a module id's number, 0 for anything else: patch-core's isMid grammar (m1…m999999, IMPL-P §3.1), mirrored here because this table is a leaf
+// (patch-core imports it); tests/patch-core.test.mjs holds the two equal
+const midN = k => { const m = typeof k === 'string' ? /^m([1-9]\d{0,5})$/.exec(k) : null; return m ? +m[1] : 0; };
 const pval = (c, x) => typeof x === 'number' && isFinite(x) ? (c.t === 's' ? Math.max(0, Math.min(c.opts.length - 1, Math.round(x))) : Math.max(c.min, Math.min(c.max, x))) : c.def;
 /** A set patched as its starter on a fresh record (§1.4; IMPL-9b §1.2: the Model 15 / System 35 / System 55 tiles, a new 900 Series
  *  from the instrument menu, `#m900`, Add track) → { rec, vals } | null (no such set): modules numbered past every `m<k>` of vals.p
@@ -492,14 +495,15 @@ const pval = (c, x) => typeof x === 'number' && isFinite(x) ? (c.t === 's' ? Mat
  *  role its k-th module), their drivers set (a driver past its max sheds its highest unbound ones), its cords c1… coloured by the
  *  least-used rule (i % 8 from none); vals = vals + the controller's and every bound module's values (the preset's, else the
  *  defaults; an unbound routing panel is new, so off). = patch-core loadPreset(fresh, vals, starter, { ensure: set }) — the tests
- *  compare the two. Pure. */
+ *  compare the two. null too when the set's ids would pass m999999 (a vals.p numbered within a set of it). Pure. */
 export function makeSet(id, vals) {
   const S = typeof id === 'string' && Object.prototype.hasOwnProperty.call(SETS, id) ? SETS[id] : null;
   if (!S) return null;
   const v0 = vals && typeof vals === 'object' && !Array.isArray(vals) ? vals : {};
   const p0 = v0.p && typeof v0.p === 'object' && !Array.isArray(v0.p) ? v0.p : {};
   let n = 1;
-  for (const k of Object.keys(p0)) { const m = /^m([1-9]\d{0,3})$/.exec(k); if (m && +m[1] < 4096) n = Math.max(n, +m[1] + 1); }
+  for (const k of Object.keys(p0)) n = Math.max(n, midN(k) + 1);
+  if (n + S.set.length - 1 > 999999) return null;                     // no room: the set's last id would pass m999999 (patch-core: "No module numbers left"; normPatch drops ids past it)
   const P = PRESETS.find(x => x.name === S.starter), mods = {}, of = {}, bound = {}, taken = {};
   for (const t of S.set) {
     const mid = 'm' + n++, o = { t }, L = TYPES[t].link;
@@ -531,6 +535,6 @@ export function model15(vals) { return makeSet('m15', vals); }
 export function pvOf(vals) {
   const o = vals && typeof vals === 'object' ? vals : {}, pv = { 0: [] }, p = o.p;
   for (const c of TCTL.params) { const x = o[c.id]; pv[0].push(typeof x === 'number' && isFinite(x) ? x : c.def); }
-  if (p && typeof p === 'object' && !Array.isArray(p)) for (const k of Object.keys(p)) if (/^m\d{1,4}$/.test(k) && p[k] && typeof p[k] === 'object') pv[k] = p[k];
+  if (p && typeof p === 'object' && !Array.isArray(p)) for (const k of Object.keys(p)) if (midN(k) > 0 && p[k] && typeof p[k] === 'object') pv[k] = p[k];
   return pv;
 }

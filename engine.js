@@ -1529,6 +1529,9 @@ const ptEmpty = f => ({ v: 1, f, mods: [], cords: [] });
 const ptFam = (pg, f) => !pg || typeof pg !== 'object' || pg.f === undefined || pg.f === f;
 // the families Track.warmPatch rounds (IMPL-9 §12 spike (a) decision 4; a family = its DSP script's globalThis.Patch<Id>)
 const PT_FAM = ['moog'];
+// IMPL-P §3.2 (D6): the warm graphs are split by this many connections — the evaluator's old MAXC, pinned. The evaluator's own guard (PatchDSP.MAXC) is
+// lifted for big user racks; the warm-up's JIT shapes, and so its payload list (tests/engine-track.test.mjs hashes it), must not follow it
+const WARM_C = 256;
 const PT_DIR = { in: 0, out: 1, any: 2 };
 // a family's warm-up material, built from its own table (IMPL-9 §7.4: T, JACKS [{ id, dir, sig, sec }], PARAMS [[id, def,
 // snap]], SINK, LINK, CTL) — no type, jack or value of a family named here, so a type added to the table is warmed with the
@@ -2557,7 +2560,7 @@ class Inst {
     const q = this.pmPend;
     this.pmPend = null;
     if (this.pm === null) { this.ptFail('load'); return; }
-    if (q !== null && ptFam(q.pg, f)) this.pm.graph(q.pg);
+    if (q !== null && ptFam(q.pg, f)) { try { this.pm.graph(q.pg); } catch (err) { this.ptFail('graph'); } } // (a throw — a stack overflow on a deep legal chain — keeps the machine's graph, tells the host once, and lets setPatch finish: IMPL-P review F1)
   }
   // ptErr once (the machine reports a payload's first offending item here too, its why): the host's one notice
   ptFail(why) {
@@ -2573,7 +2576,7 @@ class Inst {
   // is dropped, never kept (live only: no song, bounce, History or vals; the machine drops one for a module not live, too)
   ptMsg(s) {
     if (s.pe !== undefined) { const e = s.pe, pm = this.pm; if (this.kind === 'patch' && this.on === 1 && pm !== null && Array.isArray(e) && typeof pm.ev === 'function') pm.ev(e[0], e[1]); return; }
-    if (this.kind === 'patch' && this.pm !== null && ptFam(s.pg, this.pmF)) this.pm.graph(s.pg);
+    if (this.kind === 'patch' && this.pm !== null && ptFam(s.pg, this.pmF)) { try { this.pm.graph(s.pg); } catch (err) { this.ptFail('graph'); } } // (as in ptOn)
     else if (this.kind === 'patch' && this.pm === null) this.ptFail('load');
     else this.pmPend = s;
   }
@@ -3795,7 +3798,7 @@ class Track extends Facade {
   // graph changed mid-note (every input driven hard, loop steps with their ramps, then a module retired); Play from a stop's fresh
   // restart (ptFresh); a power-off with keys held and on again (the restrike); an OS change there and back. The machine's reports
   // go to a stand-in port; restore() clears its graph and state. Without the scripts (or a table it cannot read): nothing.
-  // IMPL-9b §3.1: the warm graphs within the evaluator's bound (ptWarms: the table in parts once it outgrows MAXC, each part the
+  // IMPL-9b §3.1: the warm graphs within the evaluator's bound (ptWarms: the table in parts once it outgrows WARM_C, each part the
   // whole round), after (spike (a2) decision 1) 100 graph() calls of the whole table in one payload and its flip back to back —
   // JSC's first eden GC lands in the warm-up, not on a player's first patch edit (no flip over 1 ms after it, measured); in each
   // part, every event of every module whose type declares some (a ring overflowing: the 960's twelve) and a lamp read; graph b
@@ -3808,7 +3811,7 @@ class Track extends Facade {
     I.port = WPORT;
     try {
       for (const f of PT_FAM) {
-        const FM = globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], WS = ptWarms(FM, f, PD.MAXC > 0 ? PD.MAXC : 256);
+        const FM = globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], WS = ptWarms(FM, f, WARM_C);
         if (WS === null) continue;
         const EV = FM.EV && typeof FM.EV === 'object' ? FM.EV : {}, P = v => ({ engine: 'patch', family: f, pv: v, level: 1, mode: 'mono' });
         I.seqMsg({ pg: WS.parts[0].a, pk: 'warm' }); I.setPatch(P(WS.parts[0].v0));  // (the machine; its graph waits in pmPend)
@@ -3860,7 +3863,7 @@ class Track extends Facade {
       // (IMPL-9b: one part, not the whole table — its cost × 2 over the 480 quanta; the part holding the driven type, a driven
       // oscillator being every patch's most-used class: on JSC a new Track's first payload quantum runs × 1.8 of steady, not × 5
       // with another part, and Classic bass's steady state is stage 9's)
-      const WS = ptWarms(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f, PD.MAXC > 0 ? PD.MAXC : 256);
+      const WS = ptWarms(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f, WARM_C);
       const W = WS !== null ? WS.parts.find(Q => Q.a.mods.some(m => m[2] >= 0)) || WS.parts[0] : null;
       if (W === null) continue;
       const port = x.port;

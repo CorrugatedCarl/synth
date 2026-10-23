@@ -42,7 +42,7 @@
 // Stage 2a, performance modulators (IMPL-2a §2.2; rows: cv-mods.js, the compile: cv-graph injectMods); stage 2b, every
 // modulator (IMPL-2b §1.1, §3). Pure, in place, History the caller's; a refusal leaves the track untouched.
 //   addModDev(t, kind) → id | null      kind 'velo' | 'at' | 'bend' | 'note' → the singleton 've' | 'at' | 'bd' | 'nt' (null:
-//        there already); 'lfo' | 'env' | 'macro' | 'cc' | 'chaos' → '<prefix><n>' (l / e / m / c / h; n = the highest of
+//        there already, or the track holds DEV_MAX devices — devFull(t) says so: addInst / addPanel / setModel refuse at it too); 'lfo' | 'env' | 'macro' | 'cc' | 'chaos' → '<prefix><n>' (l / e / m / c / h; n = the highest of
 //        that prefix + 1 — a removed module's number comes round again, its rows went with it) with the module's default
 //        state (song.normModDev of nothing: an LFO = Serum's default LFO as GLOBAL (mono 1), an ENV = Serum's ENV 2
 //        defaults, a macro 8 knobs at 0 with empty names, a CC { cc: 1, ch: 0, v: 0 }, a chaos GLOBAL (mono 1, as a canvas
@@ -57,7 +57,7 @@
 //   hasWheel(p)
 //   (IMPL-8 §1.4, §5, §10.3: the Pads modules, project.pads in pads-core normPads' shape — the wheel's pattern)
 //   addPads(p, o) → { ok, id, why }   a new module (pads-core newModule: "Pads n", 4 × 4 M; o's fields over it — the host's
-//        defaultsFor result, a name —, never its id) under the lowest free id pd1…pd8; the 9th: "8 Pads modules in this
+//        defaultsFor result, a name —, never its id) under the lowest free id pd1…pd64; the 65th: "64 Pads modules in this
 //        project". Its position is the host's (t.lay.pd<n> on the track it is placed on)
 //   removePads(p, id) → { ok, byTrack: [{ trackId, rows }] }   the module, every 'pd<n>.*' row and t.lay.pd<n> on every track
 //   padRows(p, x) / dropPadRows(p, x) → { ok, byTrack }   the rows of module x ('pd1') or of one mod pad ('pd1.p12') on every
@@ -101,11 +101,15 @@ import { padOfSrc, freeId, newModule, PAD_ID, MAX_MODS } from './pads-core.js?v=
 // (the host's one namespace for the rows: cv-mods' tables and checks, re-exported)
 export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, plainSwitch, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf,
   padTracks, isPadSrc, padSrcLabel } from './cv-mods.js?v=9';
-import { normModDev } from './song.js?v=9';
+import { normModDev, DEV_MAX } from './song.js?v=9';
 import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+// (IMPL-P §3.1) a track holds DEV_MAX devices (song.normDev's bound: a device past it would be dropped silently at the next load); every add path
+// refuses at it — null / { ok: false, why } — and the host says devFull's reason
+export { DEV_MAX };
+export const devFull = t => (isObj(t) && isObj(t.dev) && Object.keys(t.dev).length >= DEV_MAX ? `A track holds at most ${DEV_MAX} devices` : '');
 const done = new WeakSet();
 export const isAdopted = t => done.has(t);
 const synths = t => Object.keys(t.dev).filter(k => isObj(t.dev[k]) && t.dev[k].kind === 'synth');
@@ -230,7 +234,7 @@ export const instIds = t => { const p = primId(t); return p ? [p, ...synths(t).f
 export const isGraphShape = t => isObj(t) && isObj(t.dev) && !compileTrack(t).canonical;
 const panels = t => Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'panel');
 export function addInst(t, modelId, o = {}) {
-  if (synths(t).length >= LIMITS.inst) return null;
+  if (synths(t).length >= LIMITS.inst || devFull(t)) return null;
   const id = nextId(t, 'i'), d = { kind: 'synth', model: modelId, vals: isObj(o.vals) ? o.vals : {}, preset: o.preset === undefined ? null : o.preset };
   if (modelId === 'serum') d.fx = isObj(o.fx) ? o.fx : defaultFx2();
   if (typeof o.name === 'string' && o.name) d.name = o.name;
@@ -257,7 +261,7 @@ export function removeInst(t, id) {
   return Object.assign({ rows }, OK);
 }
 export function addPanel(t, o = {}) {
-  if (panels(t).length >= LIMITS.panels) return null;
+  if (panels(t).length >= LIMITS.panels || devFull(t)) return null;
   const id = nextId(t, 'fx'), P = { kind: 'panel', fx: isObj(o.fx) ? o.fx : defaultFx2() };
   if (typeof o.name === 'string' && o.name) P.name = o.name;
   t.dev[id] = P;
@@ -319,6 +323,7 @@ export function makePrimary(t, id) {
 export function setModel(t, id, modelId, o = {}) {
   const d = instOf(t, id);
   if (!d) return NO('No such instrument');
+  if (d.model === 'serum' && modelId !== 'serum' && devFull(t)) return NO(devFull(t)); // (a Serum's own FX unfold into a panel: one more device)
   const was = d.model;
   d.model = modelId;
   if (o.vals !== undefined) d.vals = o.vals;
@@ -390,11 +395,12 @@ const VALS_FULL = `This track’s value sources are full (${VAL_N}/${VAL_N})`;
 const fullWhy = (o, d) => `${(o && o.name) || d.name || 'Serum'}’s mod rows are full (64/64)`;
 export function addModDev(t, kind) {
   const pre = MOD_PREFIX[kind];
-  if (!pre || !isObj(t) || !isObj(t.dev)) return null;
+  if (!pre || !isObj(t) || !isObj(t.dev) || devFull(t)) return null;
   let id = pre;
   if (MOD_MULTI.includes(kind)) {
     let n = 0;
-    for (const k of Object.keys(t.dev)) { const m = new RegExp('^' + pre + '([1-9]\\d{0,5})$').exec(k); if (m) n = Math.max(n, +m[1]); }
+    const re = new RegExp('^' + pre + '([1-9]\\d{0,5})$');
+    for (const k of Object.keys(t.dev)) { const m = re.exec(k); if (m) n = Math.max(n, +m[1]); }
     id = pre + (n + 1);
   } else if (id in t.dev) return null;
   t.dev[id] = normModDev(kind === 'lfo' ? { kind, lfo: { mono: 1 } } : kind === 'chaos' ? { kind, chaos: { mono: 1, sh: 0 } } : { kind }); // (an LFO / a chaos module GLOBAL)

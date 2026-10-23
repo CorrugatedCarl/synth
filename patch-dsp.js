@@ -19,6 +19,8 @@
  *                      the controller; a port = the jack's index in its type's JACKS; a = the source end): builds, reuses
  *                      (same n and type: its state kept) or retires modules, wires, compiles the schedule; allocates — the
  *                      message handler only. Returns { steps, loops, live, ramps, why } (null, nothing changed: not a payload)
+ *                      Guards (IMPL-P §3: safety bounds against a corrupt payload — nothing is sized by them): MAXM 1024 modules, MAXC 8192
+ *                      connections, module numbers 0…MAXN (999999); past one the item is dropped with its reason ('limit' / 'mod')
  *   note(n, v, on)     to module 0 (its note(n, v, on))
  *   setOS(os, fs)      every module's setOS(fs); a transition in progress completes first
  *   render(buf, N, F0) N OS-rate samples (whole chunks: CH = 4 · OS, OS ≤ 8) of MAIN OUT × module 0's `og` added into
@@ -84,7 +86,7 @@
   try {
     const VER = 1;
     const CHMAX = 32;                  // a chunk at OS 8: every module output, feed and constant buffer
-    const MAXM = 64, MAXC = 256;       // a payload's bounds (patch-core's records hold ≤ 49 modules, ≤ 128 cords)
+    const MAXM = 1024, MAXC = 8192, MAXN = 999999;  // a payload's guards (IMPL-P §3: ≥ patch-core's records — ≤ 513 modules, ≤ 4096 cords + rows —, numbers to 999999; nothing is sized by them)
     const GMAX = 4;                    // a connection's gain (a wire's level, song.js)
     const RAMP_S = 0.002, GLIDE_S = 0.006, FLUSH_N = 32, MAXSEC = 16;
     const LATE = 1e4;                  // a late read's bound (V; NaN → 0): a loop through passive modules at gains > 1 stays finite
@@ -178,7 +180,7 @@
       if (!pg || typeof pg !== 'object' || !Array.isArray(pg.mods) || !Array.isArray(pg.cords)) { why.push('graph'); return null; }
       const recs = [], byN = new Map(), gone = new Set();
       for (const e of pg.mods) {
-        if (!Array.isArray(e) || !(Number.isInteger(e[0]) && e[0] >= 0 && e[0] <= 4096) || byN.has(e[0])) { why.push('mod'); continue; }
+        if (!Array.isArray(e) || !(Number.isInteger(e[0]) && e[0] >= 0 && e[0] <= MAXN) || byN.has(e[0])) { why.push('mod'); continue; }
         const TI = typeof e[1] === 'string' ? FT.types[e[1]] : undefined;
         if (TI === undefined) { why.push('type'); gone.add(e[0]); continue; }  // (an unknown type: silent, its cords dropped)
         if (recs.length >= MAXM) { why.push('limit'); gone.add(e[0]); continue; }
@@ -303,16 +305,25 @@
       if (G.all) live.fill(1);
       // Tarjan's strongly-connected components over the live nodes
       const IX = new Int32Array(N).fill(-1), LOW = new Int32Array(N), ON = new Uint8Array(N), stk = [], comps = [], compOf = new Int32Array(N).fill(-1);
+      // (iterative, the recursion's order exactly: a series path of 2 500 nodes — a 512-module rack of 961s — would overflow a small worklet stack)
       let ix = 0;
-      const strong = v => {
-        IX[v] = LOW[v] = ix++; stk.push(v); ON[v] = 1;
-        for (const w of out[v]) {
-          if (!live[w]) continue;
-          if (IX[w] < 0) { strong(w); if (LOW[w] < LOW[v]) LOW[v] = LOW[w]; } else if (ON[w] && IX[w] < LOW[v]) LOW[v] = IX[w];
+      const cs = [], ei = new Int32Array(N);
+      for (let s = 0; s < N; s++) {
+        if (!live[s] || IX[s] >= 0) continue;
+        IX[s] = LOW[s] = ix++; stk.push(s); ON[s] = 1; cs.push(s);
+        while (cs.length > 0) {
+          const v = cs[cs.length - 1], ov = out[v];
+          if (ei[v] < ov.length) {
+            const w = ov[ei[v]++];
+            if (!live[w]) continue;
+            if (IX[w] < 0) { IX[w] = LOW[w] = ix++; stk.push(w); ON[w] = 1; cs.push(w); } else if (ON[w] && IX[w] < LOW[v]) LOW[v] = IX[w];
+            continue;
+          }
+          if (LOW[v] === IX[v]) { const c = []; let w; do { w = stk.pop(); ON[w] = 0; compOf[w] = comps.length; c.push(w); } while (w !== v); comps.push(c); }
+          cs.pop();
+          if (cs.length > 0) { const u = cs[cs.length - 1]; if (LOW[v] < LOW[u]) LOW[u] = LOW[v]; }
         }
-        if (LOW[v] === IX[v]) { const c = []; let w; do { w = stk.pop(); ON[w] = 0; compOf[w] = comps.length; c.push(w); } while (w !== v); comps.push(c); }
-      };
-      for (let v = 0; v < N; v++) if (live[v] && IX[v] < 0) strong(v);
+      }
       // the condensation in topological order, ties by (module number, section)
       const nC = comps.length, cr = new Float64Array(nC), cOut = [], indeg = new Int32Array(nC), cset = new Set();
       for (let c = 0; c < nC; c++) { let m = Infinity; for (const v of comps[c]) if (rank[v] < m) m = rank[v]; cr[c] = m; cOut.push([]); }
@@ -786,7 +797,7 @@
       } catch (err) { return null; }
     }
 
-    globalThis.PatchDSP = Object.freeze({ VER, CHMAX, RAMP_S, GLIDE_S, FLUSH_N, MAXM, MAXC, GMAX, create, schedule });
+    globalThis.PatchDSP = Object.freeze({ VER, CHMAX, RAMP_S, GLIDE_S, FLUSH_N, MAXM, MAXC, MAXN, GMAX, create, schedule });
   } catch (err) {
     globalThis.PatchDSP = null;                                // a load failure never throws out of the script
     if (typeof console !== 'undefined') console.error('patch-dsp: load failed', err);

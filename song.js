@@ -516,9 +516,12 @@ export function serialize(project) { return JSON.stringify(project); }
 // undefined (deserialize then adds no key: an old track's History snapshot stays byte-identical). A width (w, from before
 // the no-resizing rule of 2026-10-18) is dropped: every module has one fixed width now; no schema bump.
 // Milestone 3 (schema 7, IMPL-3 §3): a Serum's parts are modules 'iN/<part>' (serum-core module names: 'oscA', 'filter2' —
-// the key's second part as PORT_ID's), up to LAY_MAX entries (a Serum in parts is up to 25 modules), and a Serum's entry
+// the key's second part as PORT_ID's), up to LAY_MAX entries (a Serum in parts is up to 25 modules; a patch's modules are '<dev>/<mid>' keys), and a Serum's entry
 // may say ui 'parts' (its parts view; absent = the whole panel, as 'flow' marks a classic's Simple layout)
-const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?$/, LAY_MAX = 256, LAY_UI = ['flow', 'parts'];
+// IMPL-P §3.1: the bounds below are safety bounds against a corrupt or hostile file, not product caps — a person adds until their system lags (9dde7e6: 64 devices,
+// 256 wires / mod rows / layout entries; a track's 65th device was dropped silently at the next load). LAY_MAX holds 512 patch modules + 1024 devices + a Serum's parts.
+export const DEV_MAX = 1024, WIRE_MAX = 4096, MODROW_MAX = 4096, LAY_MAX = 4096;
+const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?$/, LAY_UI = ['flow', 'parts'];
 const finN = x => typeof x === 'number' && Number.isFinite(x);
 export function normLay(lay) {
   if (!isObj(lay)) return undefined;
@@ -555,7 +558,7 @@ export function normDev(r) {
   const dev = {};
   let n = 0, top = 0;
   for (const k of Object.keys(r.dev)) {
-    if (n >= 64) break;
+    if (n >= DEV_MAX) break;
     const d = r.dev[k];
     if (k === '__proto__' || !DEV_ID.test(k) || !isObj(d) || typeof d.kind !== 'string' || !/^[a-z]{1,12}$/.test(d.kind)) continue;
     let o;
@@ -585,7 +588,7 @@ export function normDev(r) {
   if (!ins.length) return null;
   const prim = typeof r.prim === 'string' && dev[r.prim] && dev[r.prim].kind === 'synth' ? r.prim : ins[0];
   const wires = [], wids = new Set();
-  for (const w of Array.isArray(r.wires) ? r.wires.slice(0, 256) : []) {
+  for (const w of Array.isArray(r.wires) ? r.wires.slice(0, WIRE_MAX) : []) {
     if (!isObj(w) || typeof w.a !== 'string' || typeof w.b !== 'string' || !PORT_ID.test(w.a) || !PORT_ID.test(w.b)) continue;
     let id = typeof w.id === 'string' && /^w\d{1,6}$/.test(w.id) && !wids.has(w.id) ? w.id : '';
     for (let i = 1; !id; i++) if (!wids.has('w' + i)) id = 'w' + i;
@@ -624,7 +627,7 @@ export function normModDev(d) {
 // Stage 2a: a track's mod cables (SPEC-canvas §5.1, IMPL-2a §1): { id: 'r<n>', src, dst, then serum-core normRow's fields in
 // its order and by its rules (amt / curve / acurve −1…1, out / rise / fall 0…1 (fall = rise when slink), bits, crv: ≤ 64
 // points [x, y, c] repaired as normRow's normPts, or null) }. src 'wheel' or '<device>.<port>', dst '<device>:<param>',
-// aux '' or a source id; ids unique; at most 256 rows; a row failing any check is dropped. (Which sources, devices and
+// aux '' or a source id; ids unique; at most MODROW_MAX (4096) rows; a row failing any check is dropped. (Which sources, devices and
 // params exist — and Serum's own aux ids — the page checks: cv-model, cv-graph nativeRow.)
 const MROW_ID = /^r\d{1,6}$/, MSRC = /^(wheel|[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7})$/;
 const MDST = /^[a-z][a-z0-9]{0,15}:[A-Za-z][\w.]{0,47}$/, MAUX = /^[a-z][a-z0-9]{0,15}$/;
@@ -648,7 +651,7 @@ function crvOf(raw) { // (= serum-core normPts(raw, null, false, 64))
 export function normMods(list) {
   const out = [], ids = new Set();
   for (const r of Array.isArray(list) ? list : []) {
-    if (out.length >= 256) break;
+    if (out.length >= MODROW_MAX) break;
     if (!isObj(r) || typeof r.id !== 'string' || !MROW_ID.test(r.id) || ids.has(r.id) || typeof r.src !== 'string' || !MSRC.test(r.src)
       || typeof r.dst !== 'string' || !MDST.test(r.dst)) continue;
     const aux = r.aux === undefined || r.aux === null ? '' : r.aux;

@@ -11,7 +11,9 @@ import './v8-guard.mjs';
 // ONCE a frame by the world (a pinch frame's two writes — gesture.js's pan and zoom hooks — step and draw it once at their end,
 // the tick leaves it; the hold rule from the tick's frame length; the frame's camera), no frame while every
 // rope sleeps (the real cv-cords on a fake GL too), a cord jack below READ_K not offered to the jack hook (it pans: sleeper),
-// other jacks as before, the fit hook (ids, a READ_K floor, the foot kept).
+// other jacks as before, the fit hook (ids, a READ_K floor, the foot kept). Stage P (IMPL-P §2, §7 C; lane C): the preset — o.perf
+// at build, ?perf= over it, setPerf live to the cord layer and cv-face, glStats().perf / faceBudget —, ?texmax → createGL's
+// maxTex, a device-ratio change re-checking the faces (no camera written), the real cords at medium / low through the world.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -441,9 +443,12 @@ test('1h GL path: no .cv-grid canvas (the GL one before #world instead); one GL.
   eq([log.filter(e => e[0] === 'resize').length - r0, log.filter(e => e[0] === 'resize').pop().slice(1), draws(log)], [1, [900, 600, 1], n1 + 5], 'a resize: the buffer re-sized, one draw');
   win.devicePixelRatio = 2; world.resize(); frame(2);
   eq([log.filter(e => e[0] === 'resize').pop().slice(1), draws(log), log.filter(e => e[0] === 'draw').pop()[6], world.gridStats().s], [[900, 600, 2], n1 + 6, 2, 2], 'dpr 2: the buffer at 2×, drawn with d 2');
-  // glStats: GL.stats() + FACES.stats() (its bytes / gl renamed faceBytes / glFaces)
-  const n2 = draws(log), gs = world.glStats();
-  eq(Object.keys(gs).sort(), ['base', 'bytes', 'd', 'dom', 'faceBytes', 'faces', 'frames', 'gl', 'glFaces', 'h', 'lost', 'max', 'ms', 'paintMax', 'paintMs', 'paints', 'queued', 'soft', 'softMin', 'texes', 'w', 'winPx', 'windows'].sort()); // (+ soft / softMin / winPx: 1h fixes B)
+  // glStats: GL.stats() + FACES.stats() (its bytes / gl renamed faceBytes / glFaces; (P) budget → faceBudget) + (P) the preset
+  const n2 = draws(log), gs = world.glStats(), fs = FACES.stats();
+  const was = ['base', 'bytes', 'd', 'dom', 'faceBytes', 'faces', 'frames', 'gl', 'glFaces', 'h', 'lost', 'max', 'ms', 'paintMax', 'paintMs', 'paints', 'queued', 'soft', 'softMin', 'texes', 'w', 'winPx', 'windows']; // (+ soft / softMin / winPx: 1h fixes B)
+  const fk = Object.keys(fs).map(k => (k === 'bytes' ? 'faceBytes' : k === 'gl' ? 'glFaces' : k === 'budget' ? 'faceBudget' : k)); // ((P) cv-face's own: dE, budget, under …)
+  eq(Object.keys(gs).sort(), [...new Set([...was, 'perf', ...fk])].sort());
+  eq([gs.perf, 'budget' in gs, 'faceBudget' in gs], ['high', false, 'budget' in fs], '(P) the preset; FACES\' budget as faceBudget');
   eq([gs.gl, gs.frames, gs.w, gs.h, gs.faces, gs.faceBytes, gs.bytes], [true, n2, 1800, 1200, 0, 0, 0]);
   eq(world.glStats(true).frames, n2); eq(world.glStats().frames, 0, 'reset');
   eq(world.gridStats(true).n, 0, 'gridStats resets the same counters');
@@ -1714,6 +1719,62 @@ test('1h fix R2: world.update(id) at a drop (cv-module onMove end / cancel, a fo
   void w;
 });
 
+// (P R2-F2) a batch: world.update([ids]) — every listed item re-read, ONE recache pass and ONE FACES.recheck (the overlap rule is
+// faces × items: one call per module made a big rack's every edit O(n³)); the end state exactly the per-id path's
+function batchScene(many, k) {
+  const log = [];
+  const S = setup({ opts: { createGL: fakeGL(log) } }), { d, win, world, frame, item } = S;
+  frame();
+  class Img { constructor() { this.onload = null; } set src(u) { this._src = u; } get src() { return this._src; } }
+  const faces = [], its = {};
+  const at = (id, x, y, iw, ih, hw) => {
+    const it = item(id, x, y, iw, ih);
+    it.el.style.left = x + 'px'; it.el.style.top = y + 'px';
+    if (hw) {
+      const root = d.createElement('div'), deco = d.createElement('div'), svg = d.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      root.className = 'inst hw'; deco.className = 'hw-decor'; deco.append(svg); root.append(deco); it.body.append(root);
+      faces.push([id, FACES.register(deco, { markup: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"></svg>', w: 400, h: 200, offset: () => ({ x: 0, y: 40 }),
+        env: { win, doc: d, Image: Img, Blob: class { constructor() {} }, URL: { createObjectURL: () => 'blob:1', revokeObjectURL: () => {} } } })]);
+    }
+    its[id] = it; world.add(it);
+    return it;
+  };
+  at('a', 0, 0, 400, 240, true); at('b', 1000, 0, 300, 100); at('c', 1000, 400, 300, 100); at('d', 2000, 0, 400, 240, true); at('e', 2000, 600, 300, 100);
+  frame(2);
+  const real = world.ids; let ids = 0; // (FACES' recheck reads the world's ids once per run)
+  world.ids = () => { ids++; return real(); };
+  const move = (id, x, y) => { const it = its[id]; it.x = x; it.y = y; it.el.style.left = x + 'px'; it.el.style.top = y + 'px'; };
+  const snap = () => JSON.stringify({ rects: Object.keys(its).map(id => [id, world.rectOf(id), world.onScreen(id)]), faces: faces.map(([id, f]) => [id, f.mode]) });
+  // b dropped onto a (overlap: a's face goes to the DOM tier), c far out of view (off screen), e onto d
+  move('b', 200, 50); move('c', 9000, 400); move('e', 2100, 100);
+  ids = 0;
+  many(world);
+  const runs = ids; // (before the frame: its 'screen' event runs the overlap rule too)
+  frame(2);
+  const out = { ids: runs, snap: snap(), modes: faces.map(([id, f]) => id + ':' + f.mode).join(' '), rect: JSON.stringify(world.rectOf('c')), on: world.onScreen('c') };
+  for (const [, f] of faces) f.destroy();
+  world.destroy();
+  void k;
+  return out;
+}
+
+test('(P R2-F2) world.update([ids]) / a Set: a batch — each known id re-read (unknown skipped), ONE FACES.recheck for the lot (the per-id calls ran it once each: faces × items every time), the same end state; none known → nothing; update() all as before', () => {
+  const per = batchScene(w => { w.update('b'); w.update('c'); w.update('e'); });
+  const arr = batchScene(w => w.update(['b', 'c', 'e']));
+  const set = batchScene(w => w.update(new Set(['b', 'c', 'e', 'zz'])));
+  eq(per.ids, 3, 'the per-id path: one recheck per update');
+  eq([arr.ids, set.ids], [1, 1], 'a batch: one overlap pass for the lot');
+  eq(arr.modes, 'a:dom d:dom', 'the overlap rule ran (b on a, e on d): both faces on the DOM tier');
+  eq(arr.snap, per.snap, 'the same end state as the per-id calls: every cached rect, every item on / off screen, every face mode');
+  eq(set.snap, per.snap, 'a Set the same, an unknown id skipped');
+  eq([arr.rect, arr.on], [per.rect, per.on], 'the far one re-read (off screen at its new place)');
+  const none = batchScene(w => { w.update(['nope', 'zz']); w.update([]); });
+  eq(none.ids, 0, 'no known id: nothing runs (as update(unknown))');
+  eq(none.modes, 'a:svg d:svg', '… and nothing re-read: the faces stay apart-looking until a rest');
+  const all = batchScene(w => w.update());
+  eq([all.ids, all.snap], [1, per.snap], 'update(): everything re-read, one recheck — the same state');
+});
+
 /* ------------------------------------------------------------------ milestone 3 H5: the canvas stores' budget */
 test('H5 planStores (pure): no cap within the budget; past it the off-screen stores drop to the dpr first, then the on-screen ones farthest from the centre; the dpr is the floor', () => {
   const MB = 1024 * 1024, B = 64 * MB;
@@ -1941,6 +2002,7 @@ function fakeCords(log, made) {
       owed: () => L.owedF, wants: () => L.running || L.owedF,
       draw(c, vw, vh, d) { log.push(['draw', c.tx, c.ty, c.k, vw, vh, d]); L.owedF = false; return true; },
       resize(vw, vh, d) { log.push(['resize', vw, vh, d]); }, reset() { log.push(['reset']); }, svg() { log.push(['svg']); }, destroy() { log.push(['destroy']); },
+      setPerf(p) { log.push(['setPerf', p]); }, // ((P) the preset)
       swing(n) { L.running = true; L.left = n; opts.onWake(); } };
     if (made) made.push(L);
     return L;
@@ -2225,4 +2287,137 @@ test('(9, IMPL-9 §4.5) the fit hook: the toolbar\'s fit, the 0 key frame the id
   const c2 = W.fitCam([{ x: 0, y: 0, w: 4000, h: 300 }], 1000, 600, { pad: 48, kMin: 0.5, foot: true });
   eq([c2.k, c2.tx, c2.ty], [0.5, 48, 300 - 75], 'too wide: its left kept; the height fits: centred');
   eq(W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48 }), W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48, kMin: 0 }), 'no kMin: as before');
+});
+
+/* ------------------------------------------------------------------ (P) the performance preset, ?texmax, the device-ratio route */
+test('(P) the preset: o.perf at build (unknown → high), ?perf= over it for the session (never stored), the cord layer built with it, setPerf live to the cord layer (and cv-face\'s FACES.setPerf); glStats().perf; PERFS / PERF_PREF / perfOf', t => {
+  eq([W.PERFS, W.PERF_PREF, ['high', 'medium', 'low', 'x', null].map(W.perfOf)], [['high', 'medium', 'low'], 'synth.cv.perf', ['high', 'medium', 'low', 'high', 'high']]);
+  const log = [], made = [];
+  const S = setup({ opts: { perf: 'medium', createGL: fakeGL([]), createCords: fakeCords(log, made) } });
+  S.frame();
+  eq([S.world.perf, S.world.glStats().perf], ['medium', 'medium'], 'o.perf');
+  const L = S.world.cords();
+  eq(L.opts.perf, 'medium', 'cords() built at the preset');
+  S.world.setPerf('low');
+  eq([S.world.perf, log.filter(e => e[0] === 'setPerf').map(e => e[1]), S.world.glStats().perf], ['low', ['low'], 'low'], 'setPerf → the cord layer');
+  S.world.setPerf('turbo');
+  eq([S.world.perf, log.filter(e => e[0] === 'setPerf').pop()[1]], ['high', 'high'], 'unknown → high');
+  eq([...S.prefs.keys()].includes(W.PERF_PREF), false, 'the world never stores it (main.js does)');
+  if (typeof FACES.setPerf === 'function') { // (lane T's cv-face: the texture density follows)
+    S.world.setPerf('medium');
+    eq([FACES.stats().perf, S.world.glStats().perf, 'faceBudget' in S.world.glStats()], ['medium', 'medium', true], 'FACES.setPerf reached; its budget as faceBudget');
+    S.world.setPerf('high');
+    eq(FACES.stats().perf, 'high');
+  } else t.diagnostic('cv-face has no setPerf yet (lane T): its half checked after the merge');
+  S.world.destroy();
+  for (const [search, perf, want] of [['?perf=low', 'high', 'low'], ['?a=1&perf=medium', undefined, 'medium'], ['?perf=fast', 'medium', 'medium'], ['?perfx=low', 'medium', 'medium'], ['', 'low', 'low'], ['', 'bogus', 'high']]) {
+    const d = dom.fresh(), win = d.defaultView, m = [];
+    win.location = { search }; win.document = d; d.querySelectorAll = () => [];
+    const vp = d.createElement('div'), w = d.createElement('div');
+    vp.append(w); d.body.append(vp); place(vp, 0, 0, 800, 600);
+    const prefs = new Map(), store = { get: (k, def) => (prefs.has(k) ? prefs.get(k) : def), set: (k, v) => prefs.set(k, v) };
+    const world = W.createWorld(vp, { world: w, store, perf, env: { win, doc: d, now: () => T, raf: () => 1, caf: () => {}, setTimeout: setT, clearTimeout: clearT }, createGL: fakeGL([]), createCords: fakeCords([], m) });
+    world.cords();
+    eq([world.perf, m[0].opts.perf, prefs.size], [want, want, 0], JSON.stringify([search, perf]));
+    world.destroy();
+  }
+});
+
+test('(P) ?texmax=N reaches createGL as o.maxTex (beside ?nogl; cv-gl takes min(the GPU\'s, N)); absent, 0 or not a number: no maxTex', () => {
+  for (const [search, want] of [['?texmax=4096', 4096], ['?a&texmax=2048&b=1', 2048], ['', null], ['?texmax=0', null], ['?texmax=abc', null], ['?texmax=4096x', null], ['?nogl&texmax=4096', 'off']]) {
+    let seen = 'off';
+    const mk = (vp, o) => { seen = 'maxTex' in o ? o.maxTex : null; return fakeGL([])(vp, o); };
+    const { world } = bare({ location: { search } }, mk);
+    eq(seen, want, search);
+    world.destroy();
+  }
+});
+
+test('(P, IMPL-P §1.1, skeptic #13) a device-ratio change (its matchMedia \'change\') re-checks the faces — cv-face\'s rest-time recheck (a registered face\'s offset read again, the overlap rule, its plan) — though no camera is written; not inside a burst; the GL buffer and the cords re-sized at the new ratio', () => {
+  const mq = [];
+  const win0 = { devicePixelRatio: 1, matchMedia: q => { const m = { media: q, matches: false, addEventListener: (ty, f) => mq.push({ q, f, on: true, m }), removeEventListener: (ty, f) => { for (const e of mq) if (e.f === f) e.on = false; } }; return m; } };
+  const log = [], lc = [], made = [];
+  const d = dom.fresh(), win = d.defaultView;
+  for (const k of Object.keys(win0)) win[k] = win0[k];
+  win.document = d; d.querySelectorAll = () => [];
+  const vp = d.createElement('div'), w = d.createElement('div');
+  w.setAttribute('data-cv-world', '');
+  vp.append(w); d.body.append(vp); place(vp, 0, 0, 1000, 600);
+  const rq = [];
+  const world = W.createWorld(vp, { world: w, env: { win, doc: d, now: () => T, raf: f => { rq.push(f); return rq.length; }, caf: () => {}, setTimeout: setT, clearTimeout: clearT }, createGL: fakeGL(log), createCords: fakeCords(lc, made) });
+  const frame = (n = 1) => { for (let i = 0; i < n; i++) { const q = rq.splice(0); for (const f of q) f(T); T += 16; } };
+  frame();
+  world.cords();
+  // a hardware face in a module (as the R2 test): its offset() reads counted
+  const el = d.createElement('div'), body = d.createElement('div'), root = d.createElement('div'), deco = d.createElement('div'), svg = d.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  el.setAttribute('data-cv-mod', 'a'); body.className = 'bg'; root.className = 'inst hw'; deco.className = 'hw-decor';
+  deco.append(svg); root.append(deco); body.append(root); el.append(body); w.append(el);
+  el.style.left = '0px'; el.style.top = '0px';
+  class Img { constructor() { this.onload = null; } set src(u) { this._src = u; } get src() { return this._src; } }
+  let reads = 0;
+  const face = FACES.register(deco, { markup: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"></svg>', w: 400, h: 200, offset: () => { reads++; return { x: 0, y: 40 }; }, env: { win, doc: d, Image: Img, Blob: class { constructor() {} }, URL: { createObjectURL: () => 'blob:1', revokeObjectURL: () => {} } } });
+  world.add({ id: 'a', el, rect: () => ({ x: 0, y: 0, w: 400, h: 240 }) });
+  frame(2);
+  ok(reads > 0 && !world.busy, 'mounted (its offset read), at rest');
+  const live = () => mq.filter(e => e.on && /resolution/.test(e.q));
+  eq(live().length, 1, 'one device-ratio watch');
+  const r0 = reads, c0 = log.filter(e => e[0] === 'resize').length, k0 = world.cam.k, tx0 = world.cam.tx;
+  win.devicePixelRatio = 2;
+  live()[0].f();
+  eq([reads - r0, log.filter(e => e[0] === 'resize').pop().slice(1), log.filter(e => e[0] === 'resize').length - c0, lc.filter(e => e[0] === 'resize').pop().slice(1)], [1, [1000, 600, 2], 1, [1000, 600, 2]], 'the faces re-checked (the offset read again), the GL buffer and the cords at 2×');
+  eq([world.cam.k, world.cam.tx, live().length, live()[0].q], [k0, tx0, 1, '(resolution: 2dppx)'], 'no camera written; the watch moved to the new ratio');
+  // inside a burst: no re-check (no layout read in a burst; its end plans the faces)
+  world.panBy(5, 0); frame();
+  ok(world.busy, 'a burst');
+  const r1 = reads;
+  win.devicePixelRatio = 1.5;
+  live()[0].f();
+  eq(reads, r1, 'not in a burst');
+  face.destroy();
+  world.destroy();
+  eq(mq.filter(e => e.on).length, 0, 'destroy: the watch removed');
+});
+
+test('(P) the real cv-cords through the world at each preset: medium swings at 6 points, low never asks for a frame at rest — a module drag (its anchors relayed) is one redraw a change, no rope-step, the dragged cord\'s end on its plug; setPerf mid-sway: asleep at once, no frame after its one draw', () => {
+  const gl = {};
+  for (const k of ['COMPILE_STATUS', 'LINK_STATUS', 'VERTEX_SHADER', 'FRAGMENT_SHADER', 'ARRAY_BUFFER', 'STATIC_DRAW', 'DYNAMIC_DRAW', 'FLOAT', 'TRIANGLE_STRIP', 'BLEND', 'ONE', 'ONE_MINUS_SRC_ALPHA', 'COLOR_BUFFER_BIT', 'DEPTH_TEST']) gl[k] = k;
+  for (const k of ['shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'useProgram', 'bindVertexArray', 'bindBuffer', 'bufferData', 'bufferSubData', 'enableVertexAttribArray',
+    'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'uniform4fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear', 'drawArrays', 'drawArraysInstanced']) gl[k] = () => {};
+  Object.assign(gl, { createShader: () => ({}), createProgram: () => ({}), createBuffer: () => ({}), createVertexArray: () => ({}), getUniformLocation: (p, n) => n, getShaderParameter: () => true, getProgramParameter: () => true, getExtension: () => null });
+  const glDoc = vp => ({ createElement: t => { const el = vp.ownerDocument.createElement(t); if (t === 'canvas') el.getContext = k => (k === 'webgl2' ? gl : null); return el; } });
+  const P = new Map(), list = [];
+  for (let i = 0; i < 12; i++) { P.set('a' + i, { x: 60 * i, y: 100 }); P.set('b' + i, { x: 60 * i + 200, y: 300 }); list.push({ id: 'c' + i, a: 'a' + i, b: 'b' + i, c: i % 8 }); }
+  for (const perf of ['medium', 'low']) {
+    const S = setup({ opts: { perf, createCords: (vp, o) => CORDS.createCords(vp, Object.assign({}, o, { doc: glDoc(vp) })) } });
+    S.frame();
+    const L = S.world.cords();
+    L.alloc(true); L.anchors(new Map(P)); L.set(list); S.frame(2);
+    eq([L.stats().perf, L.stats().quality, L.stats().pts], [perf, perf === 'low' ? 'still' : 'light', 14], perf);
+    L.pluck();
+    S.frame(3);
+    eq(L.stats().awake, perf === 'low' ? 0 : 12, perf + ': plucked');
+    let n = 0;
+    while (L.wants() && n++ < 3000) S.frame();
+    eq([L.wants(), S.rq.length], [false, 0], perf + ': at rest, no frames');
+    // a module drag: the a ends of c3 and c4 moved, relayed a pointer move
+    const st0 = L.stats().steps;
+    for (let i = 1; i <= 8; i++) { const Q = new Map(P); Q.set('a3', { x: 180 + 32 * i, y: 100 }); Q.set('a4', { x: 240 + 32 * i, y: 100 }); L.anchors(Q); S.frame(); }
+    const end = L.pointAt('c3', 0);
+    ok(Math.abs(end.x - (180 + 256)) < 1e-6 && Math.abs(end.y - 100) < 1e-6, perf + ': the cord\'s end on its plug: ' + JSON.stringify(end));
+    n = 0;
+    while (L.wants() && n++ < 3000) S.frame();
+    if (perf === 'low') eq([L.stats().steps - st0, n, S.rq.length], [0, 0, 0], 'low: no rope-step, no frame left owed after the drag');
+    else ok(L.stats().steps > st0 && S.rq.length === 0, 'medium: the two swung, then sleep');
+  }
+  // setPerf mid-sway through the world
+  const S = setup({ opts: { createCords: (vp, o) => CORDS.createCords(vp, Object.assign({}, o, { doc: glDoc(vp) })) } });
+  S.frame();
+  const L = S.world.cords();
+  L.alloc(true); L.anchors(new Map(P)); L.set(list); S.frame(2); L.pluck(); S.frame(5);
+  eq(L.stats().awake, 12, 'High: swinging');
+  S.world.setPerf('medium');
+  eq([L.stats().perf, L.stats().awake, L.stats().running], ['medium', 0, false], 'asleep at once');
+  const d0 = L.stats().draws;
+  S.frame(3);
+  eq([L.stats().draws - d0, S.rq.length, L.wants()], [1, 0, false], 'one draw (the parabolas), then no frames');
 });
