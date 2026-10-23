@@ -21,7 +21,8 @@
 //              wt.js (§0.4), installed before any script runs; `seed(id)` reseeds it (call before each render)
 // Returns { ctx (the context / global object), logs ([{level, text}] of the default console), loaded (files evaluated, in
 // order), missing (listed files absent from the repository), global(name), run(code, filename), reload(file), seed(id),
-// Proc (engine only) }.
+// Proc (engine only: the last registered class — the Track), procs (engine only: every registered class by name, e.g.
+// procs['synth-master'], IMPL-M §1) }.
 //
 // noAlloc(scope, fn, names = ALLOC_NAMES) runs fn() with the scope's allocating constructors (typed arrays, Array,
 // ArrayBuffer, Map, Set, Object) replaced by throwing stubs and restores them afterwards (§15 "allocation-free checks by
@@ -38,6 +39,7 @@ export const DSP_TABLE = Object.freeze([
   ['sx-sample.js', 'SxSample'], ['sx-gran.js', 'SxGran'], ['sx-spec.js', 'SxSpec'], ['sx-seq.js', 'SxSeq'],
   ['serum-dsp.js', 'SerumDSP'], ['fx-mods2.js', 'FXMods2'], ['fx-dsp.js', 'FXDSP'], ['dr-808.js', 'Dr808'], ['dr-seq.js', 'DrSeq'],
   ['mod-core.js', 'ModCore'], ['patch-dsp.js', 'PatchDSP'], ['moog-dsp.js', 'PatchMoog'], // (IMPL-9 §3.7: the patch evaluator, the 900 Series' circuits)
+  ['master-dsp.js', 'MASTERDSP'], // (IMPL-M §7: the master meters — where MASTER runs: main.js, wk.loadDSP, the sims and the bench)
 ].map(e => Object.freeze(e)));
 export const DSP_FILES = Object.freeze(DSP_TABLE.map(e => e[0]));
 export const DSP_GLOBALS = Object.freeze(Object.fromEntries(DSP_TABLE));
@@ -91,13 +93,14 @@ export function dspScope(opts = {}) {
   let rnd = mulberry32(fnv1a32(String(seed)));
   vm.runInContext('(function (r) { Math.random = function random() { return r(); }; })', ctx, { filename: 'dsp-scope-random.js' })(() => rnd());
   let Proc = null;
+  const procs = {};
   if (!bare) {
     ctx.sampleRate = sampleRate;
     ctx.currentFrame = 0;
     vm.runInContext('(function (reg) { globalThis.AudioWorkletProcessor = class AudioWorkletProcessor {'
       + ' constructor() { this.port = { postMessage() {}, onmessage: null }; } };'
       + ' globalThis.registerProcessor = function registerProcessor(name, cls) { reg(name, cls); }; })',
-    ctx, { filename: 'dsp-scope-worklet.js' })((name, cls) => { Proc = cls; });
+    ctx, { filename: 'dsp-scope-worklet.js' })((name, cls) => { Proc = cls; procs[name] = cls; });
   }
   const run = (code, filename) => vm.runInContext(code, ctx, { filename });
   const setGlobal = (name, v) => { run('(function (v) { globalThis.' + name + ' = v; })', 'dsp-scope-stub.js')(v); };
@@ -126,6 +129,7 @@ export function dspScope(opts = {}) {
   return {
     ctx, logs: rec ? rec.msgs : null, loaded, missing: absent,
     get Proc() { return Proc; },
+    procs,
     global: name => run('globalThis.' + name, 'dsp-scope-get.js'),
     run,
     reload: file => { if (!DSP_FILES.includes(file)) throw new Error('dspScope: ' + file + ' is not in the §0.3 list'); load(file); },

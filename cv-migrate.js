@@ -102,7 +102,7 @@ import { isDrum } from './song.js?v=9';
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
 
 export { schemaOf };
-export const SCHEMA = 13;
+export const SCHEMA = 14;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -148,6 +148,9 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 12 }),
   // 12 → 13: the lifted bounds (stage P, IMPL-P §3): nothing stored changes — the identity; the bump keeps an older build from truncating a bigger project
   p => Object.assign({}, p, { schema: 13 }),
+  // 13 → 14: the master (stage M, IMPL-M §2.3: project.master — its FX rack and canvas) — additive, the identity; the bump keeps an
+  // older build from dropping the master (a 14 file opens read-only there)
+  p => Object.assign({}, p, { schema: 14 }),
 ]);
 
 export function upgrade(o) {
@@ -224,6 +227,13 @@ function instRoutes(t) {
     return { id, d: t.dev[id], v: instV1(t, id), to, via, end: via ? dst(via) : to };
   });
 }
+// (stage M) the instances of a project's master rack (MAIN, the master's only rack; a splitter's branches counted)
+function masterCount(m) {
+  const R = isObj(m) && isObj(m.fx) && Array.isArray(m.fx.racks) && isObj(m.fx.racks[0]) && Array.isArray(m.fx.racks[0].mods) ? m.fx.racks[0].mods : [];
+  let n = 0;
+  for (const I of R) { if (!isObj(I)) continue; n++; if (Array.isArray(I.br)) for (const B of I.br) if (Array.isArray(B)) n += B.filter(isObj).length; }
+  return n;
+}
 const coreOf = t => { const o = {}; for (const k of Object.keys(t)) if (!V2_KEYS.includes(k) && k !== 'mods' && k !== 'mid' && !V1_KEYS.includes(k)) o[k] = t[k]; return o; };
 const plainCopy = x => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
 // (9, IMPL-9 §1.6) a 900 Series: main has no patchable modular. The track keeps its notes (and its model id, which main reads as a Minimoog, as a drum machine's);
@@ -237,7 +247,8 @@ export function toV1(p0) {
   if (!isObj(p) || !Array.isArray(p.tracks)) return { p, lost };
   if (isObj(p.perf) && p.perf.wheel) lost.push('the Mod Wheel');
   if (Array.isArray(p.pads) && p.pads.length) lost.push(`the Pads controllers (${p.pads.length})`); // (stage 8: main has no pad controller; their mod rows are in each track's cable count)
-  delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads;
+  { const n = masterCount(p.master); if (n) lost.push(`the master effects (${n})`); } // (stage M: main has no master rack; an empty one says nothing)
+  delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads; delete p.master;
   const out = [], ids = new Set(p.tracks.map(t => isObj(t) && t.id));
   let n = 0;
   const freshId = () => { let id; do id = 'trk_' + (1000 + ++n); while (ids.has(id)); ids.add(id); return id; };

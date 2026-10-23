@@ -71,10 +71,10 @@
  *   reset(), RETRIG) also restarts the LFO-dependent ramps, so a render after a re-seed does not depend on history.
  *   With nothing audible in the lines (output < 1e-6 for 0.25 s of zero input, or a cleared rack) a re-seed is
  *   immediate and also restarts the other free-running phases and counters (Dimension AM, reverb modulation,
- *   Downsample hold, half-rate grids, the FX filter's S&H / ring phases): renders after a silent history are
- *   bit-identical to a fresh rack's (§10.7f). While a module sounds, its re-seed waits for a 2.5 ms duck of that
- *   module (output → input), restarts it there and fades it back in (5 ms); phases() reports the new phase at once.
- *   The reverb's internal modulation is not re-seeded while its tail sounds. RETRIG stays immediate.
+ *   Downsample hold, half-rate grids, the FX filter's S&H / ring phases, the Bode's BLUR LFOs): renders after a
+ *   silent history are bit-identical to a fresh rack's (§10.7f). While a module sounds, its re-seed waits for a
+ *   2.5 ms duck of that module (output → input), restarts it there and fades it back in (5 ms); phases() reports the
+ *   new phase at once. The reverb's internal modulation is not re-seeded while its tail sounds. RETRIG stays immediate.
  * - Enabling a module resets it and fades its delay-line inputs in over 5 ms (besides the 5 ms output crossfade), so
  *   taps do not click when the first signal reaches them. A disabled module is cleared at its next enable. A Plate ↔
  *   Hall change while the reverb sounds ducks it the same way; the new topology starts empty.
@@ -2089,6 +2089,9 @@
     // applied at once, so renders after a silent history are bit-identical to a fresh rack's (§10.7f).
     const SEEDQ = 0.25;
     const QBIG = 1e15;                                         // quietT after a clear: the lines hold nothing at all
+    // settleN() (IMPL-M R1-2): its floor (s), and the Convolve's clock period (fx-mods2: the tail input ring 3 × 4096
+    // frames, 32 work slices of 128 — its counter n repeats every 12288 frames)
+    const SETTLE = 0.3, CONV_T = 12288;
     const isNum = (x) => typeof x === 'number' && x === x && x !== Infinity && x !== -Infinity;
     const isList = (a, n) => !!a && typeof a === 'object' && typeof a.length === 'number' && a.length >= n;
     class FXRack {
@@ -2482,13 +2485,15 @@
       }
       transport() { this.seed(0); }
       // re-seed the LFO phases from seedPh; force (or nothing audible in the lines): at once, together with the other
-      // free-running phases and counters (reverb modulation, half-rate grids, the FX filter's S&H / ring phases)
+      // free-running phases and counters (reverb modulation, half-rate grids, the FX filter's S&H / ring phases, the
+      // Bode's BLUR LFOs — stage M review R1-1)
       seed(force) {
         const quiet = force === 1 || this.quietT >= SEEDQ * this.fs, U = this.U;
         for (let i = 0; i < U.length; i++) {
           const u = U[i];
           switch (u.k) {
-            case 0: case 2: case 3: case 4: case 11: case 12: case 18: this.seedMod(u, quiet); break;
+            case 0: case 2: case 3: case 4: case 11: case 12: this.seedMod(u, quiet); break;
+            case 18: if (quiet) u.mod.seedQ(); this.seedMod(u, quiet); break;
             case 1: case 10: u.mod.seed(); break;
             case 5: case 13: if (quiet) u.mod.hph = 0; break;
             case 7: case 15: if (quiet) u.mod.seed(); break;
@@ -2677,6 +2682,49 @@
           }
         }
         return a;
+      }
+      // IMPL-M §1.2: the delay of MAIN's output against its input (samples) — not `latency` (the longest look-ahead): the
+      // sum along MAIN of each running unit's output delay — a Distortion's (its dry glide v: 0 … DIST_LAT, DIST_LAT once
+      // enabled), a Limit-mode compressor's look-ahead La —, a splitter its longest running branch (every band is aligned
+      // to it, see align); a fully bypassed rack passes its input (0). Reads state only (the master's A/B alignment and the
+      // bounce's trim; never called by the rack itself)
+      pathLat() {
+        if (this.rByp[0] === 1 && this.rx[0] === 1) return 0;
+        return this.chainLat(this.C0);
+      }
+      chainLat(C) {
+        let a = 0;
+        for (let q = 0; q < C.length; q++) {
+          const u = C[q], k = u.k;
+          if (u.st === 0) continue;
+          if (k === 1 || k === 10) a += u.mod.v;
+          else if (k === 6 || k === 14) { if (u.mod.mode === 1) a += u.mod.La; }
+          else if (k === 21) {
+            let mx = 0;
+            for (let c = 0; c < u.mod.nb; c++) {
+              if (u.bb[c] !== 0 && u.mod.bx[c] === 1) continue;
+              const b = this.chainLat(u.br[c]);
+              if (b > mx) mx = b;
+            }
+            a += mx;
+          }
+        }
+        return a;
+      }
+      // IMPL-M R1-2: frames of exact zeros that take a freshly set rack to the state of one with a silent history (the
+      // offline MASTER plays them before frame 0; a live rack has always heard them before ▶). Its start-up transients
+      // are then over: a splitter's band alignment glides from 0 at gr = DIST_LAT / 5 ms samples per sample over up to
+      // its line capacity (the slowest: ≈ 0.16 s per Limit-mode compressor at full look-ahead in a branch at 48 kHz,
+      // 0.64 s at 192 kHz), a RATIO / multiband compressor's first block skips its attack (ent), the 5 ms fades and
+      // ramps. Length: ≥ SETTLE s (> SEEDQ: the start's transport() is a quiet re-seed, as live) and ≥ the slowest
+      // alignment glide + 10 ms, rounded up to whole Convolve clock periods (CONV_T: its partitions then stand as a fresh
+      // instance's, which renders as before). Set time only (reads state)
+      settleN() {
+        const U = this.U;
+        let g = 0;
+        for (let i = 0; i < U.length; i++) { const u = U[i]; if (u.k === 21 && u.mod.lcap > 0) { const t = u.mod.lcap / u.mod.gr; if (t > g) g = t; } }
+        const n = SETTLE * this.fs > g + 0.01 * this.fs ? SETTLE * this.fs : g + 0.01 * this.fs;
+        return ceil(n / CONV_T) * CONV_T;
       }
 
       /* ---------------- per-module dispatch (monomorphic call sites) */

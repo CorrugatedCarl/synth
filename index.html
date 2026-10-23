@@ -106,7 +106,7 @@
       <button id="engMore" class="cv-ib cv-ovf cv-engmore" type="button" aria-haspopup="true" aria-label="Engine: power, load and latency" title="Engine power, load and latency"><span class="led" aria-hidden="true"></span><svg class="cv-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg></button>
       <div class="cv-ex" id="engPop">
       <button id="power" class="power" type="button" aria-pressed="false" title="Engine power"><span class="led"></span><svg class="cv-pwr" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v6.5M6.2 5.6a6 6 0 1 0 7.6 0"/></svg><span class="lbl">Power</span></button>
-      <label class="field range cv-master" title="Master level"><span class="cv-fl">Master</span><input type="range" id="master" min="0" max="1" step="0.01" aria-label="Master level"></label>
+      <label class="field range cv-master" title="Volume: your listening level (never in a bounce)"><span class="cv-fl">Volume</span><input type="range" id="master" min="0" max="1" step="0.01" aria-label="Volume"></label>
       <div class="cv-meterbox">
         <div class="meter" id="meter" title="Engine: sample rate and load — tap for the whole text">
           <span id="rate">Engine off</span>
@@ -135,7 +135,7 @@
       <button id="gearBtn" class="cv-ib cv-gear" type="button" aria-haspopup="true" aria-label="Settings: sample rate, oversampling, drift, recording, pinch, performance" title="Settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zM8.6 2h2.8l.4 2.2 1.6.9 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.6.9-.4 2.2H8.6l-.4-2.2-1.6-.9-2.1.8-1.4-2.4 1.7-1.5V8.2L3.1 6.7l1.4-2.4 2.1.8 1.6-.9z"/></svg></button>
       <div id="gearPop" class="cv-pop cv-gearpop" role="dialog" aria-label="Settings" hidden>
         <h3>Engine</h3>
-        <label class="field range cv-gmaster">Master level <input type="range" id="masterG" min="0" max="1" step="0.01" aria-label="Master level"></label>
+        <label class="field range cv-gmaster" title="Your listening level (never in a bounce)">Volume <input type="range" id="masterG" min="0" max="1" step="0.01" aria-label="Volume"></label>
         <label class="field">Sample rate
           <select id="sr" title="Context sample rate. Device is best: any other rate is resampled to your audio hardware's rate by the browser">
             <option value="0">Device</option>
@@ -186,6 +186,8 @@
       <div class="heads" id="heads"></div>
       <div class="lanes" id="lanes"></div>
     </div>
+    <!-- stage M (IMPL-M §5.1): the Master row, the track list's footer — outside the rows' scroller, always under them (master-ui.js builds it) -->
+    <div class="cv-mfoot" id="mfoot"></div>
   </section>
   <div id="topGrip" class="cv-tgrip" role="slider" tabindex="0" aria-label="Track list height" aria-orientation="vertical" aria-valuemin="48" aria-valuemax="160" aria-valuenow="48" aria-controls="studio" title="Tap to show or fold the track list · pull it down for more rows, up to fold it"></div>
 </header>
@@ -302,11 +304,11 @@
     <h2 id="dlgTitle">Bounce to WAV</h2>
     <div class="dlgbody">
       <label>Range <select id="bRange"><option value="song">Whole song</option><option value="loop">Loop region</option><option value="sel">Bar selection</option></select></label>
-      <label>Sample rate <select id="bSr"><option value="44100">44.1 kHz</option><option value="48000" selected>48 kHz</option><option value="88200">88.2 kHz</option><option value="96000">96 kHz</option></select></label>
+      <label>Sample rate <select id="bSr"><option value="0" selected>Same as playback</option><option value="44100">44.1 kHz</option><option value="48000">48 kHz</option><option value="88200">88.2 kHz</option><option value="96000">96 kHz</option></select></label>
       <label>Format <select id="bBits"><option value="16">16-bit PCM (dithered)</option><option value="24" selected>24-bit PCM (dithered)</option><option value="32">32-bit float</option></select></label>
-      <label>Oversampling <select id="bOs"><option value="2">2×</option><option value="4">4×</option><option value="8" selected>8× (highest quality, max 384 kHz internal — not real-time)</option></select></label>
-      <label>Release tail <select id="bTail"><option value="0">None</option><option value="2" selected>2 s</option><option value="5">5 s</option></select></label>
-      <label class="chk"><input type="checkbox" id="bNorm"> Normalise peak to −0.3 dBFS</label>
+      <label>Oversampling <select id="bOs"><option value="0" selected>Same as playback</option><option value="2">2×</option><option value="4">4×</option><option value="8">8× (highest quality, max 384 kHz internal — not real-time)</option></select></label>
+      <label>Release tail <select id="bTail"><option value="0">None</option><option value="2" selected>2 s</option><option value="5">5 s</option><option value="auto" title="Until the last sound above −96 dBFS, plus half a second (at most 30 s)">Auto</option></select></label>
+      <label>Normalise <span class="bnorm"><select id="bNorm"><option value="off" selected>Off</option><option value="peak">Peak −0.3 dBFS</option><option value="lufs" title="A plain gain to the loudness target, never past −1 dBTP">Loudness</option></select><select id="bTgt" aria-label="Loudness target" title="The loudness target (the master OUT's)" hidden><option value="-9">−9 LUFS</option><option value="-14" selected>−14 LUFS</option><option value="-16">−16 LUFS</option><option value="-23">−23 LUFS</option></select></span></label>
       <p class="dlgnote" id="bNote">Renders every audible track (mute/solo respected) offline — no clicks or dropouts regardless of CPU.</p>
     </div>
     <div class="dlgbtns"><button type="button" id="bCancel">Cancel</button><button type="button" id="bGo" class="hot">Render &amp; download</button></div>

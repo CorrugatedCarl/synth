@@ -54,11 +54,14 @@ const tOf = e => (e && typeof e.timeStamp === 'number' && e.timeStamp > 0 ? e.ti
 // the nearest of n and its ancestors (up to root, excluded) that satisfies f
 const upTo = (n, root, f) => { for (; n && n !== root && n.nodeType === 1; n = n.parentNode) if (f(n)) return n; return null; };
 
-/** The top tray's height stops for n tracks: [TOP_ROW, TOP_ROW + ARR_BAR + RULER + ROW_H·1, …, + ROW_H·n].
- * @param {number} n @returns {number[]} */
-export function topSnaps(n) {
-  const out = [TOP_ROW], k = Math.max(0, Math.floor(+n || 0));
-  for (let i = 1; i <= k; i++) out.push(TOP_ROW + ARR_BAR + RULER + ROW_H * i);
+/** (stage M, IMPL-M §5.1) The track list's footer — the Master row (master-ui.js: 44 px) — under the rows' scroller. */
+export const FOOT_H = 44;
+/** The top tray's height stops for n tracks: [TOP_ROW, TOP_ROW + ARR_BAR + RULER + ROW_H·1 + foot, …, + ROW_H·n + foot] — foot
+ * (stage M: the footer's height, FOOT_H) on every stop but the collapsed one (the footer shows whenever the rows do).
+ * @param {number} n @param {number} [foot] @returns {number[]} */
+export function topSnaps(n, foot = 0) {
+  const out = [TOP_ROW], k = Math.max(0, Math.floor(+n || 0)), f = Math.max(0, +foot || 0);
+  for (let i = 1; i <= k; i++) out.push(TOP_ROW + ARR_BAR + RULER + ROW_H * i + f);
   return out;
 }
 /** The snap nearest to v among those ≤ max (the lowest when none fits). @param {number[]} snaps */

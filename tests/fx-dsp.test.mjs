@@ -2404,3 +2404,30 @@ test('§13.5 monitor tap: setTap(id) keeps the last 1024 frames of that instance
   const A = noise(512, 3), B = noise(512, 4);
   noAlloc(FULL, () => { run(r2, A, B); r2.tapOut(); });
 });
+
+test('stage M review R1-1: a Bode with BLUR after a silent history renders bit-identically to a fresh rack (§10.7f) — its blur LFO phases restart at the quiet re-seed (never heard audio; a stop with silence tails; tails decayed to nothing)', () => {
+  const BS = C.FACTORY_FX_PRESETS.bode.find((P) => P.name === 'Blurred Spiral').p, SH = C.FACTORY_RACKS.find((R) => R.name === 'Shimmer Hall').rack.mods[1].p;
+  assert.ok(BS.blur > 0 && BS.feed > 0 && BS.delay > 0 && SH.blur > 0, 'blur in the feedback path');
+  const prog = (n, s) => { const a = noise(n, s, 0.3); for (let i = 0; i < n; i++) a[i] *= Math.min(1, i / 2400); return a; };
+  const A = prog(FS, 21), B = prog(FS, 22), Z = (s) => new Float64Array(Math.round(s * FS));
+  const cases = [                                                 // [name, Bode params, what the live rack heard before transport()]
+    ['Blurred Spiral, never heard audio, 3 s of zeros', BS, (r) => { const z = Z(3); run(r, z, z.slice()); }],
+    ['Shimmer Hall\'s Bode, never heard audio, 0.5 s of zeros', SH, (r) => { const z = Z(0.5); run(r, z, z.slice()); }],
+    ['Blurred Spiral, 1 s of audio, a stop with silence tails (reset(true)), 0.5 s of zeros', BS, (r) => { run(r, A.slice(), B.slice()); r.reset(true); const z = Z(0.5); run(r, z, z.slice()); }],
+    ['Blurred Spiral, 1 s of audio, 40 s of zeros (the feedback line decays below the flush)', BS, (r) => { run(r, A.slice(), B.slice()); const z = Z(40); run(r, z, z.slice()); }],
+  ];
+  const bad = [];
+  for (const [name, p, history] of cases) {
+    const st = s2([[['bode', Object.assign({}, p, { on: 1 }), 'b']], [], []]), live = rack2(st), fresh = rack2(st);
+    history(live);
+    assert.ok(live.quietT >= 0.25 * FS, name + ': quiet before the start');
+    live.transport(); fresh.transport();
+    const L1 = A.slice(), R1 = B.slice(), L2 = A.slice(), R2 = B.slice();
+    run(live, L1, R1); run(fresh, L2, R2);
+    assert.ok(peak(L2) > 0.05 && !sameBits(L2, A), name + ': the Bode sounds');
+    let k = 0;
+    while (k < L1.length && Object.is(L1[k], L2[k]) && Object.is(R1[k], R2[k])) k++;
+    if (k < L1.length) bad.push(`${name}: differs from sample ${k} (max ${peak(L1.map((v, i) => v - L2[i])).toExponential(2)})`);
+  }
+  assert.deepEqual(bad, []);
+});

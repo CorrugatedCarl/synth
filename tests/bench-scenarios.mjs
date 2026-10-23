@@ -15,7 +15,8 @@
 // chord reaching every instrument (full key zones); classic instruments at the app's oversampling (4).
 //   const S = scenarios();                          // [{id, label, node, ipad, kind, gran?, build()}]
 //   const r = measure(S[0], env, {runs: 5});        // {load, loads, peak, worst}
-// env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms }.
+// env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms, mkMaster(processorOptions, bare) → a
+// 'synth-master' processor (bare: built without the meters — MASTERDSP hidden while it is constructed; kind 'master', IMPL-M G4) }.
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
@@ -413,6 +414,25 @@ export function patchTrack({ rec, vals }, o = {}) {
 /** A starting patch (moog-core PRESETS) on the Model 15 set → { rec, vals }. */
 export const presetSet = name => { const r = PT.loadPreset(PT.fresh(MG.FAMILY.id), {}, name, { ensure: MG.M15 }); if (r.why) throw new Error('preset ' + name + ': ' + r.why); return { rec: r.rec, vals: r.vals }; };
 
+/* ------------------------------------------------------------------ IMPL-M §6 G4: the master processor ('synth-master') */
+/** The master rows' input: the bench noise (as the FX rows) as one reused stereo Float32 quantum (what the context feeds). */
+export function masterInput() {
+  const r = W.mulberry32(W.fnv1a32('bench-master')), noise = Float32Array.from({ length: 4096 }, () => 0.25 * (2 * r() - 1));
+  const L = new Float32Array(128), R = new Float32Array(128), io = [[L, R]];
+  let pos = 0;
+  return () => { for (let i = 0; i < 128; i++) { L[i] = noise[(pos + i) & 4095]; R[i] = noise[(pos + 2048 + i) & 4095]; } pos = (pos + 128) & 4095; return io; };
+}
+// a mastering chain of five: EQ → compressor (multiband) → Distortion (light saturation) → Utility (width) → compressor (Limit)
+function master5() {
+  return fxScn(fx => {
+    fxInst(fx, 'eq', { gainL: 0.6, gainH: 0.55 });
+    fxInst(fx, 'cmp', { mb: 1 });
+    fxInst(fx, 'dist', { drive: 0.15, mix: 0.3 });
+    fxInst(fx, 'util', { width: 0.15 });
+    fxInst(fx, 'cmp', { ratio: 1, att: 0.3 });
+  });
+}
+
 export function scenarios() {
   const A = () => assets();
   const list = [
@@ -529,6 +549,13 @@ export function scenarios() {
       kind: 'track', build: () => patchTrack(m9qPatch()) },
     { id: 'm9s', label: '900 Series: the System 55 set as a classic voice — seven oscillators, two CP3As, the 914, the 904B, the 904A (regeneration 6), two 902s; five 911s, three routed by the 993 (two through the 911A); a bass line', node: 0.055, ipad: 0.04, jsc: 0.042,
       kind: 'track', build: () => patchTrack(m9sPatch(), { song: true }) },
+    // IMPL-M §6 G4: the master processor per quantum at 48 kHz (env.mkMaster; jsc: the macOS shell's target, × 7 the Low floor)
+    { id: 'master-empty', label: 'Master: an empty rack, no meters (the copy path: the processor alone)', node: 0.001, ipad: 0.001, jsc: 0.001,
+      kind: 'master', meters: false, build: () => ({}) },
+    { id: 'master-meters', label: 'Master: an empty rack + the meters (K-weighting, M / S / I, LRA, true peak 4×, correlation, the A/B match\'s input meter)', node: 0.008, ipad: 0.007, jsc: 0.008,
+      kind: 'master', build: () => ({}) },
+    { id: 'master-rack5', label: 'Master: EQ → compressor (multiband) → Distortion → Utility → compressor (Limit) + the meters', node: 0.03, ipad: 0.025, jsc: 0.03,
+      kind: 'master', build: () => master5() },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -594,6 +621,12 @@ function prepare(B, kind, env, now) {
     const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
     return api(() => { p.process([], out); env.advance(128); track(L, 128); }, () => (p.sx && p.sx.grains >= 0 ? p.sx.grains | 0 : -1));
   }
+  if (kind === 'master') { // (IMPL-M G4: a live MASTER — its warm-up ran — the rack as a {t: 'chain'}, the bench noise in)
+    if (typeof env.mkMaster !== 'function') throw new Error('bench: env.mkMaster (the synth-master class) is missing');
+    const p = env.mkMaster({}, B.meters === false), inp = masterInput(), L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
+    if (B.fxp) p.msg({ t: 'chain', fxr: B.fxp, fxrT: B.fxt });
+    return api(() => { p.process(inp(), out); env.advance(128); track(L, 128); }, () => -1);
+  }
   const rack = new env.FXDSP.FXRack(SR);
   rack.set(B.fxp, B.fxt);
   if (typeof rack.assets === 'function') rack.assets(); // (the engine's hook after stored assets, §9.5)
@@ -639,7 +672,8 @@ function measureSwitch(scn, env, now) {
 export function measure(scn, env, o = {}) {
   const runs = o.runs || 5, seconds = o.seconds || 1, now = env.now || (() => performance.now());
   if (scn.kind === 'switch') return measureSwitch(scn, env, now);
-  const A = prepare(scn.build(), scn.kind, env, now), Z = scn.base ? prepare(scn.base(), scn.kind, env, now) : null;
+  const bld = () => { const B = scn.build(); if (scn.kind === 'master') B.meters = scn.meters !== false; return B; };
+  const A = prepare(bld(), scn.kind, env, now), Z = scn.base ? prepare(scn.base(), scn.kind, env, now) : null;
   const check = (X, what) => {
     const r = X.runPeak(), g = X.grains();
     if (!(r > 1e-4)) throw new Error(`bench ${scn.id}: ${what} run is silent (peak ${r}) — it would time silence`);

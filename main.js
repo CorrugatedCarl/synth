@@ -52,6 +52,8 @@ import * as cvPads from './cv-pads.js?v=9';
 import * as PT from './patch-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
 import * as cvPatch from './cv-patch.js?v=9';
+// stage M (IMPL-M §3, §5.1, §5.3; lane U): the master OUT (scope, loudness, true peak, correlation, A/B, Mono) and the Master row
+import * as MUI from './master-ui.js?v=9';
 
 const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
@@ -109,6 +111,9 @@ const adopt = p => CMOD.adopt(p, { guard: GUARDS });
 const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0 }, store.get('synth.settings', {}));
 settings.lat = clamp(Math.round(+settings.lat) || 0, -50, 400);
 let ctx = null, an = null, master = null, metroBus = null, powering = null;
+// (IMPL-M §1.1, §2.1) the master: mnode MASTER's record (beside `nodes`, never in it); mono the Mono stage; master (above) the
+// Volume — the listening level; mSplit / anL / anR the stereo image scope's analysers (O1)
+let mnode = null, mono = null, mSplit = null, anL = null, anR = null;
 let octave = 0, sustain = false;
 // one ClassicPanel (classic-panel.js) per mounted classic instrument (classicPanels, 'trackId/dev'); curPanel(): the selected
 // track's current instrument's, or null (a Serum, not built) — (milestone 3, R6) read, never a global
@@ -275,6 +280,7 @@ function loadProject(json, lo = {}) {
   CM.stamp(p, o);
   p.perf = S.normPerf(p.perf); // (stage 2a: { wheel: { v: 1 } | null })
   p.pads = PC.normPads(p.pads); // (8, §10.1: the Pads modules — deserialize bounds a file's; anything else [])
+  if (p.master && p.master.fx) p.master.fx = fxLoad(p.master.fx); // ((M, §2.3) the master rack: normalised as a panel's)
   for (const k of ['drawLen', 'follow', 'ghosts']) if (o && k in o) p[k] = o[k];
   const byId = new Map(((o && o.tracks) || []).map(t => [t && t.id, t]));
   for (const t of p.tracks) { // a record song.js read as v1 (no valid devices): its 303 pattern and rack from the record
@@ -604,7 +610,7 @@ const instsTxt = t => instN(t) + ' instruments';
 function tabTrackUI() {
   const t = trk();
   if (!voiceShown.has(vkey(t))) voiceShown.set(vkey(t), trackVoice(instOf(t)).label);
-  $('#tabTrack').textContent = `Track: ${t.name} · ${instN(t) > 1 ? instsTxt(t) : voiceShown.get(vkey(t))}`;
+  $('#tabTrack').textContent = cvMaster ? `Master · keys play ${t.name}` : `Track: ${t.name} · ${instN(t) > 1 ? instsTxt(t) : voiceShown.get(vkey(t))}`; // ((M) the master canvas: the keys still play the track
   trkChipUI(); // (the top row's track chip shows the same: name, model · voice)
 }
 const patchQ = new Set();
@@ -776,7 +782,7 @@ function sendGraph(tr, N, c) {
   N.waitP = late; // (a newer post of the track replaces a waiting one)
   done.then(() => { if (N.waitP === late && nodes.get(tr.id) === N) { N.waitP = null; late(); } });
 }
-function queueAll() { for (const t of project.tracks) queuePatch(t); }
+function queueAll() { for (const t of project.tracks) queuePatch(t); masterSend(); } // ((M, §2.1) the master chain too (the tempo): posted when it changed
 // a classic panel wrote a value (ClassicPanel set): its preset becomes Custom, the patch, autosave
 function valChanged(iv, id, ph) { // (iv: the panel's device view, stage 1e; ph (2b U2): a drag's 'move' / 'end', else nothing)
   const tr = trOf(iv), N = nodes.get(tr.id);
@@ -846,7 +852,7 @@ const trackOS = (tr, sr) => { const d = instOf(tr); return isSerum(d) ? sxOSFor(
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
 // injected on the main thread (wk.loadDSP) for the panels' displays.
 const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js'];
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js', 'master-dsp.js']; // ((M) the master meters, last)
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
   const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));
@@ -932,7 +938,7 @@ const CLK = AC.createClock(isIOS() || navigator.vendor === 'Apple Computer, Inc.
 let holdCtx = null, readyF = null, meterT = 0;
 function whenReady(ms) {
   return new Promise(res => {
-    const f = () => { for (const N of nodes.values()) if (!N.ready) return; done(); };
+    const f = () => { for (const N of nodes.values()) if (!N.ready) return; if (mnode && !mnode.ready) return; done(); }; // ((M) MASTER too)
     const done = () => { clearTimeout(tm); if (readyF === f) readyF = null; res(); };
     const tm = setTimeout(done, ms);
     readyF = f;
@@ -988,19 +994,31 @@ async function powerOn() {
         if (pendCtx !== c) throw new Error('cancelled');
         powerUI();
       }
-      master = c.createGain(); master.gain.value = settings.master;
-      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75; // (the final mix: no reader until the Master canvas's OUT — scopeSource returns it there)
-      master.connect(c.destination); master.connect(an);
+      // (IMPL-M §1.1, §3) the mix: every track's pan → MASTER ('synth-master': the master FX rack and the meters; made once, here,
+      // before any track node — held on WebKit) → the Mono stage → the Volume (settings.master: the listening level, never in a
+      // file) → destination; `an` (8192: the master OUT's scope) and O1's splitter (two 2048 analysers: its image) off MASTER's
+      // output — what is exported, pre-Mono, pre-Volume. The metronome stays outside the mix
+      mnode = makeMaster(c);
+      mono = c.createGain(); master = c.createGain(); master.gain.value = settings.master;
+      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
+      mnode.node.connect(an); mnode.node.connect(mono); mono.connect(master); master.connect(c.destination);
+      if (typeof c.createChannelSplitter === 'function') {
+        mSplit = c.createChannelSplitter(2); anL = c.createAnalyser(); anR = c.createAnalyser(); anL.fftSize = anR.fftSize = 2048;
+        mnode.node.connect(mSplit); mSplit.connect(anL, 0); mSplit.connect(anR, 1);
+      }
+      monoApply();
       metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(c.destination);
       ctx = c; pendCtx = null; failMsg = ''; hotT = 0;
       const ready = hold ? whenReady(3000) : null;
+      masterSync(); // (its rack, its subscriptions, the A/B as the session has them — before the tracks: §1.1)
       syncNodes();
       if (ready) { readyF && readyF(); await ready; if (ctx !== c) throw new Error('cancelled'); }
     } catch (err) {
       if (holdCtx === c) holdCtx = null;
       const mine = ctx === c || pendCtx === c;
       if (pendCtx === c) pendCtx = null;
-      if (ctx === c) { ctx = null; an = master = metroBus = null; nodes.clear(); }
+      if (ctx === c) { ctx = null; an = master = metroBus = null; nodes.clear(); masterGone(); }
+      else if (!ctx && mnode && mnode.node.context === c) masterGone();
       quiet(c.close());
       if (mine) { meterRun(null); playbackSession(false); if (err.message !== 'cancelled') audioFail('Audio engine failed to start: ' + err.message); powerUI(); }
       throw err;
@@ -1018,7 +1036,7 @@ function powerOff() {
   if (T.playing) stop();
   previewStop(); previewEnd(); // (the kept preview node belongs to this context)
   ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null;
-  nodes.clear(); meterRun(null);
+  nodes.clear(); masterGone(); meterRun(null);
   if (cvView) for (const m of cvView.modules.values()) if (m.setCpu) m.setCpu(null); // (no engine: no module CPU)
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); for (const P of classicPanels.values()) if (!P.dead && P.model.id === 'tb303') P.seqRunUI(false); // (every 303 shown: RUN off)
@@ -1052,7 +1070,7 @@ function makeNode(tr) {
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser(), sc = ctx.createAnalyser();
   a.fftSize = 512; // (the meter: the last 512 samples — a bigger window would hand it the oldest ones)
   sc.fftSize = 8192; sc.smoothingTimeConstant = 0.75; // (the OUT scope's own, the master's old size: scopeSource; the rack is in the node, so this is the chain after its FX, fader and pan)
-  node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a); pan.connect(sc);
+  node.connect(gain); gain.connect(pan); pan.connect(mnode.node); pan.connect(a); pan.connect(sc); // ((M) the sum: MASTER's input
   const N0 = { node, gain, pan, an: a, sc, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined };
   const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
   if (G) { // (every part starts with its options: the caches hold them)
@@ -1165,6 +1183,7 @@ function mix() {
 // dev (stage 1e): the device the message is for — on a graphed node it gains `i` (an instrument; a Serum's own FX 'iN/fx':
 // its Serum) or `c` (a panel), and with aud an audition note `aud` (that Inst alone); legacy nodes never get them
 function postTo(tr, m, dev, aud) {
+  if (tr && tr.id === MASTER) { if (mnode) mnode.node.port.postMessage(m); return; } // ((M) MASTER: its monitors, its rack's tap
   const N = tr && nodes.get(tr.id);
   if (!N) return;
   if (dev != null && N.graphed) {
@@ -1174,7 +1193,149 @@ function postTo(tr, m, dev, aud) {
   }
   N.node.port.postMessage(m);
 }
-function postAll(m) { for (const N of nodes.values()) N.node.port.postMessage(m); }
+// every track's node; (IMPL-M §2.1) a transport or a panic reaches MASTER too — one rule, so no site misses it ('os' never does)
+function postAll(m) {
+  for (const N of nodes.values()) N.node.port.postMessage(m);
+  if (mnode && (m.t === 'transport' || m.t === 'panic')) mnode.node.port.postMessage(m);
+}
+/* ---------------------------------------------------------- the master (IMPL-M §2) */
+// MASTER's record (§2.1): { node, ready, load, lat, cpu, xsKey, last, waitC, gr, ftap, fxph } — beside `nodes`, never in it
+// (syncNodes would drop it, statsText count it as a track, postAll reach it with 'os'). Its rack is project.master.fx (absent:
+// an empty master — no key until the first edit), compiled with qr null live and offline (§2.1: the safeguard's quality steps
+// never reach it — the same rack both ways, M2). Not in History (the track racks' knob policy); an undo keeps it (keepMaster).
+const MASTER = 'master', MASTER_NAME = 'Master', MASTER_TINT = '#f2a33a';
+function makeMaster(c) {
+  const node = new AudioWorkletNode(c, 'synth-master', {
+    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+  });
+  const M = { node, ready: false, load: 0, lat: 0, cpu: undefined, xsKey: '', last: null, waitC: null, gr: null, ftap: null, fxph: null, phWait: null };
+  node.port.onmessage = e => masterMsg(M, e.data);
+  return M;
+}
+function masterMsg(M, d) {
+  if (M !== mnode || !d) return;
+  if (d.t === 'ready') { M.ready = true; if (readyF) readyF(); }
+  else if (d.t === 'stats') { M.load = +d.load || 0; M.lat = d.lat | 0; statsText(); masterCpu(d.per); }
+  else if (d.t === 'mmon') monitors.deliver(MASTER, d);
+  else if (d.t === 'smon') { if (d.fxph) M.fxph = d.fxph; monitors.deliver(MASTER, d); }
+  else if (d.t === 'fxph') { if (d.v) M.fxph = d.v; if (M.phWait) { const f = M.phWait; M.phWait = null; f(d.v); } }
+  else if (d.t === 'ab') abShown(!!d.on, d.g, d.lim);
+  else if (d.t === 'fxover' && Array.isArray(d.ids)) { const fx = masterFx(); notice(`FX memory limit reached — ${d.ids.map(x => (isV2Fx(fx) && core.instLabel(fx, x)) || x).join(', ')} bypassed (the master)`, 8000); }
+}
+// powerOff / a failed start: the record goes with its context (its assets' claim too)
+function masterGone() {
+  mnode = null; mono = mSplit = anL = anR = null; tables.release(MASTER);
+  if (mrow) mrow.clear(); // (F5: no engine, no levels — the row and the OUT go to silence at once, not to the last reading)
+  if (mout) mout.clear();
+}
+// the rack module's CPU slot on the master canvas (smoothed as a track part's)
+function masterCpu(per) {
+  const e = Array.isArray(per) ? per.find(x => x && x.id === 'mfx') : null, M = mnode;
+  if (!e || !M || !Number.isFinite(e.load)) return;
+  M.cpu = M.cpu === undefined ? e.load : M.cpu + 0.25 * (e.load - M.cpu);
+  const m = cvMaster && cvView ? cvView.modules.get('mfx') : null;
+  if (m && m.setCpu) m.setCpu(M.cpu);
+}
+// the master's FX rack: project.master.fx, or (none yet) one detached default per project — a UI-only edit stays in it; the first
+// real edit makes it the project's (§2.3: absent = empty, no key until then)
+let mfx0 = null, mfx0P = null;
+const hasMasterFx = (p = project) => !!(p && p.master && isV2Fx(p.master.fx));
+function masterFx() {
+  if (hasMasterFx()) return project.master.fx;
+  if (mfx0P !== project) { mfx0P = project; mfx0 = core.defaultFx2(); }
+  return mfx0;
+}
+// a rack's instances (MAIN — the master's only rack —, a splitter's branches counted)
+function fxCount(fx) {
+  const R = isV2Fx(fx) && fx.racks[0] && Array.isArray(fx.racks[0].mods) ? fx.racks[0].mods : [];
+  let n = 0;
+  for (const I of R) { n++; if (I && Array.isArray(I.br)) for (const B of I.br) if (Array.isArray(B)) n += B.length; }
+  return n;
+}
+const masterN = () => (hasMasterFx() ? fxCount(project.master.fx) : 0);
+// the master chain {fxr, fxrT} at rate sr: the Track's chain compile (cv-graph chainPatch) with qr null — never the safeguard's step
+const masterChain = sr => CG.chainPatch(masterFx(), { sr, bpm: project.bpm, prefs, seed: seedPend.has(MASTER), qr: null });
+// the chain to MASTER when it changed (fxrT only when its tables did; deduped as a panel's postChain), after the assets it needs
+// (a Convolve's IR: the asset manager's 'master' claim, posted to MASTER — its store messages land in the scope's shared store).
+// An untouched project posts nothing (MASTER's fresh rack is calm: its copy path); a project whose master went (a load, New)
+// posts the empty rack once, so the old one stops
+function masterSend() {
+  const M = mnode;
+  if (!M || !ctx) return;
+  if (!hasMasterFx() && !M.last) { seedPend.delete(MASTER); tables.release(MASTER); return; }
+  const fx = masterFx(), x = masterChain(ctx.sampleRate), needs = (x.fxr && x.fxr.needs) || [];
+  seedPend.delete(MASTER);
+  const go = () => {
+    M.waitC = null;
+    const fxrT = x.fxrT && M.xsKey !== x.fxrT.key ? x.fxrT : null;
+    if (fxrT) M.xsKey = fxrT.key;
+    if (!fxrT && M.last && sameVal(x.fxr, M.last)) return;
+    M.last = x.fxr;
+    M.node.port.postMessage(fxrT ? { t: 'chain', fxr: x.fxr, fxrT } : { t: 'chain', fxr: x.fxr });
+  };
+  if (!needs.length) { tables.release(MASTER); go(); return; }
+  tables.learn({ fx });
+  const done = tables.ensure(needs, { trackId: MASTER, node: M.node, fx, convMax: x.fxr.convMax });
+  if (tables.ready(needs)) { go(); return; }
+  M.waitC = go; // (a newer chain replaces a waiting one)
+  done.then(() => { if (M.waitC === go && mnode === M) go(); });
+}
+// a new MASTER (powerOn): its rack, its meters' subscriptions, the session's A/B
+function masterSync() {
+  if (!mnode) return;
+  masterSend();
+  monitors.on.delete(MASTER); monitors.sync();
+  if (mstate.ab) { mstate.g = null; mstate.lim = false; abShow(); mnode.node.port.postMessage({ t: 'bypass', on: true, g: true }); } // (the new MASTER measures the match afresh: pending until it answers)
+}
+// (§2.2) the master rack's edits (its FX module, the asset manager's relink): mutate, compile, post, persist — never a History
+// step (a track rack's knob policy) and no fxPrune (the master has no mod rows); seed: a chain / module preset loaded
+function masterEdit(fn, o) {
+  const fx = masterFx();
+  fn(fx);
+  if (o && o.ui) { if (hasMasterFx()) persist(); return; }
+  if (!project.master || typeof project.master !== 'object') project.master = {};
+  project.master.fx = fx;
+  if (o && o.seed) seedPend.add(MASTER);
+  masterSend(); persist();
+  masterRelabel();
+}
+// keepMaster (§2.3): an undo / redo within the project keeps the current master rack — the snapshot's lay comes back with its step
+function keepMaster(p, cur) {
+  const fx = cur && cur.master && cur.master.fx;
+  if (fx) { if (!p.master || typeof p.master !== 'object') p.master = {}; p.master.fx = fx; }
+  else if (p.master && typeof p.master === 'object') { delete p.master.fx; if (!p.master.lay) delete p.master; }
+}
+/* the listening controls (§3: never in a file — M2): Mono (the mono stage), the A/B (MASTER's own crossfade, level-matched: Q3);
+   session state, not saved (a reload resets both, so nobody forgets one on) */
+const mstate = { mono: false, ab: false, g: null, lim: false }; // (g: the A/B's frozen match in dB — null while pending (no valid match yet) —, lim: the boost was capped by the input's headroom)
+function monoApply() { if (mono) { mono.channelCountMode = mstate.mono ? 'explicit' : 'max'; mono.channelCount = mstate.mono ? 1 : 2; } }
+function monoSet(on) {
+  mstate.mono = !!on; monoApply();
+  if (mrow) mrow.setMono(mstate.mono);
+  if (mout) mout.setMono(mstate.mono);
+}
+// both buttons from the session's state: off plain, else the match (null: pending "A/B …"; lim: "(peak-limited)")
+function abShow() {
+  const g = mstate.ab ? mstate.g : undefined;
+  if (mrow) mrow.setBypass(mstate.ab, g, mstate.lim);
+  if (mout) mout.setBypass(mstate.ab, g, mstate.lim);
+}
+function abSet(on) {
+  mstate.ab = !!on; mstate.g = null; mstate.lim = false; // (a tap: pending until MASTER answers with its match)
+  abShow();
+  if (mnode) mnode.node.port.postMessage({ t: 'bypass', on: mstate.ab, g: true }); // (g true: MASTER freezes the match at the tap)
+}
+// MASTER's answer {t: 'ab', on, g, lim}: g the match gain it froze (null: still pending — both short-term meters are not valid yet),
+// lim: the boost was capped by the input's headroom (the button reads "A/B −3.2 dB", "A/B …", "A/B +2.1 dB (peak-limited)")
+function abShown(on, g, lim) {
+  if (on !== mstate.ab) return; // (a later tap is on its way)
+  mstate.g = g === null ? null : Number.isFinite(g) ? g : 0;
+  mstate.lim = !!lim && mstate.g !== null;
+  abShow();
+}
+// R1-3: a project change (Open, New, an undo of either) ends the A/B — its frozen match belongs to the old project's rack: the new
+// one would play its bypassed signal that many dB off
+function abEnd() { if (mstate.ab) abSet(false); }
 /* status: the Power LED shows a context that is actually running; a suspended/interrupted one asks for a tap */
 // The notice line: a timed message (notice), else the sticky one (audio problems), else the factory generation progress
 // (genProgress, §9.7). The progress text alone carries the tap-to-cancel action.
@@ -1244,6 +1405,7 @@ function statsText() {
   statT = now;
   let load = 0, voices = 0;
   for (const N of nodes.values()) { load += N.load; voices += N.voices; }
+  if (mnode) load += mnode.load; // ((M, §2.1) MASTER's too: the safeguard's sum — its levers stay the tracks')
   const pct = Math.round(load * 100), el = $('#cpu');
   el.textContent = `DSP load ${pct}% · ${voices} voice${voices === 1 ? '' : 's'} · ${nodes.size} track${nodes.size === 1 ? '' : 's'}`;
   el.classList.toggle('warn', pct > 75);
@@ -1299,8 +1461,13 @@ const PT_OS_TXT = ' (cords into audio inputs may sound different at lower oversa
 // for the other models (persisted, as the select shows it), or the Serum tracks' caps (session only): their
 // oversampling first (never above a track's own quality, §11.4 sign-off), at 1× their unison voices; the other group
 // when the first has nothing left to lower
+// ((M, §2.1) a heavy master is the user's call, as a heavy track rack: the levers stay the tracks', the notice names it when
+// MASTER's load is the largest single share)
+const masterTop = () => !!mnode && mnode.load > 0 && [...nodes.values()].every(N => mnode.load >= N.load);
+const MASTER_TOP = ' · the master effects take the largest share';
 function lowerOS() {
   hotT = 0;
+  const mx = masterTop() ? MASTER_TOP : '';
   const po = plainOS(), so = sxMaxOS();
   let lp = 0, ls = 0;
   for (const t of project.tracks) { const N = nodes.get(t.id); if (N) { const g = groupLoads(t, N); lp += g[0]; ls += g[1]; } }
@@ -1310,7 +1477,7 @@ function lowerOS() {
     const v = h.os / 2, d = h.t.dev[h.id];
     h.N.osI.set(h.id, v);
     postTo(h.t, { t: 'os', v }, h.id);
-    notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts${isPatchDev(h.t, h.id) ? PT_OS_TXT : ''}`, 9000);
+    notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts${isPatchDev(h.t, h.id) ? PT_OS_TXT : ''}${mx}`, 9000);
   } else if (!sxFirst && po > 1) {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
@@ -1318,17 +1485,17 @@ function lowerOS() {
     for (const [id, N] of nodes) if (N.osI) for (const [i, o] of [...N.osI]) { // (the instruments lowered alone below it stay there)
       if (o < v) postTo({ id }, { t: 'os', v: o }, i); else N.osI.delete(i);
     }
-    notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts${project.tracks.some(t => patchDevs(t).length) ? PT_OS_TXT : ''}`, 9000);
+    notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts${project.tracks.some(t => patchDevs(t).length) ? PT_OS_TXT : ''}${mx}`, 9000);
   } else if (so > 1) {
     sxCap = so / 2;
     for (const t of project.tracks) if (hasSx(t)) queuePatch(t);
     rateText();
-    notice(`DSP load stayed above 85% — Serum oversampling capped at ${sxCap}× to avoid dropouts`, 9000);
+    notice(`DSP load stayed above 85% — Serum oversampling capped at ${sxCap}× to avoid dropouts${mx}`, 9000);
   } else if (qrLever()) { // §14.3: Q1 … Q4 (+ Q5, Q6) after the oversampling cap, one per step, each named in a notice
     qrStep++;
     for (const t of project.tracks) if (hasSx(t)) queuePatch(t);
     rateText();
-    notice(`DSP load stayed above 85% — Serum quality step Q${qrStep}: ${QR_NOTICE[qrStep]} to avoid dropouts`, 9000);
+    notice(`DSP load stayed above 85% — Serum quality step Q${qrStep}: ${QR_NOTICE[qrStep]} to avoid dropouts${mx}`, 9000);
   }
   cvRelabel(); // (the modules' safeguard badges, capsOf)
 }
@@ -1463,13 +1630,14 @@ function applyRestore(p, keepSound = false) {
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
   const ptSeq = keepSound && p.uid === project.uid && ptBack && Array.isArray(ptBack.mv.seq) && ptBack.mv.seq.length ? ptBack.mv : null; // ((9b, review 2 F1) a preset step's sequencers)
-  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5)
-  else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
+  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); keepMaster(p, project); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5; (M) the master rack, §2.3)
+  else { for (const t of p.tracks) seedPend.add(t.id); seedPend.add(MASTER); if (p !== project) abEnd(); } // a loaded project re-seeds the racks' LFO phases (the master's too); (M, R1-3) and ends the A/B (its match belongs to the old master)
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
   const prevSel = project.selTrack;
   project = p;
   bind();
   syncNodes();
+  masterSend(); // ((M) the master chain when it changed — an undo kept it: nothing posted)
   PADS.rebuild(); padLitAll(); // ((8, §10.3) the host from the restored project.pads — its views, its subscriptions (a track back from an undo)
   // ((7a) the sessions: the records the panels read (a machine changed: a fresh session), the tempo — (7c review #1) before the
   // payloads, which read them: a synced 909's flam ticks are its session's tempo's, so a stale one never goes first)
@@ -1519,11 +1687,14 @@ function recTick(perfTs) {
 // fresh: a start / seek (the engine plays the anchor tick's notes even when the message arrives a little late); never on the
 // re-sends to a node created mid-song (makeNode) or after a panic, or a tempo / loop change
 function postTransport(seek) { postAll(Object.assign({ t: 'transport', play: true, seek }, seek ? { fresh: true } : null, T.a)); }
+// (IMPL-M P-1 (b), the lead's decision) while the master holds an effect every anchor is on a quantum boundary (≤ 2.7 ms later):
+// a start is then on the bounce's partition — bit-exact with it from a silent history; an empty master moves nothing
+const mAlign = F => (masterN() > 0 ? Math.ceil(F / 128) * 128 : F);
 async function play(from = T.pos, countBars = 0) {
   try { await powerOn(); } catch { return; }
   if (!ctx || T.playing) return;
   for (const t of project.tracks) if (songQ.has(t.id)) sendSong(t, true);
-  const F = Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate);
+  const F = mAlign(Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate));
   T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null;
   T.playing = true; T.startPos = from; T.lastClr = from;
   postTransport(true);
@@ -1547,7 +1718,7 @@ function stop() {
 }
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
   if (!T.playing || !ctx) return;
-  const sr = ctx.sampleRate, F = Math.round((ctx.currentTime + 0.05) * sr), H = outFrame(), sk = seekTick != null && seekTick !== false;
+  const sr = ctx.sampleRate, F = mAlign(Math.round((ctx.currentTime + 0.05) * sr)), H = outFrame(), sk = seekTick != null && seekTick !== false;
   const t = sk ? seekTick : AC.tickAt(F, T.a);
   // an anchor not rendered yet never sounds: the nodes' single pending slot (engine tp.pend) takes this one instead
   const p = T.a.frame > ctx.currentTime * sr ? T.as.pop() : null;
@@ -1928,8 +2099,9 @@ function setTrackModel(tr0, id, o = null) {
   return why;
 }
 function selectTrack(id) {
+  const back = cvMaster && masterOff(); // ((M, §5.2) any track pick leaves the master canvas first — the selected track's too
   const iv = curView(trk());
-  if (id === project.selTrack && bound === iv.id + ':' + iv.model) return;
+  if (id === project.selTrack && bound === iv.id + ':' + iv.model) { if (back) { renderViews(); tabTrackUI(); ptShow(); } return; }
   PATCH.cancel(); // ((9) a cord drag on the outgoing track ends)
   PERF.release(); // (1i review F2: the springs and the Pencil's aftertouch go home on the track they moved, before the selection moves)
   DRUM.release(); // ((7a) a drum machine's pads and held CLEAR too)
@@ -2316,9 +2488,10 @@ const tables = createAssetManager({
   // track — another Serum's samples and IRs are in use too
   states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSerumDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel') || isDrumDev(t, k))
     .map(k => (isDrumDev(t, k) ? { track: t, dev: k, s: null, fx: null, drum: drumOf(t, k) } // ((7a §5) a drum machine: its sample slots)
-      : { track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx }))),
+      : { track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx })))
+    .concat(hasMasterFx() ? [{ track: { id: MASTER, name: MASTER_NAME }, dev: 'mfx', s: null, fx: project.master.fx }] : []), // ((M, §2.2) the master rack: its IRs' users, relinks, learn, gc)
   edit: (x, fn, o) => sxEdit(instView(x.track, x.dev), fn, o),
-  editFx: (x, fn, o) => fxEditDev(x.track, x.dev, fn, o),
+  editFx: (x, fn, o) => (x.track && x.track.id === MASTER ? masterEdit(fn, o) : fxEditDev(x.track, x.dev, fn, o)),
   editDrum: (x, fn) => drumEdit(x.track, x.dev, fn), // ((7a) a relinked slot)
   defaultState: () => core.defaultSerum(),
   refresh: () => sxRefresh(),
@@ -2396,6 +2569,10 @@ const monitors = {
   wanted(id, N0) { // → the parts to monitor, sorted ([] = none)
     const w = new Set();
     if (document.hidden) return [];
+    if (id === MASTER) { // ((M, §2.2) MASTER's ids are its subscriptions' devs: 'meters' (the row, the OUT), 'mfx' (the rack module)
+      for (const S of this.subs) if (S.trackId === MASTER) { S.cur = [S.dev]; try { if (S.live()) w.add(S.dev); } catch (err) { console.warn(err); } }
+      return [...w].sort();
+    }
     const N = N0 || nodes.get(id), t = project.tracks.find(x => x.id === id);
     for (const S of this.subs) if (S.trackId === id) {
       S.cur = partsOf(t, N, S.dev, S.role);
@@ -2415,6 +2592,7 @@ const monitors = {
     if (peerStale.size && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
   },
   deliver(id, d) {
+    if (id === MASTER) { const k = d.t === 'mmon' ? 'meters' : 'mfx'; for (const S of [...this.subs]) if (S.trackId === MASTER && S.dev === k && S.deliver) S.deliver(d); return; } // ((M) mmon → the meters, smon → the rack
     const part = typeof d.i === 'string' ? d.i : typeof d.c === 'string' ? d.c : null;
     if (part === null && d.mc) { for (const S of [...this.subs]) if (S.trackId === id && S.mods && S.deliver) S.deliver(d); return; } // (the meters' own message: never a part's snapshot)
     for (const S of [...this.subs]) if (S.trackId === id && S.deliver && (part === null || S.cur.includes(part) || (d.i === part && S.cur.includes(part + '/fx')) || (S.role === 'none' && S.mods && d.mc))) S.deliver(d); // ((3) a track-level meters subscription takes mc wherever it rides)
@@ -2509,6 +2687,7 @@ function prefsChanged() {
   prefs = readPrefs();
   const all = old.smooth !== prefs.smooth || old.silenceTails !== prefs.silenceTails;
   for (const t of project.tracks) if (all || hasSx(t)) queuePatch(t);
+  if (all) masterSend(); // ((M) its rack's smoothing / silence tails
   if (uiLoad) uiLoad.then(M => kitPrefs(M.wk), () => {});
 }
 // the latest LFO phases of a track's rack (FXRack.phases(): fxLayout order, NaN = no LFO) → the FX state (v2 inst.ph by
@@ -2537,6 +2716,8 @@ function syncPhases() { // (R3: every rack of every track — its node's last ph
       }));
     }
   }
+  const M = mnode, mfx = hasMasterFx() ? project.master.fx : null; // ((M) the master rack's phase memory: asked of MASTER
+  if (M && mfx && hasLfoFx(mfx)) jobs.push(new Promise(res => { const tm = setTimeout(res, 300); M.phWait = v => { clearTimeout(tm); setPhases(mfx, v); res(); }; postTo({ id: MASTER }, { t: 'fxph' }); }));
   return Promise.all(jobs);
 }
 // the Save download: the project plus the user wavetables and user samples / multisamples / IRs its tracks reference
@@ -2552,6 +2733,7 @@ async function projectFile() {
       for (const id of userSmps(x, d.fx, dr)) sm.add(id);
     }
   }
+  if (hasMasterFx()) for (const id of userSmps(null, project.master.fx, null)) sm.add(id); // ((M) the master rack's IRs too
   const o = CM.mirror(JSON.parse(S.serialize(project))); // (SPEC-canvas §5.8: main opens it as each track's primary + its FX)
   if (ids.size) o.wts = await tables.embed([...ids]);
   if (sm.size) o.smps = await tables.embedSmps([...sm]);
@@ -2793,18 +2975,25 @@ function offParts(tr, sr) {
 // track id, so MIDI OUT between the rendered tracks works as live (§7.9). at = {s, fx} for patches of states that are
 // not the project's tracks (render-last of a preset, …). Stage 1e: an item of a graph-shaped track carries graphParts'
 // {graph, patches, chains, seqs, needs} (patch null): its node is built as the live one (offline = live, IMPL-1e §3.3).
-async function renderOffline(sr, frames, items, at) {
+// (IMPL-M §1.1, §4) o.master — only the bounce's: { fxr, fxrT (none: an empty master), transport, frames, lmax, needs }: bus →
+// MASTER (offline: the same processor, made after every item so node 0's stores are there for its rack, nodes[0] stays the first
+// track) → destination; lmax frames more are rendered (a host-side bound of its path latency) and the buffer carries MASTER's
+// report: buf.master = { lat (mlat: the frames to drop; null without the report), fin (mfinal: i, tpMax, pk, lra — null without
+// it) }, both awaited ≤ 1 s after the render. Resample and render-last stay pre-master (no o.master)
+async function renderOffline(sr, frames, items, at, o = null) {
   if (!window.OfflineAudioContext) throw new Error('offline rendering is not available in this browser');
-  const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(frames)), sampleRate: sr });
+  const mo = o && o.master ? o.master : null, lmax = mo ? Math.max(0, Math.ceil(+mo.lmax || 0)) : 0;
+  const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(frames)) + lmax, sampleRate: sr });
   await addModules(oc);
   const ids = new Set();
   for (const it of items) {
     for (const id of [...((it.patch && it.patch.needs) || []), ...(it.needs || [])]) ids.add(id); // ((7a) a drum track's slots beside its patch's needs)
     if (it.graph && it.tr) learnStates(it.tr);
   }
+  if (mo && Array.isArray(mo.needs) && mo.needs.length) { for (const id of mo.needs) ids.add(id); tables.learn({ fx: masterFx() }); } // ((M, §4) the master rack's IRs join the union)
   const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
   const wts = ents.filter(e => idKind(e.id) === 'wt'), smps = ents.filter(e => idKind(e.id) !== 'wt');
-  const bus = oc.createGain(); bus.connect(oc.destination);
+  const bus = oc.createGain();
   items.forEach((it, n) => {
     const po = { os: it.os, hostOS: it.hostOS || it.os, offline: true, patch: it.patch, wts: n === 0 && wts.length ? wts : null,
       smps: n === 0 && smps.length ? smps : null, song: it.song, transport: it.transport, seq: it.seq || null, trackId: it.tr ? it.tr.id : '' };
@@ -2818,7 +3007,28 @@ async function renderOffline(sr, frames, items, at) {
     g.gain.value = it.gain === undefined ? 1 : it.gain; pn.pan.value = it.pan || 0;
     node.connect(g); g.connect(pn); pn.connect(bus);
   });
-  return oc.startRendering();
+  if (!mo) { bus.connect(oc.destination); return oc.startRendering(); }
+  const rep = { lat: null, fin: null, wake: null };
+  const mn = new AudioWorkletNode(oc, 'synth-master', {
+    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+    processorOptions: Object.assign({ offline: true, transport: mo.transport, frames: mo.frames }, mo.fxr ? { fxr: mo.fxr, fxrT: mo.fxrT } : null), // (no bypass: Q2)
+  });
+  mn.port.onmessage = e => { const d = e.data; if (d && d.t === 'mlat') rep.lat = +d.lat || 0; else if (d && d.t === 'mfinal') rep.fin = d; if (rep.wake) rep.wake(); };
+  bus.connect(mn); mn.connect(oc.destination);
+  const buf = await oc.startRendering();
+  if (rep.lat === null || rep.fin === null) await new Promise(res => { const tm = setTimeout(res, 1000); rep.wake = () => { if (rep.lat !== null && rep.fin !== null) { clearTimeout(tm); res(); } }; });
+  rep.wake = null;
+  buf.master = { lat: rep.lat, fin: rep.fin };
+  return buf;
+}
+// (IMPL-M §4) a host-side upper bound of a rack's path latency (frames at sr): every Distortion's 15, every compressor at its
+// look-ahead cap (10 ms) — all in series, a splitter's branches summed (an over-estimate costs nothing: MASTER reports the real one)
+function latBound(fx, sr) {
+  const R = isV2Fx(fx) && fx.racks[0] && Array.isArray(fx.racks[0].mods) ? fx.racks[0].mods : [];
+  const one = I => (I && I.type === 'dist' ? 15 : I && I.type === 'cmp' ? Math.ceil(0.01 * sr) + 2 : 0);
+  let n = 0;
+  for (const I of R) { n += one(I); if (I && Array.isArray(I.br)) for (const B of I.br) if (Array.isArray(B)) for (const c of B) n += one(c); }
+  return n;
 }
 // the frame after which the output stays below thr for hold frames (searched from `from`), else the end
 function tailEnd(chs, from, thr, hold, max) {
@@ -2828,6 +3038,15 @@ function tailEnd(chs, from, thr, hold, max) {
     if (Math.abs(L[i]) < thr && Math.abs(R[i]) < thr) { if (++q >= hold) return i + 1; } else q = 0;
   }
   return end;
+}
+// (O2, R1-5) Auto tail: the end of what is audible, found from the render's END — the last frame at or above thr, searched back down
+// to `from` (the song's end), plus `keep` frames, at most `max` frames past `from`. A scan forward for the first quiet gap would stop
+// at a delay's first 0.5 s of silence between echoes and drop the rest
+function tailLast(chs, from, thr, keep, max) {
+  const L = chs[0], R = chs[1], len = L.length;
+  let i = len - 1;
+  while (i >= from && !(Math.abs(L[i]) >= thr || Math.abs(R[i]) >= thr)) i--;
+  return Math.min(len, Math.max(from, i + 1) + keep, from + max);
 }
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const noteName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1); // the app's naming: C4 = MIDI 60
@@ -2987,7 +3206,7 @@ function preview(key, clip) {
         processorOptions: { os: Math.min(sxQuality({ vals: { s: pv.s } }), osCap(sr), sxCap), hostOS: osFor(sr), patch, song, transport },
       });
       const g = ctx.createGain();
-      node.connect(g); g.connect(master);
+      node.connect(g); g.connect(mnode ? mnode.node : master); // ((M) the sum: through the master effects, counted by its meters)
       pv.node = node; pv.gain = g; pv.N = partCache({ node }, patch);
     }
     if (needs && needs.length) tables.ensure(needs, { trackId: 'preview', node, s: pv.s, fx: pv.fx, convMax: patch.fxr && patch.fxr.convMax });
@@ -3979,6 +4198,7 @@ function openTab(name) {
 // the instrument panels, the FX racks (always mounted on the canvas; today's FX tab only while shown) and the canvas
 // modules follow the selected track (stage 1e: every device body of it)
 function renderViews() {
+  if (cvMaster && cvOn()) { cvRender(); return; } // ((M, §5.2) the master canvas: its view alone — the track's panels are built when it is left
   if (cvSwitching()) { cvSwitch(); return; } // (a track switch on the canvas: the bodies mount over frames)
   if (cvMount) cvMountEnd(); // (a switch still mounting: this render completes it at once)
   cvBusy = true;
@@ -4192,6 +4412,7 @@ function initTransport() {
   };
   $('#fBounce').onclick = () => openBounce();
   $('#bCancel').onclick = () => { $('#modal').hidden = true; };
+  $('#bNorm').onchange = () => normUI(); // ((M, O4) Loudness: its target beside it
   bounceButton();
   pressOrTap($('#modal'), e => e.target.id === 'modal', () => { $('#modal').hidden = true; }); // the backdrop (a finger: on release)
 }
@@ -4265,11 +4486,24 @@ function importMidiFile(bytes, fname) {
 /* ------------------------------------------------------------ bounce */
 // the dialog's main button: Render & download (Save WAV… while a rendered file waits for a tap to be shared)
 function bounceButton() { const go = $('#bGo'); go.textContent = 'Render & download'; go.onclick = () => bounce(); }
+// (IMPL-M §4, Q1 (a)) the rate and oversampling playback runs at — the dialog's "Same as playback" (its default)
+const playRate = () => (ctx ? ctx.sampleRate : settings.sr || devRate || 48000);
+const BOUNCE_NOTE = 'Renders every audible track (mute/solo respected) offline — no clicks or dropouts regardless of CPU.';
+const AUTO_TAIL = 30; // ((M, O2) Auto: up to this many seconds past the song's end)
+// the Normalise select (O4): 'off' | 'peak' | 'lufs' — (a select has no `checked`: a script that ticks it, as the old checkbox's
+// drivers do — the frozen G0 bounce test's —, means Peak, the old box's meaning)
+function normMode() { const e = $('#bNorm'); return e.checked === true ? 'peak' : e.value === 'peak' || e.value === 'lufs' ? e.value : 'off'; }
 function openBounce() {
   bounceButton();
   $('#bRange').value = range ? 'sel' : project.loop.on ? 'loop' : 'song';
   $('#bRange').querySelector('[value=sel]').disabled = !range;
-  $('#bNote').textContent = 'Renders every audible track (mute/solo respected) offline — no clicks or dropouts regardless of CPU.';
+  { const sr = playRate(), a = $('#bSr').querySelector('[value="0"]'), b = $('#bOs').querySelector('[value="0"]');
+    if (a) a.textContent = `Same as playback (${kHz(sr)} kHz)`;
+    if (b) b.textContent = `Same as playback (${Math.min(settings.os, osCap(sr))}×)`; }
+  { const t = mTarget(), g = $('#bTgt'); if (g) g.value = String(t === null ? -14 : t); }
+  normUI();
+  const n = masterN();
+  $('#bNote').textContent = BOUNCE_NOTE + ' ' + (n ? `Through the master effects (${n})` : 'The master has no effects') + ' — Volume, Mono and A/B are listening controls and not in the file.';
   $('#bGo').disabled = false;
   $('#modal').hidden = false;
 }
@@ -4310,16 +4544,35 @@ function bounceSet(sr) {
   }
   return project.tracks.filter(tr => want.has(tr)).map(tr => Object.assign({ tr, gain: want.get(tr) }, partsOf(tr)));
 }
+// (F3) the main thread's copy of the meters (master-dsp.js: wk.loadDSP injects it once, as the panels' DSP; null when it is not there)
+async function meterDSP() {
+  if (!globalThis.MASTERDSP) {
+    let tm = 0;
+    try { const wk = await import('./wk.js?v=' + VERSION); await Promise.race([wk.loadDSP(['master-dsp.js?v=' + VERSION]), new Promise(r => { tm = setTimeout(r, 3000); })]); }
+    catch (err) { console.warn('the master meters did not load', err); }
+    clearTimeout(tm);
+  }
+  return globalThis.MASTERDSP || null;
+}
+// the integrated loudness (BS.1770, K-weighted and gated) of a stereo buffer, in 4 s slices with a breath between: a long render does not freeze the page
+async function integratedOf(MD, chs, sr) {
+  const m = new MD.Meters(sr), n = chs[0].length, step = Math.round(sr * 4);
+  for (let o = 0; o < n; o += step) { m.push(chs[0], chs[1], Math.min(step, n - o), o); if (o + step < n) await new Promise(r => setTimeout(r)); }
+  return m.summary().i;
+}
+// the target select shows only for Loudness
+function normUI() { const g = $('#bTgt'); if (g) g.hidden = normMode() !== 'lufs'; }
 async function bounce() {
-  const rsel = $('#bRange').value, sr = +$('#bSr').value, bits = +$('#bBits').value, tail = +$('#bTail').value, norm = $('#bNorm').checked;
-  const os = Math.min(+$('#bOs').value, osCap(sr)); // same 384 kHz internal cap as live playback
+  // (IMPL-M Q1 (a): "Same as playback" = 0, the live rate / ⚙ Oversampling; O2: Auto tail; O4: Normalise Off / Peak / Loudness)
+  const rsel = $('#bRange').value, sr = +$('#bSr').value || playRate(), bits = +$('#bBits').value, tv = $('#bTail').value, auto = tv === 'auto', tail = auto ? AUTO_TAIL : +tv, nm = normMode(), norm = nm === 'peak';
+  const os = Math.min(+$('#bOs').value || settings.os, osCap(sr)); // same 384 kHz internal cap as live playback
   const [start, end] = rsel === 'sel' && range ? range : rsel === 'loop' ? [project.loop.start, project.loop.end] : [0, S.songEnd(project)];
   if (!(end > start)) { alert('Nothing to render.'); return; }
   const note = $('#bNote'), go = $('#bGo');
   go.disabled = true;
-  const secs = S.ticksToSec(project, end) - S.ticksToSec(project, start) + tail;
+  const songS = S.ticksToSec(project, end) - S.ticksToSec(project, start), secs = songS + tail;
   const t0 = performance.now();
-  note.textContent = `Rendering ${secs.toFixed(1)} s at ${kHz(sr)} kHz × ${os} (${kHz(sr * os)} kHz internal)…`;
+  note.textContent = `Rendering ${auto ? songS.toFixed(1) + ' s + up to ' + AUTO_TAIL + ' s of tail' : secs.toFixed(1) + ' s'} at ${kHz(sr)} kHz × ${os} (${kHz(sr * os)} kHz internal)…`;
   try {
     const f = sr * 60 / (project.bpm * S.PPQ);
     const items = [];
@@ -4332,14 +4585,59 @@ async function bounce() {
       x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null));
     }
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
-    const buf = await renderOffline(sr, Math.ceil(secs * sr), items);
-    const chs = [buf.getChannelData(0), buf.getChannelData(1)];
+    // (IMPL-M §4) always through the master — empty or not, one path (an empty one copies: the same bytes as before)
+    const frames = Math.ceil(secs * sr), mc = hasMasterFx() ? masterChain(sr) : null, lmax = mc ? latBound(project.master.fx, sr) : 0;
+    const buf = await renderOffline(sr, frames, items, undefined, { master: { fxr: mc && mc.fxr, fxrT: mc && mc.fxrT, transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, frames, lmax, needs: (mc && mc.fxr.needs) || [] } });
+    const rep = buf.master || {};
+    if (rep.lat === null || rep.lat === undefined) throw new Error('the master did not report its latency — nothing was written');
+    const len = Math.max(128, frames), all = [buf.getChannelData(0), buf.getChannelData(1)];
+    let chs = lmax > 0 ? all.map(c => c.subarray(rep.lat, rep.lat + len)) : all; // (the path latency dropped: the song starts on frame 0)
+    let kept = '';
+    if (auto) { // (O2) the tail ends 0.5 s after the last frame at or above −96 dBFS (found from the render's end, R1-5), at most AUTO_TAIL s past the song
+      const s0 = Math.ceil(songS * sr), e = tailLast(chs, s0, Math.pow(10, -96 / 20), Math.round(0.5 * sr), Math.round(AUTO_TAIL * sr));
+      chs = chs.map(c => c.subarray(0, e));
+      kept = ` (tail ${(Math.max(0, e - s0) / sr).toFixed(1)} s, auto)`;
+    }
     let peak = 0;
     for (const c of chs) for (let i = 0; i < c.length; i++) { const a = Math.abs(c[i]); if (a > peak) peak = a; }
-    const target = norm ? Math.pow(10, -0.3 / 20) : peak > 0.999 ? 0.999 : peak;
-    if (peak > 0 && (norm || peak > 0.999)) { const k = target / peak; for (const c of chs) for (let i = 0; i < c.length; i++) c[i] *= k; }
+    const fin = rep.fin, I0 = fin && Number.isFinite(fin.i) ? fin.i : null, TP0 = fin && Number.isFinite(fin.tpMax) ? fin.tpMax : null;
+    const dB = x => MUI.fmtDb(x); // (a true minus, never "−0.0", "—" for silence)
+    const lufs = nm === 'lufs' && I0 !== null && TP0 !== null, tg = lufs ? +$('#bTgt').value || -14 : null;
+    let k = 1, lnote = '', bound = false;
+    const scaleBy = f => { for (const c of chs) for (let i = 0; i < c.length; i++) c[i] *= f; k *= f; };
+    if (lufs) { // (O4) a pure scale to the target, never past −1 dBTP: never a limiter, never a clip
+      const kL = Math.pow(10, (tg - I0) / 20), kT = Math.pow(10, (-1 - TP0) / 20);
+      bound = kT < kL; scaleBy(Math.min(kL, kT));
+    } else {
+      if (nm === 'lufs') lnote = ' · not loudness-normalised (no loudness measured)';
+      const target = norm ? Math.pow(10, -0.3 / 20) : peak > 0.999 ? 0.999 : peak;
+      if (peak > 0 && (norm || peak > 0.999)) scaleBy(target / peak);
+    }
+    // (F3) a pure scale moves the true peak exactly but not the integrated loudness: the tail's blocks cross BS.1770's −70 LUFS gate
+    // and the relative gate moves with them. The scaled buffer is measured (the main thread's meters) and Loudness corrects it once or
+    // twice more; the note reports the measurement (without the meters: the exact-scale estimate, as before)
+    let Im = I0 === null ? null : I0 + 20 * Math.log10(k);
+    if (k !== 1 && I0 !== null && I0 > -Infinity) {
+      const MD = lufs ? await meterDSP() : globalThis.MASTERDSP || null; // (injected for Loudness; Off / Peak use it when the page has it)
+      if (MD) {
+        const measure = async () => { const v = await integratedOf(MD, chs, sr); if (Number.isFinite(v)) Im = v; }; // (all under the gate: the estimate stays)
+        await measure();
+        for (let pass = 0; lufs && pass < 2 && Math.abs(Im - tg) > 0.01; pass++) {
+          const want = Math.pow(10, (tg - Im) / 20), room = Math.pow(10, (-1 - TP0) / 20) / k; // (room: up to −1 dBTP in all)
+          const f = Math.min(want, room);
+          if (want > room) bound = true;
+          if (Math.abs(f - 1) < 1e-4) break;
+          scaleBy(f); await measure();
+        }
+      }
+    }
+    if (lufs) lnote = bound ? ` · stopped at ${dB(Im)} LUFS (true-peak ceiling −1 dBTP)` : ` · normalised to ${dB(Im)} LUFS${Math.abs(Im - tg) > 0.05 ? ` (target ${dB(tg)})` : ''}`;
     const wav = S.encodeWAV(chs, sr, bits);
-    const done = `Done: ${secs.toFixed(1)} s rendered in ${((performance.now() - t0) / 1000).toFixed(1)} s · peak ${(20 * Math.log10(Math.max(1e-9, peak))).toFixed(1)} dBFS${peak > 0.999 && !norm ? ' (scaled to avoid clipping)' : ''}.`;
+    const kd = 20 * Math.log10(k); // (the true peak scales exactly: × k adds 20·log10 k)
+    const audible = I0 !== null && I0 > -Infinity, lra = fin && Number.isFinite(fin.lra) && !(fin.lra === 0 && !audible) && frames >= 3 * sr ? fin.lra : null; // (nothing measured — MASTER's -Infinity, or a render under the 3 s the range needs: "LRA —", never "0.0 LU")
+    const loud = audible ? ` · ${dB(Im)} LUFS integrated${TP0 !== null && TP0 > -Infinity ? ' · ' + dB(TP0 + kd) + ' dBTP' : ''} · LRA ${lra === null ? '—' : dB(lra) + ' LU'}` : '';
+    // (the numbers are the file's, after scaling: the peak too)
+    const done = `Done: ${(auto ? chs[0].length / sr : secs).toFixed(1)} s rendered in ${((performance.now() - t0) / 1000).toFixed(1)} s${kept} · peak ${dB(20 * Math.log10(Math.max(1e-9, peak * k)))} dBFS${peak > 0.999 && !norm && !lufs ? ' (scaled to avoid clipping)' : ''}${loud}${lnote}.`;
     note.textContent = done;
     // (the home-screen app on iPad / iPhone shares the file, which needs a fresh tap after a render: Save WAV… here)
     download(new Blob([wav], { type: 'audio/wav' }), `${slug(project.name)}-${sr / 1000}k-${bits}${bits === 32 ? 'f' : 'bit'}.wav`, share => {
@@ -4767,10 +5065,12 @@ const td = new Float32Array(8192), fd = new Float32Array(4096);
 // the OUT scope's tap, read each frame: the shown track's own analyser (its chain after the FX rack, then fader / mute and pan — what the
 // track adds to the mix, as its meter), or null (the flat line) without a node (engine off, not built yet). A Master canvas returns `an` here
 function scopeSource() {
+  if (cvMaster) return an; // ((M, §5.2) the master canvas: the mix as exported (its OUT reads it itself, master-ui's read)
   const id = cvView ? cvView.trackId : (trk() || {}).id, N = id && nodes.get(id);
   return N ? N.sc : null;
 }
 function drawScope() {
+  if (cvMaster) return; // ((M, lane U) the master OUT owns its scope: the shared one is not mounted there
   const cv = $('#scope');
   if (!cv.offsetParent || (cvView && !cvView.live(cvModule.ID.out))) return; // (canvas: only while OUT is live — on screen, not folded)
   // the store through the kit (wk.fitCanvas): dpr capped at 2 and, in the OUT module, the camera's zoom (clamp(dpr·k,
@@ -4837,6 +5137,7 @@ function frame() {
     el.classList.toggle('clip', v > 0.98);
   }
   drawScope();
+  if (mout) { mout.setLive(mOutLive()); mout.draw(); } // ((M) the master OUT: its own cadence (≤ 30 Hz), only while live
 }
 
 /* ============================================== canvas shell, stage 1b (docs/canvas/IMPL-1b.md §2, §4.8) */
@@ -4853,15 +5154,15 @@ function frame() {
 // the keyboard's too, all the way (kbGone) — and a tab is tapped (toggles) or pulled like a drawer (cv-tray pullSnap).
 const shell = { top: null, kb: null, src: null, tiles: null, measure: null, menus: [], sheet: null, lead: 'bottom', leadWas: 'bottom',
   topH: 0, topLast: 0, topShown: 0, safeTop: 0, chrome: 0, srcAsk: false, drop: null, dropOn: null, chipModel: '', instT: 0, dots: [], nTr: 0 };
-const oneRow = () => cvTray.topSnaps(1)[1]; // the arrangement toolbar, the ruler and one track row
+const oneRow = () => cvTray.topSnaps(1, cvTray.FOOT_H)[1]; // the arrangement toolbar, the ruler, one track row and ((M) the Master row: the footer)
 const trayVh = () => Math.max(0, (window.innerHeight || 800) - shell.safeTop);
 function trayPref() { const p = store.get(cvTray.TRAY_PREF, null); return p && typeof p === 'object' ? p : {}; }
 function trayPrefSave() { store.set(cvTray.TRAY_PREF, Object.assign({}, trayPref(), { top: shell.topH, topLast: shell.topLast })); }
 // the top tray's wanted height within its stops for this many tracks (its shown height comes from the budget)
-function topWant() { const S = cvTray.topSnaps(project.tracks.length); return clamp(shell.topH || cvTray.TOP_ROW, cvTray.TOP_ROW, S[S.length - 1]); }
+function topWant() { const S = cvTray.topSnaps(project.tracks.length, cvTray.FOOT_H); return clamp(shell.topH || cvTray.TOP_ROW, cvTray.TOP_ROW, S[S.length - 1]); }
 // the most the top tray may take when it leads (the keys pushed down to their least)
 function topMaxH() {
-  const S = cvTray.topSnaps(project.tracks.length), keys = !kbGone, chrome = shell.chrome || kbChrome(), lo = keys ? chrome + KB_H[0] : 0;
+  const S = cvTray.topSnaps(project.tracks.length, cvTray.FOOT_H), keys = !kbGone, chrome = shell.chrome || kbChrome(), lo = keys ? chrome + KB_H[0] : 0;
   const B = cvTray.budget({ vh: trayVh(), top: S[S.length - 1], bottom: lo, active: 'top', topMin: cvTray.TOP_ROW, bottomMin: lo });
   return Math.max(cvTray.TOP_ROW, Math.min(S[S.length - 1], Math.floor(B.top)));
 }
@@ -4872,6 +5173,7 @@ function topShow(px) {
   el.style.setProperty('--cv-top', h + 'px');
   const folded = h <= cvTray.TOP_ROW + 2;
   el.classList.toggle('collapsed', folded);
+  if (mrow && mrow.state().live === folded) { mrow.setLive(!folded); monitors.sync(); } // ((M) the Master row shows with the rows: its meters with it
   if (was && was <= cvTray.TOP_ROW + 2 && !folded && arr) arr.resize(); // (hidden, the lanes had no width)
   if (shell.top) shell.top.sync();
 }
@@ -4904,6 +5206,15 @@ function shellMeasure() {
 function trkChipUI() {
   const t = trk(), c = $('#trkChip');
   if (!c) return;
+  if (cvMaster) { // ((M, §5.1) the master canvas: the chip reads "Master" (the keys still play the track)
+    c.style.setProperty('--tc', MASTER_TINT);
+    $('#trkChip .cv-cn').textContent = MASTER_NAME;
+    $('#trkChip .cv-cv').textContent = 'keys play ' + t.name;
+    if (shell.chipModel !== MASTER) { shell.chipModel = MASTER; $('#trkChip .cv-cart').innerHTML = ''; }
+    c.setAttribute('aria-label', `The master canvas — the keys play “${t.name}” — the track list`);
+    for (const d of shell.dots) { d.classList.remove('on'); d.setAttribute('aria-pressed', 'false'); }
+    return;
+  }
   c.style.setProperty('--tc', t.color);
   $('#trkChip .cv-cn').textContent = t.name;
   const d = instOf(t);
@@ -4932,12 +5243,20 @@ function trkListUI() {
   const pop = $('#trkPop');
   pop.innerHTML = '';
   for (const t of project.tracks) {
-    const b = h('button', 'cv-tpi' + (t.id === project.selTrack ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    const b = h('button', 'cv-tpi' + (t.id === project.selTrack && !cvMaster ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
     b.style.setProperty('--tc', t.color);
     const d = instOf(t), art = h('span', 'cv-cart'); art.innerHTML = cvArt.chip(d.model); art.setAttribute('aria-hidden', 'true');
     const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(vkey(t)) || trackVoice(d).label)));
     b.append(h('span', 'cv-sw'), art, tx);
     b.onclick = () => selectTrack(t.id);
+    pop.append(b);
+  }
+  { // ((M, §5.1) the master canvas from here too — the collapsed tray has no footer
+    const b = h('button', 'cv-tpi cv-tpm' + (cvMaster ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.style.setProperty('--tc', MASTER_TINT);
+    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, MASTER_NAME), h('small', null, 'the mix: its effects and meters'));
+    b.append(h('span', 'cv-sw'), tx);
+    b.onclick = () => masterOpen();
     pop.append(b);
   }
   const add = h('button', 'cv-tpi add', '+ Add a track…'); add.type = 'button'; add.setAttribute('role', 'menuitem');
@@ -4987,6 +5306,8 @@ function instChip(t) {
 function srcModeUI(mode) {
   if (!shell.tiles) return;
   shell.tiles.setMode(mode);
+  { const tr = $('#srcTray'); if (tr && tr.classList) tr.classList.toggle('cv-mside', cvMaster && mode !== 'track'); } // ((M, §5.2) no tiles on the master canvas
+  if (cvMaster && mode !== 'track') { const p = $('#srcMode'); p.innerHTML = ''; p.append(MASTER_SRC); return; }
   const p = $('#srcMode'), v = shell.tiles.view(), one = v === 'serum' ? 'Serum' : 'one'; // (the intro follows the view)
   p.innerHTML = '';
   // ((8, R2-F6) the Controllers view: a tap adds a Pads module to the project — no instrument is replaced, no track made — in either mode)
@@ -5013,6 +5334,7 @@ function srcOver(t) {
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
 const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || modelById(id).family === 'patch' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always; (9) a 900 Series too)
 function srcPick(id, mode) {
+  if (cvMaster && mode !== 'track') { notice(MASTER_SRC, 4000); return; } // ((M, §5.2) nothing replaces an instrument from the master canvas
   const ui = srcUi(id), v = curView();
   // the tray stays open (the user's rule: only its tab, its ✕ or Escape close it); after a new track it goes back to
   // replacing the (new) selected track's instrument
@@ -5032,8 +5354,8 @@ const srcDrag = {
     if (!world) return;
     // over the canvas a drop replaces the instrument in place: the true-size outline sits on its module (its top-left, the
     // new size), not under the finger — the drop never moves it
-    const t = trk(), k = curOf(t), im = i.over === 'canvas' && cvView ? cvView.modules.get(k) : null, ir = im ? im.rect() : null;
-    if (i.over === 'canvas') {
+    const t = trk(), k = curOf(t), im = i.over === 'canvas' && cvView && !cvMaster ? cvView.modules.get(k) : null, ir = im ? im.rect() : null;
+    if (i.over === 'canvas' && !cvMaster) { // ((M) no outline over the master canvas: a drop there is refused
       const sz = cvModuleSize(id), was = instOf(t).model, label = modelById(id).name + (id === was ? '' : ' · replaces ' + modelById(was).name);
       const c = ir ? world.toClient(ir.x, ir.y) : null;
       shell.drop = c ? world.ghost({ x: c.x, y: c.y, w: sz.w, h: sz.h, dx: 0, dy: 0, snap: false, label }) : world.ghost({ x: i.x, y: i.y, w: sz.w, h: sz.h, label });
@@ -5049,6 +5371,7 @@ const srcDrag = {
     const ui = srcUi(id);
     if (i.over === 'tracks') { addTrack(modelById(id), null, { ui }); return true; }
     if (i.over !== 'canvas') return false;
+    if (cvMaster) { notice(MASTER_SRC, 4000); return true; } // ((M, §5.2) refused, said
     if (PT.isPatchModel(id) && ptSet()) return true; // ((9) the Model 15 tile dropped on a 900 Series: as its tap)
     if (!cvDropInstrument(id, rect, { ui })) setTrackModel(curView(), id, { ui }); // (the same model: only the layout, if asked)
     return true;
@@ -5085,14 +5408,16 @@ function helpSheet() {
 function initShell() {
   shellMeasure();
   const P = trayPref();
-  shell.topH = P.top === 0 || P.top > 0 ? Math.max(cvTray.TOP_ROW, +P.top) : oneRow(); // (first run: one track row shown)
-  shell.topLast = +P.topLast > cvTray.TOP_ROW ? +P.topLast : oneRow();
+  // ((M, §5.1) a height stored before the footer — a stop TOP_ROW + ARR_BAR + RULER + ROW_H·i — keeps its i rows: + FOOT_H)
+  const foot = v => (v > cvTray.TOP_ROW && (v - cvTray.TOP_ROW - cvTray.ARR_BAR - cvTray.RULER) % cvTray.ROW_H === 0 ? v + cvTray.FOOT_H : v);
+  shell.topH = P.top === 0 || P.top > 0 ? Math.max(cvTray.TOP_ROW, foot(+P.top)) : oneRow(); // (first run: one track row shown)
+  shell.topLast = +P.topLast > cvTray.TOP_ROW ? foot(+P.topLast) : oneRow();
   // the top tray's grip, its pull tab: a drag follows the finger (snaps to whole rows on release; a flick folds it / opens
   // it to the last height), keys; a tap (Enter / Space) = folded ↔ the last height
   shell.top = cvTray.trayGrip($('#topGrip'), {
     edge: 'top', label: 'Track list height', step: cvTray.ROW_H,
     get: () => shell.topShown || cvTray.TOP_ROW, set: topSet, min: () => cvTray.TOP_ROW, max: () => topMaxH(),
-    snaps: () => cvTray.topSnaps(project.tracks.length), onTap: topToggle, open: () => Math.max(shell.topLast || 0, oneRow()),
+    snaps: () => cvTray.topSnaps(project.tracks.length, cvTray.FOOT_H), onTap: topToggle, open: () => Math.max(shell.topLast || 0, oneRow()),
     start: () => { shell.leadWas = shell.lead; shell.lead = 'top'; shell.chrome = kbChrome(); },
     text: v => (v <= cvTray.TOP_ROW + 2 ? 'folded to one row' : `${Math.max(0, Math.round((v - oneRow()) / cvTray.ROW_H) + 1)} track rows`),
   });
@@ -5107,6 +5432,7 @@ function initShell() {
     cvTray.menuPop($('#engMore'), $('#engPop'), { attr: 'data-open', pick: false, onClose: () => { if (shell.meter) shell.meter.close(); } }),
   ];
   shell.meter = meterUI();
+  initMasterRow(); // ((M, §5.1) the Master row in the track list's footer
   // ⚙'s master level (shown where the top row's folds away, ≤ 1099 px): drives #master (its handler sets and saves)
   $('#masterG').oninput = () => { const m = $('#master'); m.value = $('#masterG').value; if (m.oninput) m.oninput(); };
   $('#helpBtn').onclick = () => helpSheet();
@@ -5378,6 +5704,7 @@ function cvBodiesDue() {
 }
 function cvRender() {
   if (!cvOn()) return;
+  if (cvMaster) { cvRenderMaster(); return; } // ((M, §5.2) the master canvas: its own view and host — never trk()'s
   const t = trk(), key = project.uid + '/' + t.id, W = cvW();
   sxPlaceNew(t); // ((3, I1) a part shown without a place gets one by Tidy's rule — no History step)
   // (R6) the same track: a sync — the modules follow its devices (a model change swaps fx1 ↔ iN/fx there), every body is
@@ -5530,7 +5857,7 @@ function cvTitle(key) {
     const n = fx && Array.isArray(fx.racks) ? fx.racks.reduce((a, r) => a + (r && Array.isArray(r.mods) ? r.mods.length : 0), 0) : 0, N = CG.devNum(key);
     return { title: (d && d.name) || (N > 1 ? 'FX Panel ' + N : 'FX Panel'), sub: n ? n + (n === 1 ? ' effect' : ' effects') : 'empty' };
   }
-  return { title: 'OUT', sub: 'master output' };
+  return { title: 'OUT', sub: 'track output' }; // ((M, §5.3) the master's is its own module
 }
 // an instrument module's chip: a classic one's ◀ preset select ▶ (the Hardware panel has no preset plate: the chip
 // loads, the ⋯ menu saves / deletes / inits) / a Serum's preset name
@@ -5581,6 +5908,7 @@ function cvChipSync() { // a preset name changed (a panel's preset UI, a Serum e
 // the ⋯ menu of module `key` (cvMenu(kind, key) as stage 1b called it still works): an instrument's About / Replace,
 // layouts and sound actions; Fold, Bring to front, Tidy (stage 1f: no device items — one instrument per track)
 function cvMenu(a, b) {
+  if (cvMaster) return mMenu(b === undefined ? a : b); // ((M) the master canvas's menus
   const key = b === undefined ? a : b, V = cvView, m = V && V.modules.get(key);
   if (!m) return [];
   const t = trk(), kind = kindOfKey(t, key);
@@ -5680,6 +6008,227 @@ function cvAbout() {
   x.onclick = close; wrap.onclick = e => { if (e.target === wrap) close(); };
   dlg.append(x, a); wrap.append(dlg); ($('#ov') || document.body).append(wrap);
 }
+/* ---------------------------------------------- cv MASTER (IMPL-M §5): the Master row (the track list's footer) and the master canvas */
+// The master canvas is its own view with its own host (cvMasterHost — never cvHost: none of its callbacks reads trk()): two devices,
+// the master FX rack (a panel device 'mfx', MAIN only) and the master OUT (master-ui's, OUT_W wide); Tidy = rack → OUT; its camera
+// 'synth.cam.<uid>.master'. project.selTrack stays on the last track (the keyboard, MIDI and the roll play it: the chip reads
+// "Master · keys play …"). cvMaster (session) is honoured by every path that would read or write trk() there (§5.2's list, §12
+// "Lane A" the ones found beyond it): cvRender / renderViews sync this view and return, cvLay / cvTidy write project.master.lay (the
+// same History steps), a drop or a Sources pick is refused with MASTER_SRC, the menus are the master's, no mod layer (no data-dev,
+// no cable drag), no 900 Series cords, scopeSource is `an`; a track pick (row, dot, list, a reveal) leaves it
+let cvMaster = false, mrow = null, mout = null, moutOff = null, mfxEl = null;
+const mfxRec = { ui: null, fx: null, gen: 0, mon: null, gr: null, ftap: null };
+const MASTER_SRC = 'The master takes effects — add them with the rack’s +';
+const MOUT_PREF = 'synth.cv.mout'; // { target, mode }: the master OUT's loudness target and scope mode (device prefs, never in a project)
+function moutPref() { const p = store.get(MOUT_PREF, null); return p && typeof p === 'object' ? p : {}; }
+function moutSet(k, v) { store.set(MOUT_PREF, Object.assign({}, moutPref(), { [k]: v })); }
+function mTarget() { const t = moutPref().target; return t === null ? null : MUI.TARGETS.includes(t) ? t : -14; } // (the OUT's target: the bounce's Loudness default too)
+// the master canvas's record: a track-shaped view of project.master (live: lay / dev read through, so a write is seen at once)
+const mLayOf = () => (project.master && project.master.lay && typeof project.master.lay === 'object' ? project.master.lay : null);
+const M_WIRES = Object.freeze([Object.freeze({ id: 'mw', a: 'mfx.out', b: 'out.in' })]);
+function masterRec() {
+  return { id: MASTER, name: MASTER_NAME, color: MASTER_TINT, wires: M_WIRES,
+    get dev() { return { mfx: { kind: 'panel', fx: masterFx() }, out: { kind: 'out' } }; }, get lay() { return mLayOf() || undefined; } };
+}
+function cvMasterHost() {
+  return {
+    root: cvParts.root, doc: document,
+    devices: t => cvModule.devicesOf(t),
+    bodies: { mount: mMount, unmount: mUnmount },
+    title: key => (key === 'mfx' ? { title: 'Master FX', sub: (n => (n ? n + (n === 1 ? ' effect' : ' effects') : 'empty'))(masterN()) } : { title: 'Master OUT', sub: 'the mix · what a bounce writes' }),
+    menu: key => mMenu(key),
+    size: key => (key === 'out' ? { fixed: { w: MUI.OUT_W, h: MUI.OUT_H + cvModule.BAR_H } } : null),
+    badge: () => null, patch: false,
+    select: () => {}, lay: mLay,
+    shown: () => monitors.sync(),
+  };
+}
+// open / leave (the Master row's name or chevron, the track list's item; a track pick leaves: selectTrack)
+function masterOpen() {
+  if (!cvMaster) {
+    PATCH.cancel(); PERF.release(); DRUM.release(); // (a cord drag, the beds and pads of the track shown let go — the keys still play it)
+    if (modLayer) modLayer.close();
+    cvMaster = true;
+    if (mrow) mrow.setActive(true);
+  }
+  if ($('#tab-inst').hidden) openTab('canvas');
+  renderViews();
+  srcModeUI(shell.tiles ? shell.tiles.mode() : 'replace');
+  tabTrackUI(); ptShow();
+  monitors.sync();
+}
+function masterOff() {
+  cvMaster = false;
+  if (mrow) mrow.setActive(false);
+  srcModeUI(shell.tiles ? shell.tiles.mode() : 'replace');
+  return true;
+}
+function cvRenderMaster() {
+  const key = project.uid + '/' + MASTER, W = cvW(), R = masterRec();
+  if (cvView && cvViewKey === key) { cvView.sync(R); return; }
+  if (cvMount) { cvMountEnd(false); const vp = $('#viewport'); if (vp) vp.removeAttribute('data-cv-mounting'); } // (a track's bodies still mounting: dropped)
+  cvCamFlush(); // the outgoing view's camera first
+  if (cvView) { try { cvView.destroy(); } finally { cvView = null; } }
+  if (W && typeof W.clear === 'function') W.clear();
+  cvViewKey = key;
+  cvView = cvModule.createTrackView(W, R, cvMasterHost());
+  modDrag = null; // (no mod cables on the master)
+  cvCamRestore();
+  monitors.sync();
+}
+// the bodies: the rack's own element (its FXRackUI — no data-dev: no mod layer, halo or cable on a master knob) and the OUT
+function mMount(key, b) {
+  if (key === 'out') {
+    const P = moutPref();
+    mout = MUI.createMasterOut(b, { doc: document, target: mTarget(), mode: MUI.MODES.includes(P.mode) ? P.mode : 'wave', read: mRead,
+      onReset: () => postTo({ id: MASTER }, { t: 'mreset' }), onBypass: on => abSet(on), onMono: on => monoSet(on),
+      onTarget: t => moutSet('target', t), onMode: m => moutSet('mode', m) });
+    mout.setMono(mstate.mono); mout.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim);
+    if (moutOff) moutOff();
+    moutOff = monitors.sub(MASTER, 'meters', { live: () => mOutLive(), deliver: d => { if (mout) mout.update(d); } });
+    return;
+  }
+  if (!mfxEl) { mfxEl = h('section', 'fxtab'); mfxEl.setAttribute('aria-label', 'Master effects rack'); }
+  b.append(mfxEl);
+  renderMasterFx();
+}
+function mUnmount(key) {
+  if (key === 'out') { if (moutOff) { const f = moutOff; moutOff = null; f(); } if (mout) { mout.destroy(); mout = null; } return; }
+  mfxDrop();
+  if (mfxEl && typeof mfxEl.remove === 'function') mfxEl.remove();
+}
+const mOutLive = () => cvMaster && !!cvView && !!mout && !$('#tab-inst').hidden && cvView.live('out');
+// the master OUT's scope data, pulled while it draws (master-ui read): `an` (wave / spectrum), O1's L / R analysers (image)
+function mRead(mode, b) {
+  if (!ctx || !an) return 0;
+  if (mode === 'image') { if (!anL || !anR) return 0; anL.getFloatTimeDomainData(b.L); anR.getFloatTimeDomainData(b.R); }
+  else if (mode === 'spectrum') an.getFloatFrequencyData(b.fd);
+  else an.getFloatTimeDomainData(b.td);
+  return ctx.sampleRate;
+}
+// (§2.2) the master rack's host: fxHost's form — racks 1 (MAIN), no Serum (state / edit / locked / extraRows absent), its tap → MASTER
+function mfxHost() {
+  return {
+    fx: () => masterFx(),
+    editFx: (fn, o) => masterEdit(fn, o),
+    v2Fx: true, racks: () => 1, irs: smpHost, bpm: () => project.bpm,
+    gr: () => mfxRec.gr, tap: () => mfxRec.ftap || null,
+    setTap: inst => postTo({ id: MASTER }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
+    storage: hostStore, notify: txt => notice(txt, 3500),
+  };
+}
+function renderMasterFx() {
+  const box = mfxEl, rec = mfxRec, fx = masterFx();
+  if (!box) return;
+  if (rec.ui && rec.fx === fx) { rec.ui.refresh(); return; }
+  mfxDrop();
+  box.innerHTML = '';
+  box.append(h('p', 'boot', 'Loading the FX rack…'));
+  const gen = rec.gen;
+  cvBuild(uiMods()).then(M => {
+    if (gen !== rec.gen) return;
+    box.innerHTML = '';
+    try {
+      rec.fx = fx;
+      rec.ui = new M.fxui.FXRackUI(box, mfxHost(), { embedded: false, dsp: globalThis.FXDSP || null, racks: 1, v2Fx: true, cost: fxCost }); // (the "+" menu's estimates)
+      rec.mon = monitors.sub(MASTER, 'mfx', { live: () => !!rec.ui && cvMaster && cvLive('mfx'), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
+    } catch (err) {
+      console.error(err);
+      rec.ui = null;
+      box.innerHTML = '';
+      box.append(h('p', 'boot', 'The FX rack could not be shown (' + err.message + ').'));
+    }
+    monitors.sync();
+  }, err => { if (gen === rec.gen) { box.innerHTML = ''; box.append(h('p', 'boot', 'The FX rack could not be loaded (' + err.message + ').')); } });
+}
+function mfxDrop() {
+  const rec = mfxRec, u = rec.ui;
+  rec.gen++; rec.ui = null; rec.fx = null; rec.gr = null; rec.ftap = null;
+  if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
+  if (rec.mon) { const off = rec.mon; rec.mon = null; off(); }
+  monitors.sync();
+}
+// after a master edit: the modules' titles (its effects counted); the rack UI follows a project change (another master)
+function masterRelabel() {
+  if (!cvMaster || !cvView) return;
+  cvView.refresh(masterRec());
+  if (mfxRec.ui && mfxRec.fx !== masterFx()) renderMasterFx();
+}
+// the master canvas's ⋯ menus: Fold, Bring to front and Tidy on the rack, Fold on the OUT — neither can be removed or replaced
+function mMenu(key) {
+  const V = cvView, m = V && V.modules.get(key);
+  if (!m || !cvMaster) return [];
+  const fold = { label: m.fold ? 'Unfold' : 'Fold', action: () => V.toggleFold(key) };
+  if (key === 'out') return [fold];
+  return [fold, { label: 'Bring to front', action: () => V.front(key) }, { sep: true }, { label: 'Tidy the canvas', action: () => cvTidy() }];
+}
+// project.master.lay writes (the master view's host.lay): cvLay's rules — a move / fold one History step at its 'end', only when the
+// layout really changes; a front / pin write no step
+function mLay(key, entry, phase, what) {
+  if (phase === 'start') {
+    const m = cvView && cvView.modules.get(key);
+    cvLayPend = { key, what, label: (what === 'fold' ? 'Fold ' : 'Move ') + (m ? m.title : key), was: JSON.stringify(mLayOf() || null) };
+    return;
+  }
+  if (phase === 'cancel') { if (cvLayPend && cvLayPend.key === key) cvLayPend = null; return; }
+  if (phase !== 'end' || !entry) return;
+  const p = cvLayPend && cvLayPend.key === key && cvLayPend.what === what ? cvLayPend : null;
+  if (p) {
+    cvLayPend = null;
+    if (JSON.stringify(Object.assign({}, mLayOf() || {}, { [key]: entry })) === p.was) return; // (nothing moved: no step, no write)
+    hist.record(project, p.label); updateUndoUI();
+  }
+  if (!project.master || typeof project.master !== 'object') project.master = {};
+  if (!mLayOf()) project.master.lay = {};
+  project.master.lay[key] = entry;
+  persist(); updateUndoUI();
+}
+function mTidy() {
+  if (!cvView) return;
+  const R = masterRec(), td = cvModule.tidy(R, cvView.sizes(), cvView.devices()), old = mLayOf() || {}, lay = {};
+  for (const k in td) { const e = { x: td[k].x, y: td[k].y }; if (old[k] && old[k].fold) e.fold = 1; lay[k] = e; }
+  if (mLayOf() && JSON.stringify(lay) === JSON.stringify(mLayOf())) { cvView.sync(R); return; }
+  hist.record(project, 'Tidy'); updateUndoUI();
+  if (!project.master || typeof project.master !== 'object') project.master = {};
+  project.master.lay = lay;
+  persist();
+  cvView.sync(R);
+}
+// the master canvas's default camera: the rack and the OUT framed together from their top-left (never below READ_K)
+function mCamRestore() {
+  const W = cvW();
+  if (!W || !cvView || typeof W.setCamera !== 'function') return;
+  const key = CM.camKey(project.uid, MASTER), c = cvModule.camGet(store.get(cvModule.CAM_PREF, null), key);
+  if (c) { cvCamDef = null; cvCamLast = { key, cam: c }; W.setCamera(c, { animate: false }); return; }
+  const a = cvView.modules.get('mfx'), z = cvView.modules.get('out');
+  if (!a || !z) return;
+  const b = W.band();
+  if ($('#tab-inst').hidden || !(b.right > b.left && b.bottom > b.top)) { cvCamDef = key; return; }
+  cvCamDef = null;
+  const o = W.toClient(0, 0), cam = W.cam, P = 24, r = a.rect(), q = z.rect(), bw = b.right - b.left - 2 * P, bh = b.bottom - b.top - 2 * P;
+  const x0 = Math.min(r.x, q.x), y0 = Math.min(r.y, q.y), x1 = Math.max(r.x + r.w, q.x + q.w), y1 = Math.max(r.y + r.h, q.y + q.h);
+  const k = Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, x1 - x0), bh / Math.max(1, y1 - y0)));
+  const ox = o.x - cam.tx, oy = o.y - cam.ty, d = { k, tx: Math.round(b.left - ox + P - x0 * k), ty: Math.round(b.top - oy + P - y0 * k) };
+  cvCamLast = { key, cam: d };
+  W.setCamera(d, { animate: false });
+}
+// the effect hook's master form (the "+" menu's path through the rack UI is its editFx)
+function mAddEffect(type) {
+  let nid = null;
+  masterEdit(fx => { nid = fxAddInst(fx, type); }, { seed: true });
+  if (!nid) { notice('No room for another module here', 3500); return null; }
+  if (mfxRec.ui) mfxRec.ui.refresh();
+  notice(`Added ${fxName(type)} to the master`, 3500);
+  return nid;
+}
+// the Master row (§5.1): built once into the footer; its meters subscribed while the rows show (topShow)
+function initMasterRow() {
+  const el = $('#mfoot');
+  if (!el || mrow) return;
+  mrow = MUI.createMasterRow(el, { doc: document, open: () => masterOpen(), onBypass: on => abSet(on), onMono: on => monoSet(on) });
+  mrow.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim); mrow.setMono(mstate.mono); mrow.setActive(cvMaster);
+  monitors.sub(MASTER, 'meters', { live: () => !!mrow && mrow.state().live, deliver: d => { if (mrow) mrow.update(d); } });
+}
 // the camera: saved 500 ms after a move ends (one LRU record), restored on a track switch / load, else the default: the
 // primary instrument's top-left 24 px inside the visible band, at k = 1 when its whole width fits there (its FX module
 // beside it too when both fit at an editable zoom), else at the k that fits its width — its bar's chip, ⋯ and ▾ clear the
@@ -5721,6 +6270,7 @@ function cvCamResized(e) {
   cvCamRestore(trk());
 }
 function cvCamRestore(t) {
+  if (cvMaster) { mCamRestore(); return; } // ((M) the master canvas's camera: synth.cam.<uid>.master
   const W = cvW();
   if (!W || !cvView || typeof W.setCamera !== 'function') return;
   const key = CM.camKey(project.uid, t.id), c = cvModule.camGet(store.get(cvModule.CAM_PREF, null), key);
@@ -5806,6 +6356,7 @@ function cvRelabel() { // titles, chips, badges and the Serum's route label afte
 // Sources tray's replace mode: replaces the instrument (v: its device view; default the current one = the primary) in
 // place (SPEC §2.7), one History step, an undo notice
 function cvDropInstrument(modelId, at, o = null, v0 = null) {
+  if (cvMaster) { notice(MASTER_SRC, 4000); return true; } // ((M, §5.2) the master canvas holds no instrument: refused (handled — nothing replaced)
   const t = trk(), iv = v0 || curView(t), dev = dvOf(iv), m = MODELS.find(x => x.id === modelId);
   if (!m || m.id === iv.model) return false;
   const old = modelById(iv.model), id = t.id;
@@ -5851,6 +6402,7 @@ function cvModuleSize(modelId) {
   return cvSeen.get(modelId) || cvModule.sizeFor(modelId);
 }
 function cvTidy() {
+  if (cvMaster) { mTidy(); return; } // ((M, §5.2) the master's lay, the same History step
   const t = trk();
   if (!cvView) return;
   const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => PATCH.rack(t, k)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5)
@@ -6650,6 +7202,7 @@ function sxOwnConnect(t, own, pid) {
 // (complete) in parts view and adds the part, one step
 function sxPartPick(kind) { sxPartDrop(kind, null); }
 function sxPartDrop(kind, at) {
+  if (cvMaster) { notice(MASTER_SRC, 4000); return null; } // ((M) refused on the master canvas
   const t = trk(), dev = curOf(t);
   if (isSerumDev(t, dev)) return sxAddPart(dev, kind, at);
   const msg = 'Serum parts belong to a Serum · Replace with Serum', tid = t.id;
@@ -6756,7 +7309,7 @@ const cvCords = () => { const W = cvW(); try { return W && typeof W.cords === 'f
 function ptShow() {
   PATCH.sync();
   const C = cvCords(), t = trk();
-  if (C && typeof C.alloc === 'function') { try { C.alloc(isPatchDev(t, curOf(t))); } catch (err) { console.error(err); } }
+  if (C && typeof C.alloc === 'function') { try { C.alloc(!cvMaster && isPatchDev(t, curOf(t))); } catch (err) { console.error(err); } }
   ptDim();
 }
 // (§4.3) the cords of the shown 900 Series are drawn at 0.45 alpha while it is off: its track muted or soloed out, or its own ⏻ (cv-cords dim).
@@ -6784,7 +7337,7 @@ function ptCtlJacks(t, dev) {
 let ptUp = false; // (the world is built: PATCH.attach — cvW is read only from then on)
 const PATCH = cvPatch.patchHost({
   doc: document, world: () => (ptUp ? cvW() : null), kit: classicHost.kit,
-  cur: () => { const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; },
+  cur: () => { if (cvMaster) return null; const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; }, // ((M) the master canvas shows no patch
   rec: (t, dev) => { const x = ptT(t); return x ? patchOf(x, dev) : null; },
   vals: (t, dev) => { const x = ptT(t); return x && isPatchDev(x, dev) ? x.dev[dev].vals : null; },
   edit: (t, dev, label, r) => ptEdit(ptT(t), dev, label, r),
@@ -6898,7 +7451,7 @@ function ptLampMon(t, dev, key, on) {
 // (Q5: "Replaced … · tap to undo"). The Model 15 tile (the m900 model tile, srcPick / srcDrag) on a 900 Series: Classic bass
 // loaded as a preset — the missing Model 15 modules added, one step, its knobs back on undo (ptBack) — never a same-model Replace
 const ptModel = () => MODELS.find(m => PT.isPatchModel(m.id)) || null;
-function ptShown() { const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; }
+function ptShown() { if (cvMaster) return null; const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; } // ((M) none shown on the master canvas
 // (9b, IMPL-9b §1.2) id: a FAMILY.sets key — 'm15' the Model 15 tile (Classic bass over the patch, its free slots: stage 9's
 // step), 's35' / 's55' a set tile (its starter over the full set, the rack laid out: cv-patch setLoad's tidy, one step)
 function ptSet(id = 'm15') { // (a set tile on its own instrument) → true when it was one
@@ -7333,6 +7886,7 @@ function padsAdd(at) {
   return id;
 }
 function modAdd(kind, at) {
+  if (cvMaster) { notice(MASTER_SRC, 4000); return null; } // ((M, §5.2) no modulation on the master canvas
   if (kind === 'pads') return padsAdd(at);
   const t = trk(), multi = CMOD.MOD_MULTI.includes(kind), key0 = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
   if (!name || !t.dev || (!multi && !key0)) return null;
@@ -7924,7 +8478,7 @@ const CV_SLICE_MS = 12, CV_MOUNT_MAX = 500; // (past it the frames show with the
 let cvMount = null, cvBuilds = 0; // the switch mounting { key, jobs, t0, raf }; UI builds in flight (uiMods)
 function cvBuild(p) { cvBuilds++; return p.finally(() => { cvBuilds = Math.max(0, cvBuilds - 1); }); }
 function cvSwitching() {
-  if (!cvOn() || !cvView || !cvViewKey || $('#tab-inst').hidden || typeof requestAnimationFrame !== 'function') return false;
+  if (cvMaster || !cvOn() || !cvView || !cvViewKey || $('#tab-inst').hidden || typeof requestAnimationFrame !== 'function') return false;
   return cvViewKey !== project.uid + '/' + trk().id;
 }
 function cvSwitch() {
@@ -7984,7 +8538,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     // (stage 1e; 1f: add / power / zone are hooks only — no UI reaches them — for the host and engine-protocol tests)
     add: cvAddInstrument, power: cvPower, zone: cvZone,
     badge: cvBadge, cur: () => curOf(trk()), setCur: key => setCur(trk(), key), view1e: k => instView(trk(), k),
-    fx: { items: FX_ITEMS, cost: fxCost, addEffect: (key, type) => cvAddEffect(trk(), key, type) }, // ((2026-10-22) no Effects tray: no tiles, pick, drag)
+    fx: { items: FX_ITEMS, cost: fxCost, addEffect: (key, type) => (cvMaster ? mAddEffect(type) : cvAddEffect(trk(), key, type)) }, // ((2026-10-22) no Effects tray: no tiles, pick, drag; (M) the master canvas: its rack)
     classicPanels, serumPanels, fxPanels, bodyEl: key => cvBodyEl(trk(), key), measure: cvMeasure, costLabels, devFactor, setTrackModel, renderPanels,
     touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
     wheelToWt, chordCheck, mount: () => (cvMount ? { jobs: cvMount.jobs.map(j => j.key) } : null), // (a switch's mounting: the bodies still to build)
@@ -8002,6 +8556,13 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
       bodies: modBodies, sel: modCableSel, act: modCableAct, cmenu: modCableMenu, list: modList, label: modLabel, descs: modDescs, decor: cvModDecor, cableDrag: () => modDrag },
+  };
+  // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers
+  globalThis.__synthTest.master = {
+    rec: () => mnode, graph: () => ({ an, mono, level: master, split: mSplit, anL, anR }), on: () => cvMaster, open: masterOpen,
+    off: () => { if (cvMaster) { masterOff(); renderViews(); tabTrackUI(); ptShow(); } }, fx: masterFx, edit: masterEdit, host: mfxHost, ui: mfxRec,
+    state: () => Object.assign({}, mstate), ab: abSet, mono: monoSet, row: () => mrow, out: () => mout, chain: masterChain, n: masterN,
+    latBound, addEffect: mAddEffect, menu: mMenu, view: masterRec, read: mRead, normMode, playRate,
   };
   // (milestone 3, lane D: tests/canvas-3-sim, ui-bench ?m3=1&real=1) the parts hook on cv.parts — cvParts' own fields (home,
   // root, scope, about) stay as they are

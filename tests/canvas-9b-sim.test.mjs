@@ -21,7 +21,7 @@ import * as COSTM from '../cv-cost.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 // the cord layer's stand-in (IMPL-9 §7.4's interface): every call recorded, the last set / anchors kept
 const CORDS = { calls: [], list: null, anchors: null, on: null };
@@ -430,12 +430,12 @@ test('§3.4 / §3.6: ▶ steps the sequence, ■ holds it; muted (P-1) the patch
   assert.equal(stageOf(cv.patch.lampBits(T(), d, m960)), 1, '⏻ on (undo): lit again');
 });
 
-test('§1.1 / §6: Save / reload identical (schema 13: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
+test('§1.1 / §6: Save / reload identical (schema 14 since stage M: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
   api.selectTrack(ID.t1); await settle();
   const t = T(), d = dev(t), m993 = midOf('993');
   cv.patch.knobSet(t, d, m993, 'e1', 1); await settle();
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.equal(p2.schema, 13);
+  assert.equal(p2.schema, 14);
   for (const x of P().tracks) {
     const u = p2.tracks.find(y => y.id === x.id), k = CMOD.primId(x);
     if (!cv.isPatchDev(x, k)) continue;

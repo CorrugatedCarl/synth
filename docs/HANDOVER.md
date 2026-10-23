@@ -119,6 +119,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    "+"), Sources / keyboard / track list fold to pull tabs. Next: **the Master canvas** (ROADMAP 13, contract `docs/canvas/IMPL-M.md`,
    skeptic-reviewed, the user's answers in its header) — G0 (the base's bounce hashes) by the lead from the "P" commit, then lanes D / U
    (phase 1) and A (phase 2).
+12. **(2026-10-23.)** **Stage M (the Master canvas, ROADMAP 13) deployed** as one squashed commit "M" on `canvas` (holding branch
+   `wt-M`; contract IMPL-M; `tests/ref-M` frozen: G0's base bounce hashes + MASTER's output and meter readings). An always-on
+   `synth-master` processor (registered before `synth-engine`) between the tracks' pans and the Volume; schema 14 (`project.master`);
+   canonical-stream split by processor name (the `synth-engine` part = main's fixture). Next on the roadmap (the user's order): 9c (1960s
+   Moog extras), the ARP 2600 / MS-20 patch panels on the 900 Series engine, the Colossus (11), our own synth (10), the standalone offline
+   app (12); one consolidated real-device iPad pass after the features; the commercial release (15) after that.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

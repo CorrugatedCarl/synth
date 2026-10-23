@@ -162,7 +162,7 @@ test('AudioWorklet offline where the browser does not route worklet requests thr
   globalThis.fetch = async url => { got.push(String(url)); return new Response(readFileSync(new URL('../' + String(url).split('?')[0], import.meta.url), 'utf8')); };
   try {
     const c = await s.power();
-    assert.equal(c.modules.length, 17, '16 DSP scripts + engine.js (stage 9: patch-dsp.js, moog-dsp.js)');
+    assert.equal(c.modules.length, 18, '17 DSP scripts + engine.js (stage 9: patch-dsp.js, moog-dsp.js; stage M: master-dsp.js)');
     assert.ok(c.modules.every(u => u.startsWith('blob:')), 'from blob: URLs');
     const dsp = /const DSP_FILES = \[([^\]]*)\]/.exec(readFileSync(new URL('../main.js', import.meta.url), 'utf8'))[1].match(/'([^']+)'/g).map(x => x.slice(1, -1));
     assert.deepEqual(got.slice().sort(), dsp.concat('engine.js').map(f => f + '?v=' + N).sort(), 'the versioned URLs (the worker\'s cache keys)');

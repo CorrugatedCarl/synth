@@ -1425,3 +1425,86 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .inst.hw .cv-plamp { position: absolute; border-radius: 50%; pointer-events: none; }
 .inst.hw .cv-plamp[data-on] { background: #f0642c; box-shadow: inset 0 0 2px rgba(255, 226, 196, 0.9), 0 0 6px 1px rgba(240, 100, 44, 0.75); }
 @media (prefers-reduced-motion: reduce) { .inst.hw .cv-plamp[data-on] { box-shadow: inset 0 0 2px rgba(255, 226, 196, 0.9); } }
+
+/* ---------------------------------------------------------- the master OUT and the Master row (stage M, IMPL-M §5.1 / §5.3; lane U: master-ui.js).
+   The OUT's body is a fixed 420 × 236 box: master-ui.js places every child inline (left / top / size), the meters canvas lies under
+   the DOM; looks only here. Lane A appends the footer's placement of .cv-mastrow after this block. */
+.cv-mout { position: relative; box-sizing: border-box; overflow: hidden; background: #0b0d0f; color: var(--text); font-family: var(--ui); }
+.cv-out.cv-mout { padding: 0; }
+.cv-mout > * { position: absolute; margin: 0; }
+.cv-mout > canvas.mo-mt { left: 0; top: 0; pointer-events: none; }
+.cv-mout > .mo-scope { min-height: 0; border-radius: 8px; }
+.cv-mout .mo-scope canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; min-height: 0; }
+.cv-mout > .mo-modes { display: flex; gap: 4px; }
+.mo-mode { flex: 1 1 0; min-width: 0; padding: 0 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg2); color: var(--mute); font: 600 11px/1 var(--ui); -webkit-tap-highlight-color: transparent; }
+.mo-mode.on { color: #7cffb5; border-color: #2d5a42; }
+.mo-lab { font: 700 9px/16px var(--ui); letter-spacing: 0.12em; color: var(--mute); white-space: nowrap; }
+/* a readout: the letter and unit on a line, the value below; the I and MAX ones are buttons (a tap resets) */
+.mo-n { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "l u" "v v"; align-items: baseline; padding: 3px 6px 2px; border: 1px solid #1b1d22; border-radius: 7px; background: #0e1013; color: var(--text); text-align: left; font-family: var(--ui); -webkit-tap-highlight-color: transparent; }
+.mo-nl { grid-area: l; font: 700 9px/1.3 var(--ui); letter-spacing: 0.12em; color: var(--mute); }
+.mo-nu { grid-area: u; font: 600 8px/1.3 var(--ui); letter-spacing: 0.08em; color: var(--mute); }
+.mo-nv { grid-area: v; font: 600 16px/1.15 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+button.mo-n { cursor: pointer; }
+button.mo-n:hover { border-color: #3a3c42; }
+.mo-hold { display: flex; align-items: baseline; gap: 6px; padding: 2px 8px; }
+.mo-hold .mo-nv { font-size: 13px; }
+.mo-hold.mo-over { border-color: #8a2a1a; background: #2a100c; }
+.mo-hold.mo-over .mo-nv { color: #ff4a2a; }
+.mo-n.mo-corr { display: block; padding: 0; border: 0; background: none; text-align: right; }
+.mo-corr .mo-nv { font-size: 11.5px; line-height: 16px; }
+.mo-corr.mo-bad .mo-nv { color: #ff4a2a; }
+.mo-btn { padding: 0 8px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); color: var(--text); font: 600 12px var(--ui); -webkit-tap-highlight-color: transparent; }
+.mo-btn:hover { border-color: #4a4d55; }
+.mo-ab[aria-pressed="true"] { background: #3a3326; color: #f2c23a; border-color: #6b5a26; }
+.mo-ab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mo-mono[aria-pressed="true"] { background: #1c3324; color: #7cffb5; border-color: #2d5a42; }
+.mo-target { display: flex; align-items: center; justify-content: space-between; color: var(--mute); font-size: 11px; }
+.mo-target::after { content: '\25BE'; opacity: 0.7; }
+.mo-target[aria-expanded="true"] { border-color: var(--hot); color: var(--hot); }
+.mo-btn:focus-visible, .mo-mode:focus-visible, button.mo-n:focus-visible, .mo-mi:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+.cv-mout > .mo-menu { z-index: 5; display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; border: 1px solid var(--line2); background: var(--pop); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); }
+.cv-mout > .mo-menu[hidden] { display: none; }
+.mo-mi { display: flex; align-items: center; height: 26px; padding: 0 10px 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: 500 12.5px var(--ui); text-align: left; -webkit-tap-highlight-color: transparent; }
+.mo-mi::before { content: ''; flex: none; width: 16px; color: var(--hot); text-align: center; }
+.mo-mi[aria-checked="true"] { color: var(--hot); }
+.mo-mi[aria-checked="true"]::before { content: '\2713'; }
+.mo-mi:hover, .mo-mi:focus-visible { background: #24262c; outline: none; }
+/* the Master row (the track list's footer): the track rows' stripe in the master's amber, name, peak meter, LUFS, A/B, Mono, chevron */
+.cv-mastrow { position: relative; box-sizing: border-box; display: flex; align-items: center; gap: 8px; min-width: 0; height: 44px; padding: 0 6px 0 14px; border-top: 1px solid var(--line); background: #101114; color: var(--text); }
+.cv-mastrow::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--hot); opacity: 0.85; }
+.cv-mastrow.on { background: color-mix(in srgb, var(--hot) 12%, #101114); }
+.cv-mastrow.on::before { width: 6px; opacity: 1; }
+.mr-name { flex: 0 0 auto; height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: 600 13px var(--ui); text-align: left; -webkit-tap-highlight-color: transparent; }
+.mr-name:hover { background: #1b1c21; }
+.mr-meter { flex: 1 1 56px; min-width: 36px; max-width: 120px; display: flex; flex-direction: column; gap: 3px; }
+.mr-bar { height: 6px; border-radius: 3px; overflow: hidden; background: linear-gradient(90deg, #3fae5a, #9bd16a 70%, #f5d22e 90%, #ff4a2a); }
+.mr-bar i { display: block; width: 100%; height: 100%; background: #07090a; will-change: transform; }
+.mr-bar.over { box-shadow: 0 0 6px #ff4a2a; }
+.mr-lufs { flex: 0 0 auto; display: flex; align-items: baseline; gap: 3px; min-width: 7ch; font-variant-numeric: tabular-nums; }
+.mr-lv { font: 600 13px var(--mono); }
+.mr-lu { font: 600 8.5px var(--ui); letter-spacing: 0.08em; color: var(--mute); }
+.mr-btn { flex: 0 0 auto; height: 28px; min-width: 38px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg2); color: var(--mute); font: 700 11px var(--ui); -webkit-tap-highlight-color: transparent; }
+.mr-btn:hover { border-color: #3a3c42; color: var(--text); }
+.mr-ab[aria-pressed="true"] { background: #3a3326; color: #f2c23a; border-color: #6b5a26; }
+.mr-ab { white-space: nowrap; } /* "A/B +2.1*": the match rides on the button */
+.mr-mono[aria-pressed="true"] { background: #1c3324; color: #7cffb5; border-color: #2d5a42; }
+.mr-open { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--mute); -webkit-tap-highlight-color: transparent; }
+.mr-open svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mr-open:hover, .cv-mastrow.on .mr-open { color: var(--hot); }
+.mr-name:focus-visible, .mr-btn:focus-visible, .mr-open:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+@media (pointer: coarse) { .mr-btn { height: 36px; min-width: 44px; } .mr-name { height: 36px; } .mr-open { width: 44px; height: 44px; } }
+@media (max-width: 640px) { .cv-mastrow .mr-lufs { display: none; } } /* the LUFS number folds first */
+/* ---------------------------------------------------------- the Master row's place and the master canvas's shell (stage M, IMPL-M §5.1 / §5.2;
+   lane A — after lane U's block, none of its rules touched). The footer #mfoot sits under #arrwrap inside #studio (a column now): outside
+   the rows' scroller, so it never scrolls away and the heads / lanes rows stay aligned; its row under the heads column (the lanes' part of
+   the footer left empty); at ≤ 900 px (250 px heads: the row's controls would not fit) the row spans the footer. No footer at the
+   collapsed stop (.cv-top.collapsed .studio hides it with the rows). The Sources tray on the master canvas: its line, no tiles. */
+.cv-top .studio { flex-direction: column; }
+.cv-top .studio > .arrwrap { min-height: 0; } /* (a column: the rows shrink and scroll above the footer) */
+.cv-mfoot { flex: none; display: flex; min-width: 0; height: 44px; background: #0f1013; box-shadow: inset 0 1px 0 var(--line); }
+.cv-mfoot > .cv-mastrow { flex: 0 0 auto; width: 372px; border-right: 1px solid var(--line); }
+@media (max-width: 900px) { .cv-mfoot > .cv-mastrow { flex: 1 1 auto; width: auto; border-right: 0; } }
+#srcTray.cv-mside #srcLayout, #srcTray.cv-mside #srcScroll, #srcTray.cv-mside #srcNote { display: none; }
+.cv-tpi.cv-tpm { padding-left: 6px; }
+.dlgbody .bnorm { display: inline-flex; gap: 6px; }
+.dlgbody .bnorm select[hidden] { display: none; }

@@ -27,7 +27,7 @@
   const G = typeof self !== 'undefined' ? self : globalThis;
   // §0.3 scripts 1–11 in table order (= main.js DSP_FILES; engine.js is loaded last)
   const DSP = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js'];
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js', 'master-dsp.js'];
   const SR = 48000, Q = 128, MAX_FRAMES = 60 * SR, THR = Math.pow(10, -80 / 20), HOLD = 2048;
 
   // wt.js fnv1a32 / mulberry32 (identical code; compared by tests/smpgen.test.mjs)

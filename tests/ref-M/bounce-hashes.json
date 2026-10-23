@@ -1,0 +1,62 @@
+{
+  "project-p1": {
+    "wav": "08c446edb8d69a2f7cfc20fb5e8fe6ec9754a53034c6806cb0e1443a575a5d85",
+    "L": "c6fd3451e3500d3302ccd255c187fe01e7570ee8a81e88a6c0b6b83517848597",
+    "R": "718635d9e067ff4c853325cd0f2685ef3cfbc3eff7e5ab8d98bf720055c33fa4",
+    "frames": 92904,
+    "wavBytes": 557468,
+    "peak": 1.491389,
+    "settings": {
+      "loop": [
+        0,
+        3840
+      ],
+      "range": "loop",
+      "sr": 48000,
+      "bits": 24,
+      "os": 2,
+      "tail": 0,
+      "norm": false
+    }
+  },
+  "drums-808": {
+    "wav": "bd80449192d50873c606032055e8dc4db82b0c5d85fb07313bdae6c28f9c3d04",
+    "L": "1e4ad588cab43642cded6ca62d93a274ba40589aa7753fd2317311e29491a3eb",
+    "R": "987b880f57970d6a82efac297f2907f16683a6707e2e2a448d68da2759653b99",
+    "frames": 176400,
+    "wavBytes": 705644,
+    "peak": 0.985854,
+    "settings": {
+      "loop": [
+        0,
+        3840
+      ],
+      "range": "loop",
+      "sr": 44100,
+      "bits": 16,
+      "os": 4,
+      "tail": 2,
+      "norm": true
+    }
+  },
+  "m900-model15": {
+    "wav": "9cda6629b4fa981b962f236e1ed6700a210e32d06d295759acdbcdfe343411ad",
+    "L": "0b93ec3a86495cdd40c2ef00bddec0066f9942b3972cfb73e3dade8e988d07ab",
+    "R": "2daac9e0e5c523bb09bf17373be65b55f9b772ee6ee866d7ab70cf2c8de27c0f",
+    "frames": 192000,
+    "wavBytes": 1536058,
+    "peak": 0.326301,
+    "settings": {
+      "loop": [
+        0,
+        7680
+      ],
+      "range": "loop",
+      "sr": 48000,
+      "bits": 32,
+      "os": 2,
+      "tail": 0,
+      "norm": false
+    }
+  }
+}

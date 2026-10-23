@@ -1,0 +1,9 @@
+{
+ "note": "Frozen master sound (IMPL-M §7): sha256 of MASTER's float32 L / R for tests/master-proc.test.mjs's program through the 6-unit rack (G2), the Convolve rack (G2 c) and the offline window case, at the stage M acceptance commit. Never edit: the test compares them exactly.",
+ "commit": "432bd00e02a2b13ce95fa009573011233d9b3c76",
+ "out": {
+  "rack6": "55e1c79dfc3b9d17be796de715fdba2343e6e56c701f6cac5f881c9c5ecb8aa8",
+  "conv": "0deabbd347b539265f6de9ad4cbfe1d10948f8a12f5b5b8207e9f7af49b2cf98",
+  "offline": "7bd7050ebef8ae28e657b6df879f0a49cf523a7847333cc2f2e751831b3193a3"
+ }
+}

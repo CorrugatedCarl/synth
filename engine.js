@@ -4870,4 +4870,327 @@ class Track extends Facade {
   }
 }
 
+// The master (IMPL-M §1; lane D): the mix's processor 'synth-master' — one stereo input (the tracks' sum; none connected:
+// [] → silence, never a throw), one stereo output (live: MASTER → the mono stage → the Volume → destination, `an` on its
+// output; the bounce: bus → MASTER → destination). Effects and analysis only: one FX rack (Chain 'mfx': MAIN, no buses,
+// no ModCore, no notes — RETRIG and key tracking idle) and the meters (MASTERDSP.Meters, read here: without master-dsp.js
+// it passes audio and posts no meters). M1: a calm rack (empty, every instance off) COPIES its input (float32 → float32,
+// no arithmetic; the A/B too). A start (seek, or from a stop) is applied at its frame by the Track's rule (the first
+// 4-frame point ≥ frame − 0.5: two rack calls around it, rack.transport() between; from a stop the meters restart there);
+// nothing else splits a quantum. The A/B (§3): its own 5 ms crossfade between the rack's output and the input delayed by
+// the rack's pathLat() (time-aligned), the rack running throughout; the bypassed signal × the gain frozen at the tap
+// (Q3: the meters' short-term out − in, ±24 dB; review R1-4: while either is ≤ −70 LUFS the match is pending — 0 dB,
+// re-measured until both have been valid for 3 s, then frozen and glided in over 5 ms). Messages in: chain {fxr, fxrT} ·
+// transport · panic · mon {ids ⊆ ['meters', 'mfx']} · fxtap {id} · fxph · bypass {on, g: true (match) | dB | absent
+// (0 dB)} · mreset · the store messages wt / wtf / wtdel / smp / smpdel (as a Track: the scope's stores, every rack
+// told) · bye. Out: ready (live, after its warm-up) · stats {load, lat, per: [{id: 'mfx', load}]} every 0.25 s · fxover
+// {ids} · mmon (every ≥ 33 ms of audio while 'meters' is subscribed: Meters.summary() + lat) · smon {c: 'mfx', gr, fxph,
+// ftap} ('mfx') · fxph {v, c: 'mfx'} · ab {on, g: dB, null while the match is pending; lim: the boost was capped to keep
+// B ≤ −1 dBFS (review 2 F1)} (each bypass message, and a pending match's freeze) · offline: mlat {lat} (constructor) and
+// mfinal {i, tpMax, pk, lra} (once output frame lat + frames is reached: the meters over [lat, lat + frames) only).
+// Offline processorOptions: { offline, fxr, fxrT, transport, frames } (live: none; bypass is never an export option,
+// Q2); an offline rack first hears its pre-roll of exact zeros (preroll(): a live rack's silent history, review R1-2).
+// The integrated value and LRA accumulate while the transport plays (review 2 F4; with none since the last restart too).
+const M_DLAT = 15;                                                           // fx-dsp's DIST_LAT (a Distortion's delay)
+class Master extends AudioWorkletProcessor {
+  constructor(opt) {
+    super();
+    const po = (opt && opt.processorOptions) || {};
+    this.offline = !!po.offline;
+    this.base = sampleRate;
+    const c = new Chain(this.base);
+    c.id = 'mfx';
+    this.c = c;
+    // the meters (none without master-dsp.js); Mi: the A/B match's input meter (short-term only, live); Po / Pi: a pending
+    // match's pair (R1-4: the rack's output and the input, from the tap on, fed only while pending)
+    const MD = globalThis.MASTERDSP;
+    this.M = null; this.Mi = null; this.Po = null; this.Pi = null;
+    if (MD) {
+      try {
+        this.M = new MD.Meters(this.base);
+        if (!this.offline) { this.Mi = new MD.Meters(this.base, { lite: true }); this.Po = new MD.Meters(this.base, { lite: true }); this.Pi = new MD.Meters(this.base, { lite: true }); }
+      } catch (err) { this.M = null; this.Mi = null; this.Po = null; this.Pi = null; }
+    }
+    this.sm = { t: 'mmon', m: 0, s: 0, i: 0, lra: 0, tp: [0, 0], tpMax: 0, pk: [0, 0], pkMax: 0, corr: 0, lat: 0 };
+    this.z = new Float32Array(128);                                          // (the input meter's silence)
+    // transport: playing; the pending start's frame (NaN: none) and seek flag
+    this.play = false; this.pF = NaN; this.pS = 0; this.frames = 0;
+    this.mm = false; this.mx = false; this.monF = 0; this.loadT = 0; this.statN = 0;
+    this.lat = 0; this.ending = 0; this.wf = 0;                               // (wf: the warm-up forces the rack path)
+    // A/B: target, crossfade 0 … 1, the frozen gain (linear, dB), the match pending (R1-4), the gain's glide (from abG0,
+    // 0 … 1: 1 = at abG); dl: the dry line (L at 0, R at dcap), grown at set time
+    this.ab = 0; this.abx = 0; this.abG = 1; this.abDb = 0; this.fst = 1 / (0.005 * this.base);
+    this.abP = 0; this.abV = 0; this.abG0 = 1; this.aby = 1; this.abLim = 0;
+    this.dl = null; this.dcap = 0; this.dw = 0;
+    // offline: the measured window [w0, w1) of output frames, mfinal posted
+    this.w0 = 0; this.w1 = Infinity; this.fin = 0;
+    ALL.add(this);
+    if (!this.offline) { try { this.warm(); } catch (err) { /* a failed warm-up only costs speed */ } }
+    if (po.fxr) this.chainMsg({ fxr: po.fxr, fxrT: po.fxrT });
+    if (this.offline && po.fxr && c.rack !== null) this.preroll();
+    if (po.transport) this.transportMsg(po.transport);
+    if (this.offline) {
+      this.lat = c.rack !== null ? Math.round(c.rack.pathLat()) : 0;
+      const fr = +po.frames;
+      if (fr > 0) { this.w0 = this.lat; this.w1 = this.lat + fr; }
+      this.port.postMessage({ t: 'mlat', lat: this.lat });
+    }
+    this.port.onmessage = (ev) => this.msg(ev.data);
+    if (!this.offline) this.port.postMessage({ t: 'ready' });
+  }
+  // ≈ 0.25 s of synthetic noise through process() — the copy path, the rack path (forced), the A/B crossfade both ways, both
+  // meters — then everything back as constructed (the context is held meanwhile, IMPL-M §1.2; cold code on JavaScriptCore
+  // is the stall WebKit keeps as latency)
+  warm() {
+    const K = Math.ceil(0.25 * this.base / 128), a = new Float32Array(128), b = new Float32Array(128), io = [[a, b]], oo = [[new Float32Array(128), new Float32Array(128)]];
+    let r = 0x2545F491;
+    this.dcap = 64; this.dl = new Float64Array(128);                         // (the dry line's paths too; dropped below)
+    try {
+      for (let k = 0; k < K; k++) {
+        for (let i = 0; i < 128; i++) { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; a[i] = ((r >>> 0) / 4294967296 - 0.5) * 0.5; b[i] = a[i] * (k & 1 ? -0.7 : 0.7); }
+        this.wf = k >= K >> 2 ? 1 : 0;
+        this.ab = k >= K >> 1 && k < (3 * K) >> 2 ? 1 : 0;
+        if (k === K >> 1) { this.abG0 = 0.5; this.aby = 0; }                  // (the match's gain glide too)
+        this.process(k % 7 === 6 ? [[]] : io, oo);
+        this.statN = 0;
+        if (k % 9 === 8 && this.M !== null) this.M.summary(this.sm);
+      }
+    } finally { // (a failed warm-up too: everything as constructed)
+      this.wf = 0; this.ab = 0; this.abx = 0; this.abG = 1; this.abDb = 0; this.abP = 0; this.abV = 0; this.abG0 = 1; this.aby = 1; this.abLim = 0;
+      this.frames = 0; this.loadT = 0; this.statN = 0; this.c.t = 0; this.monF = 0;
+      this.dl = null; this.dcap = 0; this.dw = 0; this.lat = 0;
+      if (this.M !== null) this.M.reset();
+      if (this.Mi !== null) this.Mi.reset();
+    }
+  }
+  // offline (review R1-2, M2): the rack hears rack.settleN() frames of exact zeros (≥ 0.3 s, whole Convolve periods) in
+  // quanta of 128 before frame 0 — the silent history a live MASTER's rack always has before ▶ — so a fresh rack's
+  // start-up transients (a splitter's alignment glide from 0, a compressor's first block, the 5 ms fades) are over at
+  // the song's start, as live. Not output: frame 0, mlat and the meters' window are unchanged; the start's
+  // rack.transport() is then a quiet re-seed, as live after ≥ 0.25 s of zeros
+  preroll() {
+    const c = this.c, r = c.rack, L = c.oL, R = c.oR, N = r.settleN();
+    for (let o = 0; o < N; o += 128) { L.fill(0); R.fill(0); r.process(L, R, 128); }
+  }
+  msg(d) {
+    if (this.ending === 1 || !d) return;
+    switch (d.t) {
+      case 'chain': this.chainMsg(d); break;
+      case 'transport': this.transportMsg(d); break;
+      case 'panic': { const r = this.c.rack; if (r !== null) r.reset(false); if (this.dl !== null) this.dl.fill(0); break; } // (tails cleared at once)
+      case 'mon': this.watch(d.ids); break;
+      case 'fxtap': { const r = this.c.rack; if (r !== null) r.setTap(typeof d.id === 'string' ? d.id : ''); break; }
+      case 'fxph': { const r = this.c.rack; this.port.postMessage({ t: 'fxph', v: r !== null ? r.phases() : null, c: 'mfx' }); break; }
+      case 'bypass': this.bypass(d); break;
+      case 'mreset': this.restart(); break;
+      case 'wt': { const SD = globalThis.SerumDSP; if (SD) SD.storeWT(d.id, d); break; }
+      case 'wtf': { const SD = globalThis.SerumDSP; if (SD) SD.storeWTFrame(d.id, d.frame, d.levels); break; }
+      case 'wtdel': { const SD = globalThis.SerumDSP; if (SD) SD.dropWT(d.id); break; }
+      case 'smp': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string' && SB.storeAsset(d.id, d)) assetsChanged(); break; }
+      case 'smpdel': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string') { SB.dropAsset(d.id); assetsChanged(); } break; }
+      case 'bye': this.ending = 1; ALL.delete(this); break;                  // (the context's end: out of the stores' announcements)
+      default: break;
+    }
+  }
+  // {t: 'chain', fxr, fxrT}: the rack's FXP (compiled with qr null, live and offline: the same rack both ways, M2)
+  chainMsg(d) {
+    const c = this.c, r = c.rack;
+    if (r === null) return;
+    c.fxr = d.fxr || null;
+    r.set(c.fxr, d.fxrT);
+    this.lines();
+    this.over();
+  }
+  // the A/B's dry line: room for the path's upper bound (every Distortion's delay, every compressor at its look-ahead
+  // cap, all in series — set time only, grow only)
+  lines() {
+    const U = this.c.rack.U;
+    let n = 0;
+    for (let i = 0; i < U.length; i++) { const k = U[i].k; if (k === 1 || k === 10) n += M_DLAT; else if (k === 6 || k === 14) n += Math.ceil(0.01 * this.base) + 2; }
+    if (n === 0 || n + 1 <= this.dcap) return;
+    this.dcap = n + 1; this.dl = new Float64Array(2 * this.dcap); this.dw = 0;
+  }
+  over() {
+    const c = this.c, o = c.rack !== null && Array.isArray(c.rack.over) ? c.rack.over : null, k = o && o.length ? o.join(',') : '';
+    if (k === c.overK) return;
+    c.overK = k;
+    if (k) this.port.postMessage({ t: 'fxover', ids: o.slice() });
+  }
+  assets() { const r = this.c.rack; if (r !== null) { try { r.assets(); this.over(); } catch (err) { /* a failed rack keeps its old IR */ } } }
+  // the Track's pend / apply rule (golden-harness: a start's frame; a stop clears it): a start (seek, or from a stop) re-seeds
+  // the rack at its frame; a stop silences the tails when the FXP says so; a re-anchor without seek and a loop wrap re-seed nothing
+  transportMsg(d) {
+    if (!d.play) {
+      this.pF = NaN;
+      if (this.play) {
+        this.play = false;
+        const c = this.c;
+        if (c.rack !== null && c.fxr && c.fxr.silence) c.rack.reset(true);
+        if (this.M !== null) this.M.integrate(false);                         // (review 2 F4: I / LRA hold at ■)
+      }
+      return;
+    }
+    const F = +d.frame;
+    this.pF = F === F ? F : 0; this.pS = d.seek !== false ? 1 : 0;
+  }
+  start() {
+    const cold = !this.play;
+    this.pF = NaN; this.play = true;
+    if (this.pS === 1 || cold) { const r = this.c.rack; if (r !== null) r.transport(); }
+    if (cold) this.restart();
+  }
+  // the integrated value, LRA and the holds (from a stop at the start's frame, the OUT's reset tap); the input meter's
+  // sub-block phase with them (an empty rack's A/B match then reads exactly 0 dB). Review 2 F4: I / LRA accumulate while
+  // the transport plays — and, with no transport since this restart (a keyboard jam: power-on, the reset tap), as before
+  restart() { if (this.M !== null) { this.M.restart(); this.M.integrate(true); } if (this.Mi !== null) this.Mi.restart(); }
+  watch(ids) {
+    const has = id => Array.isArray(ids) && ids.indexOf(id) >= 0;
+    this.mm = has('meters'); this.mx = has('mfx'); this.c.mon = this.mx; this.monF = 0;
+    if (this.mm || this.mx) this.postMon();
+  }
+  postMon() {
+    if (this.mm && this.M !== null) { const s = this.M.summary(this.sm); s.lat = this.lat; this.port.postMessage(s); }
+    if (this.mx) { const r = this.c.rack; this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null }); }
+  }
+  // {t: 'bypass', on, g}: the A/B target; turning on freezes the bypassed signal's gain — g true: the level match (the
+  // output's short-term − the input's, the moment of the tap; R1-4: while either is ≤ −70 LUFS the match is pending at
+  // 0 dB — Po / Pi restart and measure the rack's output and the input from the tap on, and process() freezes their
+  // short-term difference once both have been above −70 LUFS for 3 s, a full short-term window of programme), a number:
+  // that many dB, else 0 dB; ±24 dB; a repeated on keeps it (pending or frozen), off clears a pending match. Answered
+  // {t: 'ab', on, g} (g null while pending)
+  bypass(d) {
+    const on = d.on ? 1 : 0, was = this.abP;
+    if (on === 1 && this.ab === 0) {
+      this.abP = 0; this.abLim = 0;
+      if (d.g === true && this.M !== null && this.Mi !== null) {
+        const so = this.M.short(), si = this.Mi.short();
+        if (so > -70 && si > -70) this.abMatch(so - si, this.Mi.peak3());
+        else { this.abP = 1; this.abV = 0; this.abSet(0); this.Po.reset(); this.Pi.reset(); }
+      } else this.abSet(typeof d.g === 'number' && d.g === d.g ? d.g : 0);   // (g true without meters: 0 dB)
+    } else if (on === 0) this.abP = 0;
+    this.ab = on;
+    this.port.postMessage({ t: 'ab', on: on === 1, g: this.abP === 1 || (on === 0 && was === 1) ? null : this.abDb, lim: this.abLim === 1 });
+  }
+  // the match g = S_out − S_in (dB) with review 2 F1's headroom cap: a boost is limited so that pk (the input's sample peak
+  // over the short-term window, linear) × the gain stays ≤ −1 dBFS (abLim 1 when the cap binds; with an input already
+  // above −1 dBFS that is a cut); a cut is never limited (an empty rack: exactly 0 dB)
+  abMatch(g, pk) {
+    let v = g, lim = 0;
+    if (v > 0 && pk > 0) { const c = -1 - 20 * Math.log10(pk); if (v > c) { v = c; lim = 1; } }
+    this.abLim = lim;
+    this.abSet(v);
+  }
+  // the bypassed signal's gain (dB, ±24): set at once while none of it is heard, else glided from the gain applied now
+  // over 5 ms (dry())
+  abSet(db) {
+    const g = db > 24 ? 24 : db < -24 ? -24 : db, G = g === 0 ? 1 : Math.pow(10, g / 20);
+    const cur = this.aby < 1 ? this.abG0 + this.aby * (this.abG - this.abG0) : this.abG;
+    if (this.abx === 0 || cur === G) { this.abG0 = G; this.aby = 1; } else { this.abG0 = cur; this.aby = 0; }
+    this.abDb = g; this.abG = G;
+  }
+  process(inputs, outputs) {
+    const out = outputs[0], Lo = out[0], Ro = out[1] || out[0];
+    if (!Lo) return true;
+    const n = Lo.length;
+    if (this.ending === 1) { Lo.fill(0); if (Ro !== Lo) Ro.fill(0); return false; }
+    const t0 = Date.now(), inp = inputs && inputs[0], Li = inp && inp.length > 0 ? inp[0] : null, Ri = inp && inp.length > 1 ? inp[1] : Li;
+    const F0 = typeof currentFrame === 'number' ? currentFrame : this.frames;
+    this.frames = F0 + n;
+    let s = n;
+    if (this.pF === this.pF) { const d = this.pF - F0; s = d <= 0.5 ? 0 : Math.ceil((d - 0.5) / 4) * 4; if (s > n) s = n; } // (≥ frame − 0.5)
+    for (let o = 0; o < s; o += 128) this.part(Li, Ri, Lo, Ro, o, s - o < 128 ? s - o : 128, F0);
+    if (s < n) { this.start(); for (let o = s; o < n; o += 128) this.part(Li, Ri, Lo, Ro, o, n - o < 128 ? n - o : 128, F0); }
+    if (this.abP === 1) {                                                     // (R1-4: a pending match)
+      const so = this.Po.short(), si = this.Pi.short();
+      if (!(so > -70 && si > -70)) this.abV = 0;
+      else if ((this.abV += n) >= 3 * this.base) {
+        this.abP = 0; this.abMatch(so - si, this.Pi.peak3());
+        this.port.postMessage({ t: 'ab', on: true, g: this.abDb, lim: this.abLim === 1 });
+      }
+    }
+    if ((this.mm || this.mx) && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
+    if (this.w1 !== Infinity && this.fin === 0 && F0 + n >= this.w1 && this.M !== null) {
+      this.fin = 1;
+      const S = this.M.summary(this.sm);
+      this.port.postMessage({ t: 'mfinal', i: S.i, tpMax: S.tpMax, pk: S.pkMax, lra: S.lra });
+    }
+    this.loadT += Date.now() - t0;
+    this.statN += n;
+    if (this.statN >= this.base * 0.25) this.stats();
+    return true;
+  }
+  // frames [o, o + m) of the quantum (m ≤ 128): a calm rack copies, else the rack in Float64 (+ the A/B); then the meters
+  part(Li, Ri, Lo, Ro, o, m, F0) {
+    const c = this.c, r = c.rack;
+    if (r === null || (r.calm === 1 && r.nConv === 0 && this.wf === 0)) {
+      if (Li === null) for (let j = 0; j < m; j++) { Lo[o + j] = 0; Ro[o + j] = 0; }
+      else for (let j = 0; j < m; j++) { Lo[o + j] = Li[o + j]; Ro[o + j] = Ri[o + j]; }
+      if (this.dl !== null) this.dry(Li, Ri, null, null, o, m);
+      this.abx = this.ab; this.lat = 0;
+      if (this.abP === 1) this.Po.push(Lo, Ro, m, o);                         // (the rack's output: the copy)
+    } else {
+      const L = c.oL, R = c.oR;
+      if (Li === null) for (let j = 0; j < m; j++) { L[j] = 0; R[j] = 0; }
+      else for (let j = 0; j < m; j++) { L[j] = Li[o + j]; R[j] = Ri[o + j]; }
+      const tf = Date.now();
+      r.process(L, R, m);
+      c.t += Date.now() - tf;
+      this.lat = Math.round(r.pathLat());
+      if (this.abP === 1) this.Po.push(L, R, m, 0);                           // (the rack's output, before the A/B)
+      if (this.ab !== 0 || this.abx !== 0) this.dry(Li, Ri, L, R, o, m); else if (this.dl !== null) this.dry(Li, Ri, null, null, o, m);
+      for (let j = 0; j < m; j++) { Lo[o + j] = L[j]; Ro[o + j] = R[j]; }
+    }
+    const M = this.M;
+    if (M !== null) {
+      if (this.offline) {
+        const a = F0 + o > this.w0 ? F0 + o : this.w0, b = F0 + o + m < this.w1 ? F0 + o + m : this.w1;
+        if (b > a) M.push(Lo, Ro, b - a, a - F0);
+      } else M.push(Lo, Ro, m, o);
+    }
+    if (this.Mi !== null) { if (Li === null) this.Mi.push(this.z, this.z, m, 0); else this.Mi.push(Li, Ri, m, o); }
+    if (this.abP === 1) { if (Li === null) this.Pi.push(this.z, this.z, m, 0); else this.Pi.push(Li, Ri, m, o); }
+  }
+  // the A/B's dry signal: the input into the line, read back pathLat frames later (0: the input itself), × the frozen gain
+  // (gliding from abG0 over 5 ms after a change heard, R1-4), crossfaded with the rack's output in L / R (5 ms; equal
+  // samples left as they are). L null: the line is only written
+  dry(Li, Ri, L, R, o, m) {
+    const D = this.dl, cap = this.dcap, d = this.lat < cap ? this.lat : cap - 1;
+    let w = this.dw;
+    if (L === null) {
+      if (D === null) return;
+      for (let j = 0; j < m; j++) { D[w] = Li === null ? 0 : Li[o + j]; D[cap + w] = Li === null ? 0 : Ri[o + j]; w = w + 1 === cap ? 0 : w + 1; }
+      this.dw = w;
+      return;
+    }
+    const G = this.abG, G0 = this.abG0, st = this.ab === 1 ? this.fst : -this.fst, gst = this.fst;
+    let x = this.abx, y = this.aby, g = y < 1 ? G0 + y * (G - G0) : G;
+    for (let j = 0; j < m; j++) {
+      let bl = Li === null ? 0 : Li[o + j], br = Li === null ? 0 : Ri[o + j];
+      if (D !== null) {
+        D[w] = bl; D[cap + w] = br;
+        let ri = w - d;
+        if (ri < 0) ri += cap;
+        bl = D[ri]; br = D[cap + ri];
+        w = w + 1 === cap ? 0 : w + 1;
+      }
+      if (y < 1) { y += gst; if (y >= 1) { y = 1; g = G; } else g = G0 + y * (G - G0); }
+      if (g !== 1) { bl *= g; br *= g; }
+      x += st;
+      x = x > 1 ? 1 : x < 0 ? 0 : x;
+      if (x === 1) { L[j] = bl; R[j] = br; } else if (x !== 0) {
+        const a = L[j], b = R[j];
+        if (a !== bl) L[j] = a + x * (bl - a);
+        if (b !== br) R[j] = b + x * (br - b);
+      }
+    }
+    this.dw = w; this.abx = x; this.aby = y;
+  }
+  stats() {
+    const ms = this.statN / this.base * 1000, c = this.c;
+    this.port.postMessage({ t: 'stats', load: Math.max(0, this.loadT / ms), lat: this.lat, per: [{ id: 'mfx', load: Math.max(0, c.t / ms) }] });
+    this.loadT = 0; this.statN = 0; c.t = 0;
+  }
+}
+
+registerProcessor('synth-master', Master);
 registerProcessor('synth-engine', Track);

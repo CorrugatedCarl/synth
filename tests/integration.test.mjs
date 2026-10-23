@@ -677,7 +677,7 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
 });
 
 /* ------------------------------------------------------------------ SPEC-serum2 M1a step 4: engine, script list, PROCS */
-test('§0.3: main.js, the golden harness and dsp-scope load the same 16 scripts in table order (mod-core.js, IMPL-2b, after the drum machine’s two, IMPL-7a; the patch evaluator and the 900 Series’ circuits last, IMPL-9 §3.7); every file exists', async () => {
+test('§0.3: main.js and dsp-scope load the same 17 scripts in table order (mod-core.js, IMPL-2b, after the drum machine’s two, IMPL-7a; the patch evaluator and the 900 Series’ circuits, IMPL-9 §3.7; the master meters last, IMPL-M §7), the golden harness the first 16 (it never builds the master: engine.js reads MASTERDSP at use); every file exists', async () => {
   const main = SRC('main.js'), m = /const DSP_FILES = \[([^\]]*)\]/.exec(main);
   assert.ok(m, 'main.js DSP_FILES');
   assert.deepEqual(m[1].split(',').map(x => x.trim().replace(/^'|'$/g, '')).filter(Boolean), [...DSP_FILES]);
@@ -685,7 +685,8 @@ test('§0.3: main.js, the golden harness and dsp-scope load the same 16 scripts 
   assert.match(main, /async function addModule\(c, url\) \{\n  try \{ await c\.audioWorklet\.addModule\(url\); \}/, 'by the worklet (a blob: URL of the cached script only when that fails)');
   assert.match(main, /wk\.loadDSP\(DSP_URLS\)/, 'the same list on the main thread');
   const H = await import('./golden-harness.mjs');
-  assert.deepEqual([...H.DSP_V2], [...DSP_FILES]);
+  assert.deepEqual([...H.DSP_V2], DSP_FILES.filter(f => f !== 'master-dsp.js'));
+  assert.equal(DSP_FILES[DSP_FILES.length - 1], 'master-dsp.js');
   for (const f of DSP_FILES) assert.ok(SRC(f).length > 0, f);
   // a scope with the whole list: every global defined (an object, or null for a script still an M1a stub)
   const S = scope();

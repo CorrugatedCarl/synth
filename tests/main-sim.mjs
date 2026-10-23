@@ -4,7 +4,11 @@
 //    AudioWorkletGlobalScope (a node:vm context with the §0.3 scripts and engine.js, tests/dsp-scope.mjs); a worklet node
 //    owns a real SynthProcessor of that scope; messages are structured-cloned (transfers detach, as in a browser) and
 //    their v8-serialised sizes recorded; live contexts render on demand (sim.run), offline ones in startRendering
-//    (gain / stereo-panner / destination graph mixed),
+//    (gain / stereo-panner / destination graph mixed). (IMPL-M §4) A worklet with inputs (numberOfInputs ≥ 1, Web Audio's
+//    default: the master 'synth-master') is a mixing point: the routes stop there, it is processed after every worklet
+//    feeding it in the quantum (creation order is not topological — the live master is made first) and gets
+//    [[Float32(Σ Float64 route contributions)]] — the one rounding the destination's sum makes — or [[]] when nothing
+//    feeds it; a route with no panner on it passes its signal as it is (× its gains),
 //  - storage: a fake localStorage and, optionally, the fake IndexedDB of tests/fakes.mjs (appstore `synth-app`);
 //    no Workers (the asset manager builds on the main thread), no BroadcastChannel,
 //  - controllable requestAnimationFrame (sim.raf() runs the queued callbacks) and unref'd timers (the test process exits),
@@ -92,16 +96,18 @@ function makeDom() {
 }
 
 /* ------------------------------------------------------------------ Web Audio fakes */
-// one AudioWorkletGlobalScope: the §0.3 scripts in table order, then engine.js; processors post through `out`. What a
+// one AudioWorkletGlobalScope: the §0.3 scripts in table order, then engine.js; processors post through `out`; a node gets the
+// processor registered under its name (IMPL-M: 'synth-master' beside 'synth-engine'; the last registration otherwise). What a
 // processor posts from its constructor (engine.js {t: 'ready'}) reaches its node a microtask later, as in a browser
 // (after main.js has set node.port.onmessage); o.noReady drops 'ready', o.readyMs delivers it that many ms later.
 function workletScope(sr, o = {}) {
   const D = dspScope({ sampleRate: sr, fast: true });
   let Proc = null, early = null;
+  const procs = {}; // name → class
   const outs = new Map(); // processor → its node (worklet → main messages)
   D.run('(function (reg, out) { globalThis.AudioWorkletProcessor = class AudioWorkletProcessor { constructor() { const self = this;'
     + ' this.port = { postMessage(m) { out(self, m); }, onmessage: null }; } };'
-    + ' globalThis.registerProcessor = function registerProcessor(name, cls) { reg(cls); }; })', 'sim-worklet.js')(c => { Proc = c; }, (p, m) => {
+    + ' globalThis.registerProcessor = function registerProcessor(name, cls) { reg(name, cls); }; })', 'sim-worklet.js')((n, c) => { Proc = c; procs[n] = c; }, (p, m) => {
     if (m && m.t === 'ready' && o.noReady) return;
     const node = outs.get(p);
     if (node) node._fromProc(m); else if (early) early.push(m);
@@ -109,7 +115,7 @@ function workletScope(sr, o = {}) {
   D.run(ENGINE, 'engine.js');
   const make = (po, node) => {
     early = [];
-    const p = new Proc({ processorOptions: po }), q = early;
+    const C = (node && procs[node.name]) || Proc, p = new C({ processorOptions: po }), q = early;
     early = null; outs.set(p, node);
     if (q.length && node) {
       const send = () => { for (const m of q) node._fromProc(m); };
@@ -117,7 +123,7 @@ function workletScope(sr, o = {}) {
     }
     return p;
   };
-  return { D, ctx: D.ctx, outs, make };
+  return { D, ctx: D.ctx, outs, make, procs };
 }
 class Param {
   constructor(v) { this.value = v; }
@@ -145,6 +151,7 @@ class BaseContext {
     n.getFloatTimeDomainData = a => a.fill(0); n.getFloatFrequencyData = a => a.fill(-200);
     return n;
   }
+  createChannelSplitter(n = 6) { const x = new Node(this, 'split'); x.numberOfOutputs = n; return x; } // (IMPL-M O1: off the master — its analysers)
   createOscillator() { const n = new Node(this, 'osc'); n.frequency = new Param(440); n.start = () => {}; n.stop = () => {}; return n; }
   // calls: the state changes asked for, in order (a suspended context's state and time stand still until resume); a
   // change fires statechange a microtask later
@@ -157,18 +164,58 @@ class BaseContext {
   suspend() { return this._to('suspend', 'suspended'); }
   close() { return this._to('close', 'closed'); }
 }
-// the gain / pan path of node n to the destination: [{g, pan}] (a fan-out gives several)
-function paths(n, g = 1, pan = 0, seen = new Set()) {
-  if (n.kind === 'dest') return [{ g, pan }];
+// the gain / pan routes of node n's output: [{to, g, pan}] (a fan-out gives several) — `to` the destination, or the first
+// worklet with inputs met (IMPL-M §4: a mixing point — nothing passes through it as a wire); g the product of the gains,
+// pan the last panner's (null: none on the route — the signal as it is)
+function paths(n, g = 1, pan = null, seen = new Set(), top = true) {
+  if (n.kind === 'dest') return [{ to: n, g, pan }];
+  if (!top && n.kind === 'worklet') return n.nIn > 0 ? [{ to: n, g, pan }] : [];
   if (seen.has(n)) return [];
   seen.add(n);
   const out = [];
   for (const m of n.outs) {
     const g2 = m.kind === 'gain' ? g * m.gain.value : g, p2 = m.kind === 'pan' ? m.pan.value : pan;
-    out.push(...paths(m, g2, p2, seen));
+    out.push(...paths(m, g2, p2, seen, false));
   }
   return out;
 }
+// the worklets in processing order: every one after the worklets whose routes reach it (creation order otherwise; a
+// cycle — none in the app — keeps creation order)
+function procOrder(list, routes) {
+  const feeds = new Map(list.map(n => [n, list.filter(m => m !== n && routes.get(m).some(r => r.to === n))]));
+  const order = [], done = new Set();
+  while (order.length < list.length) {
+    let moved = false;
+    for (const n of list) if (!done.has(n) && feeds.get(n).every(m => done.has(m))) { order.push(n); done.add(n); moved = true; }
+    if (!moved) { for (const n of list) if (!done.has(n)) { order.push(n); done.add(n); } }
+  }
+  return order;
+}
+// one quantum of a context's worklets (creation-order list, its routes, processing order): each processed with its input
+// (none: []; a worklet with inputs: [[Float32 of its Float64 sum]] or [[]] unfed), its output mixed into the sums its
+// routes reach (acc: target → {L, R} Float64); out(n, L, R) sees every output (the live run's per-node record)
+function quantum(order, routes, acc, bL, bR, out) {
+  for (const a of acc.values()) { a.L.fill(0); a.R.fill(0); a.fed = false; }
+  for (const n of order) for (const r of routes.get(n)) if (!n.ended && acc.has(r.to)) acc.get(r.to).fed = true;
+  for (const n of order) {
+    if (n.ended) continue; // process() returned false: no longer an active source (Web Audio)
+    let inp = [];
+    if (n.nIn > 0) {
+      const a = acc.get(n);
+      if (a && a.fed) { for (let i = 0; i < 128; i++) { a.iL[i] = a.L[i]; a.iR[i] = a.R[i]; } inp = [[a.iL, a.iR]]; } else inp = [[]];
+    }
+    if (n.proc.process(inp, [[bL, bR]]) === false) n.ended = true;
+    if (out) out(n, bL, bR);
+    for (const r of routes.get(n)) { const a = acc.get(r.to); if (a) { if (r.pan === null) plainMix(bL, bR, r.g, a.L, a.R, 128); else panMix(bL, bR, r.pan, r.g, a.L, a.R, 128); } }
+  }
+}
+const sums = (order, dest) => {
+  const acc = new Map();
+  for (const t of [...order.filter(n => n.nIn > 0), dest]) acc.set(t, { L: new Float64Array(128), R: new Float64Array(128), iL: new Float32Array(128), iR: new Float32Array(128), fed: false });
+  return acc;
+};
+// a route without a panner: the stereo signal × g
+function plainMix(L, R, g, oL, oR, n) { for (let i = 0; i < n; i++) { oL[i] += g * L[i]; oR[i] += g * R[i]; } }
 // Web Audio StereoPannerNode on a stereo input (equal power)
 function panMix(L, R, pan, g, oL, oR, n) {
   const p = Math.max(-1, Math.min(1, pan)), x = p <= 0 ? p + 1 : p, gl = Math.cos(x * Math.PI / 2), gr = Math.sin(x * Math.PI / 2);
@@ -201,6 +248,8 @@ export async function bootMain(o = {}) {
       super(ctx, 'worklet');
       this.name = name; this.posted = []; this.got = []; this.proc = null; this.pend = []; this.ended = false;
       this.state0 = ctx.state; // the context's state when the node (and its processor) was built
+      this.nIn = opts && opts.numberOfInputs != null ? +opts.numberOfInputs : 1; // (Web Audio's default: one input — IMPL-M §4)
+      if (opts) for (const k of ['channelCount', 'channelCountMode', 'channelInterpretation']) if (opts[k] !== undefined) this[k] = opts[k];
       this.po = structuredClone((opts && opts.processorOptions) || {});
       const node = this;
       this.port = {
@@ -249,16 +298,13 @@ export async function bootMain(o = {}) {
       const S = workletScope(this.sampleRate), list = this.nodes.filter(n => n.kind === 'worklet');
       for (const n of list) { n.proc = S.make(n.po, n); for (const m of n.pend.splice(0)) n.proc.msg(m); }
       const N = Math.ceil(this.length / 128) * 128, L = new Float32Array(N), R = new Float32Array(N);
-      const bL = new Float32Array(128), bR = new Float32Array(128), mL = new Float64Array(128), mR = new Float64Array(128);
-      const routes = list.map(n => paths(n));
+      const bL = new Float32Array(128), bR = new Float32Array(128);
+      // (IMPL-M §4) the sums in Float64, each rounded once to Float32 where it is used: a mixing worklet's input, the
+      // destination (an empty master copies its input: the destination's sum is today's, bit for bit)
+      const routes = new Map(list.map(n => [n, paths(n)])), order = procOrder(list, routes), acc = sums(order, this.destination), D = acc.get(this.destination);
       for (let off = 0; off < N; off += 128) {
-        mL.fill(0); mR.fill(0);
-        list.forEach((n, k) => {
-          if (n.ended) return; // process() returned false: no longer an active source (Web Audio)
-          if (n.proc.process([], [[bL, bR]]) === false) n.ended = true;
-          for (const r of routes[k]) panMix(bL, bR, r.pan, r.g, mL, mR, 128);
-        });
-        for (let i = 0; i < 128; i++) { L[off + i] = mL[i]; R[off + i] = mR[i]; }
+        quantum(order, routes, acc, bL, bR, null);
+        for (let i = 0; i < 128; i++) { L[off + i] = D.L[i]; R[off + i] = D.R[i]; }
         S.ctx.currentFrame += 128; this.frames += 128;
       }
       const chs = [L.slice(0, this.length), R.slice(0, this.length)];
@@ -333,12 +379,10 @@ export async function bootMain(o = {}) {
       const list = c.nodes.filter(n => n.kind === 'worklet' && n.proc), N = Math.ceil(frames / 128) * 128;
       const out = new Map(list.map(n => [n, { L: new Float32Array(N), R: new Float32Array(N) }]));
       const L = new Float32Array(128), R = new Float32Array(128);
+      // (IMPL-M §4) a worklet with inputs (the master) after its sources, fed their Float32-rounded sum; the destination is not mixed
+      const routes = new Map(list.map(n => [n, paths(n)])), order = procOrder(list, routes), acc = sums(order, c.destination);
       for (let off = 0; off < N; off += 128) {
-        for (const n of list) {
-          if (n.ended) continue; // process() returned false: no longer processed (its output stays silent)
-          if (n.proc.process([], [[L, R]]) === false) n.ended = true;
-          out.get(n).L.set(L, off); out.get(n).R.set(R, off);
-        }
+        quantum(order, routes, acc, L, R, (n, bL, bR) => { out.get(n).L.set(bL, off); out.get(n).R.set(bR, off); });
         c.scope().ctx.currentFrame += 128; c.frames += 128;
         if (o.clock) { if (wall) sim.ms += 128 / c.sampleRate * 1000; c._stamp(); }
       }

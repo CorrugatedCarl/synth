@@ -606,9 +606,16 @@ test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain af
   while (P().tracks.length < 2) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
   sim.raf(8); await sim.settle(5);
   const [A, B] = P().tracks, first = T().id;
-  // the analysers by what feeds them: a track's own (its pan node's: the meter's 512 + the scope's) and the master's (the gain every pan feeds)
+  // the analysers by what feeds them: a track's own (its pan node's: the meter's 512 + the scope's) and the master's — (stage M, IMPL-M
+  // §7.3: a topology change by design) found through pan → MASTER ('synth-master') → an; every pan feeds only MASTER and its own two
+  // analysers; MASTER feeds an, O1's splitter and the Mono stage → the Volume (gain.value = settings.master) → destination
   const own = id => [...api.nodes.get(id).pan.outs].filter(n => n.kind === 'an'), scopeOf = id => own(id).find(n => n.fftSize >= 8192);
-  const masterAn = [...[...api.nodes.get(A.id).pan.outs].find(n => n.kind === 'gain').outs].find(n => n.kind === 'an');
+  const MST = [...api.nodes.get(A.id).pan.outs].find(n => n.kind === 'worklet' && n.name === 'synth-master');
+  const masterAn = [...MST.outs].find(n => n.kind === 'an');
+  for (const t of [A, B]) assert.deepEqual([...api.nodes.get(t.id).pan.outs].map(n => (n === MST ? 'MASTER' : n.kind + ':' + n.fftSize)).sort(), ['MASTER', 'an:512', 'an:8192'], t.id + ': pan → MASTER + its own two analysers');
+  const monoG = [...MST.outs].find(n => n.kind === 'gain'), level = monoG && [...monoG.outs][0];
+  assert.deepEqual([...MST.outs].map(n => n.kind).sort(), ['an', 'gain', 'split'], 'MASTER → an, the O1 splitter, the Mono stage');
+  assert.deepEqual([level.kind, level.gain.value === api.settings().master, [...level.outs].map(n => n.kind).join()], ['gain', true, 'dest'], 'Mono → the Volume → destination');
   const reads = [], tap = (n, who) => {
     n.getFloatTimeDomainData = a => { reads.push('td ' + who + ':' + n.fftSize); a.fill(0); };
     n.getFloatFrequencyData = a => { reads.push('fd ' + who + ':' + n.fftSize); a.fill(-200); };

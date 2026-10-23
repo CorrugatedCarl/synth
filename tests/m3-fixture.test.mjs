@@ -40,7 +40,7 @@ if (typeof nodeModule.registerHooks === 'function') {
 } else nodeModule.register('./serum-ui.hooks.mjs', import.meta.url);
 // every DSP global wk.loadDSP waits for defined (null): it resolves at once, no script injected into the fake DOM — a
 // pending load holds each host's continuation (and the host) for its 20 s give-up timer
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const SX = await import('../sx-host.js?v=9');
 const SM = await import('../sx-ui-mod.js?v=9');
 const UI = await import('../serum-ui.js?v=9');

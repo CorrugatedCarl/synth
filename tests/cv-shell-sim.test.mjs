@@ -61,7 +61,7 @@ test('boot: today\'s controls keep their handlers in the shell (transport, ≡ f
   for (const id of ['topGrip', 'kbGrip', 'srcGrip', 'srcTab']) assert.ok(bound(s.$('#' + id), 'pointerdown') && bound(s.$('#' + id), 'keydown') || bound(s.$('#' + id), 'pointerdown'), id + ' grip');
   for (const t of ['pointermove', 'pointerup', 'pointercancel']) assert.ok(bound(s.$('#srcTab'), t), 'the Sources tab pulls: ' + t);
   assert.equal(s.$('#topGrip').getAttribute('role'), 'slider');
-  assert.equal(s.$('#topGrip').getAttribute('aria-valuenow'), '160', 'first run: one track row shown (the arrangement toolbar, the ruler, the row)');
+  assert.equal(s.$('#topGrip').getAttribute('aria-valuenow'), '204', 'first run: one track row shown (the arrangement toolbar, the ruler, the row; (M) the Master row: the footer)');
   // the selected track in the top row
   const t = s.api.project().tracks[0];
   assert.equal(s.$('#trkChip .cv-cn').textContent, t.name);
@@ -193,19 +193,19 @@ test('the height budget: kbMaxH keeps the canvas ≥ 240 px with the top tray at
     assert.ok(vh - sh.topMaxH() - chrome - 70 >= 240 || sh.topMaxH() === 48, `${vh}: the top tray leaves the canvas 240 px`);
   }
   await resize(s, 1400, 900);
-  // the top tray: one row by default; its stops follow the track count
-  assert.equal(sh.topWant(), 160);
+  // the top tray: one row by default; its stops follow the track count ((M, IMPL-M §5.1) + the footer, the Master row: 44 px)
+  assert.equal(sh.topWant(), 204);
   for (let k = 0; k < 4; k++) api.addTrack();
-  assert.equal(sh.topMaxH(), 384, 'five tracks: 48 + 32 + 24 + 5 · 56');
-  sh.topSet(272, 'end');
-  assert.equal(sh.shell.topShown, 272);
-  assert.deepEqual(JSON.parse(ls.m.get('synthc.cv.trays')), { top: 272, topLast: 272 }, 'persisted');
-  assert.equal(s.$('#topGrip').getAttribute('aria-valuenow'), '272');
+  assert.equal(sh.topMaxH(), 428, 'five tracks: 48 + 32 + 24 + 5 · 56 + 44');
+  sh.topSet(316, 'end');
+  assert.equal(sh.shell.topShown, 316);
+  assert.deepEqual(JSON.parse(ls.m.get('synthc.cv.trays')), { top: 316, topLast: 316 }, 'persisted');
+  assert.equal(s.$('#topGrip').getAttribute('aria-valuenow'), '316');
   assert.equal(s.$('#topGrip').getAttribute('aria-valuetext'), '3 track rows');
   // the top tray leads: a short window lowers the keys, never below 70 px
   await resize(s, 1400, 700);
-  assert.equal(sh.shell.topShown, 272);
-  assert.equal(api.kb().h, Math.max(70, 700 - 240 - 272 - chrome), 'the keys pushed (' + api.kb().h + ')');
+  assert.equal(sh.shell.topShown, 316);
+  assert.equal(api.kb().h, Math.max(70, 700 - 240 - 316 - chrome), 'the keys pushed (' + api.kb().h + ')');
   // the keyboard leads again (a key on its grip): the top tray is pushed instead
   const g = s.$('#kbGrip');
   g.dispatchEvent({ type: 'keydown', key: 'End', shiftKey: false, preventDefault() {}, stopPropagation() {} });
@@ -218,22 +218,22 @@ test('the height budget: kbMaxH keeps the canvas ≥ 240 px with the top tray at
   assert.equal(sh.shell.topShown, 48, 'a tap: folded');
   assert.equal(JSON.parse(ls.m.get('synthc.cv.trays')).top, 48);
   tg.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {}, stopPropagation() {} });
-  assert.equal(sh.shell.topShown, 272, 'Enter: the last height again');
+  assert.equal(sh.shell.topShown, 316, 'Enter: the last height again');
   sh.topToggle(); sh.topToggle();
-  assert.equal(sh.shell.topShown, 272);
+  assert.equal(sh.shell.topShown, 316);
   sh.topSet(0, 'reset');
   assert.equal(sh.shell.topShown, 48, 'reset (Delete) from open: folded');
   sh.topSet(0, 'reset');
-  assert.equal(sh.shell.topShown, 160, 'and from folded: one row');
+  assert.equal(sh.shell.topShown, 204, 'and from folded: one row');
   // a two-finger cancel of a drag: as it was, nothing saved
   const saved = ls.m.get('synthc.cv.trays');
-  sh.topSet(216, 'move');
-  assert.equal(sh.shell.topShown, 216);
-  sh.topSet(160, 'cancel');
-  assert.deepEqual([sh.shell.topShown, ls.m.get('synthc.cv.trays')], [160, saved]);
+  sh.topSet(260, 'move');
+  assert.equal(sh.shell.topShown, 260);
+  sh.topSet(204, 'cancel');
+  assert.deepEqual([sh.shell.topShown, ls.m.get('synthc.cv.trays')], [204, saved]);
   // the prefs come back in the next session
   const s2 = await bootMain({ ls });
-  assert.equal(shellOf().shell.topShown, 160);
+  assert.equal(shellOf().shell.topShown, 204);
   void s2;
 });
 

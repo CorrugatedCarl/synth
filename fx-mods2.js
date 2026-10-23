@@ -353,6 +353,9 @@
       }
       snap() { this.dd = this.dt; this.blurD(this.bd0); }
       seed(p) { this.ph = frac(+p); this.qc = cos(TAU * this.ph); this.qs = sin(TAU * this.ph); }
+      // the quiet re-seed (FXRack.seed with nothing audible, or a cleared rack): the BLUR LFOs restart at 0 as a fresh
+      // unit's (bd0 = the delays at those phases, as snap() leaves them) — a render after a silent history ≡ a fresh one's
+      seedQ() { this.bph.fill(0); this.blurD(this.bd0); }
       // blur allpass delays (base samples) at the current LFO phases
       blurD(o) {
         const k = this.fs / 1000, dep = this.blur * 4;

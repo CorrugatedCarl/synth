@@ -58,7 +58,8 @@
   globalThis.sampleRate = 48000;
   globalThis.currentFrame = 0;
   globalThis.AudioWorkletProcessor = class AudioWorkletProcessor { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
-  globalThis.registerProcessor = (name, cls) => { globalThis.BenchProc = cls; };
+  globalThis.BenchProcs = {};
+  globalThis.registerProcessor = (name, cls) => { globalThis.BenchProcs[name] = cls; globalThis.BenchProc = cls; }; // (the last: the Track)
 </script>
 <!-- SPEC-serum2 §0.3 script list in table order, then engine.js -->
 <script src="../sx-base.js?v=9"></script>
@@ -77,6 +78,7 @@
 <script src="../mod-core.js?v=9"></script>
 <script src="../patch-dsp.js?v=9"></script>
 <script src="../moog-dsp.js?v=9"></script>
+<script src="../master-dsp.js?v=9"></script>
 <script src="../engine.js?v=9"></script>
 </head>
 <body>
@@ -131,6 +133,8 @@
     mk: po => new globalThis.BenchProc({ processorOptions: po }),
     advance: n => { globalThis.currentFrame += n; },
     FXDSP: globalThis.FXDSP, SxBase: globalThis.SxBase, now: () => performance.now(),
+    // IMPL-M G4: the master rows (bare: without the meters — MASTERDSP hidden while it is built)
+    mkMaster: (po, bare) => { const m = globalThis.MASTERDSP; if (bare) globalThis.MASTERDSP = null; try { return new globalThis.BenchProcs['synth-master']({ processorOptions: po }); } finally { globalThis.MASTERDSP = m; } },
   };
   // the classic rows run at the app's default oversampling (4) — measure() builds its processors at 2
   const env4 = Object.assign({}, env, { mk: po => new globalThis.BenchProc({ processorOptions: Object.assign({}, po, { os: 4 }) }) });

@@ -21,7 +21,7 @@ import { MODELS } from '../models.js?v=9';
 import * as cvWorld from '../cv-world.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 // the cord layer's stand-in (§7.4's interface): every call recorded, the last set / anchors kept
 const CORDS = { calls: [], list: null, anchors: null, on: null };
@@ -431,9 +431,9 @@ test('§1.4 review #25: every other way to a 900 Series gives the Model 15 set a
   api.selectTrack(ID.t1); await settle();
 });
 
-test('§1.6: Save / reload identical (schema 13 since stage P; the orphan knobs pruned at load, never by History); a schema-14 file opens read-only; Save as classic names the patch it loses', async () => {
+test('§1.6: Save / reload identical (schema 14 since stage M, 13 since P; the orphan knobs pruned at load, never by History); a schema-15 file opens read-only; Save as classic names the patch it loses', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA], [13, 13]);
+  assert.deepEqual([p2.schema, CM.SCHEMA], [14, 14]);
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id), k = CMOD.primId(t);
     if (!cv.isPatchDev(t, k)) continue;
@@ -443,8 +443,8 @@ test('§1.6: Save / reload identical (schema 13 since stage P; the orphan knobs 
   }
   assert.equal(Object.keys(vals(byId(ID.t1)).p).some(k => !rec(byId(ID.t1)).mods[k]), true, 'the session still holds its orphans (§1.5)');
   const n = JSON.parse(json);
-  n.schema = 14;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 14, 'a schema-14 file: read-only');
+  n.schema = 15;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 15, 'a schema-15 file: read-only');
   const was = globalThis.confirm;
   let asked = '';
   globalThis.confirm = m => { asked = m; return false; };

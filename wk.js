@@ -3178,15 +3178,15 @@ function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contai
 // Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=9' and 'serum-dsp.js'
 // are the same script), in order (async = false). Resolves when every script has loaded, failed or timed out;
 // never rejects. A missing, broken or failed script yields null for its global. DSP_GLOBALS = the SPEC-serum2 §0.3
-// list (files 1–16, table order = main.js DSP_FILES; the patch family's two last, IMPL-9 §3.7) → their globals: a
+// list (files 1–17, table order = main.js DSP_FILES; the patch family's two, IMPL-9 §3.7, then the master meters, IMPL-M §7) → their globals: a
 // script whose global is already defined (a static <script> or an earlier evaluation) is not injected again; the result carries every global of the list (null when missing).
 // The app passes main.js DSP_URLS (the full §0.3 list) before any panel asks, so the panels' default calls find every
-// script loaded. loadDSP.URLS = files 1–16 in table order (frozen) = the default list (§0.3). The 20 s give-up timer
+// script loaded. loadDSP.URLS = files 1–17 in table order (frozen) = the default list (§0.3). The 20 s give-up timer
 // does not keep a node process alive (unref where the host has it).
 const DSP_GLOBALS = { 'sx-base.js': 'SxBase', 'sx-filt2.js': 'SxFilt2', 'sx-warp.js': 'SxWarp', 'sx-mod.js': 'SxMod',
   'sx-sample.js': 'SxSample', 'sx-gran.js': 'SxGran', 'sx-spec.js': 'SxSpec', 'sx-seq.js': 'SxSeq', 'serum-dsp.js': 'SerumDSP',
   'fx-mods2.js': 'FXMods2', 'fx-dsp.js': 'FXDSP', 'dr-808.js': 'Dr808', 'dr-seq.js': 'DrSeq', 'mod-core.js': 'ModCore',
-  'patch-dsp.js': 'PatchDSP', 'moog-dsp.js': 'PatchMoog' };
+  'patch-dsp.js': 'PatchDSP', 'moog-dsp.js': 'PatchMoog', 'master-dsp.js': 'MASTERDSP' };
 const dspLoads = new WeakMap(); // document → Map(path → Promise)
 export function loadDSP(urls = loadDSP.URLS) {
   const d = D();

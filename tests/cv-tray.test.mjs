@@ -37,6 +37,11 @@ test('topSnaps(): the collapsed row, then the arrangement toolbar + ruler + whol
   assert.equal(T.nearestSnap(S, 250), 272);
   assert.equal(T.nearestSnap(S, 400, 230), 216, 'only stops that fit');
   assert.equal(T.nearestSnap(S, 400, 20), 48, 'none fits: the lowest');
+  // (stage M, IMPL-M §5.1) the footer (the Master row) under the rows: on every stop but the collapsed one
+  assert.equal(T.FOOT_H, 44);
+  assert.deepEqual(T.topSnaps(3, T.FOOT_H), [48, 204, 260, 316]);
+  assert.deepEqual(T.topSnaps(0, 44), [48], 'no rows: the collapsed stop alone');
+  assert.deepEqual(T.topSnaps(2, -5), T.topSnaps(2), 'a negative foot: none');
 });
 
 test('budget(): the canvas keeps ≥ 240 px at iPad and desktop heights; the dragged tray wins and pushes the other toward its fold; both at their least clamp the active one; collapsed stays 48', () => {

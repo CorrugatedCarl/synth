@@ -11,9 +11,13 @@ import { scenarios, measure } from './bench-scenarios.mjs';
 import { dspScope } from './dsp-scope.mjs';
 import * as CPU from './cpu-gate.mjs';
 
+// IMPL-M G4: the master rows' processor ('synth-master', registered before the Track); bare: built without the meters
+const mkMaster = (G, Master) => (po, bare) => { const m = G.MASTERDSP; if (bare) G.MASTERDSP = null; try { return new Master({ processorOptions: po }); } finally { G.MASTERDSP = m; } };
+
 test('§14.1 bench: every scenario d–m builds and renders audibly through the engine / FXRack', () => {
   const D = dspScope({ fast: true, engine: true });
-  const env = { mk: po => new D.Proc({ processorOptions: po }), advance: n => { D.ctx.currentFrame += n; }, FXDSP: D.global('FXDSP'), SxBase: D.global('SxBase') };
+  const env = { mk: po => new D.Proc({ processorOptions: po }), advance: n => { D.ctx.currentFrame += n; }, FXDSP: D.global('FXDSP'), SxBase: D.global('SxBase'),
+    mkMaster: mkMaster(D.ctx, D.procs['synth-master']) };
   const ids = [];
   for (const s of scenarios()) {
     const r = measure(s, env, { runs: 1, seconds: 0.05 });
@@ -125,7 +129,9 @@ test('§14.1 tests/bench.html: its scripts load in one page scope after the stan
   for (const m of srcs) vm.runInContext(readFileSync(new URL('../' + m[1], import.meta.url), 'utf8'), ctx, { filename: m[1] });
   for (const g of ['SxBase', 'SxMod', 'SerumDSP', 'FXDSP', 'BenchProc']) assert.ok(ctx[g] || vm.runInContext('typeof ' + g + ' !== "undefined" && ' + g, ctx), g + ' defined');
   const BP = vm.runInContext('BenchProc', ctx);
-  const env = { mk: po => new BP({ processorOptions: po }), advance: n => { ctx.currentFrame += n; }, FXDSP: vm.runInContext('FXDSP', ctx), SxBase: vm.runInContext('SxBase', ctx), now: () => performance.now() };
+  const env = { mk: po => new BP({ processorOptions: po }), advance: n => { ctx.currentFrame += n; }, FXDSP: vm.runInContext('FXDSP', ctx), SxBase: vm.runInContext('SxBase', ctx), now: () => performance.now(),
+    mkMaster: mkMaster(ctx, vm.runInContext('BenchProcs', ctx)['synth-master']) };
+  assert.equal(vm.runInContext('BenchProcs["synth-engine"]', ctx), BP, 'the last registration is the Track');
   const kinds = new Set();
   for (const s of scenarios()) {
     if (kinds.has(s.kind)) continue;

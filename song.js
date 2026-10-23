@@ -665,6 +665,15 @@ export function normMods(list) {
 }
 // Stage 2a: project.perf, the project's performance modules (D9): { wheel: { v: 1 } | null } — anything else null
 export const normPerf = x => ({ wheel: isObj(x) && isObj(x.wheel) ? { v: 1 } : null });
+// Stage M (IMPL-M §2.3, schema 14): project.master — { fx: the master FX rack (FX v2; copied as a panel's is: its validation is
+// the host's), lay: the master canvas's module places (normLay) }; nothing valid → undefined (absent = an empty master: no key)
+export function normMaster(m) {
+  if (!isObj(m)) return undefined;
+  const o = {}, lay = normLay(m.lay);
+  if (isObj(m.fx)) o.fx = m.fx;
+  if (lay) o.lay = lay;
+  return Object.keys(o).length ? o : undefined;
+}
 
 export function deserialize(json) {
   let o = json;
@@ -724,6 +733,8 @@ export function deserialize(json) {
   p.selTrack = p.tracks.some(t => t.id === o.selTrack) ? o.selTrack : p.tracks[0].id;
   if (isObj(o.perf)) p.perf = normPerf(o.perf); // (stage 2a; absent: no key, an old project reads as before)
   if (Array.isArray(o.pads)) p.pads = normPads(o.pads); // (stage 8, schema 11: the Pads modules, bounded by pads-core; absent: no key, a project without them reads as before)
+  const mst = normMaster(o.master); // (stage M, schema 14: the master's rack and canvas; absent: no key, a project without one reads as before)
+  if (mst) p.master = mst;
   return p;
 }
 
