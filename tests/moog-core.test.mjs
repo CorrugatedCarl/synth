@@ -8,6 +8,10 @@ import './v8-guard.mjs';
 // console row; the sets (M15 / S35 / S55, FAMILY.sets; each row fits rackWide); the presets' shape and their headroom on the real
 // circuits (patch-dsp.js + moog-dsp.js: every preset peaks −12 … −3 dBFS at 48 kHz × 4); the three tables of a type (moog-core =
 // PatchMoog (JACKS, SECS, PARAMS, EV, LAMPS) = the faces' ports, buttons and lamps — rear jacks never placed).
+// IMPL-9c (lane K9c): the ten 1960s types (§1.0's table: ids, orders, defaults, ranges, sections, the 901B → 901A link max 3, the CP3's
+// bus rows), their "1960s" group and tiles, Tidy's rows and console row, the System IIIc (36 modules, drivers 3 / 3 / 3, Tidy's widths)
+// and the three 9c presets' shape (Drift choir: the verniers ≈ ±2 Hz; Follower wah; Spring pluck). Until lanes V / X merge, the two
+// cross-checks below (PatchMoog, the faces) fail on the ten new types — expected.
 // Pure: no DOM; only numbers / strings / plain records go into assert.
 // Run alone: node --max-old-space-size=2048 --test tests/moog-core.test.mjs
 import test from 'node:test';
@@ -23,8 +27,11 @@ const SRC = readFileSync(new URL('../moog-core.js', import.meta.url), 'utf8');
 const T = MG.TYPES;
 const JACKS = { ctl: 27, 921: 13, '921a': 5, '921b': 7, 923: 7, '904a': 5, '907a': 2, 911: 2, 902: 7, 995: 6,
   // IMPL-9b §2.2–§2.3 (rear terminals included: the 992 1 + 1, CP3A 11 + 1, CP4A 2 + 2, CP2 10 + 2; the 962's 12, §12 (a2) decision 4)
-  '904b': 5, 914: 4, '911a': 4, '903a': 4, 960: 29, 962: 12, 992: 2, 993: 0, 994: 8, cp3a: 12, cp4a: 4, cp35: 14, cp2: 12, cp8a: 0, 961: 33, clk: 3 };
-const CONSOLE_T = ['ctl', 'cp2', 'cp3a', 'cp4a', 'cp35', '961', 'clk', 'cp8a'];          // console-height faces (IMPL-9b §2.3)
+  '904b': 5, 914: 4, '911a': 4, '903a': 4, 960: 29, 962: 12, 992: 2, 993: 0, 994: 8, cp3a: 12, cp4a: 4, cp35: 14, cp2: 12, cp8a: 0, 961: 33, clk: 3,
+  // IMPL-9c §1.0 (the CP3's twelve = the CP3A's, xr rear)
+  901: 11, '901a': 3, '901b': 8, '901c': 3, '904c': 5, 905: 2, 912: 4, 984: 8, 991: 2, cp3: 12 };
+const CONSOLE_T = ['ctl', 'cp2', 'cp3a', 'cp3', 'cp4a', 'cp35', '961', 'clk', 'cp8a'];   // console-height faces (IMPL-9b §2.3; the CP3: IMPL-9c)
+const T9C = ['901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3'];   // the ten 1960s types, §1.0's order = the tray's
 // the Model 15 set (§2.2 header, RM §2.1): 902 × 2, 904A, 907A, 911 × 2, 921, 921A, 921B × 2, 923, 995 + the controller
 const M15 = ['902', '902', '904a', '907a', '911', '911', '921', '921a', '921b', '921b', '923', '995'];
 
@@ -67,7 +74,7 @@ test('params: ids ≤ 3 chars, unique, K inside its range, S an option index, 0 
   assert.equal(ids('995'), 'a1 a2 a3');
   assert.equal(ids('ctl'), 'gl pr rt tu x1 x2 x3 x4 ov');
   // IMPL-9b §2.2–§2.3 (the 960's: stage knobs by row, stage modes, row ranges, the clock; the Song clock's LENGTH: P-2 (b))
-  assert.deepEqual(MG.ORDER_ALL.filter(t => T[t].params.length > 16), ['960']);
+  assert.deepEqual(MG.ORDER_ALL.filter(t => T[t].params.length > 16), ['960', '984']);       // (9c: the 984's 22)
   assert.deepEqual(MG.ORDER_ALL.filter(t => !T[t].params.length), ['903a', '994', '962', 'cp8a']);   // (§8.8's list names the 993: it has eight switches, no jack)
   assert.equal(ids('904b'), 'fc rg');
   assert.equal(ids('914'), 'lo b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 hi');
@@ -81,7 +88,20 @@ test('params: ids ≤ 3 chars, unique, K inside its range, S an option index, 0 
   assert.equal(ids('cp2'), 'lp hp');
   assert.equal(ids('961'), 't1 t2 se');
   assert.equal(ids('clk'), 'dv md ln');
+  // IMPL-9c §1.0: the ten 1960s types' ids, in order
+  assert.equal(ids('901'), 'fv rg fq pw v1 v2 v3 v4');
+  assert.equal(ids('901a'), 'fv fq pw');
+  assert.equal(ids('901b'), 'rg vn v1 v2 v3 v4');
+  assert.equal(ids('901c'), 'am');
+  assert.equal(ids('904c'), 'md fc bw');
+  assert.equal(ids('905'), 'mx');
+  assert.equal(ids('912'), 'rs th');
+  assert.equal(ids('984'), [1, 2, 3, 4].flatMap(i => [1, 2, 3, 4].map(o => 'l' + i + o)).join(' ') + ' m1 m2 m3 m4 bs tb');
+  assert.equal(ids('991'), 'lp hp at');
+  assert.equal(ids('cp3'), ids('cp3a'));
   const opts = (t, p) => T[t].params.find(c => c.id === p).opts.join(' ');
+  assert.equal(opts('901', 'rg'), 'LO 32\' 16\' 8\' 4\' 2\''); assert.equal(opts('901b', 'rg'), opts('901', 'rg'));
+  assert.equal(opts('904c', 'md'), 'Band Reject Off Band Pass'); assert.equal(opts('912', 'rs'), 'Short Medium Long');
   assert.equal(opts('960', 's1'), 'Stop Normal Skip'); assert.equal(opts('960', 's9'), 'Stop Skip'); assert.equal(opts('960', 'ga'), '×1 ×2 ×4');
   assert.equal(opts('960', 'rg'), '0.1 Hz 0.4 Hz 1.6 Hz 6.4 Hz 26 Hz 100 Hz 410 Hz'); assert.equal(opts('960', 'os'), 'Stopped Running');
   assert.equal(opts('911a', 'md'), 'Off Parallel Series'); assert.equal(opts('904b', 'rg'), 'Low High');
@@ -92,6 +112,13 @@ test('params: ids ≤ 3 chars, unique, K inside its range, S an option index, 0 
   assert.equal(d9b('914'), Array(14).fill(10).join(' '));
   assert.deepEqual([d9b('904b'), d9b('911a'), d9b('992'), d9b('993'), d9b('cp3a'), d9b('cp4a'), d9b('cp35'), d9b('cp2'), d9b('961'), d9b('clk')],
     ['0 0', '3 3 0', '0 0 0 0 0', '0 0 0 0 0 0 0 0', '7 7 7 7 5 0 0 0 0 10', '0 0 0 0 0 0 0', '0 0 0 0', '5 5', '5 5 5', '2 0 0']);
+  // IMPL-9c §1.0's defaults (the 901's fixed voltage at 0, 8′ = index 3, pulse width 50, every level 10; the 984 four unity channels: the diagonal
+  // at 10, masters 8, tone flat at 5; the 904C a band-pass of one octave; the 912 medium, TH 5; the 991 open, no high-pass, attenuator full)
+  assert.deepEqual(['901', '901a', '901b', '901c', '904c', '905', '912', '991', 'cp3'].map(d9b), ['0 3 0 50 10 10 10 10', '0 0 50', '3 0 10 10 10 10', '10', '2 0 1', '5', '1 5', '10 0 10', d9b('cp3a')]);
+  assert.equal(d9b('984'), [1, 2, 3, 4].flatMap(i => [1, 2, 3, 4].map(o => (i === o ? 10 : 0))).concat([8, 8, 8, 8, 5, 5]).join(' '));
+  const rng9 = (t, p) => { const c = T[t].params.find(q => q.id === p); return c.min + '…' + c.max; };
+  assert.deepEqual([rng9('901', 'fv'), rng9('901', 'fq'), rng9('901', 'pw'), rng9('901', 'v1'), rng9('901a', 'fv'), rng9('901b', 'vn'), rng9('904c', 'fc'), rng9('904c', 'bw'), rng9('912', 'th'), rng9('984', 'l23')],
+    ['-5…6', '-6…6', '10…90', '0…10', '-5…6', '-6…6', '-6…6', '0…3', '0…10', '0…10']);
   // §2.3's defaults: an oscillator at 8', a closed VCA, an open bank, a filter mid-range without regeneration
   const def = (t, p) => T[t].params.find(c => c.id === p).def;
   assert.equal(T['921'].params.find(c => c.id === 'rg').opts[def('921', 'rg')], '8\'');
@@ -120,7 +147,7 @@ test('jacks: ids, directions, plugs, roles, sections, normals, AC coupling, rear
       if (j.ac !== undefined) assert.equal(j.ac, 1);
       if (j.rear !== undefined) assert.ok(j.rear === 1 && j.dir !== 'any' && !j.norm && !j.ac, id + '.' + j.id + ' rear');
       if (j.sig === 's') assert.equal(j.role, 'tr');
-      if (j.dir === 'any') assert.ok(['ctl', '994', 'cp3a', 'cp35', 'cp2'].includes(id), id + '.' + j.id + ': multiples');
+      if (j.dir === 'any') assert.ok(['ctl', '994', 'cp3a', 'cp3', 'cp35', 'cp2'].includes(id), id + '.' + j.id + ': multiples');
     }
     const labels = t.jacks.map(j => j.label);
     assert.equal(new Set(labels).size, labels.length, id + ' labels unique (Connect to… names a jack by its label)');
@@ -130,9 +157,9 @@ test('jacks: ids, directions, plugs, roles, sections, normals, AC coupling, rear
   for (const t of ['921a', '921b', '923', '904a', '907a', '902', '995']) assert.equal(sig(t), '');
   // IMPL-9b: the S-trigger sockets, the rear terminals, the new types' jack orders (= the payload's ports)
   assert.deepEqual(MG.ORDER.filter(t => sig(t) && !['921', '911'].includes(t)).map(t => t + ': ' + sig(t)),
-    ['911a: i1 o1 i2 o2', '961: s1 s2 v1i v2i', 'cp2: so ksr', 'cp4a: ti tr']);
+    ['911a: i1 o1 i2 o2', '961: s1 s2 v1i v2i', 'cp2: so ksr', 'cp4a: ti tr', '912: st']);                // (9c: the 912's S-trigger output)
   assert.deepEqual(MG.ORDER.flatMap(t => T[t].jacks.filter(j => j.rear).map(j => `${t}.${j.id} ${j.dir} ${j.sig}`)),
-    ['cp2.kpr in v', 'cp2.ksr in s', 'cp3a.xr out v', 'cp4a.tr out s', 'cp4a.cr out v', '992.xr out v']);
+    ['cp2.kpr in v', 'cp2.ksr in s', 'cp3a.xr out v', 'cp4a.tr out s', 'cp4a.cr out v', '992.xr out v', 'cp3.xr out v']);
   const jo = t => T[t].jacks.map(j => j.id + (j.sec ? j.sec : '')).join(' ');
   assert.equal(jo('904b'), 'in c1 c2 c3 out');
   assert.equal(jo('914'), 'i1 i2 o1 o2');
@@ -149,6 +176,24 @@ test('jacks: ids, directions, plugs, roles, sections, normals, AC coupling, rear
   assert.equal(jo('961'), [1, 2].map(c => [...[1, 2, 3, 4, 5, 6].map(k => 'a' + c + k), ...[1, 2, 3, 4, 5, 6].map(k => 'b' + c + k), 's' + c].map(x => x + (c - 1 || '')).join(' ')).join(' ')
     + ' v1i2 v1o2 v2i3 v2o3 ai4 ao14 ao24');
   assert.equal(jo('clk'), 'ck rn rs');
+  // IMPL-9c §1.0: the ten's jack orders (= the payload's ports) and sections (the number after an id)
+  assert.equal(jo('901'), 'f1 f2 f3 sin saw tri pls vsin vsaw vtri vpls');
+  assert.equal(jo('901a'), 'f1 f2 f3');
+  assert.equal(jo('901b'), 'sin saw tri pls vsin vsaw vtri vpls');
+  assert.equal(jo('901c'), 'in p n');
+  assert.equal(jo('904c'), 'in c1 c2 b1 out');
+  assert.equal(jo('905'), 'in out');
+  assert.equal(jo('912'), 'in co ci1 st1');
+  assert.equal(jo('984'), 'i1 i2 i3 i4 o1 o2 o3 o4');
+  assert.equal(jo('991'), 'in out');
+  assert.equal(jo('cp3'), jo('cp3a'));
+  assert.deepEqual(T['912'].secs, ['follow', 'comp']);
+  assert.deepEqual([T['912'].jacks.find(j => j.id === 'ci').norm, T['912'].jacks.find(j => j.id === 'st').sig], ['co', 's']);
+  assert.deepEqual(T.cp3.secs, T.cp3a.secs); assert.deepEqual(T.cp3.jacks, T.cp3a.jacks); assert.deepEqual(T.cp3.params, T.cp3a.params);   // the CP3A's, copied
+  assert.deepEqual(T9C.filter(t => T[t].secs.length > 1), ['912', 'cp3']);
+  assert.deepEqual(MG.ORDER_ALL.flatMap(t => T[t].jacks.filter(j => j.ac).map(j => t + '.' + j.id)), ['921b.ac', '912.in', '984.i1', '984.i2', '984.i3', '984.i4']);   // (the ORDER's order: the 9c four last)
+  assert.deepEqual(['901', '901a', '901b'].map(t => [T[t].jacks.filter(j => j.dir === 'in').map(j => j.id).join(), T[t].jacks.filter(j => j.dir === 'out').length]), [['f1,f2,f3', 8], ['f1,f2,f3', 0], ['', 8]]);   // 901A: no audio out; 901B: no input at all
+  assert.deepEqual(T['901c'].jacks.map(j => [j.id, j.dir, j.role]), [['in', 'in', 'au'], ['p', 'out', 'cv'], ['n', 'out', 'cv']]);
   assert.deepEqual([T['960'].jacks.filter(j => j.dir === 'out').length, T['961'].secs.length, T.cp35.secs.length], [16, 5, 6]);
   assert.deepEqual(T['995'].jacks.map(j => [j.id, j.dir, j.sec, j.norm || '']), [['i1', 'in', 0, ''], ['o1', 'out', 0, ''], ['i2', 'in', 1, 'i1'],
     ['o2', 'out', 1, ''], ['i3', 'in', 2, 'i2'], ['o3', 'out', 2, '']]);
@@ -156,6 +201,12 @@ test('jacks: ids, directions, plugs, roles, sections, normals, AC coupling, rear
   assert.deepEqual(T['921b'].jacks.filter(j => j.ac).map(j => j.id), ['ac']);
   assert.deepEqual(T['921b'].link, { to: '921a', max: 3 });
   assert.equal(T['921a'].jacks.some(j => j.dir === 'out'), false);
+  // IMPL-9c §1.1 (the lead's decision #1): the 901B's driver is the 901A, three each (RM:99: nine oscillators on three drivers) — one linked
+  // type per driver type (patch-core finds a driver's linked type by `link.to`); the 901A has no audio output, the 901 is self-contained
+  assert.deepEqual(T['901b'].link, { to: '901a', max: 3 });
+  assert.deepEqual(MG.ORDER.filter(t => T[t].link).map(t => t + '→' + T[t].link.to), ['921b→921a', '901b→901a']);
+  assert.equal(new Set(MG.ORDER.filter(t => T[t].link).map(t => T[t].link.to)).size, 2, 'one linked type a driver type');
+  assert.equal(T['901'].link, undefined); assert.equal(T['901a'].jacks.some(j => j.dir === 'out'), false);
   // the controller's seven sections (§2.6): KBD outputs only, MIX, MULT A, MULT B, V→S, S→V, OUT (the sink)
   const bySec = T.ctl.secs.map((_, s) => T.ctl.jacks.filter(j => j.sec === s).map(j => j.id).join(' '));
   assert.deepEqual(bySec, ['kp1 kp2 ks1 ks2 kg kv kw ka', 'm1 m2 m3 m4 mo mn', 'a1 a2 a3 a4', 'b1 b2 b3 b4', 'vi vo', 'si so', 'out']);
@@ -173,6 +224,8 @@ test('sizes (§2.2): px per mm and the bar as cv-panel / cv-module; 1 / 2 / 3 MU
   // IMPL-9b §2.1 / §2.5: 4 MU 448, 8 MU 864; console height 2 / 3 / 4 MU → 224 / 352 / 448 × 352
   assert.deepEqual([px('914'), px('960'), px('clk'), px('cp2'), px('961'), px('cp3a'), px('cp35'), px('cp8a')],
     [[448, 512], [864, 512], [224, 352], [352, 352], [352, 352], [448, 352], [448, 352], [224, 352]]);
+  // IMPL-9c §1.0: the 901 3 MU, the 901A / B / C 1 MU, the 904C and 905 2 MU, the 912 and 991 1 MU, the 984 4 MU, the CP3 a 4 MU console panel
+  assert.deepEqual(T9C.map(px), [[352, 512], [128, 512], [128, 512], [128, 512], [224, 512], [224, 512], [128, 512], [448, 512], [128, 512], [448, 352]]);
   for (const id of MG.ORDER_ALL) {
     const t = T[id], con = CONSOLE_T.includes(id);
     assert.equal(t.face, con ? 'console' : 'module', id);
@@ -212,7 +265,7 @@ test('IMPL-9b §1.4–§1.6: events, lamps and bus rows — typed, one plug, out
     assert.ok(r.g === undefined || (r.g >= 0 && r.g <= 4), w + ': g');
     rows.push(`${t} [${r.sw}] ${r.a} → ${r.b}`);
   }
-  assert.deepEqual(MG.ORDER.filter(t => T[t].bus), ['cp2', 'cp3a', 'cp4a', '992', '993']);
+  assert.deepEqual(MG.ORDER.filter(t => T[t].bus), ['cp2', 'cp3a', 'cp4a', '992', '993', 'cp3']);
   assert.deepEqual(rows, [   // IMPL-9b §2.4
     'cp2 [] c.kp1 → .kpr', 'cp2 [] c.ks1 → .ksr',
     'cp3a [r1] c.kp1 → 921a|921#=.f3', 'cp3a [r2] c.kw → 921a|921#=.f3', 'cp3a [r3] c.ka → 921a|921#=.f3', 'cp3a [r4] .xr → 921a|921#=.f3',
@@ -222,32 +275,65 @@ test('IMPL-9b §1.4–§1.6: events, lamps and bus rows — typed, one plug, out
     '992 [s1] c.kp1 → 904b#1.c3', '992 [s2] c.kw → 904b#1.c3', '992 [s3] c.ka → 904b#1.c3', '992 [s4] .xr → 904b#1.c3',
     '993 [f1] c.ks1 → 911a#1.i1', '993 [f2] c.ks2 → 911a#1.i1', '993 [f1,t1] c.ks1 → 911#1.trg', '993 [f2,t1] c.ks2 → 911#1.trg',
     '993 [t2] 911a#1.o1 → 911#2.trg', '993 [t3] 911a#1.o2 → 911#3.trg',
-    '993 [e1] 911#1.out → 902#1.c3', '993 [e2] 911#2.out → 902#2.c3', '993 [e3] 911#3.out → 902#3.c3']);
+    '993 [e1] 911#1.out → 902#1.c3', '993 [e2] 911#2.out → 902#2.c3', '993 [e3] 911#3.out → 902#3.c3',
+    // IMPL-9c §1.7: the CP3 k → the k-th of the 901As by number, then the 901, then the 921As, then the 921s (one port id, f3, across the four types)
+    'cp3 [r1] c.kp1 → 901a|901|921a|921#=.f3', 'cp3 [r2] c.kw → 901a|901|921a|921#=.f3', 'cp3 [r3] c.ka → 901a|901|921a|921#=.f3', 'cp3 [r4] .xr → 901a|901|921a|921#=.f3']);
   // a rear terminal is reached by a bus row of its own panel, and every rear jack is
   for (const t of MG.ORDER) for (const j of T[t].jacks.filter(x => x.rear)) assert.ok((T[t].bus || []).some(r => r.a === '.' + j.id || r.b === '.' + j.id), t + '.' + j.id);
 });
 
-test('IMPL-9b §1.2, §2.5, §4.4: the sets (S35 22, S55 37 — in Tidy\'s row order), FAMILY.sets, each row within rackWide', () => {
+test('IMPL-9b §1.2, §2.5, §4.4; IMPL-9c §2: the sets (S35 22, S55 37, S3C 36 — in Tidy\'s row order), FAMILY.sets, each row within rackWide', () => {
   const count = s => { const o = {}; for (const t of s) o[t] = (o[t] || 0) + 1; return o; };
   assert.deepEqual(count(MG.S35), { 921: 1, '921a': 2, '921b': 4, 923: 1, '904a': 1, '904b': 1, '907a': 1, 911: 3, 902: 3, cp3a: 2, cp4a: 1, cp35: 1, cp8a: 1 });
   assert.deepEqual(count(MG.S55), { 921: 1, '921a': 2, '921b': 6, '903a': 1, 995: 1, 994: 1, 960: 1, 962: 1, '904a': 1, '904b': 1, 914: 1, 911: 5, '911a': 1,
     902: 5, 992: 1, 993: 1, 961: 1, cp2: 1, cp3a: 3, cp8a: 1, clk: 1 });
-  assert.deepEqual([MG.M15.length, MG.S35.length, MG.S55.length], [12, 22, 37]);
+  assert.deepEqual(count(MG.S3C), { 901: 1, '901a': 3, '901b': 9, '903a': 1, 994: 1, 912: 1, '904a': 1, '904b': 1, '904c': 1, 905: 1, 914: 1, 911: 3, '911a': 1,
+    902: 3, 984: 1, 992: 1, 993: 1, cp3: 4, cp8a: 1 });
+  assert.deepEqual([MG.M15.length, MG.S35.length, MG.S55.length, MG.S3C.length], [12, 22, 37, 36]);
   const rows = [...MG.ROWS, MG.CONSOLE], W = l => l.reduce((w, t) => w + T[t].w, 0);
   assert.deepEqual([...MG.ROWS.flat(), ...MG.CONSOLE].sort(), [...MG.ORDER].sort(), 'ROWS + CONSOLE = ORDER');
   assert.ok(MG.CONSOLE.every(t => T[t].face === 'console') && MG.ROWS.flat().every(t => T[t].face === 'module'));
-  for (const s of [MG.M15, MG.S35, MG.S55]) assert.deepEqual(rows.flatMap(r => s.filter(t => r.includes(t))), [...s], 'numbered in row order');
+  for (const s of [MG.M15, MG.S35, MG.S55, MG.S3C]) assert.deepEqual(rows.flatMap(r => s.filter(t => r.includes(t))), [...s], 'numbered in row order');
+  // (Tidy places a row's types in the row's order, then by number: a set listed in that order is numbered as it is laid out — the IIIc's too)
+  for (const s of [MG.S35, MG.S55, MG.S3C]) for (const r of rows) { const L = s.filter(t => r.includes(t)).map(t => r.indexOf(t)); assert.deepEqual(L, [...L].sort((a, b) => a - b), 'a row\'s types ascend'); }
   assert.deepEqual(rows.map(r => W(MG.S35.filter(t => r.includes(t)))), [1120, 1376, 1920]);
   assert.deepEqual(rows.map(r => W(MG.S55.filter(t => r.includes(t)))), [2624, 2368, 2496]);
+  assert.deepEqual(rows.map(r => W(MG.S3C.filter(t => r.includes(t)))), [2272, 2752, 2016], 'the IIIc: both cabinet rows and the console row fit one 22 MU line (≤ 2 816)');
+  assert.ok(rows.every(r => W(MG.S3C.filter(t => r.includes(t))) <= MG.FAMILY.rackWide));
   const over = (a, b) => { const ca = count(a), cb = count(b); return a.length + Object.keys(cb).reduce((n, t) => n + Math.max(0, cb[t] - (ca[t] || 0)), 0); };
   assert.deepEqual([48 - MG.S55.length, over(MG.M15, MG.S55), over(MG.S35, MG.S55), over(MG.M15, MG.S35)], [11, 39, 41, 23], 'the cap (§1.7): 11 spare; a System 55 over a Model 15 / a System 35');
+  assert.deepEqual([over(MG.M15, MG.S3C), over(MG.S35, MG.S3C), over(MG.S55, MG.S3C)], [12 + 36 - 5, 22 + 36 - 9, 37 + 36 - 15], 'a System IIIc over a Model 15 (shares 904A, 2 × 911, 2 × 902) / a System 35 / a System 55');
   const F = MG.FAMILY;
-  assert.deepEqual(Object.keys(F.sets), ['m15', 's35', 's55']);
-  assert.deepEqual(Object.values(F.sets).map(s => [s.name, s.set, s.starter]), [['Model 15', MG.M15, 'Classic bass'], ['System 35', MG.S35, 'Swept band'], ['System 55', MG.S55, 'Sequence']]);
+  assert.deepEqual(Object.keys(F.sets), ['m15', 's35', 's55', 's3c']);
+  assert.deepEqual(Object.values(F.sets).map(s => [s.name, s.set, s.starter]), [['Model 15', MG.M15, 'Classic bass'], ['System 35', MG.S35, 'Swept band'], ['System 55', MG.S55, 'Sequence'],
+    ['System IIIc', MG.S3C, 'Drift choir']]);
   assert.equal(F.sets.m15.set, F.set); assert.equal(F.sets.m15.starter, F.starter);
   assert.deepEqual([F.console, F.rackW, F.rackWide, F.rackN], [MG.CONSOLE, 1024, 2816, 16]);
   assert.equal(F.rackWide, 22 * 128, 'a 22 MU cabinet row at 128 px a MU');
-  assert.ok(Object.isFrozen(F.sets.s55) && Object.isFrozen(MG.S55));
+  assert.ok(Object.isFrozen(F.sets.s55) && Object.isFrozen(MG.S55) && Object.isFrozen(F.sets.s3c) && Object.isFrozen(MG.S3C));
+});
+
+test('IMPL-9c §2: the System IIIc — makeSet(\'s3c\'): 36 modules, the nine 901Bs three to each 901A (the first driver with room), Drift choir keyboard-played, no name in a maker\'s hand', () => {
+  const S = MG.makeSet('s3c', {}), ks = Object.keys(S.rec.mods), of = t => ks.filter(k => S.rec.mods[k].t === t);
+  assert.deepEqual([ks.length, S.rec.name, S.rec.cords.length, S.rec.nid], [36, 'Drift choir', 10, 37]);
+  assert.deepEqual(ks.map(k => S.rec.mods[k].t), [...MG.S3C], 'numbered m1… in the set\'s order');
+  const drv = of('901a'), ob = of('901b');
+  assert.equal(drv.length, 3); assert.equal(ob.length, 9);
+  assert.deepEqual(drv.map(d => ob.filter(o => S.rec.mods[o].drv === d).length), [3, 3, 3], 'three a driver — RM:99 (nine oscillators on three drivers)');
+  assert.deepEqual(ob.map(o => S.rec.mods[o].drv), [...Array(3).fill(drv[0]), ...Array(3).fill(drv[1]), ...Array(3).fill(drv[2])], '901B 1–3 on 901A 1, 4–6 on 2, 7–9 on 3');
+  assert.equal(ks.filter(k => S.rec.mods[k].drv).length, 9, 'only the 901Bs are driven');
+  // the starter binds 901A 1 and 901B 1–3 (on that driver), the 984, the 904C, the first 902 and 911, the 905: keyboard → 901A 1 f1 … MAIN OUT
+  const has = (a, b) => S.rec.cords.some(c => c.a === a && c.b === b), [d1] = drv, [o1, o2, o3] = ob, [x984] = of('984'), [f] = of('904c'), [a] = of('902'), [r] = of('905'), [e] = of('911');
+  assert.ok(has('c.kp1', d1 + '.f1') && has('c.ks1', e + '.trg') && has(r + '.out', 'c.out') && has(x984 + '.o1', f + '.in') && has(a + '.o2', r + '.in'), 'a keyboard-played chain');
+  assert.deepEqual([o1, o2, o3].map(o => S.rec.mods[o].drv), [d1, d1, d1]);
+  assert.deepEqual([o1, o2, o3].map((o, i) => has(o + '.saw', x984 + '.i' + (i + 1))), [true, true, true]);
+  assert.equal(S.rec.cords.some(c => c.a === 'c.kg' || /^c\.(mo|a\d|b\d)/.test(c.a)), false, 'no drone: nothing but the keyboard feeds it');
+  // the unbound panels are new and off: the four CP3s' switches all 0 (no hidden row into the preset), the vals hold every bound module's knobs
+  assert.deepEqual(of('cp3').map(k => S.vals.p[k]), [undefined, undefined, undefined, undefined]);
+  assert.equal(S.vals.p[x984].l21, 10); assert.equal(S.vals.p[x984].l11, 10); assert.equal(S.vals.p[f].md, 2);
+  assert.equal(JSON.stringify(MG.makeSet('s3c', {})), JSON.stringify(S), 'pure');
+  // the tray / art / notes name it "System IIIc" (a set tile; ROADMAP 15's trademark note applies before any sale); no maker word
+  assert.ok(!/moog|r\.a\./i.test(MG.SETS.s3c.name + MG.SETS.s3c.starter));
 });
 
 test('IMPL-9b display laws: 904B f₀, 914 centres, 911A 2 ms … 2 s, the 960\'s clock and rows, 961 40 ms … 4 s and θ, the Song clock\'s steps', () => {
@@ -263,26 +349,58 @@ test('IMPL-9b display laws: 904B f₀, 914 centres, 911A 2 ms … 2 s, the 960\'
   assert.equal(T['911a'].params[0].fmt(3), '16 ms'); assert.equal(T['961'].params[0].fmt(5), '400 ms'); assert.equal(T['960'].params.find(c => c.id === 'vn').fmt(10), '×4.00');
 });
 
-test('the tray order, the groups, Tidy\'s rows and the console row cover every module type once (IMPL-9b §4.3, §4.4)', () => {
+test('IMPL-9c display laws: 904C centre 4 Hz … 16.4 kHz, the 912\'s comparator pairs (0.32 / 0.12, 2.88 / 0.2, 5.7 / 0.3 V), the 991\'s corners', () => {
+  const near = (a, b) => assert.ok(Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)), a + ' vs ' + b);
+  near(MG.LAW.f904c(-6), 4); near(MG.LAW.f904c(0), 256); near(MG.LAW.f904c(6), 16384);
+  near(MG.LAW.th912on(0), 0.32); near(MG.LAW.th912on(5), 2.88); near(MG.LAW.th912on(10), 5.7); near(MG.LAW.th912on(2.5), 1.6); near(MG.LAW.th912on(7.5), 4.29);
+  near(MG.LAW.th912off(0), 0.12); near(MG.LAW.th912off(5), 0.2); near(MG.LAW.th912off(10), 0.3); near(MG.LAW.th912off(2.5), 0.16);
+  near(MG.LAW.lp991(0), 20); near(MG.LAW.lp991(10), 20000); near(MG.LAW.hp991(0), 10); near(MG.LAW.hp991(10), 10000);
+  assert.deepEqual([T['904c'].params[1].fmt(0), T['904c'].params[1].fmt(-6), T['904c'].params[2].fmt(1), T['912'].params[1].fmt(5), T['991'].params[0].fmt(10), T['991'].params[1].fmt(0)],
+    ['256 Hz', '4.0 Hz', '2.06 oct', '2.88 V', '20.0 kHz', '10.0 Hz']);   // (the BANDWIDTH readout is the band's width: 9c fix, review 1 F4, below)
+});
+
+test('9c fix (review 1 F4): the 904C BANDWIDTH readout shows the band\'s own −3 dB width — 1.63 / 2.06 / 2.64 / 3.36 octaves at 0 / 1 / 2 / 3 (measured through the evaluator, band pass, 48 kHz × 4: 1.628 / 2.056 / 2.638 / 3.361; the knob\'s value is the corners\' spacing) — a monotonic map, display only (the knob\'s range, default and the dial\'s printed 0 … 3 unchanged)', () => {
+  const bw = T['904c'].params[2], fmt = bw.fmt, oct = v => +fmt(v).replace(' oct', '');
+  assert.deepEqual([bw.id, bw.min, bw.max, bw.def], ['bw', 0, 3, 1]);
+  assert.deepEqual([0, 1, 2, 3].map(fmt), ['1.63 oct', '2.06 oct', '2.64 oct', '3.36 oct']);
+  // the half steps are the measured band too (1.821 / 2.327 / 2.988), and the readout never falls as the knob turns up
+  assert.deepEqual([0.5, 1.5, 2.5].map(fmt), ['1.82 oct', '2.33 oct', '2.99 oct']);
+  let last = -1;
+  for (let v = 0; v <= 3 + 1e-9; v += 0.05) { assert.ok(oct(v) >= last, 'monotonic at ' + v); last = oct(v); }
+  assert.ok(oct(3) - oct(0) > 1.7, 'the whole sweep: 1.7 octaves of band');
+  // the ends hold beyond the knob's range (a stored value is clamped by the table's own prune, but the readout must not run away or print NaN)
+  assert.deepEqual([fmt(-1), fmt(5), fmt(NaN), fmt('2')], ['1.63 oct', '3.36 oct', '1.63 oct', '2.64 oct']);
+});
+
+test('the tray order, the groups, Tidy\'s rows and the console row cover every module type once (IMPL-9b §4.3, §4.4; IMPL-9c §1.8)', () => {
   assert.deepEqual(MG.ORDER, ['921', '921a', '921b', '923', '903a', '904a', '904b', '907a', '914', '902', '911', '911a', '995', '994',
-    '960', '961', '962', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993']);
+    '960', '961', '962', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993', ...T9C]);
   const by = g => MG.ORDER.filter(t => T[t].group === g).join(' ');
-  assert.deepEqual(Object.keys(MG.GROUPS), ['src', 'mod', 'ctl', 'seq', 'cp']);
-  assert.deepEqual(Object.values(MG.GROUPS), ['Sources', 'Modifiers', 'Control', 'Sequencing', 'Console & routing']);
+  assert.deepEqual(Object.keys(MG.GROUPS), ['src', 'mod', 'ctl', 'seq', 'cp', 's60']);
+  assert.deepEqual(Object.values(MG.GROUPS), ['Sources', 'Modifiers', 'Control', 'Sequencing', 'Console & routing', '1960s']);
   assert.deepEqual(Object.keys(MG.GROUPS).map(by), ['921 921a 921b 923 903a', '904a 904b 907a 914 902', '911 911a 995 994', '960 961 962 clk',
-    'cp2 cp3a cp4a cp35 cp8a 992 993']);
+    'cp2 cp3a cp4a cp35 cp8a 992 993', '901 901a 901b 901c 904c 905 912 984 991 cp3']);
+  assert.deepEqual(MG.ORDER.filter(t => T[t].group === 's60'), T9C, 'all ten in the 1960s group, in §1.0\'s order');
+  assert.deepEqual(MG.ORDER.slice(0, 25).map(t => T[t].group).filter(g => g === 's60'), [], 'the 9b groups hold exactly their 9b types');
   assert.deepEqual(MG.ORDER.map(t => T[t].group), Object.keys(MG.GROUPS).flatMap(g => MG.ORDER.filter(t => T[t].group === g).map(() => g)), 'group by group');
   assert.deepEqual([...MG.ROWS.flat(), ...MG.CONSOLE].sort(), [...MG.ORDER].sort());
-  assert.deepEqual(MG.ROWS.map(r => r.join(' ')), ['921 921a 921b 923 903a 995 994 960 962', '904a 904b 907a 914 911 911a 902 992 993']);
-  assert.deepEqual([...MG.CONSOLE], ['cp2', 'cp3a', 'cp4a', 'cp35', '961', 'clk', 'cp8a']);
-  // a Model 15 Tidy is unchanged: its types keep their stage-9 rows and relative order
+  assert.deepEqual(MG.ROWS.map(r => r.join(' ')), ['921 921a 921b 923 901 901a 901b 901c 903a 995 994 960 962 912', '904a 904b 904c 991 905 907a 914 911 911a 902 984 992 993']);
+  assert.deepEqual([...MG.CONSOLE], ['cp2', 'cp3a', 'cp3', 'cp4a', 'cp35', '961', 'clk', 'cp8a']);
+  // a Model 15 Tidy is unchanged: its types keep their stage-9 rows and relative order; so do the System 35 / 55's (the 9b types, their relative order in each row)
   assert.deepEqual(MG.ROWS.map(r => r.filter(t => M15.includes(t)).join(' ')), ['921 921a 921b 923 995', '904a 907a 911 902']);
+  const R9B = [['921', '921a', '921b', '923', '903a', '995', '994', '960', '962'], ['904a', '904b', '907a', '914', '911', '911a', '902', '992', '993']];
+  assert.deepEqual(MG.ROWS.map(r => r.filter(t => !T9C.includes(t))), R9B, 'the 9b rows, as they were');
+  assert.deepEqual(MG.CONSOLE.filter(t => !T9C.includes(t)), ['cp2', 'cp3a', 'cp4a', 'cp35', '961', 'clk', 'cp8a']);
   assert.deepEqual(MG.ORDER.map(t => T[t].tile), ['921 Oscillator', '921A Driver', '921B Oscillator', '923 Noise', '903A Random signal', '904A Low-pass',
     '904B High-pass', '907A Filter bank', '914 Filter bank', '902 Amplifier', '911 Envelope', '911A Trigger delay', '995 Attenuators', '994 Multiples',
     '960 Sequencer', '961 Interface', '962 Switch', 'Song clock', 'CP2 Filters', 'CP3A Mixer', 'CP4A Routing', 'CP35 Attenuators', 'CP8A Power',
-    '992 Control voltages', '993 Trigger routing']);
+    '992 Control voltages', '993 Trigger routing', '901 Oscillator', '901A Controller', '901B Oscillator', '901C Output stage', '904C Coupler', '905 Reverb',
+    '912 Follower', '984 Matrix mixer', '991 Filter', 'CP3 Mixer']);
   assert.deepEqual(MG.ORDER.map(t => T[t].short), ['921', '921A', '921B', '923', '903A', '904A', '904B', '907A', '914', '902', '911', '911A', '995', '994',
-    '960', '961', '962', 'SONG CLOCK', 'CP2', 'CP3A', 'CP4A', 'CP35', 'CP8A', '992', '993']);
+    '960', '961', '962', 'SONG CLOCK', 'CP2', 'CP3A', 'CP4A', 'CP35', 'CP8A', '992', '993', '901', '901A', '901B', '901C', '904C', '905', '912', '984', '991', 'CP3']);
+  assert.deepEqual(T9C.map(t => T[t].name), ['901 Oscillator', '901A Oscillator Controller', '901B Oscillator', '901C Output Stage', '904C Filter Coupler', '905 Reverberation',
+    '912 Envelope Follower', '984 Four-Channel Mixer', '991 Filter and Attenuator', 'CP3 Mixer and Routing']);
+  assert.ok(T9C.every(t => !/gibbs/i.test(T[t].name + T[t].tile + T[t].jacks.map(j => j.label).join() + T[t].params.map(c => c.label).join())), 'no maker word on the 905 (cv-panel MAKERS does not know it)');
   for (const t of MG.ORDER) assert.ok(T[t].name.length <= 40 && T[t].tile.length <= 24, t);
 });
 
@@ -324,11 +442,14 @@ test('the Model 15 set, FAMILY\'s fields, the presets\' shape (roles, types, por
   assert.deepEqual(Object.keys(MG.FAMILY.plugs).sort(), ['s', 'v']);
   assert.ok(T.ctl.jacks.some(j => j.id === MG.FAMILY.sink && j.dir === 'in'));
   assert.deepEqual(MG.PRESETS.map(p => p.name), ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells',
-    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed']);
-  // the smallest set that carries each preset's modules: stage 9's six the Model 15, Swept band the System 35, the rest the System 55
+    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed', 'Drift choir', 'Follower wah', 'Spring pluck']);
+  // the smallest set that carries each preset's modules: stage 9's six the Model 15, Swept band the System 35, the rest of 9b the System 55; (9c)
+  // Drift choir the System IIIc, Follower wah and Spring pluck — shown in a Model 15 / System 35 rack — no set: the Model 15's modules + a 912 / a 905
   const fits = (p, set) => { const c = {}; for (const t of set) c[t] = (c[t] || 0) + 1; return p.mods.every(([, t]) => (c[t] = (c[t] || 0) - 1) >= 0); };
-  assert.deepEqual(MG.PRESETS.map(p => ['m15', 's35', 's55'].find(id => fits(p, MG.FAMILY.sets[id].set))), [...Array(6).fill('m15'), 's35', ...Array(6).fill('s55')]);
-  for (const id of ['s35', 's55']) assert.ok(MG.PRESETS.some(p => p.name === MG.FAMILY.sets[id].starter), id + '\'s starter shipped');
+  assert.deepEqual(MG.PRESETS.map(p => ['m15', 's35', 's55', 's3c'].find(id => fits(p, MG.FAMILY.sets[id].set)) || null),
+    [...Array(6).fill('m15'), 's35', ...Array(6).fill('s55'), 's3c', null, null]);
+  assert.deepEqual([fits(MG.PRESETS[14], [...MG.M15, '912']), fits(MG.PRESETS[15], [...MG.M15, '905']), fits(MG.PRESETS[14], MG.S35.concat('912', '995')), fits(MG.PRESETS[15], MG.S35.concat('905'))], [true, true, true, true]);
+  for (const id of ['s35', 's55', 's3c']) assert.ok(MG.PRESETS.some(p => p.name === MG.FAMILY.sets[id].starter), id + '\'s starter shipped');
   for (const p of MG.PRESETS) {
     assert.ok(typeof p.about === 'string' && p.about.length > 10 && p.name.length <= 40, p.name);
     const roles = p.mods.map(([r]) => r), typeOf = Object.fromEntries(p.mods);
@@ -375,6 +496,26 @@ test('the Model 15 set, FAMILY\'s fields, the presets\' shape (roles, types, por
   assert.ok(Math.abs(MG.LAW.clk960(sb.rg, sb.vn) - 2 * 261.6255653005986) < 1e-6 && sb.rg === 6);
   assert.ok(Math.abs([1, 2, 3, 4, 5, 6, 7, 8].reduce((n, k) => n + sb['a' + k], 0) / 8 - sb.b1) < 1e-12 && [2, 3, 4, 5, 6, 7, 8].every(k => sb['b' + k] === sb.b1));   // row B = row A's mean: the 902 takes the offset off
   assert.deepEqual([P('Routed').cords.length, P('Swept band').cords.length, sq.cords.length, tf.cords.length], [6, 20, 24, 28]);
+  // IMPL-9c §2: Drift choir — the keyboard's pitch to 901A 1 f1, 901B 1 / 2 / 3 at 8′ on it, their verniers ≈ −2 / 0 / +2 Hz (a fixed number of Hz:
+  // f = f_nom · (r + k − 1), k = 2^(vn · (4 / 3) / 6), f_nom = C4 for 8′: the beats 2 and 4 Hz at every key), the 984 (inputs 1–3 → bus 1) into the
+  // 904C in BAND PASS, the 902 opened by the first 911 from S-TRIG 1 (no gate, no multiple: played, not droned), the 905 at MIX 4 → MAIN OUT
+  const dc = P('Drift choir'), F8 = 261.6255653005986, hz = vn => (Math.pow(2, vn * (4 / 3) / 6) - 1) * F8;
+  assert.deepEqual(dc.mods.map(([r, t]) => r + ':' + t), ['d:901a', 'o1:901b', 'o2:901b', 'o3:901b', 'mx:984', 'f:904c', 'a:902', 'e:911', 'r:905']);
+  assert.deepEqual(dc.drv, { o1: 'd', o2: 'd', o3: 'd' });
+  assert.deepEqual([-1, 0, 1].map((k, i) => Math.abs(hz((dc.v['o' + (i + 1)] || {}).vn || 0) - 2 * k) < 0.01), [true, true, true], 'verniers −2 / 0 / +2 Hz');
+  assert.ok([1, 2, 3].every(i => !('rg' in (dc.v['o' + i] || {}))), '8′ (the default)');
+  assert.deepEqual([dc.cords.length, dc.v.mx, dc.v.f, dc.v.r], [10, { l21: 10, l31: 10 }, { md: 2, fc: 1.5, bw: 1.5 }, { mx: 4 }]);
+  assert.ok(dc.cords.some(c => c[0] === 'c.kp1' && c[1] === 'd.f1') && dc.cords.some(c => c[0] === 'c.ks1' && c[1] === 'e.trg') && !dc.cords.some(c => c[0] === 'c.kg'));
+  // Follower wah: the 912 reads the 902's output (a bare saw holds the follower still), co → the 904A's c1, st → a second 911 → the 995 → c2
+  const fw = P('Follower wah'), has = (p, x, y) => p.cords.some(c => c[0] === x && c[1] === y);
+  assert.deepEqual(fw.mods.map(([r, t]) => r + ':' + t), ['d:921a', 'o1:921b', 'o2:921b', 'a:902', 'e1:911', 'e2:911', 'at:995', 'f:904a', 'fl:912']);
+  assert.ok(has(fw, 'a.o1', 'fl.in') && has(fw, 'a.o2', 'f.in') && has(fw, 'fl.co', 'f.c1') && has(fw, 'fl.st', 'e2.trg') && has(fw, 'e2.out', 'at.i1') && has(fw, 'at.o1', 'f.c2'));
+  assert.ok(!fw.cords.some(c => c[1] === 'fl.ci'), 'the comparator input stays normalled to the control out');
+  assert.deepEqual([fw.cords.length, fw.v.fl, T['912'].params[0].opts[fw.v.fl.rs]], [13, { rs: 2, th: 5 }, 'Long']);
+  // Spring pluck: a 911 pluck (es 0: it decays by itself) through the 905 at MIX 7
+  const sp = P('Spring pluck');
+  assert.deepEqual(sp.mods.map(([r, t]) => r + ':' + t), ['d:921a', 'o1:921b', 'o2:921b', 'f:904a', 'e1:911', 'e2:911', 'a:902', 'r:905']);
+  assert.ok(has(sp, 'a.o2', 'r.in') && has(sp, 'r.out', 'c.out') && sp.v.r.mx === 7 && sp.v.e1.es === 0 && sp.cords.length === 11);
 });
 
 // The three tables of one module type agree (§2.6, §7.4; IMPL-9b §2.7): moog-core's, PatchMoog's (moog-dsp.js, lanes V9b / V9c:
@@ -382,7 +523,7 @@ test('the Model 15 set, FAMILY\'s fields, the presets\' shape (roles, types, por
 // panels/m900b.js — lanes P9 / P9b: a `{ <type>: layout }` export, the console as m900.js's default; live jacks = controls with a
 // `port` (never a rear jack), event buttons = `kind: 'button'` with `ev`, live lamps = `kind: 'lamp'` with `lamp`). Each check
 // runs once its file is on the branch; until then it is skipped and says so (IMPL-9 §12, lane K9).
-const DSP = new URL('../moog-dsp.js', import.meta.url), PANELS = ['m900.js', 'm900b.js'].map(f => new URL('../panels/' + f, import.meta.url));
+const DSP = new URL('../moog-dsp.js', import.meta.url), PANELS = ['m900.js', 'm900b.js', 'm900c.js'].map(f => new URL('../panels/' + f, import.meta.url));   // (m900c.js: lane X9c)
 test('moog-core = PatchMoog (T, JACKS, SECS, PARAMS, EV, LAMPS)', t => {
   if (!existsSync(DSP)) { t.skip('moog-dsp.js not on this branch yet (V9b)'); return; }
   const ctx = vm.createContext({});
@@ -406,7 +547,7 @@ test('moog-core = PatchMoog (T, JACKS, SECS, PARAMS, EV, LAMPS)', t => {
     assert.deepEqual(idsOf(PM.LAMPS[id]), (T[id].lamps || []).map(e => e.id), id + ' LAMPS');
   }
 });
-test('moog-core = the faces (panels/m900.js, panels/m900b.js: every face\'s live jacks, event buttons and lamps are its type\'s; rear jacks never placed)', async t => {
+test('moog-core = the faces (panels/m900.js, m900b.js, m900c.js: every face\'s live jacks, event buttons and lamps are its type\'s; rear jacks never placed)', async t => {
   const files = PANELS.filter(u => existsSync(u));
   if (!files.length) { t.skip('panels/m900.js not on this branch yet (P9)'); return; }
   const live = (L, f) => (L && Array.isArray(L.controls) ? L.controls.filter(c => c && f(c)) : null);
@@ -446,7 +587,8 @@ test('every preset peaks −12 … −3 dBFS at 48 kHz × 4 over PatchDSP + Patc
     return o.sort((a, b) => a[0] - b[0] || a[3] - b[3]);
   };
   const LINE = { 'Classic bass': 'bass', 'Filter sweep': 'lead', Drone: 'none', 'Sync lead': 'lead', Wind: 'none', Bells: 'lead',
-    'Swept band': 'lead', Sequence: 'none', 'Twenty-four steps': 'none', 'Echo strikes': 'lead', Vowel: 'lead', 'Step bass': 'bass', Routed: 'bass' };
+    'Swept band': 'lead', Sequence: 'none', 'Twenty-four steps': 'none', 'Echo strikes': 'lead', Vowel: 'lead', 'Step bass': 'bass', Routed: 'bass',
+    'Drift choir': 'lead', 'Follower wah': 'bass', 'Spring pluck': 'lead' };                               // (9c)
   // the clocked ones (IMPL-9b §2.6): built while stopped, then ▶ from a stop (the patch reset) at 120 BPM — fpt 25 frames a tick
   const SONG = new Set(['Sequence', 'Twenty-four steps']), PMT = sc.global('PatchMoog').T, waits = [];
   const H = 95, c = 20000 / (base * os), h = new Float64Array(H);

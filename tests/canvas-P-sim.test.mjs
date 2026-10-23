@@ -106,7 +106,7 @@ test('§3.1: a System 55 + 30 modules (past 9b\'s 48) greys no tile — the modu
   tiles.setView('moog'); await settle();
   assert.deepEqual([I(T(), dev()).model, n, n > 48], ['m900', n0 + 30, true]);
   const all = [...cvTray.MOOG_TILES.map(x => tiles.moogTile(x.id)), ...cvTray.SET_TILES.map(x => tiles.setTile(x.id))];
-  assert.deepEqual([all.filter(Boolean).length, all.filter(b => b && b.getAttribute('aria-disabled') === 'true').length], [cvTray.MOOG_TILES.length + 2, 0], 'every tile there, none greyed');
+  assert.deepEqual([all.filter(Boolean).length, all.filter(b => b && b.getAttribute('aria-disabled') === 'true').length], [cvTray.MOOG_TILES.length + cvTray.SET_TILES.length, 0], 'every tile there, none greyed');
   cv.patch.add('995'); await settle();
   assert.equal(Object.keys(rec().mods).length, n + 1, 'a tap adds one more');
   assert.doesNotMatch(note(), /at most/);

@@ -33,7 +33,8 @@ import { mulberry32, fnv1a32 } from '../wt.js?v=9';
 
 // ref-9b guards 9b's sound: the sixteen types and the seven presets 9b added (stage 9's are ref-9's: tests/golden-moog.test.mjs)
 const S9_TYPES = ['921', '921a', '921b', '923', '904a', '907a', '902', '911', '995'];
-const B_TYPES = MG.ORDER.filter(t => !S9_TYPES.includes(t));
+// the sixteen, literal (IMPL-9c D3: never derived from the live table, which 9c grows — ref-9b's circuits cannot render a 9c type)
+const B_TYPES = ['903a', '904b', '914', '911a', '994', '960', '961', '962', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993'];
 const B_PRESETS = ['Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed'];
 const REF = new URL('./ref-9b/', import.meta.url), FILES = ['patch-dsp.js', 'moog-dsp.js', 'engine.js'];
 // the frozen hashes, pinned by the lead at the freeze (null until then: the manifest alone is checked)

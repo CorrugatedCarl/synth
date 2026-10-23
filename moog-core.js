@@ -6,8 +6,8 @@
 //            groups, set (the Model 15 set, M15), starter ('Classic bass': the Model 15 tile's), sink ('out': the controller's MAIN
 //            OUT), rackW (Tidy's row width, px), plugs / conv (the wrong-plug reason's words), PRESETS,
 //            console (IMPL-9b §4.4: the console-height types' Tidy row, flush above the controller), sets ({ <id>: { name, set,
-//            starter } }: m15 = set / starter above, s35, s55 — IMPL-9b §1.2), rackWide (Tidy's width past rackN modules or with a
-//            console module: a 22 MU cabinet row) }
+//            starter } }: m15 = set / starter above, s35, s55 — IMPL-9b §1.2 —, s3c — IMPL-9c §2), rackWide (Tidy's width past rackN
+//            modules or with a console module: a 22 MU cabinet row) }
 //   iterate `order` (or ORDER_ALL), never Object.keys(types): integer-like keys ('902', '921' …) enumerate first, ascending.
 // TYPE = { id, name, short, tile, mu, face 'module' (5U) | 'console' (console height: the controller, the CP panels, the 961, the
 //          Song clock — the controller is `ctl`, not "the console face"), layout, w, h (module px: ceil32(face) × ceil32(BAR_H +
@@ -17,7 +17,7 @@
 //                    ac?: 1 (AC-coupled), rear?: 1 (IMPL-9b §1.3: an edge-connector terminal — a payload port, never on a face,
 //                    never a cord's end; reached by bus rows only) }],
 //          secs: [section names] (sec n = secs[n]: a section's outputs depend on its own inputs only — the schedule's nodes, §3.3),
-//          link?: { to: <type>, max } (a rear connector: the 921B's driver, a schedule edge), group 'src' | 'mod' | 'ctl' | 'seq' | 'cp',
+//          link?: { to: <type>, max } (a rear connector: the 921B's / 901B's driver, a schedule edge), group 'src' | 'mod' | 'ctl' | 'seq' | 'cp' | 's60',
 //          cost (load at OS 4, V8: spike (a) / (a2)'s figures, V9b / V9c re-measure),
 //          bus?: [{ sw: [switch param ids] (all on → a connection; [] = always), a, b, g? }] (IMPL-9b §1.4: a routing switch's
 //                hidden connection, resolved from vals by patch-core; an end = 'c.<port>' (the controller) · '.<port>' (this
@@ -68,6 +68,12 @@ export const LAW = Object.freeze({
   on961: v => 0.04 * Math.pow(100, v / 10),                             // 961 SWITCH ON TIME: 40 ms … 4 s
   th961: v => 5 * Math.pow(0.01, v / 10),                               // 961 SENSITIVITY: the comparator's θ 5 V … 50 mV (off below θ / 2)
   ticks: dv => [960, 480, 240, 120, 320, 160][dv],                      // Song clock STEP (1/4 1/8 1/16 1/32 1/8T 1/16T) in song ticks (PPQ 960)
+  // (9c, IMPL-9c §1.2, §1.4, §1.6) the same laws in moog-dsp
+  f904c: fc => Math.pow(2, fc + 8),                                     // 904C centre (Hz) at 0 V: 2^(fc + 8 + ΣC): 4 Hz … 16.4 kHz over the knob
+  th912on: v => (v <= 5 ? 0.32 + (2.88 - 0.32) * v / 5 : 2.88 + (5.7 - 2.88) * (v - 5) / 5),   // 912 THRESHOLD: the comparator's on level (V), piecewise linear through 0.32 / 2.88 / 5.7
+  th912off: v => (v <= 5 ? 0.12 + (0.2 - 0.12) * v / 5 : 0.2 + (0.3 - 0.2) * (v - 5) / 5),     // … and its off level: 0.12 / 0.2 / 0.3
+  lp991: v => 20 * Math.pow(1000, v / 10),                              // 991 LOW PASS corner (Hz): 20 Hz … 20 kHz
+  hp991: v => 10 * Math.pow(1000, v / 10),                              // 991 HIGH PASS corner (Hz): 10 Hz … 10 kHz
 });
 const F_T = { fmt: v => fmtT(LAW.t911(v)) }, F_ES = { fmt: v => LAW.es911(v).toFixed(2) + ' V' }, F_RC = { fmt: v => fmtHz(LAW.rc923(v)) };
 const GLIDE = { fmt: v => v > 0.05 ? fmtT(LAW.glide(v)) : 'off' };
@@ -75,6 +81,15 @@ const CENTS = { fmt: v => sg(Math.round(v), 0) + ' ct' };
 const MIXL = { fmt: v => '×' + (v / 5).toFixed(2) };                   // MIXER LEVEL 0…10 → 0 … ×2
 const F_D = { fmt: v => fmtT(LAW.d911a(v)) }, F_ON = { fmt: v => fmtT(LAW.on961(v)) }, F_TH = { fmt: v => LAW.th961(v).toFixed(2) + ' V' };
 const F_VN = { fmt: v => '×' + Math.pow(4, v / 10).toFixed(2) };       // 960 VERNIER: the clock × 1 … 4 (one RANGE step)
+// (9c fix, review 1 F4) the 904C BANDWIDTH knob is the corners' spacing B (IMPL-9c §1.2); the readout is the band the filter makes, its
+// −3 dB width in octaves — measured through the evaluator (band pass, 48 kHz × 4, centre 512 Hz) at B = 0, ½ … 3: 1.628 · 1.821 · 2.056 ·
+// 2.327 · 2.638 · 2.988 · 3.361 (the coupled 4 + 4-pole pair is never narrower than ≈ 1.6). A display map only (linear between the half
+// steps, held beyond the knob's ends): moog-dsp's law, the knob's range and the dial's printed 0 … 3 are unchanged.
+const BW_OCT = [1.628, 1.821, 2.056, 2.327, 2.638, 2.988, 3.361];
+const bwOct = v => { const x = Math.min(3, Math.max(0, +v || 0)) * 2, i = Math.min(5, Math.floor(x)); return BW_OCT[i] + (BW_OCT[i + 1] - BW_OCT[i]) * (x - i); };
+const F_FC = { fmt: v => fmtHz(LAW.f904c(v)) }, F_BW = { fmt: v => bwOct(v).toFixed(2) + ' oct' };                // 904C CENTER FREQUENCY · BANDWIDTH
+const F_T912 = { fmt: v => LAW.th912on(v).toFixed(2) + ' V' };                                                 // 912 THRESHOLD: the comparator's on level
+const F_L991 = { fmt: v => fmtHz(LAW.lp991(v)) }, F_H991 = { fmt: v => fmtHz(LAW.hp991(v)) };                   // 991 LOW PASS · HIGH PASS corners
 
 /* ---------------------------------------------------------------- sizes (§2.2) */
 export const MU_MM = 53.975, FACE_H_MM = 222.25, CONSOLE_H_MM = 142.875, PX_PER_MM = 2, BAR_H = 40;   // = cv-panel PX_PER_MM, cv-module BAR_H
@@ -300,6 +315,68 @@ const T_CLK = con('clk', 'Song Clock', 'Song clock', 2, 'seq', 0.0003, [
 ], [J('ck', 'out', 'v', 'tr', 'CLOCK'), J('rn', 'out', 'v', 'tr', 'RUN'), J('rs', 'out', 'v', 'tr', 'RESTART')],   // 0 / +5 V
 { short: 'SONG CLOCK', lamps: [E('lr', 'RUN')] });
 
+/* ---------------------------------------------------------------- the 1960s types (IMPL-9c §1.0) */
+// ids / params / jacks / sections / the link = IMPL-9c §1.0's table, the one source tables (here), DSP (moog-dsp) and faces build from;
+// all ten in group 's60' (the tray's "1960s"); costs are G2's targets until lane V's measures (cv-cost COST.patch the same)
+const S60 = 's60', WAVES = [['sin', 'Sine'], ['saw', 'Sawtooth'], ['tri', 'Triangle'], ['pls', 'Pulse']];
+const WLEV = WAVES.map(([, l], i) => K('v' + (i + 1), l + ' Level', 0, 10, 10, TEN));        // each variable output = the fixed one × level / 10
+const OUTS901 = [...WAVES.map(([id, l]) => J(id, 'out', 'v', 'au', l.toUpperCase() + ' OUT')),
+  ...WAVES.map(([id, l]) => J('v' + id, 'out', 'v', 'au', 'VARIABLE ' + l.toUpperCase() + ' OUT'))];
+const CI901 = range(3, i => J('f' + i, 'in', 'v', 'cv', 'CONTROL INPUT ' + i));                // named as the 921's: one bus row reaches either (§1.7)
+
+const T901 = mod('901', '901 Oscillator', '901 Oscillator', 3, S60, 0.0032, [                 // a 901A + 901B on one panel, self-contained (no link)
+  K('fv', 'Fixed Voltage', -5, 6, 0, VOLT),
+  S('rg', 'Frequency Range', FEET921B, 3),                             // Lo · 32′ … 2′: 8′ at 0 V = C4
+  K('fq', 'Frequency', -6, 6, 0, DIAL),                                // ±1 oct
+  K('pw', 'Pulse Width', 10, 90, 50, PCT), ...WLEV,
+], [...CI901, ...OUTS901]);
+
+const T901A = mod('901a', '901A Oscillator Controller', '901A Controller', 1, S60, 0.0012, [   // the driver: no audio outputs, no range of its own (§1.1)
+  K('fv', 'Fixed Voltage', -5, 6, 0, VOLT), K('fq', 'Frequency', -6, 6, 0, DIAL), K('pw', 'Pulse Width', 10, 90, 50, PCT),
+], CI901);
+
+const T901B = mod('901b', '901B Oscillator', '901B Oscillator', 1, S60, 0.0016, [
+  S('rg', 'Frequency Range', FEET921B, 3), K('vn', 'Frequency', -6, 6, 0, DIAL), ...WLEV,
+], OUTS901, { link: { to: '901a', max: 3 } });                         // 3 a driver (RM:99: nine oscillators on three drivers)
+
+const T901C = mod('901c', '901C Output Stage', '901C Output stage', 1, S60, 0.0005,           // ours (§1.1): one sentence of research
+  [K('am', 'Amplitude', 0, 10, 10, TEN)],
+  [J('in', 'in', 'v', 'au', 'INPUT'), J('p', 'out', 'v', 'cv', 'OUTPUT +'), J('n', 'out', 'v', 'cv', 'OUTPUT −')]);
+
+const T904C = mod('904c', '904C Filter Coupler', '904C Coupler', 2, S60, 0.008, [              // self-contained: its own low-pass and high-pass (§1.2)
+  S('md', 'Mode', ['Band Reject', 'Off', 'Band Pass'], 2),
+  K('fc', 'Center Frequency', -6, 6, 0, F_FC),                         // LAW.f904c
+  K('bw', 'Bandwidth', 0, 3, 1, F_BW),
+], [J('in', 'in', 'v', 'au', 'SIGNAL INPUT'), ...range(2, i => J('c' + i, 'in', 'v', 'cv', 'CENTER FREQUENCY CONTROL ' + i)),
+  J('b1', 'in', 'v', 'cv', 'BANDWIDTH CONTROL'), J('out', 'out', 'v', 'au', 'SIGNAL OUTPUT')]);
+
+const T905 = mod('905', '905 Reverberation', '905 Reverb', 2, S60, 0.008,                      // ours: a spring tank, every number [C] (§1.3)
+  [K('mx', 'Mix', 0, 10, 5, TEN)],
+  [J('in', 'in', 'v', 'au', 'SIGNAL INPUT'), J('out', 'out', 'v', 'au', 'SIGNAL OUTPUT')]);
+
+const T912 = mod('912', '912 Envelope Follower', '912 Follower', 1, S60, 0.002, [
+  S('rs', 'Response', ['Short', 'Medium', 'Long'], 1),
+  K('th', 'Threshold', 0, 10, 5, F_T912),                              // LAW.th912on / th912off
+], [J('in', 'in', 'v', 'au', 'SIGNAL INPUT', { ac: 1 }), J('co', 'out', 'v', 'cv', 'CONTROL OUTPUT'),
+  J('ci', 'in', 'v', 'cv', 'COMPARATOR INPUT', { sec: 1, norm: 'co' }),   // unpatched: its own control out (a second section: the CP35's cross-section normal)
+  J('st', 'out', 's', 'tr', 'TRIGGER OUTPUT', { sec: 1 })],
+{ secs: ['follow', 'comp'] });
+
+// the 984 (§1.5): input i → bus o is `l<i><o>`; the diagonal at 10 makes a fresh one four unity channels
+const T984 = mod('984', '984 Four-Channel Mixer', '984 Matrix mixer', 4, S60, 0.005, [
+  ...range(4, i => range(4, o => K('l' + i + o, 'Input ' + i + ' → Bus ' + o, 0, 10, i === o ? 10 : 0, TEN))).flat(),
+  ...range(4, o => K('m' + o, 'Master ' + o, 0, 10, 8, TEN)), K('bs', 'Bass', 0, 10, 5, TEN), K('tb', 'Treble', 0, 10, 5, TEN),
+], [...range(4, i => J('i' + i, 'in', 'v', 'au', 'INPUT ' + i, { ac: 1 })), ...range(4, o => J('o' + o, 'out', 'v', 'au', 'OUTPUT ' + o))]);
+
+const T991 = mod('991', '991 Filter and Attenuator', '991 Filter', 1, S60, 0.001, [               // ours (§1.6): no controls or ranges found
+  K('lp', 'Low Pass', 0, 10, 10, F_L991), K('hp', 'High Pass', 0, 10, 0, F_H991), K('at', 'Attenuator', 0, 10, 10, TEN),
+], [J('in', 'in', 'v', 'au', 'SIGNAL INPUT'), J('out', 'out', 'v', 'au', 'SIGNAL OUTPUT')]);
+
+// the CP3 (§1.7): the CP3A's behaviour in a class of its own, its four routing switches feeding the drivers — CP3 k → the k-th 901A by
+// number, then the 901, then the 921As, then the 921s; params / jacks copied from the CP3A (ids, order, defaults, sections)
+const T_CP3 = con('cp3', 'CP3 Mixer and Routing', 'CP3 Mixer', 4, S60, 0.0007, T_CP3A.params.map(c => Object.assign({}, c)), T_CP3A.jacks.map(j => Object.assign({}, j)),
+  { secs: T_CP3A.secs.slice(), bus: [...KWPJ, '.xr'].map((a, i) => ({ sw: ['r' + (i + 1)], a, b: '901a|901|921a|921#=.f3' })) });
+
 // the controller (ours, §2.4): 27 jacks in seven sections — KBD (the keyboard and performance outputs only) · MIX · MULT A ·
 // MULT B · V→S · S→V · OUT (MAIN OUT, the sink)
 const [CW, CH] = sizeOf(8 * MU_MM, CONSOLE_H_MM);
@@ -321,23 +398,28 @@ const TCTL = {
   secs: ['kbd', 'mix', 'multA', 'multB', 'v2s', 's2v', 'out'], group: 'ctl', cost: 0.0005,
 };
 
-export const GROUPS = Object.freeze({ src: 'Sources', mod: 'Modifiers', ctl: 'Control', seq: 'Sequencing', cp: 'Console & routing' });
-/** The tray's order, group by group (§4.6, IMPL-9b §4.3: 25 tiles); the controller is no tile. */
+export const GROUPS = Object.freeze({ src: 'Sources', mod: 'Modifiers', ctl: 'Control', seq: 'Sequencing', cp: 'Console & routing', s60: '1960s' });
+/** The tray's order, group by group (§4.6, IMPL-9b §4.3, IMPL-9c §1.8: 35 tiles — the ten 1960s ones last); the controller is no tile. */
 export const ORDER = Object.freeze(['921', '921a', '921b', '923', '903a', '904a', '904b', '907a', '914', '902', '911', '911a', '995', '994',
-  '960', '961', '962', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993']);
+  '960', '961', '962', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993',
+  '901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3']);
 /** Every type, the controller first. */
 export const ORDER_ALL = Object.freeze(['ctl', ...ORDER]);
 /** Tidy's cabinet rows (§4.5, IMPL-9b §4.4): sources and sequencing, then modifiers and envelopes (the Model 15 types in their
- *  stage-9 order: its Tidy is unchanged, rows at dy −1 024 / −512 when no console module is present). */
-export const ROWS = Object.freeze([Object.freeze(['921', '921a', '921b', '923', '903a', '995', '994', '960', '962']),
-  Object.freeze(['904a', '904b', '907a', '914', '911', '911a', '902', '992', '993'])]);
+ *  stage-9 order: its Tidy is unchanged, rows at dy −1 024 / −512 when no console module is present). (9c, IMPL-9c §1.8) The 1960s
+ *  types sit among them — Tidy places a row's types in this order, so the IIIc's numbering (S3C) is its Tidy order: the 901 family
+ *  beside the 921s, the 912 last in the first row; the 904C and 991 after the filters, the 905 before the filter banks, the 984
+ *  after the 902. A stage 9 / 9b rack has none of them: its Tidy is unchanged. */
+export const ROWS = Object.freeze([Object.freeze(['921', '921a', '921b', '923', '901', '901a', '901b', '901c', '903a', '995', '994', '960', '962', '912']),
+  Object.freeze(['904a', '904b', '904c', '991', '905', '907a', '914', '911', '911a', '902', '984', '992', '993'])]);
 /** Tidy's console row (IMPL-9b §4.4): the console-height types, flush above the controller (dy −352), the cabinet rows above it;
  *  an empty console row takes no height. ROWS + CONSOLE = ORDER. */
-export const CONSOLE = Object.freeze(['cp2', 'cp3a', 'cp4a', 'cp35', '961', 'clk', 'cp8a']);
+export const CONSOLE = Object.freeze(['cp2', 'cp3a', 'cp3', 'cp4a', 'cp35', '961', 'clk', 'cp8a']);
 export const TYPES = deepFreeze({ ctl: TCTL, 921: T921, '921a': T921A, '921b': T921B, 923: T923, '904a': T904A, '907a': T907A,
   911: T911, 902: T902, 995: T995,
   '904b': T904B, 914: T914, '911a': T911A, '903a': T903A, 960: T960, 962: T962, 992: T992, 993: T993, 994: T994,
-  cp3a: T_CP3A, cp4a: T_CP4A, cp35: T_CP35, cp2: T_CP2, cp8a: T_CP8A, 961: T961, clk: T_CLK });
+  cp3a: T_CP3A, cp4a: T_CP4A, cp35: T_CP35, cp2: T_CP2, cp8a: T_CP8A, 961: T961, clk: T_CLK,
+  901: T901, '901a': T901A, '901b': T901B, '901c': T901C, '904c': T904C, 905: T905, 912: T912, 984: T984, 991: T991, cp3: T_CP3 });
 
 /* ---------------------------------------------------------------- the Model 15 set and the starting patches (§2.5, ours) */
 /** The Model 15 set (RM §2.1), in its numbering order (Tidy's rows, sources first): 921, 921A, 921B × 2, 923, 995, 904A, 907A,
@@ -350,9 +432,14 @@ export const S35 = Object.freeze(['921', '921a', '921a', '921b', '921b', '921b',
 export const S55 = Object.freeze(['921', '921a', '921a', '921b', '921b', '921b', '921b', '921b', '921b', '903a', '995', '994', '960', '962',
   '904a', '904b', '914', '911', '911', '911', '911', '911', '911a', '902', '902', '902', '902', '902', '992', '993',
   'cp2', 'cp3a', 'cp3a', 'cp3a', '961', 'clk', 'cp8a']);
+/** The System IIIc (IMPL-9c §2: the 1960s cabinet as RM §2.2 lists it, a CP8A standing for the CP9) in its numbering order — Tidy's
+ *  (ROWS, then CONSOLE): 36 modules + the controller. The nine 901Bs hang three to a 901A (the first driver with room, link max 3). */
+export const S3C = Object.freeze(['901', '901a', '901a', '901a', ...Array(9).fill('901b'), '903a', '994', '912',
+  '904a', '904b', '904c', '905', '914', '911', '911', '911', '911a', '902', '902', '902', '984', '992', '993',
+  'cp3', 'cp3', 'cp3', 'cp3', 'cp8a']);
 /** The set tiles (IMPL-9b §1.2): a set = its modules and its starting patch; m15 = FAMILY.set / starter. */
 export const SETS = deepFreeze({ m15: { name: 'Model 15', set: M15, starter: 'Classic bass' }, s35: { name: 'System 35', set: S35, starter: 'Swept band' },
-  s55: { name: 'System 55', set: S55, starter: 'Sequence' } });
+  s55: { name: 'System 55', set: S55, starter: 'Sequence' }, s3c: { name: 'System IIIc', set: S3C, starter: 'Drift choir' } });
 // (a 921B's fq is ±1 oct over its ±6: 6 · semitones / 12; the 921's with SCALE ±12 st likewise; 911 times: LAW.t911)
 export const PRESETS = deepFreeze([
   { name: 'Classic bass', about: 'Two driven 921Bs (8′ and 4′) and a 921 an octave below them, mixed into the 904A — its cutoff from the first 911 and half the keyboard, the 902 opened by the second 911',
@@ -475,6 +562,37 @@ export const PRESETS = deepFreeze([
     cords: [['o1.saw', 'mx.m1'], ['o2.saw', 'mx.m2'], ['mx.mo', 'f.in'], ['f.out', 'a.i1'], ['a.o2', 'c.out'], ['e2.out', 'f.c1']],
     v: { c: { ov: 10 }, o1: { rg: 2 }, o2: { rg: 3, fq: 0.02 }, mx: { x1: 9, x2: 8, ms: 8, r1: 1 }, rt: { f1: 1, t1: 1, t2: 1, e1: 1 }, dl: { d1: 4 },
       f: { fc: 1, re: 3 }, e1: { t1: 0.5, t2: 5, es: 8, t3: 4 }, e2: { t1: 1, t2: 4.5, es: 3, t3: 4 } } },
+  // (9c, IMPL-9c §2) the System IIIc's starting patch and two presets that show the new types in a Model 15 / System 35 rack — ours;
+  // levels are first numbers: set from a proxy render on the base circuits (the new modules stood in by 921A/B, CP3A, 904B + 904A, a held CV for the
+  // 912, the 905 dropped: peaks ≈ −7 / −10 / −9 dBFS at ov 9 / 10 / 10 over 48 k × 4) — the real circuits' headroom gates (moog-dsp.test, engine-track) retune them
+  // keyboard-played (a set tile never starts a drone): KBD PITCH → the 901A; three 901Bs (8′) whose verniers sit ≈ −2 / 0 / +2 Hz from
+  // nominal — a fixed number of Hz, the 901's law (vn = 4.5 · log2(1 ± 2 / 261.63)): the beats, 2 and 4 Hz, the same at every key —
+  // through the 984 (inputs 1 – 3 → bus 1) and the 904C's band-pass at ≈ 724 Hz, a slow 911 on the 902, the 905
+  { name: 'Drift choir', about: 'Three 901Bs on one 901A, their verniers 2 Hz apart so they beat at 2 and 4 Hz at every key, summed by the 984 into the 904C band-pass and the 905\'s spring — a slow 911 on the 902: a pad that breathes, played from the keyboard',
+    mods: [['d', '901a'], ['o1', '901b'], ['o2', '901b'], ['o3', '901b'], ['mx', '984'], ['f', '904c'], ['a', '902'], ['e', '911'], ['r', '905']],
+    drv: { o1: 'd', o2: 'd', o3: 'd' },
+    cords: [['c.kp1', 'd.f1'], ['o1.saw', 'mx.i1'], ['o2.saw', 'mx.i2'], ['o3.saw', 'mx.i3'], ['mx.o1', 'f.in'], ['f.out', 'a.i1'],
+      ['c.ks1', 'e.trg'], ['e.out', 'a.c1'], ['a.o2', 'r.in'], ['r.out', 'c.out']],
+    v: { c: { ov: 9 }, o1: { vn: -0.0498 }, o3: { vn: 0.0494 }, mx: { l21: 10, l31: 10 }, f: { md: 2, fc: 1.5, bw: 1.5 },
+      e: { t1: 6, t2: 7, es: 9, t3: 7 }, r: { mx: 4 } } },
+  // the 912 follows the 902's own output (the note's level: a bare saw would hold it still); its control out rides the 904A's cutoff
+  // (co ≈ 5 V at 1 V p-p, ½ V an octave of level: the wah opens with the note and closes as it dies), its S-trigger — closed while
+  // the level is above TH — starts a second 911, a sweep through the 995 into the 904A's second input
+  { name: 'Follower wah', about: 'The 912 follows the 902\'s output — each note\'s own level — and its control out rides the 904A\'s cutoff: the wah opens with the note and closes as it dies; its trigger output starts a second 911, a sweep each time the level crosses the threshold',
+    mods: [['d', '921a'], ['o1', '921b'], ['o2', '921b'], ['a', '902'], ['e1', '911'], ['e2', '911'], ['at', '995'], ['f', '904a'], ['fl', '912']],
+    drv: { o1: 'd', o2: 'd' },
+    cords: [['c.kp1', 'd.f1'], ['o1.saw', 'c.m1'], ['o2.rec', 'c.m2'], ['c.mo', 'a.i1'], ['c.ks1', 'e1.trg'], ['e1.out', 'a.c1'],
+      ['a.o2', 'f.in'], ['a.o1', 'fl.in'], ['fl.co', 'f.c1'], ['fl.st', 'e2.trg'], ['e2.out', 'at.i1'], ['at.o1', 'f.c2'], ['f.out', 'c.out']],
+    v: { c: { x1: 10, x2: 5, ov: 10 }, o1: { rg: 3 }, o2: { rg: 3, fq: 0.02 }, e1: { t1: 0.5, t2: 5, es: 7, t3: 5 }, e2: { t1: 3, t2: 6, es: 0, t3: 5 },
+      at: { a1: 4 }, f: { fc: -4.5, re: 5 }, fl: { rs: 2, th: 5 } } },
+  // a short pluck (a saw and a detuned rectangle through the 904A, its cutoff on a second 911) through the 905 at MIX 7
+  { name: 'Spring pluck', about: 'A short 911 pluck — a saw and a detuned rectangle through the 904A, its cutoff closing on a second 911 — straight into the 905 at MIX 7: the spring rings on after every key',
+    mods: [['d', '921a'], ['o1', '921b'], ['o2', '921b'], ['f', '904a'], ['e1', '911'], ['e2', '911'], ['a', '902'], ['r', '905']],
+    drv: { o1: 'd', o2: 'd' },
+    cords: [['c.kp1', 'd.f1'], ['o1.saw', 'c.m1'], ['o2.rec', 'c.m2'], ['c.mo', 'f.in'], ['f.out', 'a.i1'], ['a.o2', 'r.in'], ['r.out', 'c.out'],
+      ['c.ks1', 'e1.trg'], ['e1.out', 'a.c1'], ['c.ks2', 'e2.trg'], ['e2.out', 'f.c1']],
+    v: { c: { x1: 10, x2: 5, ov: 10 }, o1: { rg: 3 }, o2: { rg: 3, fq: 0.02 }, f: { fc: 0.5, re: 1 }, e1: { t1: 0, t2: 5, es: 0, t3: 4 }, e2: { t1: 0, t2: 4.5, es: 0, t3: 4 },
+      r: { mx: 7 } } },
 ]);
 
 /** The family record patch-core registers (§2.6). */

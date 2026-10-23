@@ -2203,12 +2203,13 @@ test('9 drift (§3.4): the app\'s analog drift reaches the oscillators through m
 // §8.1's headroom through the whole Track (V9b: OUT_K 0.15 a volt): every starting patch with a note line at 48 kHz × 4 and
 // 44.1 kHz × 2 — the pre-limiter peak (the limiter's input) never reaches the limiter's threshold (−1 dBFS); Classic bass
 // peaks between −12 and −3 dBFS (the 808 groove's gate, 8 §12.4: measured as the app plays it). IMPL-9b §8.8: all thirteen — the
-// six on the Model 15 set, the seven on their own modules, the payload with the vals (Routed's bus rows); the clocked pair
+// six on the Model 15 set, the seven on their own modules, the payload with the vals (Routed's bus rows) —, IMPL-9c: sixteen with the three
+// 1960s ones (Drift choir, Follower wah, Spring pluck: on their own modules too); the clocked pair
 // (Sequence, Twenty-four steps) built while stopped, then ▶ from a stop at 120 BPM (the song's transport into the Song clock) — each
 // sounds (above −30 dBFS)
-test('9 headroom (§3.2, §8.1; 9b §8.8): the thirteen starting patches through the whole Track never reach the limiter (48 kHz × 4, 44.1 kHz × 2) and sound — the clocked pair from ▶; Classic bass peaks −12 … −3 dBFS', (t) => {
+test('9 headroom (§3.2, §8.1; 9b §8.8; 9c §2): the sixteen starting patches through the whole Track never reach the limiter (48 kHz × 4, 44.1 kHz × 2) and sound — the clocked pair from ▶; Classic bass peaks −12 … −3 dBFS', (t) => {
   const rep = [], CLK = new Set(['Sequence', 'Twenty-four steps']), S9 = new Set(['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells']);
-  assert.equal(MG.PRESETS.length, 13);
+  assert.equal(MG.PRESETS.length, 16);
   for (const [sr, os] of [[48000, 4], [44100, 2]]) {
     const D = p9Scope({ sampleRate: sr });
     for (const P of MG.PRESETS) {
@@ -2276,19 +2277,23 @@ test('9 warmPatch (§3.1, spike (a) decision 4; 9b §3.1): the first Track\'s wa
   const D = p9Scope({ overrides: { 'patch-dsp.js': wrap } });
   D.ctx.currentFrame = 0;
   const { p } = mk(D, { os: 4, hostOS: 4 }), I = p.i0, E = [...D.global('GLOG')].map(s => JSON.parse(s)), MAXC = D.global('PatchDSP').MAXC;
-  const gs = E.filter(e => e.pg && e.pg.mods.length > 0 && e.me === 1), big = gs.filter(e => e.pg.mods.length === MG.ORDER_ALL.length + 1);
+  const LINKED = MG.ORDER_ALL.filter(t => MG.TYPES[t].link), gs = E.filter(e => e.pg && e.pg.mods.length > 0 && e.me === 1), big = gs.filter(e => e.pg.mods.length === MG.ORDER_ALL.length + LINKED.length);   // (each linked type twice: driven, undriven)
   const parts = gs.filter(e => e.pg.mods.length < MG.ORDER_ALL.length);
   assert.ok(parts.length >= 6 && big.length >= 100, `the warm graphs (${parts.length} of the parts, ${big.length} of the whole table)`);
   assert.deepEqual(E.filter(e => e.r && e.r.why.length).map(e => e.r.why), [], 'no offending item');
   // IMPL-P §3.2 (skeptic #16): the evaluator's MAXC / MAXM are lifted (8192 / 1024) but the warm-up keeps the old shapes: engine.js's
   // WARM_C (a script-scope const of the worklet file: pinned here as a literal) splits the table by 256 connections, and every warm
   // payload holds ≤ 64 modules (the old MAXM: the table's types + the controller) — so the warm payload list is the 9dde7e6 one
-  // byte for byte (hashed on that base before lane B's first edit: 119 payloads)
+  // byte for byte (hashed on that base before lane B's first edit: 119 payloads). IMPL-9c G4 (a): re-pinned to the 36-type table (the
+  // ten 1960s types: still two parts, 17 and 22 modules, 119 payloads; PatchMoog.T lists the 901B before the 921B, so the undriven
+  // 921B stays the loop module — the 901B, no input of its own, last would take the loop steps away — lane V, on wt-9c with K's tables).
+  // IMPL-9c fix E: re-pinned again — graphs b and c now carry a ring through every loop-capable module of the part (a unchanged;
+  // still 119 payloads, the same calls; the loop no longer hangs on the table's order): was 87b16aac…
   assert.equal(gs.filter(e => e.pg.cords.length > 256).length, 0, 'every payload within 256 connections (WARM_C)');
   assert.equal(gs.filter(e => e.pg.mods.length > 64).length, 0, 'every payload within 64 modules (the old MAXM)');
   assert.ok(MAXC >= 256, 'the evaluator\'s bound is at least the warm-up\'s');
   assert.equal(E.filter(e => e.pg).length, 119);
-  assert.equal(createHash('sha256').update(E.filter(e => e.pg).map(e => JSON.stringify(e.pg)).join('\n')).digest('hex'), '1963f9f9d7b81f0f449909c4f9cd437af7fa57100c75e8a5380637e9d597c601', 'the warm payload list: byte-identical to 9dde7e6');
+  assert.equal(createHash('sha256').update(E.filter(e => e.pg).map(e => JSON.stringify(e.pg)).join('\n')).digest('hex'), '5e1aad3904700410a9e2ecd0273c830ef234dfe056c791964a7931fdfaba1dcd', 'the warm payload list: the 9c table\'s, fix E\'s ring');
   assert.ok(new Set(parts.map(e => e.pg.mods.map(m => m[1]).join())).size >= 2, 'the table in parts');
   // each part's graph a: the first payload of each module list that no other list contains (c is a's less a module)
   const key = e => JSON.stringify(e.pg.mods), sub = (x, y) => x.pg.mods.length < y.pg.mods.length && x.pg.mods.every(m => y.pg.mods.some(q => q.join() === m.join()));
@@ -2298,7 +2303,11 @@ test('9 warmPatch (§3.1, spike (a) decision 4; 9b §3.1): the first Track\'s wa
   assert.deepEqual([...new Set(A.flatMap(e => e.mods.map(m => m[1])))].sort(), [...MG.ORDER_ALL].sort(), 'every class built');
   // (a type with no output — the 993, 994, CP8A: no slots, the evaluator's multiples — is built, never scheduled)
   for (const e of A) assert.deepEqual(e.mods.filter(([n, ty]) => !e.run.includes(n) && MG.TYPES[ty].jacks.some(j => j.dir === 'out')), [], 'every module with an output live: each one runs');
-  assert.deepEqual(A.flatMap(e => e.pg.mods.filter(m => m[1] === '921b').map(m => m[2] >= 0)), [true, false], 'the linked type driven and undriven');
+  for (const ty of LINKED) assert.deepEqual(A.flatMap(e => e.pg.mods.filter(m => m[1] === ty).map(m => m[2] >= 0)), [true, false], ty + ': the linked type driven and undriven');
+  // IMPL-9c G4 (a): the 9c keys reorder the parts (the integer-like 901 first, the 901A among the last) — warmPatchOn's part (the first with
+  // a driven module: a new Track's first patch) still holds the 921B (Classic bass's first quanta), its driver beside it
+  const WP = D.run('ptWarms(globalThis.PatchMoog, "moog", 256)').parts.find(Q => Q.a.mods.some(m => m[2] >= 0));
+  assert.ok(WP.a.mods.some(m => m[1] === '921b' && m[2] >= 0) && WP.a.mods.some(m => m[1] === '921a'), 'warmPatchOn\'s part holds the driven 921B');
   for (const e of A) for (const [n, ty] of e.pg.mods) MG.TYPES[ty].jacks.forEach((j, k) => {
     if (j.dir === 'in') assert.ok(e.pg.cords.some(c => c[2] === n && c[3] === k), `${ty} ${j.id} fed`);
     if (j.dir === 'out') assert.ok(e.pg.cords.some(c => c[0] === n && c[1] === k), `${ty} ${j.id} read`);
@@ -2331,13 +2340,48 @@ test('9 warmPatch (§3.1, spike (a) decision 4; 9b §3.1): the first Track\'s wa
   assert.deepEqual([I.kind, I.pm.mon().mods.length, I.pmPend, I.pmErr, I.on, I.tp === p.tp], ['analog', 0, null, 0, 1, true], 'restore: fresh, the Track\'s transport back');
 });
 
+// IMPL-9c fix E (lane V's open finding): 9b's loop was a back cord from the last module to module 1, a loop only where the chain ran
+// unbroken between them — the table's order decided it. The 9c table's integer-like ids moved the part boundary: part 0 ended on
+// the 994 (no 1/4" output) with no loop step, and loopRun's per-sample call (patch-dsp.js `ms[k].run`) met three classes in the
+// warm-up (9b's seven: generic past V8's four maps) — m9x's loop deopted it on a new Track. Now a ring through every loop-capable
+// module of each part (a section with a 1/4" input and a 1/4" output — read from the table's jacks here, not from engine.js): each
+// part's graph b holds one loop step with all of them, and the call site meets every loop-capable class of the table (≥ 9b's seven)
+test('9c warm-up loops (fix E): each warm part\'s graph b holds one loop step with every loop-capable module of the part (≥ 2 members); loopRun\'s per-sample call meets every loop-capable class of the table — at least 9b\'s seven', () => {
+  const wrap = src => src + `;(function () {
+    const PD = globalThis.PatchDSP, cr = PD.create, S = globalThis.GLR = new Set();
+    globalThis.PatchDSP = Object.freeze(Object.assign({}, PD, { create(inst, f) {
+      const m = cr(inst, f);
+      if (m !== null) { const lr = m.loopRun; m.loopRun = function (st, i0, i1) { for (let k = 0; k < st.nm; k++) S.add(st.ms[k].constructor.name); return lr.call(this, st, i0, i1); }; }
+      return m;
+    } }));
+  })();`;
+  const D = p9Scope({ overrides: { 'patch-dsp.js': wrap } });
+  D.ctx.currentFrame = 0;
+  mk(D, { os: 4, hostOS: 4 });                                                   // (the first live Track: the warm-up)
+  const PM = D.global('PatchMoog'), PD = D.global('PatchDSP'), WS = D.run('ptWarms(globalThis.PatchMoog, "moog", 256)');
+  const lc = t => { const J = MG.TYPES[t].jacks, q = (j, d) => j.dir === d && j.sig !== 's'; return J.some(j => q(j, 'out') && J.some(i => q(i, 'in') && (i.sec | 0) === (j.sec | 0))); };
+  const LCT = MG.ORDER_ALL.filter(t => t !== PM.CTL && lc(t));
+  assert.ok(WS.parts.length >= 2 && LCT.length >= 7, `the table in parts (${WS.parts.length}), its loop-capable types (${LCT.length})`);
+  WS.parts.forEach((W, i) => {
+    const S = PD.schedule(W.b, 'moog'), mine = W.b.mods.filter(([n, t]) => n !== 0 && lc(t)).map(m => m[0]);
+    const loops = S.steps.filter(s => s.loop === 1).map(s => [...new Set(s.nodes.map(v => S.nodes[v][0]))]);
+    assert.deepEqual([...S.why], [], `part ${i}: graph b analyses with no offending item`);
+    assert.ok(mine.length >= 2, `part ${i}: ${mine.length} loop-capable modules`);
+    assert.ok(loops.some(L => L.length >= 2 && mine.every(n => L.includes(n))), `part ${i}: one loop step holds its ${mine.length} loop-capable modules (loops: ${JSON.stringify(loops)})`);
+  });
+  const seen = [...D.global('GLR')], want = [...new Set(LCT.map(t => PM.T[t].name))];
+  assert.deepEqual(want.filter(x => !seen.includes(x)), [], 'every loop-capable class met at loopRun\'s call site');
+  assert.ok(seen.length >= 7, `loopRun's call site met ${seen.length} classes (9b's seven)`);
+});
+
 // IMPL-9 §3.8 / §12 spike (a): the 900 Series' rows through the CPU gate (calibrated, ≤ 1.5 × the node target); IMPL-9b §3.7: the
-// System 55 set's m9q (Sequence, the Song clock on ALWAYS) and m9s (the classic voice, three 911s by the 993's bus rows)
-test('9 bench rows (node gate): m9p, m9x, m9d, m9q, m9s ≤ 1.5 × their targets', async (t) => {
+// System 55 set's m9q (Sequence, the Song clock on ALWAYS) and m9s (the classic voice, three 911s by the 993's bus rows); IMPL-9c G3:
+// the System IIIc set's m9c (the classic voice: ten oscillators, the 984, the three filters, the 905)
+test('9 bench rows (node gate): m9p, m9x, m9d, m9q, m9s, m9c ≤ 1.5 × their targets', async (t) => {
   const D = dspScope({ engine: true, fast: true, console: quiet });
   const { scenarios } = await import('./bench-scenarios.mjs');
   const rows = scenarios().filter(s => s.id.startsWith('m9'));
-  assert.deepEqual(rows.map(s => s.id), ['m9p', 'm9x', 'm9d', 'm9q', 'm9s']);
+  assert.deepEqual(rows.map(s => s.id), ['m9p', 'm9x', 'm9d', 'm9q', 'm9s', 'm9c']);
   for (const S of rows) assert.equal(CPU.BENCH.targets[S.id].jsc, S.jsc, S.id + ': the jsc target (9b rows)');
   for (const S of rows) {
     const B = S.build(), p = new D.Proc({ processorOptions: { os: 4, hostOS: 4, offline: true } });
@@ -2793,10 +2837,62 @@ test('9b warm-up at System 55 scale: the System 55 tile on a new Track — its f
   assert.ok(ok, 'no scope within the gates (first quanta ≤ ' + DL.toFixed(3) + ' ms, graph() median ≤ 0.5, max ≤ 1 ms)');
 });
 
+// IMPL-9c §3 G4 (c) (review 1 F2: measured in scratch only until now): the same in a warmed scope for the System IIIc tile — its
+// graph() (36 modules built, ≤ 1 ms), its first quanta, then a key (the starter is keyboard-played) — each quantum within a quarter
+// of the deadline; then m9c's patch and 40 flips of CP3 1's KEYBOARD switch (a bus row to the 901As in and out of the payload, the
+// payload re-posted with the values, 4 quanta apart): graph() median ≤ 0.5 ms, none over 1 ms, the flip's quantum within a quarter
+// of the deadline. Best of 3
+test('9c warm-up at System IIIc scale (G4 c): the System IIIc tile on a new Track — graph() ≤ 1 ms, its first quanta and the first key\'s ≤ a quarter of the deadline; 40 CP3 routing-switch flips: graph() median ≤ 0.5 ms, max ≤ 1 ms (warmed scope, fresh isolate)', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const here = new URL('./', import.meta.url).href, V = '?v=9';
+  const code = `
+    import '${here}v8-guard.mjs';
+    import { dspScope } from '${here}dsp-scope.mjs';
+    import * as core from '${here}../serum-core.js${V}';
+    import { patchFor } from '${here}../models.js${V}';
+    import * as MG from '${here}../moog-core.js${V}';
+    import * as PT from '${here}../patch-core.js${V}';
+    import { m9cPatch } from '${here}bench-scenarios.mjs';
+    const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} }, out = [], DL = 0.25 * 128 / 48;
+    const s = MG.makeSet('s3c', {}), P3 = PT.payload(s.rec, 'moog', s.vals), x = m9cPatch(), [c1] = Object.keys(x.rec.mods).filter(k => x.rec.mods[k].t === 'cp3');
+    const v1 = PT.setKnob(x.vals, x.rec, c1, 'r1', 1), v0 = PT.setKnob(x.vals, x.rec, c1, 'r1', 0);
+    const on = PT.payload(x.rec, 'moog', v1), off = PT.payload(x.rec, 'moog', v0);
+    if (JSON.stringify(on) === JSON.stringify(off)) throw new Error('the CP3 switch changed no payload');
+    const patch = v => patchFor('m900', v, core.defaultFx2(), { sr: 48000, bpm: 120 }), now = () => performance.now();
+    for (let k = 0; k < 3; k++) {
+      const D = dspScope({ engine: true, fast: true, console: quiet });
+      new D.Proc({ processorOptions: { os: 4, hostOS: 4 } }); // (the first live Track of the scope: the warm-up)
+      const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4 } });
+      const o = [[new Float32Array(128), new Float32Array(128)]], q = () => { const t0 = now(); p.process([], o); D.ctx.currentFrame += 128; return now() - t0; };
+      const steady = n => { const a = []; for (let j = 0; j < n; j++) a.push(q()); return a.slice(n >> 2).sort((y, z) => y - z)[(n - (n >> 2)) >> 1]; };
+      p.msg({ t: 'patch', p: patch(s.vals) });
+      let t0 = now(); p.msg({ t: 'seq', s: P3 }); const g = now() - t0;
+      const f0 = Math.max(q(), q()), s0 = steady(200);
+      p.msg({ t: 'on', n: 48, v: 0.8 });
+      const f1 = Math.max(q(), q(), q()), s1 = steady(300);
+      p.msg({ t: 'off', n: 48 });
+      p.msg({ t: 'patch', p: patch(v0) }); p.msg({ t: 'seq', s: off }); p.msg({ t: 'on', n: 36, v: 0.8 });
+      steady(100);
+      const G = [], F = [];
+      for (let j = 0; j < 40; j++) { for (let i = 0; i < 4; i++) q(); p.msg({ t: 'patch', p: patch(j & 1 ? v0 : v1) }); t0 = now(); p.msg({ t: 'seq', s: j & 1 ? off : on }); G.push(now() - t0); F.push(q()); }
+      const srt = G.slice().sort((y, z) => y - z);
+      out.push([g, f0, s0, f1, s1, srt[20], srt[39], Math.max(...F), Object.keys(s.rec.mods).length]);
+      if (g <= 1 && Math.max(f0, f1, Math.max(...F)) <= DL && srt[20] <= 0.5 && srt[39] <= 1) break;
+    }
+    console.log(JSON.stringify(out));`;
+  const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 180000 });
+  assert.equal(r.status, 0, r.stderr);
+  const got = JSON.parse(r.stdout.trim().split('\n').pop()), DL = 0.25 * 128 / 48;
+  for (const [g, f0, s0, f1, s1, gm, gx, ff, n] of got) t.diagnostic(`the System IIIc tile: graph() ${g.toFixed(3)} ms (${n} modules), first quanta ${f0.toFixed(3)} / steady ${s0.toFixed(3)}, a key ${f1.toFixed(3)} / ${s1.toFixed(3)}; CP3 flips: graph() median ${gm.toFixed(3)} max ${gx.toFixed(3)} ms, the flip's quantum ≤ ${ff.toFixed(3)} ms`);
+  const ok = got.find(([g, f0, , f1, , gm, gx, ff]) => g <= 1 && Math.max(f0, f1, ff) <= DL && gm <= 0.5 && gx <= 1);
+  assert.ok(ok, 'no scope within the gates (graph() ≤ 1 ms, first quanta ≤ ' + DL.toFixed(3) + ' ms, flips: graph() median ≤ 0.5, max ≤ 1 ms)');
+});
+
 // IMPL-9b §8.3 / §12 spike (a2) decision 1: the scope's warm-up (the first live Track's) at most 1.25 × stage 9's — tests/ref-9's
 // engine.js, patch-dsp.js and moog-dsp.js (the Model 15 family) against the current files, every other script current; each in a
-// fresh process (the JIT's state is per isolate), alternating, the median ratio of 5 pairs (measured again once when above)
-test('9b warm-up time: the scope\'s warm-up ≤ 1.25 × stage 9\'s (ref-9, alternating fresh processes)', async (t) => {
+// fresh process (the JIT's state is per isolate), alternating, the median ratio of 5 pairs (measured again once when above).
+// IMPL-9c §13 (the user's answer to §10's extra, 2026-10-23: "Allow the longer start" — every type stays pre-warmed): 1.35
+test('9b warm-up time: the scope\'s warm-up ≤ 1.35 × stage 9\'s (ref-9, alternating fresh processes)', async (t) => {
   const { spawnSync } = await import('node:child_process');
   const root = new URL('../', import.meta.url), here = new URL('./', import.meta.url).href;
   const child = side => `
@@ -2815,12 +2911,45 @@ test('9b warm-up time: the scope\'s warm-up ≤ 1.25 × stage 9\'s (ref-9, alter
     const t0 = performance.now(); new Proc({ processorOptions: { os: 4, hostOS: 4 } }); console.log(performance.now() - t0);`;
   const one = side => { const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', child(side)], { encoding: 'utf8', timeout: 60000 }); assert.equal(r.status, 0, r.stderr); return +r.stdout.trim(); };
   let best = null;
-  for (let a = 0; a < 2 && !(best && best.ratio <= 1.25); a++) {
+  for (let a = 0; a < 2 && !(best && best.ratio <= 1.35); a++) {
     const A = [], B = [], Q = [];
     for (let k = 0; k < 5; k++) { let x, y; if (k & 1) { y = one('cur'); x = one('ref9'); } else { x = one('ref9'); y = one('cur'); } A.push(x); B.push(y); Q.push(y / x); }
     const med = v => v.slice().sort((p, q) => p - q)[2], r = { a: med(A), b: med(B), ratio: med(Q) };
     t.diagnostic(`warm-up: stage 9 ${r.a.toFixed(0)} ms, now ${r.b.toFixed(0)} ms (× ${r.ratio.toFixed(3)})`);
     if (!best || r.ratio < best.ratio) best = r;
   }
-  assert.ok(best.ratio <= 1.25, `warm-up × ${best.ratio.toFixed(3)} of stage 9's (cap 1.25)`);
+  assert.ok(best.ratio <= 1.35, `warm-up × ${best.ratio.toFixed(3)} of stage 9's (cap 1.35)`);
+});
+
+// IMPL-9c G4 (b) (skeptic #3): the stage's own growth — the scope's warm-up at most 1.10 × stage 9b's (tests/ref-9b's engine.js,
+// patch-dsp.js and moog-dsp.js: the 26-type family, every other script current), the same harness (alternating fresh processes, the
+// median ratio of 5 pairs, measured again once when above); IMPL-9c §13 (the user's answer to §10's extra, 2026-10-23): 1.22 — the
+// same bound as the 1.35 × stage 9 cap above (1.35 / 1.109, lane V's ref-9b over ref-9)
+test('9c warm-up time: the scope\'s warm-up ≤ 1.22 × stage 9b\'s (ref-9b, alternating fresh processes)', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const root = new URL('../', import.meta.url), here = new URL('./', import.meta.url).href;
+  const child = side => `
+    import '${here}v8-guard.mjs';
+    import vm from 'node:vm';
+    import { readFileSync } from 'node:fs';
+    import { DSP_FILES } from '${here}dsp-scope.mjs';
+    const R9 = ['patch-dsp.js', 'moog-dsp.js', 'engine.js'], src = f => readFileSync(new URL(${JSON.stringify(side)} === 'ref9b' && R9.includes(f) ? 'tests/ref-9b/' + f : f, ${JSON.stringify(root.href)}), 'utf8');
+    const g = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+    let Proc = null;
+    Object.assign(g, { console: { log() {}, info() {}, debug() {}, warn() {}, error() {} }, sampleRate: 48000, currentFrame: 0 });
+    g.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
+    g.registerProcessor = (n, c) => { Proc = c; };
+    for (const f of DSP_FILES) vm.runInContext(src(f), g, { filename: f });
+    vm.runInContext(src('engine.js'), g, { filename: 'engine.js' });
+    const t0 = performance.now(); new Proc({ processorOptions: { os: 4, hostOS: 4 } }); console.log(performance.now() - t0);`;
+  const one = side => { const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', child(side)], { encoding: 'utf8', timeout: 60000 }); assert.equal(r.status, 0, r.stderr); return +r.stdout.trim(); };
+  let best = null;
+  for (let a = 0; a < 2 && !(best && best.ratio <= 1.22); a++) {
+    const A = [], B = [], Q = [];
+    for (let k = 0; k < 5; k++) { let x, y; if (k & 1) { y = one('cur'); x = one('ref9b'); } else { x = one('ref9b'); y = one('cur'); } A.push(x); B.push(y); Q.push(y / x); }
+    const med = v => v.slice().sort((p, q) => p - q)[2], r = { a: med(A), b: med(B), ratio: med(Q) };
+    t.diagnostic(`warm-up: stage 9b ${r.a.toFixed(0)} ms, now ${r.b.toFixed(0)} ms (× ${r.ratio.toFixed(3)})`);
+    if (!best || r.ratio < best.ratio) best = r;
+  }
+  assert.ok(best.ratio <= 1.22, `warm-up × ${best.ratio.toFixed(3)} of stage 9b's (cap 1.22)`);
 });

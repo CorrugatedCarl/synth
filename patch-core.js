@@ -594,7 +594,9 @@ function busScan(fam, rec, vals, only) {
     const ts = m[1].split('|'), k = m[2] === '=' ? ord.get(mid) : +m[2], L = [];
     for (const t of ts) for (const x of byT.get(t) || []) L.push(x);
     if (k <= L.length) return [L[k - 1] + '.' + m[3], ''];
-    return [null, `No ${ts.map(t => (typeOf(fam, t) || { short: t.toUpperCase() }).short).join(' / ')} ${k} in this patch`];
+    const names = ts.map(t => (typeOf(fam, t) || { short: t.toUpperCase() }).short);
+    // ((9c fix, review 2 N2) one type: its title's form, "No <short> <k>"; several: the ordinal first, "No 4th of <a> / <b> / <c>" — "<c> 4" reads as a module's title)
+    return [null, ts.length === 1 ? `No ${names[0]} ${k} in this patch` : `No ${k}${k % 100 >= 11 && k % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][k % 10] || 'th'} of ${names.join(' / ')} in this patch`];
   };
   for (const mid of ms) {
     const T = typeOf(fam, M[mid].t);
@@ -606,7 +608,7 @@ function busScan(fam, rec, vals, only) {
       let why = !on ? 'Off' : wa || wb || (!A || !B || !A.T || !B.T || A.j.dir !== 'out' || B.j.dir !== 'in' || A.j.sig !== B.j.sig ? 'No such jack' : '');
       if (!why) {
         const k = pair(A, B), by = held.get(k);
-        if (by !== undefined) why = by === null ? 'Already patched by a cord' : by === mid ? 'Already routed by another row of this panel' : `Already routed by ${T.short} ${ord.get(by)}`;
+        if (by !== undefined) why = by === null ? 'Already patched by a cord' : by === mid ? 'Already routed by another row of this panel' : `Already routed by ${(typeOf(fam, M[by].t) || T).short} ${ord.get(by)}`; // ((9c fix, review 1 F3) the holder's type: a CP3A's route may stand under a CP3)
         else if (room > 0) { room--; held.set(k, mid); }
         else why = `A patch holds at most ${MAX_CONN} connections`;
       }
@@ -622,7 +624,8 @@ export function busRows(rec, f, vals) {
   return fam ? busScan(fam, rec, vals).filter(x => !x.why).map(x => ({ a: x.a, b: x.b, g: x.g, panel: x.panel, i: x.i, sw: x.sw })) : [];
 }
 /** A routing panel's rows for its switches' tips (IMPL-9b §1.4): [{ i, sw, on, a, b, ok, why }] — ok: a connection now; why: '' |
- *  'Off' | 'No <short> <k> in this patch' (an ordinal past the patch's modules) | the bound's reason. */
+ *  'Off' | 'No <short> <k> in this patch' (an ordinal past the patch's modules; several listed types: 'No <k>th of <short> / <short> in
+ *  this patch') | the bound's reason. */
 export function busInfo(rec, f, vals, mid) {
   const fam = famOf(f) || famOf(rec && rec.f);
   return fam ? busScan(fam, rec, isObj(vals) ? vals : {}, mid).map(x => ({ i: x.i, sw: x.sw, on: x.on, a: x.a, b: x.b, ok: !x.why, why: x.why })) : [];

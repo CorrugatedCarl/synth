@@ -1261,7 +1261,7 @@ test('9b (IMPL-9b §6, §1.4): every graph payload the host builds carries the d
   const api = s.api, cv = globalThis.__synthTest.cv, t = api.project().tracks[0], dv = CMOD.primId(t), N = s.nodeOf(t.id);
   const tiles = globalThis.__synthTest.shell.shell.tiles;
   tiles.setView('moog');
-  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55'], 'the set tiles');
+  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55', 's3c'], 'the set tiles');
   cv.setPick('s55', 'replace'); s.raf(); await s.settle(3);
   const rec = () => I(api.project().tracks[0]).patch, vals = () => I(api.project().tracks[0]).vals, m993 = Object.keys(rec().mods).find(k => rec().mods[k].t === '993');
   assert.deepEqual([Object.keys(rec().mods).length, rec().name], [39, 'Sequence'], 'loaded over the Model 15: 12 + 27 modules');

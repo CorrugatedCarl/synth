@@ -485,7 +485,7 @@ const DRAW = {
 
 /* ---------------------------------------------------------------- the set tiles (IMPL-9b §4.3) */
 const fz = Object.freeze;
-/** The Sources tray's set tiles (System 35, System 55) by set id (moog-core FAMILY.sets). outline: the silhouette's polygon in the 96 × 56 design box; rows: module faces per
+/** The Sources tray's set tiles (System 35, System 55, System IIIc) by set id (moog-core FAMILY.sets). outline: the silhouette's polygon in the 96 × 56 design box; rows: module faces per
  * tier; console: console panels in the strip; modules: the tile's "N modules" (rows + console, the controller not counted); cords: coloured cords hanging. The Model 15's tile is
  * the 900 Series' own, art('m900'). @type {Object<string, {name: string, body: string, outline: ReadonlyArray<ReadonlyArray<number>>, rows: ReadonlyArray<number>, console: number, modules: number, cords: number}>} */
 export const SET_ART = fz({
@@ -494,6 +494,9 @@ export const SET_ART = fz({
   // two wood-ended cabinets, the upper narrower: sixteen tall narrow faces (the wide one a sequencer's 3 × 8 dots) over fourteen (a wide bank of small knobs), a console strip
   // of seven panels, four coloured cords hanging between the cabinets
   s55: fz({ name: 'System 55', body: 'stack', outline: fz([[3, 53], [93, 53], [93, 29.4], [89, 29.4], [89, 2], [7, 2], [7, 29.4], [3, 29.4]].map(fz)), rows: fz([16, 14]), console: 7, modules: 37, cords: 4 }),
+  // (9c, IMPL-9c §2) a wide wood cabinet under a narrow tower centred on it: sixteen tall narrow faces in the tower (one three units wide: the 901) over fifteen in the cabinet (a wide
+  // bank of small knobs, a wide mixer), a console strip of five panels, three coloured cords hanging from the tower's jacks to the cabinet's
+  s3c: fz({ name: 'System IIIc', body: 'tower', outline: fz([[3, 53], [93, 53], [93, 29], [72, 29], [72, 3.5], [24, 3.5], [24, 29], [3, 29]].map(fz)), rows: fz([16, 15]), console: 5, modules: 36, cords: 3 }),
 });
 const SF = { FACE: '#2b2926', CON: '#383430', CAP: '#d4cfc4', JK: '#8d887e', LAMP: '#f2a33a', DIM: '#5a4a30', CORDS: ['#d8452f', '#e6b422', '#3b82c4', '#3fae5a'] };
 // columns across a panel: units wide each, 0.4 apart → [p, q] as fractions of the panel's width; xl / xr give the panel's edges at a height y (a wedge's lean bends them), X(y, p) the x of fraction p
@@ -574,6 +577,17 @@ const SETDRAW = {
     const J = (t, i, k) => t.J[i][Math.min(k, t.J[i].length - 1)];
     return s + [[J(a, 0, 0), J(b, 2, 0)], [J(a, 3, 1), J(b, 5, 0)], [J(a, 9, 0), J(b, 6, 0)], [J(a, 14, 0), J(b, 12, 0)]].map(([p, q], i) => setCord(p, q, [5, 8, 6, 9][i], SF.CORDS[i], lo)).join('');
   },
+  // a wide wood cabinet under a narrow tower: sixteen tall faces in the tower (the wide one the 901's three units), fifteen in the cabinet (a wide bank of small knobs: two rows of seven;
+  // the wide pair of mixers), a console strip of five panels, three coloured cords from the tower's jacks down to the cabinet's
+  s3c(th, lo) {
+    const A = th.accent || '#d9d2bf', up = [() => 27, () => 69], lw = [() => 6, () => 90];
+    let s = shadow(3, 93, 54.4) + setCab(3, 29, 90, 24, 3, 1.4, 2.6, th) + setCab(24, 3.5, 48, 25.5, 3, 1.4, 1, th) + R(24, 28.5, 48, 0.8, '#0c0b0a');
+    const a = setTier(...up, 5.6, 22, [3, ...Array(15).fill(1)], {}, 3, lo, A);
+    const b = setTier(...lw, 31.2, 13.4, [1, 1, 2, 2, 4, 1, 1, 1, 1, 1, 1, 1, 4, 1, 1], { 4: 'bank' }, 5, lo, A);
+    s += a.g + b.g + setConsole(...lw, 45.4, 5, [2, 2, 2, 2, 1], lo);
+    const J = (t, i, k) => t.J[i][Math.min(k, t.J[i].length - 1)];
+    return s + [[J(a, 2, 0), J(b, 2, 0)], [J(a, 8, 1), J(b, 5, 0)], [J(a, 13, 0), J(b, 11, 0)]].map(([p, q], i) => setCord(p, q, [4, 7, 5][i], SF.CORDS[i], lo)).join('');
+  },
 };
 
 /* ---------------------------------------------------------------- glyphs (32 × 32 design box, currentColor strokes) */
@@ -617,7 +631,7 @@ export function art(id, o) {
 }
 /** The track-row chip drawing (CHIP size). @param {string} id @returns {string} */
 export function chip(id) { return art(id, CHIP); }
-/** The drawing of a set tile ('s35' System 35, 's55' System 55; SET_ART) as an SVG string, like art(): cached per id + size, `data-art` the set id. An unknown set id gets the Model 15's
+/** The drawing of a set tile ('s35' System 35, 's55' System 55, 's3c' System IIIc; SET_ART) as an SVG string, like art(): cached per id + size, `data-art` the set id. An unknown set id gets the Model 15's
  * tile (the 900 Series' art('m900')). @param {string} setId @param {{w?: number, h?: number}} [o] @returns {string} */
 export function setArt(setId, o) {
   if (!SETDRAW[setId]) return art('m900', o);

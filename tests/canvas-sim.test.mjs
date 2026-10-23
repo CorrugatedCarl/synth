@@ -660,18 +660,19 @@ test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain af
   }
 });
 
-test('(9b, IMPL-9b §4.3; lanes U9b, H9b) the Sources tray\'s Moog modules view in the page: the note names the three sets; five groups (Sources · Modifiers · Control · Sequencing · Console & routing) and the 25 module tiles in the family\'s order, each with its glyph box, name and load; tiles() stays the synths\'; the host\'s two set tiles (System 35, System 55)', () => {
+test('(9b, IMPL-9b §4.3; lanes U9b, H9b) the Sources tray\'s Moog modules view in the page: the note names the four sets; six groups (Sources · Modifiers · Control · Sequencing · Console & routing · 1960s) and the 35 module tiles in the family\'s order, each with its glyph box, name and load; tiles() stays the synths\'; the host\'s three set tiles (System 35, System 55, System IIIc)', () => {
   const tiles = globalThis.__synthTest.shell.shell.tiles, was = tiles.view();
   try {
     tiles.setView('moog');
     const sec = sim.$('#srcScroll').children.find(c => c.getAttribute && c.getAttribute('data-sec') === 'moog'), box = sec.children[0];
     const row = box.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-moog')));
     assert.deepEqual([sec.hidden, row], [false, ['#Sources', '921', '921a', '921b', '923', '903a', '#Modifiers', '904a', '904b', '907a', '914', '902', '#Control', '911', '911a', '995', '994',
-      '#Sequencing', '960', '961', '962', 'clk', '#Console & routing', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993']]);
+      '#Sequencing', '960', '961', '962', 'clk', '#Console & routing', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993',
+      '#1960s', '901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3']]);
     const t960 = tiles.moogTile('960');
     assert.deepEqual([tiles.moogTiles().length, t960.children.map(c => c.className), t960.children[1].textContent, tiles.moogTile('clk').children[1].textContent, tiles.moogTile('cp8a').children[1].textContent],
-      [25, ['cv-gglyph', 'cv-tname', 'cv-tcost', 'cv-treason'], '960 Sequencer', 'Song clock', 'CP8A Power']);
-    assert.equal(sim.$('#srcNote').textContent, 'Model 15, System 35 and System 55 bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.');
-    assert.deepEqual([tiles.tiles().length, tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set'))], [MODELS.length, ['m900'], ['s35', 's55']]);
+      [35, ['cv-gglyph', 'cv-tname', 'cv-tcost', 'cv-treason'], '960 Sequencer', 'Song clock', 'CP8A Power']);
+    assert.equal(sim.$('#srcNote').textContent, 'Model 15, System 35, System 55 and System IIIc bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.');
+    assert.deepEqual([tiles.tiles().length, tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set'))], [MODELS.length, ['m900'], ['s35', 's55', 's3c']]);
   } finally { tiles.setView(was); }
 });

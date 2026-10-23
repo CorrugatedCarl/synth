@@ -37,7 +37,12 @@
 //   queuePatch throttled, no step), view() → the track view (ports, jacks, modules), cords() → the cord layer | null, notice(text,
 //   ms, onTap?), undo(), kit (classic-panel's kit for the faces), menu?(x, y, items, opts) (wk.contextMenu); (9b) ev?(t, dev, mid,
 //   id) (a momentary event: the node's { t: 'seq', s: { pe: [n, k] } }), heard?(ts?) → the output frame heard now (lamps; NaN /
-//   absent: at once), rate?() → Hz, playing?() → the song plays (a set's ▶ note is skipped, review 2 N2), raf?(fn) (tests; else wk.frame) }.
+//   absent: at once), rate?() → Hz, playing?() → the song plays (a set's ▶ note is skipped, review 2 N2), raf?(fn) (tests; else wk.frame);
+//   (9c fix, review 2 F2) show?(key) → a module just tapped in (not dropped) or duplicated: the host brings it into view when it lies
+//   off the band (main.js modShow: the camera, no edit state) }.
+//   (9c fix, review 2 N1) a linked module that comes out undriven (add / duplicate, no driver of its link's type has room) says so on a
+//   notice ("Every 901A already drives three — this 901B runs on its own; add a 901A to drive it"; none in the patch: "No 901A in this
+//   patch — …") and its bar's sub reads "not driven".
 // The cord layer (cv-cords, lane C9; stubbed here per §7.4): set([{ id, a, b, c, s }]) (a / b jack keys, c the colour index, s 1
 //   for an S-trigger cord), anchors(Map jackKey → {x, y}), live({ a: {x, y}, b: {x, y}, c, s } | null), grab(id, end 'a' | 'b',
 //   p) / move(p) / drop(), sel(id | null).
@@ -550,7 +555,18 @@ export function patchHost(deps) {
     const T = C.fam.types[type], mv = routeMoves(C, r.rec, C.vals);
     if (!commit(C, 'Add ' + (T ? T.short : type), { rec: r.rec, lay: { [keyOf(C.dev, r.mid)]: p } })) return null;
     if (mv) notice('Added ' + PT.title(r.rec, r.mid, C.f) + ' · ' + mv + ' · tap to undo', 8000, undoTap); // ((9b, review 2 F4) said only when a lit row moved)
+    else { const un = undriven(C, r.rec, r.mid); if (un) notice(un, 6000); }
+    if (!(atP && fin(atP.x) && fin(atP.y))) call(P.show, keyOf(C.dev, r.mid)); // ((9c fix, review 2 F2) a tap: off the band, the camera brings it in — a drop lands where the finger is)
     return r.mid;
+  }
+  /** (9c fix, review 2 N1) What to say of a linked module that has no driver (no module of its link's type had room): '' when it has one
+   * or has no link. "Every 901A already drives three — this 901B runs on its own; add a 901A to drive it" (the patch holds none:
+   * "No 901A in this patch — …"). */
+  function undriven(C, rec, mid) {
+    const m = rec.mods[mid], T = m && C.fam.types[m.t], L = T && T.link, D = L && C.fam.types[L.to];
+    if (!D || m.drv) return '';
+    const any = Object.keys(rec.mods).some(k => rec.mods[k].t === L.to), W = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+    return `${any ? `Every ${D.short} already drives ${W[L.max] || L.max}` : `No ${D.short} in this patch`} — this ${T.short} runs on its own; add a ${D.short} to drive it`;
   }
   /** Delete a module with its cords (one step, no prompt — Q4; a driver's driven modules undriven), "tap to undo". */
   function remove(mid) {
@@ -578,6 +594,8 @@ export function patchHost(deps) {
     const mv = routeMoves(C, r.rec, r.vals || C.vals);
     if (!commit(C, 'Duplicate ' + modTitle(C, mid), { rec: r.rec, vals: r.vals, lay: { [keyOf(C.dev, r.mid)]: p } })) return null;
     if (mv) notice('Duplicated ' + modTitle(C, mid) + ' · ' + mv + ' · tap to undo', 8000, undoTap);
+    else { const un = undriven(C, r.rec, r.mid); if (un) notice(un, 6000); } // ((9c fix, review 2 N1) its driver is full)
+    call(P.show, keyOf(C.dev, r.mid)); // ((9c fix, review 2 F2) its place may be a free slot far from the source)
     return r.mid;
   }
   /** A linked module's driver (null: none). */
@@ -647,12 +665,12 @@ export function patchHost(deps) {
   }
 
   /* ---- the modules' bars, menus and entries */
-  /** A module's bar: { title ('<short> <ordinal>': patch-core title), sub (a linked module's driver: 'on <its title>') }. */
+  /** A module's bar: { title ('<short> <ordinal>': patch-core title), sub (a linked module's driver: 'on <its title>', none: 'not driven') }. */
   function title(t, dev, mid) {
     const C = ctxOf(t, dev);
     if (!C) return { title: '', sub: '' };
     const m = C.rec.mods[mid], T = m && C.fam.types[m.t];
-    return { title: modTitle(C, mid), sub: T && T.link && m.drv ? 'on ' + modTitle(C, m.drv) : '' };
+    return { title: modTitle(C, mid), sub: T && T.link ? (m.drv ? 'on ' + modTitle(C, m.drv) : 'not driven') : '' }; // ((9c fix, review 2 N1) an undriven one says so)
   }
   /** The ⋯ items of a patch module (Duplicate, Driver ▸, Delete) or of the controller (Patches ▸ the presets and Init patch, Tidy patch). */
   function items(t, dev, mid) {

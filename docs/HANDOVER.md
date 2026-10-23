@@ -125,6 +125,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    canonical-stream split by processor name (the `synth-engine` part = main's fixture). Next on the roadmap (the user's order): 9c (1960s
    Moog extras), the ARP 2600 / MS-20 patch panels on the 900 Series engine, the Colossus (11), our own synth (10), the standalone offline
    app (12); one consolidated real-device iPad pass after the features; the commercial release (15) after that.
+13. **(2026-10-23.)** **Stage 9c (the 1960s Moog extras) deployed** as one squashed commit "9c" on `canvas` (holding branch `wt-9c`;
+   contract IMPL-9c; `tests/ref-9c` frozen beside ref-9 / ref-9b; golden-moog-c). The user doesn't expect to patch the Moog much
+   ("not having it physically defeats why it's pleasurable") and asked for **the standalone app next** (ROADMAP 12), before the patch-panel
+   stages: Xcode 27.1 is installed (`xcode-select` → Xcode), the iOS 27.0 simulator runtime holds the iPads (27.1's only the "iPhone
+   Duo"); the simulator **SYNTH iPad Pro 13** (iOS 27.0) exists. Process: Fable 5.1 for the spike / contract / native bridges / reviews,
+   Opus 5.5 for builders, Sonnet for mechanical lanes. The user's Apple Developer account / TestFlight is their step.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

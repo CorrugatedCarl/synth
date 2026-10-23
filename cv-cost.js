@@ -126,7 +126,11 @@ export const COST = Object.freeze({
     // 993, the 994 and the CP8A nothing (no slots: never scheduled; the 994's multiples are the evaluator's)
     '904b': 0.0016, 914: 0.0072, '911a': 0.0005, '903a': 0.0003, 960: 0.0011, 962: 0.0006, 992: 0.0001, 993: 0, 994: Object.freeze([0, 0]),
     cp3a: Object.freeze([0.0005, 0.0001, 0]), cp4a: Object.freeze([0.0001, 0.0001]), cp35: Object.freeze([0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0]),
-    cp2: Object.freeze([0.0003, 0.0003, 0, 0.0001]), cp8a: 0, 961: Object.freeze([0.0005, 0.0005, 0.0001, 0.0001, 0.0002]), clk: 0.0003 }),
+    cp2: Object.freeze([0.0003, 0.0003, 0, 0.0001]), cp8a: 0, 961: Object.freeze([0.0005, 0.0005, 0.0001, 0.0001, 0.0002]), clk: 0.0003,
+    // 9c (IMPL-9c §3 G2, §12 Lane V: V8, the type minus its null twin, OS 4): the 901 with one output read, the 901B driven, the 904C
+    // without CV, the 984 with four buses read, the 912 follower / comparator, the CP3 as the CP3A's sections
+    901: 0.0015, '901a': 0.0007, '901b': 0.0014, '901c': 0.0005, '904c': 0.0018, 905: 0.0061, 912: Object.freeze([0.0010, 0.0002]), 984: 0.0017, 991: 0.0006,
+    cp3: Object.freeze([0.0003, 0.0001, 0]) }),
   // a loop step's member: ≈ 6–9 ns a sample at OS 4 (spike (a), V9a: 7.5 ns × 192 000 samples a second) on top of its block cost
   loop: 0.00144,
 });

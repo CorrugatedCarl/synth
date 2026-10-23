@@ -86,6 +86,10 @@ function rig({ base = 48000, os = 4, mods, cords = [], pv = {}, drive = [], taps
     const nIn = P.JACKS[type].filter(j => j.dir === 'in').length, nOut = P.JACKS[P.LINK[type].from].filter(j => j.dir === 'out').length;
     P.LINK[type].def.forEach((_, k) => bind.set(n + ':' + (nIn + k), { n: d, oi: nOut + k, sec: 0, dsec: 0 }));
   }
+  for (const [n, type, d] of mods) if (P.LINK[type] && !(d !== undefined && d >= 0)) {   // (9c) undriven: a non-zero def a constant feed (patch-dsp.js's rule)
+    const nIn = P.JACKS[type].filter(j => j.dir === 'in').length;
+    P.LINK[type].def.forEach((v, k) => { if (v !== 0) dmap.set(n + ':' + (nIn + k), new Float64Array(P.BL).fill(v)); });
+  }
   for (const m of M.values()) m.om = 0;
   for (const [key, b] of dmap) { const [n, ii] = key.split(':').map(Number); M.get(n).ins[ii] = b; }
   for (const [key, b] of bind) { const [n, ii] = key.split(':').map(Number); M.get(n).ins[ii] = M.get(b.n).outs[b.oi]; M.get(b.n).om |= 2 ** b.oi; }
@@ -277,6 +281,9 @@ const T_JACKS = {
   962: 'i1 i2 i3 q1 q2 t1 t2 t3 o1 o2 o3 sh', 992: 'x4 xr', 993: '', 994: 'a1 a2 a3 a4 b1 b2 b3 b4',
   cp2: 'li lo hi ho u1 u2 u3 u4 po so kpr ksr', cp3a: 'm1 m2 m3 m4 mo mn x4 xr a1 a2 a3 a4', cp4a: 'ti tr ci cr',
   cp35: 'p6 m6 i1 o1 i2 o2 i3 o3 i4 o4 u1 u2 u3 u4', cp8a: '', clk: 'ck rn rs',
+  // stage 9c (IMPL-9c §1.0; lane V)
+  901: 'f1 f2 f3 sin saw tri pls vsin vsaw vtri vpls', '901a': 'f1 f2 f3', '901b': 'sin saw tri pls vsin vsaw vtri vpls', '901c': 'in p n',
+  '904c': 'in c1 c2 b1 out', 905: 'in out', 912: 'in co ci st', 984: 'i1 i2 i3 i4 o1 o2 o3 o4', 991: 'in out', cp3: 'm1 m2 m3 m4 mo mn x4 xr a1 a2 a3 a4',
 };
 const T_PARAMS = {
   ctl: 'gl:0 pr:0:1 rt:0:1 tu:0 x1:7 x2:7 x3:7 x4:7 ov:7', 921: 'sp:0:1 cr:1:1 fq:0 rg:2:1 pw:50 ax:2:1 cl:0 al:5', '921a': 'sp:0:1 fq:0 pw:50',
@@ -288,15 +295,20 @@ const T_PARAMS = {
   961: 't1:5 t2:5 se:5', 962: '', 992: 's1:0:1 s2:0:1 s3:0:1 s4:0:1 at:0', 993: 'f1:0:1 f2:0:1 t1:0:1 t2:0:1 t3:0:1 e1:0:1 e2:0:1 e3:0:1', 994: '',
   cp2: 'lp:5 hp:5', cp3a: 'x1:7 x2:7 x3:7 x4:7 ms:5 r1:0:1 r2:0:1 r3:0:1 r4:0:1 ra:10', cp4a: 'c1:0:1 c2:0:1 c3:0:1 c4:0:1 t1:0:1 t2:0:1 t3:0:1',
   cp35: 'a1:0 a2:0 a3:0 a4:0', cp8a: '', clk: 'dv:2:1 md:0:1 ln:0:1',
+  901: 'fv:0 rg:3:1 fq:0 pw:50 v1:10 v2:10 v3:10 v4:10', '901a': 'fv:0 fq:0 pw:50', '901b': 'rg:3:1 vn:0 v1:10 v2:10 v3:10 v4:10', '901c': 'am:10',
+  '904c': 'md:2:1 fc:0 bw:1', 905: 'mx:5', 912: 'rs:1:1 th:5',
+  984: 'l11:10 l12:0 l13:0 l14:0 l21:0 l22:10 l23:0 l24:0 l31:0 l32:0 l33:10 l34:0 l41:0 l42:0 l43:0 l44:10 m1:8 m2:8 m3:8 m4:8 bs:5 tb:5',
+  991: 'lp:10 hp:0 at:10', cp3: 'x1:7 x2:7 x3:7 x4:7 ms:5 r1:0:1 r2:0:1 r3:0:1 r4:0:1 ra:10',
 };
 const words = s => (s === '' ? [] : s.split(' '));
 const S9 = ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995'];
 const S9B = ['904b', '914', '911a', '903a', '960', '961', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', 'clk'];
-test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the 26 types (stage 9\'s ten, then 9b\'s sixteen), JACKS (jack objects), SECS (counts), PARAMS ([id, def, snap?]), SINK, LINK, EV / LAMPS, the evaluator\'s slots (IO); moog-core\'s tables agree; every class has the base shape', () => {
+const S9C = ['901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3'];
+test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the 36 types (stage 9\'s ten, 9b\'s sixteen, then 9c\'s ten), JACKS (jack objects), SECS (counts), PARAMS ([id, def, snap?]), SINK, LINK, EV / LAMPS, the evaluator\'s slots (IO); moog-core\'s tables agree; every class has the base shape', () => {
   const P = PM();
   assert.ok(P && Object.isFrozen(P) && Object.isFrozen(P.T) && Object.isFrozen(P.JACKS) && Object.isFrozen(P.JACKS['921']) && Object.isFrozen(P.JACKS['921'][0]));
   assert.equal(P.id, 'moog'); assert.equal(P.CTL, 'ctl'); assert.equal(P.SINK, 'out'); assert.equal(P.OUT_K, 0.15); assert.equal(P.BL, 32);
-  eq(P.ORDER, [...S9, ...S9B]);
+  eq(P.ORDER, [...S9, ...S9B, ...S9C]);
   for (const t of P.ORDER) {
     eq(P.JACKS[t].map(j => j.id), words(T_JACKS[t]), t);
     eq(P.PARAMS[t].map(p => p.join(':')), words(T_PARAMS[t]), t);
@@ -304,19 +316,20 @@ test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the 26 typ
   }
   eq(P.JACKS.ctl.map(j => j.sec), [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5, 5, 6]);
   eq(P.JACKS['923'].map(j => j.sec), [0, 0, 0, 1, 1, 2, 2]); eq(P.JACKS['995'].map(j => j.sec), [0, 0, 1, 1, 2, 2]);
-  eq(P.ORDER.map(t => P.SECS[t]), [7, 1, 1, 1, 3, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 5, 1, 1, 1, 2, 4, 3, 2, 6, 1, 1]);
+  eq(P.ORDER.map(t => P.SECS[t]), [7, 1, 1, 1, 3, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 5, 1, 1, 1, 2, 4, 3, 2, 6, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 3]);
   eq(P.JACKS['995'].map(j => j.norm || ''), ['', '', 'i1', '', 'i2', '']);
   eq(P.JACKS.cp35.map(j => j.norm || ''), ['', '', 'p6', '', 'p6', '', 'm6', '', 'm6', '', '', '', '', '']);
   eq(P.JACKS['961'].map(j => j.sec).join(''), '0'.repeat(13) + '1'.repeat(13) + '2233444');
   eq(P.JACKS.cp2.map(j => j.sec), [0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]); eq(P.JACKS.cp3a.map(j => j.sec), [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2]);
   eq(P.JACKS.cp35.map(j => j.sec), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5]); eq(P.JACKS['994'].map(j => j.sec), [0, 0, 0, 0, 1, 1, 1, 1]);
   eq(P.JACKS.cp4a.map(j => j.sec), [0, 0, 1, 1]);
-  eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.ac).map(j => t + '.' + j.id)), ['921b.ac']);
+  eq(P.JACKS['912'].map(j => j.sec), [0, 0, 1, 1]); eq(P.JACKS['912'].map(j => j.norm || ''), ['', '', 'co', '']); eq(P.JACKS.cp3.map(j => j.sec), P.JACKS.cp3a.map(j => j.sec));
+  eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.ac).map(j => t + '.' + j.id)), ['921b.ac', '912.in', '984.i1', '984.i2', '984.i3', '984.i4']);
   eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.sig === 's').map(j => t + '.' + j.id)), ['ctl.ks1', 'ctl.ks2', 'ctl.vo', 'ctl.si', '921.cs', '911.trg',
-    '911a.i1', '911a.o1', '911a.i2', '911a.o2', '961.s1', '961.s2', '961.v1i', '961.v2i', 'cp2.so', 'cp2.ksr', 'cp4a.ti', 'cp4a.tr']);
+    '911a.i1', '911a.o1', '911a.i2', '911a.o2', '961.s1', '961.s2', '961.v1i', '961.v2i', 'cp2.so', 'cp2.ksr', 'cp4a.ti', 'cp4a.tr', '912.st']);
   eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.dir === 'any').map(j => t + '.' + j.id)).filter(x => !x.startsWith('ctl.')),
     ['994.a1', '994.a2', '994.a3', '994.a4', '994.b1', '994.b2', '994.b3', '994.b4', 'cp2.u1', 'cp2.u2', 'cp2.u3', 'cp2.u4', 'cp3a.a1', 'cp3a.a2', 'cp3a.a3', 'cp3a.a4',
-      'cp35.u1', 'cp35.u2', 'cp35.u3', 'cp35.u4']);
+      'cp35.u1', 'cp35.u2', 'cp35.u3', 'cp35.u4', 'cp3.a1', 'cp3.a2', 'cp3.a3', 'cp3.a4']);
   // events and lamps (IMPL-9b §1.5 / §1.6): a row per type, ids in order
   assert.ok(Object.isFrozen(P.EV) && Object.isFrozen(P.LAMPS) && P.ORDER.every(t => Array.isArray(P.EV[t]) && Array.isArray(P.LAMPS[t])));
   eq(P.ORDER.filter(t => P.EV[t].length).map(t => t + ': ' + P.EV[t].join(' ')), ['960: on off sh e1 e2 e3 e4 e5 e6 e7 e8 e9', '962: e1 e2 e3']);
@@ -327,13 +340,14 @@ test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the 26 typ
     const m = new P.T[t]({ fs: 192000, OS: 4, n: 1, type: t }), oi = id => P.IO[t].oi[P.JACKS[t].findIndex(j => j.id === id)];
     assert.ok(oi(a) !== oi(b) && m.outs[oi(a)] === m.outs[oi(b)], `${t} ${a} / ${b}`);
   }
-  eq(P.LINK, { '921b': { from: '921a', def: [0, 0] } });
+  eq(P.LINK, { '921b': { from: '921a', def: [0, 0] }, '901b': { from: '901a', def: [1, 0] } });
   // the evaluator's slots: 'in' jacks then the link's inputs, 'out' jacks then the link's outputs; the multiples none
   const C = P.IO.ctl;
   eq([C.nIn, C.nOut], [7, 12]);
   eq(['m1', 'm2', 'm3', 'm4', 'vi', 'si', 'out'].map(id => C.ii[P.JACKS.ctl.findIndex(j => j.id === id)]), [0, 1, 2, 3, 4, 5, 6]);
   eq(['vo', 'so', 'a1', 'b4'].map(id => C.oi[P.JACKS.ctl.findIndex(j => j.id === id)]), [10, 11, -1, -1]);
   eq([P.IO['921a'].nOut, P.IO['921a'].nIn, P.IO['921b'].nIn, P.IO['921b'].nOut], [2, 5, 5, 4]);
+  eq([P.IO['901a'].nOut, P.IO['901a'].nIn, P.IO['901b'].nIn, P.IO['901b'].nOut], [2, 3, 2, 8]);
   for (const t of P.ORDER) {
     const m = new P.T[t]({ fs: 192000, OS: 4, n: 3, salt: 0, inst: null, type: t });
     for (const f of ['flush', 'ctl', 'run', 'setOS', 'reset', 'setSalt']) assert.equal(typeof m[f], 'function', `${t}.${f}`);
@@ -1374,12 +1388,27 @@ const BUSY = [
   ['cp4a', {}, [['ti', i => ((i >> 9) & 1)], ['ci', i => Math.sin(i * 0.01)]], ['tr', 'cr']],
   ['cp35', { a1: 3, a2: 10, a3: 5, a4: 8 }, [['i1', i => Math.sin(i * 0.02)], ['i3', i => 2 * Math.sin(i * 0.01)]], ['p6', 'm6', 'o1', 'o2', 'o3', 'o4']],
   ['clk', { md: 1, dv: 3, ln: 3 }, [], ['ck', 'rn', 'rs']],
+  // stage 9c (lane V): the 901 on its CV, the 901A driving a 901B (its width at 30 %), a 901B undriven (its link's constant), the
+  // 904C both modes with all three CVs, the 905 on bursts (its chunk step: block = per sample), the 912 gated (its comparator on
+  // the normal), the 984 with the tone on, the 991, the CP3
+  ['901', { pw: 30, rg: 4, fv: 0.5, fq: 1, v2: 6, v4: 3 }, [['f1', i => Math.sin(i * 0.002)], ['f3', i => 0.5 * Math.sin(i * 0.013)]], ['sin', 'saw', 'tri', 'pls', 'vsin', 'vsaw', 'vtri', 'vpls']],
+  ['901a', { fq: 2, pw: 30, fv: 1 }, [['f1', i => Math.sin(i * 0.01)], ['f2', i => 0.5 * Math.sin(i * 0.02)]], []],
+  ['901b', { vn: -4, rg: 2, v4: 3 }, [], ['sin', 'saw', 'tri', 'pls', 'vpls']],
+  ['901c', { am: 7 }, [['in', i => 3 * Math.sin(i * 0.01)]], ['p', 'n']],
+  ['904c', { md: 2, fc: 1, bw: 0.7 }, [['in', i => 2 * Math.sin(i * 0.01) + Math.sin(i * 0.2)], ['c1', i => Math.sin(i * 0.0003)], ['c2', i => 0.2 * Math.sin(i * 0.05)], ['b1', i => Math.sin(i * 0.0007)]], ['out']],
+  ['904c', { md: 0, fc: -1, bw: 2 }, [['in', i => 2 * Math.sin(i * 0.01) + Math.sin(i * 0.2)], ['b1', i => Math.sin(i * 0.0007)]], ['out']],
+  ['905', { mx: 6 }, [['in', i => 2 * Math.sin(i * 0.01) * (((i >> 11) & 3) === 0 ? 1 : 0) + (i % 3001 < 3 ? 3 : 0)]], ['out']],
+  ['912', { rs: 0, th: 3 }, [['in', i => 2 * Math.sin(i * 0.01) * (((i >> 12) & 1) + 0.1)]], ['co', 'st']],
+  ['984', { l12: 6, l21: 3, l34: 8, bs: 8, tb: 2, m2: 10 }, [['i1', i => Math.sin(i * 0.02)], ['i2', i => 2 * Math.sin(i * 0.003)], ['i4', i => Math.sin(i * 0.3)]], ['o1', 'o2', 'o3', 'o4']],
+  ['991', { lp: 6, hp: 3, at: 7 }, [['in', i => Math.sin(i * 0.02) + Math.sin(i * 0.4)]], ['out']],
+  ['cp3', { x1: 10, x3: 4, ms: 9, ra: 6 }, [['m1', i => 4 * Math.sin(i * 0.02)], ['m3', i => 3 * Math.sin(i * 0.03)], ['x4', i => Math.sin(i * 0.01)]], ['mo', 'mn', 'xr']],
 ];
+const DRIVEN = { '921a': '921b', '901a': '901b' };          // a driver type's BUSY row runs it on one oscillator of its own
 const BUSY_NOTES = [[0, 60, 0.7, 1], [200, 64, 0.9, 1], [400, 55, 0.5, 1], [600, 64, 0, 0], [800, 55, 0, 0], [1000, 67, 1, 1], [1400, 60, 0, 0], [1600, 67, 0, 0]];
 function busy(k, o = {}) {
   const [type, pv, drive, taps] = BUSY[k];
-  const mods = type === 'ctl' ? [[0, 'ctl']] : type === '921a' ? [[1, '921a'], [2, '921b', 1]] : [[1, type]], n = type === 'ctl' ? 0 : 1;
-  const tp = type === '921a' ? [[2, 'saw'], [2, 'rec']] : (o.taps || taps).map(id => [n, id]);
+  const mods = type === 'ctl' ? [[0, 'ctl']] : DRIVEN[type] ? [[1, type], [2, DRIVEN[type], 1]] : [[1, type]], n = type === 'ctl' ? 0 : 1;
+  const tp = DRIVEN[type] ? [[2, 'saw'], [2, type === '921a' ? 'rec' : 'pls']] : (o.taps || taps).map(id => [n, id]);
   const { taps: _t, nF = 2000, ...ro } = o;
   const r = rig(Object.assign({ mods, pv: { [n]: pv }, drive: drive.map(d => [n, d[0], d[1]]), taps: tp }, ro));
   return r.render(nF, { notes: type === 'ctl' ? BUSY_NOTES : [], each: type === 'ctl' ? (F, M, I) => { I.bend = ((F >> 6) % 5) - 2; I.wheel = 0.3; I.sustain = (F >> 9) & 1; } : undefined });
@@ -1391,7 +1420,7 @@ test('the module contracts: block steps = per-sample steps (a loop member) bit f
     const nm = BUSY[k][0], a = busy(k), b = busy(k, { perSample: true }), c = busy(k);
     a.t.forEach((y, j) => { if (!same(y, b.t[j])) bad.push(`${nm} tap ${j}: block ≠ per sample`); if (!same(y, c.t[j])) bad.push(`${nm} tap ${j}: not deterministic`); });
     if (!same(a.y, b.y)) bad.push(`${nm} MAIN OUT: block ≠ per sample`);
-    if (nm !== '921a') BUSY[k][3].forEach((id, j) => { const one = busy(k, { taps: [id] }); if (!same(one.t[0], a.t[j])) bad.push(`${nm}.${id}: the mask changed it`); });
+    if (!DRIVEN[nm]) BUSY[k][3].forEach((id, j) => { const one = busy(k, { taps: [id] }); if (!same(one.t[0], a.t[j])) bad.push(`${nm}.${id}: the mask changed it`); });
     const d = busy(k, { base: 44100, os: 2 }), e = busy(k, { base: 44100, os: 2, perSample: true });
     d.t.forEach((y, j) => { if (!same(y, e.t[j]) || !y.every(Number.isFinite)) bad.push(`${nm} at 44.1 k × 2`); });
   }
@@ -1405,10 +1434,10 @@ test('no NaN / Inf / subnormal: every type with every knob at its ends (OS 1 and
   const P = PM(), bad = [];
   for (const os of [1, 4]) for (let k = 0; k < BUSY.length; k++) for (const end of [0, 1]) {
     const [type, , drive, taps] = BUSY[k], pv = Object.fromEntries(P.PARAMS[type].map(([id], j) => [id, P.RANGE[type][j][end]]));
-    const n = type === 'ctl' ? 0 : 1, mods = type === 'ctl' ? [[0, 'ctl']] : type === '921a' ? [[1, '921a'], [2, '921b', 1]] : [[1, type]];
+    const n = type === 'ctl' ? 0 : 1, mods = type === 'ctl' ? [[0, 'ctl']] : DRIVEN[type] ? [[1, type], [2, DRIVEN[type], 1]] : [[1, type]];
     let live = true;
     const r = rig({ os, mods, pv: { [n]: pv }, drive: drive.map(d => [n, d[0], i => (live ? 12 * Math.sign(d[1](i)) * (i % 7 === 0 ? -0.5 : 1) : 0)]),
-      taps: (type === '921a' ? ['saw'] : taps).map(id => [type === '921a' ? 2 : n, id]) });
+      taps: (DRIVEN[type] ? ['saw'] : taps).map(id => [DRIVEN[type] ? 2 : n, id]) });
     const a = r.render(frames(0.2), { notes: type === 'ctl' ? BUSY_NOTES : [] });
     live = false;
     const b = r.render(frames(3), { notes: type === 'ctl' ? [[0, 0, 0, 0]] : [] });
@@ -1430,7 +1459,7 @@ test('reset() = the fresh state, bit for bit (phases, filters, envelopes, keys, 
   const P = PM(), bad = [];
   for (let k = 0; k < BUSY.length; k++) {
     const [type, pv, drive] = BUSY[k];
-    if (type === '921a') continue;
+    if (DRIVEN[type]) continue;
     const mk = () => { const m = new P.T[type]({ fs: 192000, OS: 4, n: 2, salt: 3, inst: INST(), type }); P.PARAMS[type].forEach(([id], j) => { if (pv[id] !== undefined) m.p[j] = m.t[j] = pv[id]; }); m.mv = 1; return m; };
     const a = mk(), b = mk(), bufs = drive.map(() => new Float64Array(32)), io = P.IO[type];
     for (const m of [a, b]) drive.forEach((d, j) => { m.ins[io.ii[P.JACKS[type].findIndex(x => x.id === d[0])]] = bufs[j]; });
@@ -1472,7 +1501,9 @@ function line(kind, base) {
 }
 const LINE = { 'Classic bass': 'bass', 'Filter sweep': 'lead', Drone: 'none', 'Sync lead': 'lead', Wind: 'none', Bells: 'lead',
   // stage 9b's (K9b): the keyboard-played ones get a line, the clocked ones the transport (presetM)
-  'Swept band': 'lead', Sequence: 'none', 'Twenty-four steps': 'none', 'Echo strikes': 'lead', Vowel: 'lead', 'Step bass': 'bass', Routed: 'bass' };
+  'Swept band': 'lead', Sequence: 'none', 'Twenty-four steps': 'none', 'Echo strikes': 'lead', Vowel: 'lead', 'Step bass': 'bass', Routed: 'bass',
+  // stage 9c's (K): keyboard-played, as moog-core.test's
+  'Drift choir': 'lead', 'Follower wah': 'bass', 'Spring pluck': 'lead' };
 // the base-rate MAIN OUT (a windowed-sinc low-pass below 20 kHz, then every OS-th sample)
 function decim(y, os, base) {
   const H = 95, c = 20000 / (base * os), h = new Float64Array(H);
@@ -1825,4 +1856,377 @@ test('IMPL-P review F1: a legal 512-module chain of 961s (2 561 nodes in series)
     { input: JSON.stringify(pg), encoding: 'utf8', maxBuffer: 1 << 20, timeout: 120000 });
   assert.equal(r.status, 0, 'the child: ' + r.stderr);
   assert.deepEqual(JSON.parse(r.stdout.trim()), { steps: 2561, live: 2562, why: [], errs: [], finite: true });
+});
+
+/* ---------------------------------------------------------------- stage 9c (IMPL-9c §1, §3 G5; lane V): the 1960s types */
+const pp = (y, i0 = 0, i1 = y.length) => { let lo = Infinity, hi = -Infinity; for (let i = i0; i < i1; i++) { if (y[i] < lo) lo = y[i]; if (y[i] > hi) hi = y[i]; } return hi - lo; };
+const meanOf = (y, i0 = 0, i1 = y.length) => { let s = 0; for (let i = i0; i < i1; i++) s += y[i]; return s / (i1 - i0); };
+// an impulse response's transfer function at f: [re, im] over [i0, i1) (a rotating phasor, no trig a sample)
+function tfAt(h, fs, f, i0 = 0, i1 = h.length) {
+  const w = 2 * Math.PI * f / fs, c = Math.cos(w), s = Math.sin(w);
+  let re = 0, im = 0, pr = Math.cos(w * i0), pi = -Math.sin(w * i0);
+  for (let n = i0; n < i1; n++) { re += h[n] * pr; im += h[n] * pi; const t = pr * c + pi * s; pi = pi * c - pr * s; pr = t; if ((n & 4095) === 4095) { const k = Math.hypot(pr, pi); pr /= k; pi /= k; } }
+  return [re, im];
+}
+const magAt = (h, fs, f, i0, i1) => Math.hypot(...tfAt(h, fs, f, i0, i1));
+// the group delay (s from sample 0) at f: the phase slope over ± d Hz of the window [i0, i1) taken from i0 (no wrap below 1 / 4d)
+function gdAt(h, fs, f, i0, i1, d = 20) { const w = h.subarray(i0, i1), a = tfAt(w, fs, f - d), b = tfAt(w, fs, f + d); let p = Math.atan2(b[1], b[0]) - Math.atan2(a[1], a[0]); while (p > Math.PI) p -= 2 * Math.PI; while (p < -Math.PI) p += 2 * Math.PI; return -p / (2 * Math.PI * 2 * d) + i0 / fs; }
+// |H| of an impulse response as a function of f: one FFT (zero-padded to N), linear between bins
+function respOf(h, fs, N = 1 << 18) {
+  const re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < Math.min(N, h.length); i++) re[i] = h[i];
+  fft(re, im); const m = new Float64Array(N / 2); for (let k = 0; k < N / 2; k++) m[k] = Math.hypot(re[k], im[k]);
+  return f => { const x = f * N / fs, k = Math.floor(x), u = x - k; return m[k] * (1 - u) + m[k + 1] * u; };
+}
+// f where g(f) crosses db between lo and hi (geometric bisection; g monotonic there)
+function crossAt(g, db, lo, hi) { const s = Math.sign(dB(g(lo)) - db); for (let k = 0; k < 50; k++) { const m = Math.sqrt(lo * hi); if (Math.sign(dB(g(m)) - db) === s) lo = m; else hi = m; } return Math.sqrt(lo * hi); }
+
+test('9c T-OSC2 (RM §1.3, IMPL-9c §1.1): the 901 at the bench set — sine 1.41, saw 1.73, triangle 2.25, pulse 2.4 V p-p within 1 % (±1.2 V at widths 10 / 50 / 90 %, the duty the knob\'s), zero-mean; the variable outputs the fixed × LEVEL / 10; the sine a diode-shaped triangle (THD 2.0 ± 0.3 %); the 901B the same set', () => {
+  const fs = 192000, bad = [], i0 = 9600, want = [1.41, 1.73, 2.25, 2.4], lv = [0.7, 0.3, 0.5, 0.9];
+  const t = solo('901', { pv: { v1: 7, v2: 3, v3: 5, v4: 9 }, taps: ['sin', 'saw', 'tri', 'pls', 'vsin', 'vsaw', 'vtri', 'vpls'] }).render(frames(0.5)).t;
+  for (let k = 0; k < 4; k++) {
+    const v = pp(t[k], i0); if (!near(v, want[k], 0.01)) bad.push(`901 fixed ${k}: ${v} V p-p`);
+    if (k < 3 && Math.abs(meanOf(t[k], i0, i0 + Math.round(400 * fs / C4))) > 0.003) bad.push(`901 fixed ${k}: mean ${meanOf(t[k], i0)}`);
+    for (let i = i0; i < t[k].length; i++) if (Math.abs(t[4 + k][i] - lv[k] * t[k][i]) > 1e-12) { bad.push(`901 variable ${k} ≠ × ${lv[k]} at ${i}`); break; }
+  }
+  const L = i0 + Math.round(100 * fs / C4), h1 = amp(t[0], fs, C4, i0, L); let s2 = 0; for (let k = 2; k <= 15; k++) s2 += amp(t[0], fs, k * C4, i0, L) ** 2;
+  const thd = 100 * Math.sqrt(s2) / h1; if (!(thd >= 1.7 && thd <= 2.3)) bad.push(`the sine's THD ${thd} %`);
+  for (const pw of [10, 50, 90]) {
+    const y = solo('901', { pv: { pw }, taps: ['pls'] }).render(frames(0.3)).t[0]; let hi = 0; for (let i = i0; i < y.length; i++) if (y[i] > 0) hi++;
+    if (!near(pp(y, i0), 2.4, 0.01) || Math.abs(hi / (y.length - i0) - pw / 100) > 0.01) bad.push(`pulse ${pw} %: ${pp(y, i0)} V p-p, duty ${hi / (y.length - i0)}`);
+  }
+  const b = solo('901b', { taps: ['sin', 'saw', 'tri', 'pls'] }).render(frames(0.3)).t;
+  b.forEach((y, k) => { if (!near(pp(y, i0), want[k], 0.01)) bad.push(`901B ${k}: ${pp(y, i0)} V p-p`); });
+  console.log(`# 901: THD ${thd.toFixed(2)} %, p-p ${t.slice(0, 4).map(y => pp(y, i0).toFixed(4)).join(' / ')}`);
+  assert.deepEqual(bad, []);
+});
+
+test('9c: the 901\'s law — 32′ … 2′ = C4 · 2^(−2 … +2) at 0 V within 0.1 cent; Lo = C4 · 2^−8 (1.02 Hz) and over FIXED VOLTAGE 32 mHz … 65 Hz (RM\'s bench 35 mHz … 70 Hz within 10 %); 1 V/oct over the three inputs and the knob within 0.1 cent; FINE ±1 oct (FINE / 6); the 901B\'s footages the same (undriven, vernier 0)', () => {
+  const bad = [], fs = 192000, f = (pv, drive = [], t = '901', base = 48000, sec = 0.5) => { const r = rig({ base, mods: [[1, t]], pv: { 1: pv }, drive: drive.map(d => [1, d[0], d[1]]), taps: [[1, 'saw']] }); return zcF(r.render(frames(sec, base)).t[0], r.fs, Math.round(0.02 * r.fs)); };
+  for (const rg of [1, 2, 3, 4, 5]) for (const t of ['901', '901b']) { const g = f({ rg }, [], t); if (Math.abs(cents(g, C4 * 2 ** (rg - 3))) > 0.1) bad.push(`${t} range ${rg}: ${g}`); }
+  for (const [fv, want, sec] of [[0, C4 / 256, 6], [-5, C4 / 256 / 32, 100], [6, C4 / 4, 2]]) {
+    const g = f({ rg: 0, fv }, [], '901', 1000, sec);
+    if (Math.abs(cents(g, want)) > 0.5) bad.push(`Lo at ${fv} V: ${g} vs ${want}`);
+  }
+  if (!(near(C4 / 256 / 32, 0.035, 0.1) && near(C4 / 4, 70, 0.1))) bad.push('Lo vs RM\'s bench');
+  const g1 = f({ fv: 0.5, fq: 3 }, [['f1', 0.7], ['f2', -0.2], ['f3', 1]]);
+  if (Math.abs(cents(g1, C4 * 2 ** (2 + 0.5))) > 0.1) bad.push(`1 V/oct: ${g1}`);
+  const g2 = f({ fq: -6 }, [['f1', i => -1]]);
+  if (Math.abs(cents(g2, C4 / 4)) > 0.1) bad.push(`FINE −6 and −1 V: ${g2}`);
+  const g3 = f({ rg: 0 }, [], '901b', 1000, 6);
+  if (Math.abs(cents(g3, C4 / 256)) > 0.5) bad.push(`901B Lo: ${g3}`);
+  assert.deepEqual(bad, []);
+});
+
+test('9c: drift — the 901\'s and the 901B\'s walk is the 921\'s twice in the exponent (one seed: the same dv, chunk by chunk; the pitch\'s cents RMS × 2 ± 3 %), the 901A none (it carries no drift), 0 holds', () => {
+  const P = PM(), inst = Object.assign(INST(), { p: { drift: 1 } }), mk = t => new P.T[t]({ fs: 192000, OS: 4, n: 3, salt: 5, inst, type: t });
+  const a = mk('901'), b = mk('921'), c = mk('901b');
+  let same = true; for (let cc = 0; cc < 3000; cc++) { a.ctl(cc); b.ctl(cc); c.ctl(cc); if (a.dv !== b.dv || c.dv !== b.dv) same = false; }
+  assert.ok(same, 'one walk');
+  const dev = (t, d) => {
+    const r = rig({ base: 48000, os: 1, salt: 5, inst: Object.assign(INST(), { p: { drift: d } }), mods: [[3, t]], taps: [[3, 'saw']] }), y = r.render(frames(30)).t[0], c = [];
+    for (let s = 0; s + 48000 <= y.length; s += 48000) c.push(cents(zcF(y, 48000, s, s + 48000), C4));
+    return rms(c);
+  };
+  const d9 = dev('901', 1), d1 = dev('921', 1);
+  console.log(`# drift: 901 ${d9.toFixed(3)} cents RMS, 921 ${d1.toFixed(3)} (× ${(d9 / d1).toFixed(3)})`);
+  assert.ok(near(d9 / d1, 2, 0.03), `× ${d9 / d1}`);
+  assert.ok(dev('901', 0) < 1e-6, 'no drift: the pitch exact');
+  assert.equal(new P.T['901a']({ fs: 192000, OS: 4, n: 3, type: '901a' }).dv, undefined, 'the 901A carries no drift');
+});
+
+test('9c the link (IMPL-9c §1.1): a 901A converts — r = 2^(ΣV + FIXED + FINE / 6) within 1.5e-4 cent; a 901B at max(0, f_nom · (r + k − 1)), k = 2^(VERNIER · 2/9), over 3 octaves of keys × three verniers within 0.02 Hz — the vernier a fixed number of Hz: two 901Bs on one driver beat at one rate (± 0.1 Hz over the 3 octaves); undriven k · f_nom (the link\'s constant 1); below its driver it stalls (f = 0, the outputs held); the width its driver\'s (PULSE WIDTH 20 → 20 %); the evaluator\'s link the same (driven and undriven)', () => {
+  const bad = [], fs = 192000;
+  const f = (vn, key, more = {}) => { const r = rig({ mods: [[1, '901a'], [2, '901b', 1]], pv: { 1: more, 2: { vn } }, drive: [[1, 'f1', key]], taps: [[2, 'saw']] }); return zcF(r.render(frames(1)).t[0], fs, 9600); };
+  const beats = [];
+  for (const vn of [-3, 0, 3]) for (const key of [-1, 0, 1, 2]) {
+    const k = 2 ** (vn * 2 / 9), want = C4 * (2 ** key + k - 1), g = f(vn, key);
+    if (Math.abs(g - want) > 0.02) bad.push(`vn ${vn} key ${key}: ${g} vs ${want}`);
+  }
+  for (const key of [-1, 0, 1, 2]) beats.push(f(0.05, key) - f(0, key));
+  if (Math.max(...beats) - Math.min(...beats) > 0.1 || !near(beats[0], (2 ** (0.05 * 2 / 9) - 1) * C4, 0.01)) bad.push(`beats ${beats}`);
+  // r itself: the driver's link output 0
+  const r = rig({ mods: [[1, '901a'], [2, '901b', 1]], pv: { 1: { fv: 1.3, fq: 2 } }, drive: [[1, 'f1', 0.7], [1, 'f2', -0.2]], taps: [[2, 'saw']] });
+  r.render(64); const rv = r.M.get(1).outs[0][5], rw = 2 ** (1.3 + 2 / 6 + 0.5);
+  if (Math.abs(cents(rv, rw)) > 1.5e-4) bad.push(`r ${rv} vs ${rw}`);
+  // undriven: the evaluator's constant (the rig does the same)
+  const u = rig({ mods: [[2, '901b']], pv: { 2: { vn: 3 } }, taps: [[2, 'saw']] }), gu = zcF(u.render(frames(1)).t[0], fs, 9600);
+  if (Math.abs(gu - C4 * 2 ** (3 * 2 / 9)) > 0.02) bad.push(`undriven ${gu}`);
+  // the stall: vn −6 (k 0.397), key −2 (r 0.25 < 1 − k)
+  const s = rig({ mods: [[1, '901a'], [2, '901b', 1]], pv: { 2: { vn: -6 } }, drive: [[1, 'f1', i => (i < fs / 4 ? 0 : -2)]], taps: [[2, 'saw'], [2, 'pls'], [2, 'sin']] }).render(frames(0.6)).t;
+  if (pp(s[0], fs * 0.35) !== 0 || pp(s[1], fs * 0.35) !== 0 || pp(s[2], fs * 0.35) !== 0 || Math.abs(s[1][s[1].length - 1]) !== 1.2) bad.push(`the stall: ${pp(s[0], fs * 0.35)} ${s[1][s[1].length - 1]}`);
+  // the width from the driver
+  const w = rig({ mods: [[1, '901a'], [2, '901b', 1]], pv: { 1: { pw: 20 } }, taps: [[2, 'pls']] }).render(frames(0.3)).t[0]; let hi = 0; for (let i = 9600; i < w.length; i++) if (w[i] > 0) hi++;
+  if (Math.abs(hi / (w.length - 9600) - 0.2) > 0.01) bad.push(`width ${hi / (w.length - 9600)}`);
+  // over the evaluator: a driven 901B at C4 · 2^key, an undriven one at k · f_nom
+  for (const [mods, cords, vals, want] of [[[[1, '901a'], [2, '901b', 1]], [[0, 'kp1', 1, 'f1'], [2, 'saw', 0, 'out']], {}, C4 / 2], [[[2, '901b']], [[2, 'saw', 0, 'out']], { 2: { vn: -2 } }, C4 * 2 ** (-4 / 9)]]) {
+    const { pg, pv } = payloadOf(mods, cords, vals), m = machine({ pg, pv }), y = m.render(frames(1), { notes: [[0, 48, 1, 1]] });
+    const g = zcF(y, fs, 9600); if (Math.abs(g - want) > 0.02 || m.errs.length) bad.push(`evaluator: ${g} vs ${want} ${m.errs}`);
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 904C (IMPL-9c §1.2): BAND PASS peaks at f0 = 2^(CENTER + 8) Hz ± 2 % at 0 dB ± 0.1, its −3 dB edges the coupled pair\'s (4 + 4 poles, the corners at f0 · 2^(∓B/2)) within 0.1 oct for B 0 … 3; c1 / c2 1 V/oct, b1 +1 V = +1 oct of B; BAND REJECT (the input less the band pass) ≥ 12 dB deep at f0 for every B (RM\'s parallel sum recorded); OFF the input bit for bit', () => {
+  const bad = [], rep = [], fs = 192000, A = 1e-3;
+  const ir = (pv, drive = [], sec = 0.6) => rig({ mods: [[1, '904c']], pv: { 1: pv }, drive: [[1, 'in', i => (i === 0 ? A : 0)], ...drive.map(d => [1, d[0], d[1]])], taps: [[1, 'out']] }).render(frames(sec)).t[0].map(x => x / A);
+  // the analog prototype: |HP|⁴ |LP|⁴ made up to 1 at f0; its −3 dB edges
+  const K3 = 1 / Math.sqrt(Math.pow(2, 0.25) - 1), proto = (f, f0, B) => { const fh = f0 * 2 ** (-B / 2) / K3, fl = f0 * 2 ** (B / 2) * K3, xh = f / fh, xl = f / fl; return (1 + fh / fl) ** 4 * (xh * xh / (1 + xh * xh)) ** 2 / (1 + xl * xl) ** 2; };
+  for (const fc of [0, 3]) for (const [B, pv, drive] of [[0, { bw: 0 }], [1, { bw: 1 }], [2, { bw: 2 }], [3, { bw: 3 }], [2.5, { bw: 1.5 }, [['b1', 1]]], [1, { bw: 1, fc: fc - 1 }, [['c1', 0.6], ['c2', 0.4]]]]) {
+    const f0 = 2 ** (fc + 8), H = respOf(ir(Object.assign({ md: 2, fc }, pv), drive), fs);
+    let pk = 0, at = 0; for (let k = -60; k <= 60; k++) { const f = f0 * 2 ** (k / 200), v = H(f); if (v > pk) { pk = v; at = f; } }
+    const lo = crossAt(H, dB(pk) - 3, f0 / 32, at), hi = crossAt(H, dB(pk) - 3, at, f0 * 32), pl = crossAt(f => proto(f, f0, B), -3, f0 / 32, f0), ph = crossAt(f => proto(f, f0, B), -3, f0, f0 * 32);
+    rep.push(`f0 ${f0} B ${B}: peak ${at.toFixed(1)} ${dB(pk).toFixed(3)} dB, edges ${Math.log2(lo / f0).toFixed(3)} / +${Math.log2(hi / f0).toFixed(3)} oct`);
+    if (!near(at, f0, 0.02) || Math.abs(dB(pk)) > 0.1 || Math.abs(Math.log2(lo / pl)) > 0.1 || Math.abs(Math.log2(hi / ph)) > 0.1) bad.push(rep[rep.length - 1] + ` (prototype ${Math.log2(pl / f0).toFixed(3)} / ${Math.log2(ph / f0).toFixed(3)})`);
+  }
+  // RM's parallel sum (analog: the LP's −3 dB at f0 · 2^(−B/2), the HP's at f0 · 2^(B/2)) at f0: 2 |H| cos(4 atan x) — the record
+  const par = B => { const x = 2 ** (-B / 2) / K3, h = 1 / (1 + x * x); return Math.abs(2 * h * h * Math.cos(4 * Math.atan(x))); };
+  for (const bw of [0, 0.5, 1, 1.5, 2, 3]) {
+    const h = ir({ md: 0, fc: 0, bw }), d = dB(magAt(h, fs, 256, 0, h.length));
+    rep.push(`reject B ${bw}: ${d.toFixed(1)} dB (the parallel sum ${dB(par(bw)).toFixed(1)})`);
+    if (!(d <= -12)) bad.push(`reject B ${bw}: ${d} dB`);
+  }
+  const x = i => 3 * Math.sin(i * 0.01) + 20 * Math.sin(i * 0.1), y = rig({ mods: [[1, '904c']], pv: { 1: { md: 1 } }, drive: [[1, 'in', x], [1, 'c1', 3]], taps: [[1, 'out']] }).render(400).t[0];
+  if (!y.every((v, i) => v === x(i))) bad.push('OFF ≠ the input');
+  console.log('# 904C: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 905 (IMPL-9c §1.3): MIX 0 ≡ −in bit for bit; the wet — echoes at 25 / 31 / 37 ms ± 0.5 ms (the 1 kHz group delay of each first echo less the chain\'s), RT60 2.5 s ± 10 %, the dispersion 4 → 20 kHz ≥ 3 ms, a 100 ms 1 kHz burst\'s wet energy = its dry ± 1 dB; aliases ≥ 60 dB down; OS 2 / OS 8 the same timing and energy; a chunk-number gap clears the tank', () => {
+  const bad = [], rep = [], P = PM(), K = P.K;
+  const x0 = i => 3 * Math.sin(i * 0.013) + 1.9 * Math.sin(i * 0.31) * Math.cos(i * 0.002);   // (inside the rails: −rail(x) = −x)
+  const d = rig({ mods: [[1, '905']], pv: { 1: { mx: 0 } }, drive: [[1, 'in', x0]], taps: [[1, 'out']] }).render(frames(0.2)).t[0];
+  if (!d.every((v, i) => v === -x0(i))) bad.push('MIX 0 ≠ −in');
+  const wetOf = (os, drive, sec) => { const r = rig({ os, mods: [[1, '905']], pv: { 1: { mx: 10 } }, drive: [[1, 'in', drive]], taps: [[1, 'out']] }); return { w: r.render(frames(sec)).t[0].map(v => -v), fs: r.fs }; };
+  const echo = os => {
+    const { w, fs } = wetOf(os, i => (i === 0 ? 1 : 0), 3), fb = fs / os, at = ms => Math.round(ms * fs / 1000), o = [];
+    const chain = f => { const c = Math.cos(2 * Math.PI * f / fb), a = K.SP_A; return K.SP_N * (1 - a * a) / (1 + 2 * a * c + a * a) / fb; }, damp = f => (1 / (2 * Math.PI * K.SP_FD)) / (1 + (f / K.SP_FD) ** 2);
+    for (const [ms, a0, a1] of [[25, 24, 30.8], [31, 30.6, 36.8], [37, 36.6, 42.6]]) o.push(1000 * (gdAt(w, fs, 1000, at(a0), at(a1)) - chain(1000) - damp(1000)));
+    const W = Math.round(0.1 * fs), E = []; for (let s = Math.round(0.3 * fs); s + W <= Math.round(2.2 * fs); s += W) { let e = 0; for (let i = s; i < s + W; i++) e += w[i] * w[i]; E.push(10 * Math.log10(e)); }
+    let sx = 0, sy = 0, sxx = 0, sxy = 0; E.forEach((e, k) => { sx += k; sy += e; sxx += k * k; sxy += k * e; }); const slope = (E.length * sxy - sx * sy) / (E.length * sxx - sx * sx) / 0.1;
+    const spread = 1000 * (gdAt(w, fs, 20000, at(24), at(30.8)) - gdAt(w, fs, 4000, at(24), at(30.8)));
+    return { o, rt: -60 / slope, spread };
+  };
+  const energy = os => { const r = rig({ os, mods: [[1, '905']], pv: { 1: { mx: 10 } }, drive: [[1, 'in', i => (i < 0.1 * 48000 * os ? Math.sin(2 * Math.PI * 1000 * i / (48000 * os)) : 0)]], taps: [[1, 'out']] }), y = r.render(frames(6)).t[0];
+    let ed = 0, ew = 0; for (let i = 0; i < 0.1 * r.fs; i++) ed += Math.sin(2 * Math.PI * 1000 * i / r.fs) ** 2; for (const v of y) ew += v * v; return 10 * Math.log10(ew / ed); };
+  const e4 = echo(4), en4 = energy(4);
+  rep.push(`OS 4: echoes ${e4.o.map(v => v.toFixed(3)).join(' / ')} ms, RT60 ${e4.rt.toFixed(3)} s, dispersion 4 → 20 kHz ${e4.spread.toFixed(2)} ms, wet / dry ${en4.toFixed(2)} dB`);
+  [25, 31, 37].forEach((ms, j) => { if (Math.abs(e4.o[j] - ms) > 0.5) bad.push(`echo ${ms}: ${e4.o[j]}`); });
+  if (!(Math.abs(e4.rt - 2.5) <= 0.25)) bad.push(`RT60 ${e4.rt}`);
+  if (!(e4.spread >= 3)) bad.push(`dispersion ${e4.spread} ms`);
+  if (!(Math.abs(en4) <= 1)) bad.push(`energy ${en4} dB`);
+  for (const os of [2, 8]) {
+    const e = echo(os), en = energy(os);
+    rep.push(`OS ${os}: echoes ${e.o.map(v => v.toFixed(3)).join(' / ')}, RT60 ${e.rt.toFixed(3)}, dispersion ${e.spread.toFixed(2)}, ${en.toFixed(2)} dB`);
+    if (e.o.some((v, j) => Math.abs(v - e4.o[j]) > 0.05) || Math.abs(en - en4) > 0.2 || Math.abs(e.spread - e4.spread) > 0.1) bad.push(`OS ${os} differs`);
+  }
+  // aliases: a 40 kHz sine's wet at 8 kHz vs an 8 kHz sine's (OS 4: 192 kHz), both over the same window
+  const al = (f, g) => { const { w, fs } = wetOf(4, i => Math.sin(2 * Math.PI * f * i / 192000), 0.6); return amp(w, fs, g, Math.round(0.3 * fs), w.length); };
+  const ar = dB(al(40000, 8000) / al(8000, 8000)); rep.push(`alias 40 → 8 kHz ${ar.toFixed(1)} dB`);
+  if (!(ar <= -60)) bad.push(`alias ${ar} dB`);
+  // a gap in the chunk numbers clears the tank (a 905 frozen by a pull, re-patched)
+  const m = new P.T['905']({ fs: 192000, OS: 4, n: 1, type: '905' }), b = new Float64Array(32);
+  m.ins = [b]; m.om = 1; m.mv = 1;
+  const go = (c0, n, on) => { let pk = 0; for (let c = c0; c < c0 + n; c++) { for (let i = 0; i < 16; i++) b[i] = on ? Math.sin(c * 16 + i) : 0; m.ctl(c); m.mv = 0; m.run(0, 0, 16); for (let i = 0; i < 16; i++) pk = Math.max(pk, Math.abs(m.outs[0][i])); } return pk; };
+  go(0, 600, 1);
+  const tail = go(600, 400, 0); go(0, 600, 1);
+  const gap = go(1003, 400, 0);
+  if (!(tail > 1e-3) || gap !== 0) bad.push(`gap: the tail ${tail}, after a gap ${gap}`);
+  console.log('# 905: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+// review 1 F1: the tank ran at the context's own rate, and the chain's dispersion is per sample — the drip gone at 88.2 … 192 kHz
+// (a 96 kHz bounce of a 48 kHz session a plain multi-tap echo), 1.6 × at 44.1 kHz, the cost and the lines × the rate
+test('9c the 905 at every context rate the app offers (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz × OS 1 / 2 / 4 / 8) as at 48 kHz × 4: the first echoes\' 1 kHz group delays within ± 0.1 ms, RT60 2.5 s ± 10 %, a 1 kHz burst\'s wet / dry within ± 0.5 dB (± 1 dB of 0), the dispersion 4 → 16 kHz ≥ 1 ms and within ± 25 %, the lines no longer; aliases into 8 kHz from every fold ≥ 60 dB down', () => {
+  const bad = [], rep = [];
+  const at905 = (base, os) => {
+    const r = rig({ base, os, mods: [[1, '905']], pv: { 1: { mx: 10 } }, drive: [[1, 'in', i => (i === 0 ? 1 : 0)]], taps: [[1, 'out']] }), fs = r.fs, at = ms => Math.round(ms * fs / 1000);
+    const h = r.render(frames(0.3, base)).t[0].map(v => -v);
+    const o = [[24, 30.8], [30.6, 36.8], [36.6, 42.6]].map(([a0, a1]) => 1000 * gdAt(h, fs, 1000, at(a0), at(a1)));
+    const spread = 1000 * (gdAt(h, fs, 16000, at(24), at(30.8)) - gdAt(h, fs, 4000, at(24), at(30.8)));
+    // RT60: 0.1 s windows from 0.3 s on (19 of them), the slope of their energies in dB
+    const W = Math.round(0.1 * fs), E = new Float64Array(19);
+    for (let s = 0; s < 19 * W;) { const y = r.render(frames(0.1, base)).t[0]; for (let i = 0; i < y.length && s < 19 * W; i++, s++) E[(s / W) | 0] += y[i] * y[i]; }
+    let sx = 0, sy = 0, sxx = 0, sxy = 0; E.forEach((e, k) => { const v = 10 * Math.log10(e); sx += k; sy += v; sxx += k * k; sxy += k * v; });
+    const rt = -60 / ((19 * sxy - sx * sy) / (19 * sxx - sx * sx) / 0.1);
+    // a 100 ms 1 kHz burst: its wet energy over 3 s vs the dry's
+    const q = rig({ base, os, mods: [[1, '905']], pv: { 1: { mx: 10 } }, drive: [[1, 'in', i => (i < 0.1 * fs ? Math.sin(2 * Math.PI * 1000 * i / fs) : 0)]], taps: [[1, 'out']] });
+    let ed = 0, ew = 0; for (let i = 0; i < 0.1 * fs; i++) ed += Math.sin(2 * Math.PI * 1000 * i / fs) ** 2;
+    for (let k = 0; k < 12; k++) for (const v of q.render(frames(0.25, base)).t[0]) ew += v * v;
+    const m = r.M.get(1);
+    return { o, spread, rt, en: 10 * Math.log10(ew / ed), lines: m.L0.length, fb: fs / m.R };
+  };
+  const ref = at905(48000, 4);
+  for (const base of [44100, 48000, 88200, 96000, 176400, 192000]) for (const os of [1, 2, 4, 8]) {
+    const e = at905(base, os), tag = `${base / 1000}k × ${os}`;
+    rep.push(`${tag} (tank ${e.fb / 1000}k): ${e.o.map(v => v.toFixed(3)).join(' / ')} ms, RT60 ${e.rt.toFixed(3)}, ${e.en.toFixed(2)} dB, 4 → 16 kHz ${e.spread.toFixed(3)} ms`);
+    e.o.forEach((v, j) => { if (!(Math.abs(v - ref.o[j]) <= 0.1)) bad.push(`${tag}: echo ${j} at ${v.toFixed(3)} ms (48k × 4: ${ref.o[j].toFixed(3)})`); });
+    if (!(Math.abs(e.rt - 2.5) <= 0.25)) bad.push(`${tag}: RT60 ${e.rt}`);
+    if (!(Math.abs(e.en - ref.en) <= 0.5 && Math.abs(e.en) <= 1)) bad.push(`${tag}: wet / dry ${e.en} dB (48k × 4: ${ref.en})`);
+    if (!(e.spread >= 1 && Math.abs(e.spread / ref.spread - 1) <= 0.25)) bad.push(`${tag}: dispersion ${e.spread.toFixed(3)} ms (48k × 4: ${ref.spread.toFixed(3)})`);
+    if (!(e.lines <= ref.lines)) bad.push(`${tag}: lines ${e.lines} (48k × 4: ${ref.lines})`);
+    // aliases: a sine at k · tank rate − 8 kHz (every half-band's fold, k = 1, 2, 4 …) heard at 8 kHz, vs an 8 kHz sine's
+    const fs = base * os, al = f => { const r = rig({ base, os, mods: [[1, '905']], pv: { 1: { mx: 10 } }, drive: [[1, 'in', i => Math.sin(2 * Math.PI * f * i / fs)]], taps: [[1, 'out']] }), w = r.render(frames(0.6, base)).t[0]; return amp(w, fs, 8000, Math.round(0.3 * fs), w.length); };
+    const a0 = al(8000);
+    for (let k = 1; k * e.fb - 8000 < fs / 2; k *= 2) { const a = dB(al(k * e.fb - 8000) / a0); if (!(a <= -60)) bad.push(`${tag}: alias ${k * e.fb - 8000} Hz → 8 kHz ${a.toFixed(1)} dB`); }
+  }
+  // the tank's group (2 / 4 chunks at 88.2 … 192 kHz): block steps = per-sample steps bit for bit, deterministic
+  const k5 = BUSY.findIndex(b => b[0] === '905');
+  for (const [base, os] of [[88200, 2], [96000, 4], [176400, 1], [192000, 2], [192000, 8]]) {
+    const a = busy(k5, { base, os, nF: 16000 }), b = busy(k5, { base, os, nF: 16000, perSample: true }), c = busy(k5, { base, os, nF: 16000 });
+    if (!same(a.t[0], b.t[0]) || !same(a.t[0], c.t[0]) || !(absMax(a.t[0], 0.03 * base * os) > 0.1)) bad.push(`${base / 1000}k × ${os}: block ≠ per sample, or not deterministic, or no wet`);
+  }
+  console.log('# 905 rates: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 905: no NaN / Inf / subnormal over a 60 s tail after a loud burst (OS 4), its state flushed', () => {
+  const r = rig({ mods: [[1, '905']], pv: { 1: { mx: 7 } }, drive: [[1, 'in', i => (i < 19200 ? 15 * Math.sin(i * 0.05) : 0)]], taps: [[1, 'out']] });
+  let bad = 0, pk = 0;
+  for (let s = 0; s < 60; s++) { const y = r.render(frames(1)).t[0]; for (const v of y) { if (!Number.isFinite(v) || (v !== 0 && Math.abs(v) < SUB)) bad++; pk = Math.max(pk, Math.abs(v)); } }
+  assert.equal(bad, 0); assert.ok(pk > 1, 'it rang');
+  assert.deepEqual(subOf(r.M.get(1)), []);
+});
+
+test('9c the 912 (IMPL-9c §1.4, RM §3.4): CONTROL OUT 5 + 0.5 · log2(V p-p) — the table\'s seven points within 0.2 V (a 250 Hz sine), on the law within 0.05 V, 250 Hz 500 mV p-p → 4.5 V ± 0.02 on every RESPONSE; a 10 % pulse within 0.2 V of a sine of its p-p; silence → 0 V; the log within 1e-4 oct; the comparator\'s three pairs at THRESHOLD 0 / 5 / 10 (and 2.5) within 10 mV, on its normal and patched', () => {
+  const bad = [], rep = [], fs = 192000, P = PM();
+  const co = (vpp, rs, shape = 'sin', f = 250) => { const w = shape === 'sin' ? i => 0.5 * vpp * Math.sin(2 * Math.PI * f * i / fs) : i => ((i * f / fs) % 1 < 0.1 ? 0.9 * vpp : -0.1 * vpp);
+    const y = solo('912', { pv: { rs }, drive: [['in', w]], taps: ['co'] }).render(frames(1.4)).t[0]; return { m: meanOf(y, Math.round(1 * fs)), rip: pp(y, Math.round(1 * fs)) }; };
+  for (const rs of [0, 1, 2]) { const c = co(0.5, rs).m; if (Math.abs(c - 4.5) > 0.02) bad.push(`calibration on ${rs}: ${c}`); }
+  for (const [v, t] of [[0.031, 2.4], [0.063, 3.0], [0.127, 3.5], [0.5, 4.5], [1, 5.0], [2, 5.5], [4, 6.0]]) {
+    const c = co(v, 1).m; rep.push(`${v} V → ${c.toFixed(3)}`);
+    if (Math.abs(c - t) > 0.2 || Math.abs(c - (5 + 0.5 * Math.log2(v))) > 0.05) bad.push(`${v} V p-p: ${c}`);
+  }
+  for (const rs of [0, 1, 2]) { const s = co(1, rs).m, p = co(1, rs, 'pulse').m; if (Math.abs(p - s) > 0.2) bad.push(`pulse vs sine on ${rs}: ${p} / ${s}`); }
+  rep.push(`50 Hz ripple on SHORT ${co(1, 0, 'sin', 50).rip.toFixed(3)} V p-p`);
+  const q = solo('912', { pv: { rs: 2 }, drive: [['in', i => (i < 0.5 * fs ? Math.sin(i * 0.01) : 0)]], taps: ['co'] }).render(frames(3)).t[0];
+  if (q[q.length - 1] !== 0 || !(q[Math.round(0.4 * fs)] > 4)) bad.push(`silence: ${q[q.length - 1]}`);
+  // the log: the follower's state set to v (pos = −neg = v / 2, the smoothed Vpp v), one sample → its own law exactly
+  let el = 0;
+  for (let e = -11.9; e < 4; e += 0.0137) {
+    const m = new P.T['912']({ fs, OS: 4, n: 1, type: '912' }), z = new Float64Array(32), v = 2 ** e; m.ins = [z, z]; m.om = 1; m.ctl(0);
+    m.ps = v / 2; m.ng = -v / 2; m.vs = v; m.run(0, 0, 1);
+    const ps = v / 2 * m.dk, vs = v + (2 * ps - v) * m.ka, want = Math.min(6.5, Math.max(0, 5 + 0.5 * Math.log2(m.kc * vs)));
+    el = Math.max(el, Math.abs(m.outs[0][0] - want) / 0.5);
+  }
+  if (!(el <= 1e-4)) bad.push(`log2 ${el} oct`);
+  // the comparator: COMPARATOR IN patched with a slow ramp 0 → 7 → 0 V; and on its normal (CONTROL OUT) a rising level crosses TH's on
+  for (const [th, on, off] of [[0, 0.32, 0.12], [2.5, 1.6, 0.16], [5, 2.88, 0.2], [10, 5.7, 0.3]]) {
+    const ramp = i => { const t = i / fs; return t < 1 ? 7 * t : Math.max(0, 7 * (2 - t)); };
+    const y = solo('912', { pv: { th }, drive: [['ci', ramp]], taps: ['st'] }).render(frames(2.1)).t[0];
+    let up = -1, dn = -1; for (let i = 1; i < y.length; i++) { if (y[i - 1] === 0 && y[i] === 1 && up < 0) up = ramp(i); if (y[i - 1] === 1 && y[i] === 0) dn = ramp(i); }
+    if (Math.abs(up - on) > 0.01 || Math.abs(dn - off) > 0.01) bad.push(`TH ${th}: on ${up} off ${dn}`);
+  }
+  const n = rig({ mods: [[1, '912']], pv: { 1: { th: 5, rs: 0 } }, drive: [[1, 'in', i => (i > fs / 2 ? 0.3 * Math.sin(i * 0.01) : 0.01 * Math.sin(i * 0.01))]], taps: [[1, 'st'], [1, 'co']] }).render(frames(1)).t;
+  const k = n[0].indexOf(1); if (!(k > fs / 2) || !(n[1][k] > 2.88 && n[1][k - 1] <= 2.88)) bad.push(`the normal: closes at ${k} (co ${n[1][k]})`);
+  console.log('# 912: ' + rep.join(' · ') + ` · log2 ${el.toExponential(2)} oct`);
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 984 (IMPL-9c §1.5): 1.25 through a channel at 10 / 10 ± 0.5 % (any input → any bus, linear: master 5 → half), the defaults four unity channels; AC 10 Hz (−3 dB ± 0.2); flat at 5 within 0.1 dB (the coupler alone); BASS / TREBLE first-order shelves ±12 dB at 100 Hz / 5 kHz, the analog prototype within 0.3 dB, a cut the boost\'s mirror', () => {
+  const bad = [], rep = [], fs = 192000;
+  const H = (pv, f, inp = 'i1', tap = 'o1') => { const y = solo('984', { pv, drive: [[inp, i => 0.1 * Math.sin(2 * Math.PI * f * i / fs)]], taps: [tap] }).render(frames(Math.max(0.6, 40 / f))).t[0]; return amp(y, fs, f, Math.round(y.length / 2), y.length) / 0.1; };
+  const ac = f => { const a = 1 / (1 + 2 * Math.PI * 10 / fs), w = 2 * Math.PI * f / fs, n = Math.hypot(1 - Math.cos(w), Math.sin(w)), d = Math.hypot(1 - a * Math.cos(w), a * Math.sin(w)); return a * n / d; };
+  for (const [pv, inp, tap, want] of [[{ m1: 10 }, 'i1', 'o1', 1.25], [{ l32: 10, m2: 10 }, 'i3', 'o2', 1.25], [{ l41: 10, m1: 5 }, 'i4', 'o1', 0.625], [{}, 'i2', 'o2', 1], [{}, 'i2', 'o1', 0]]) {
+    const g = H(pv, 1000, inp, tap) / ac(1000); if (want === 0 ? g > 1e-12 : !near(g, want, 0.005)) bad.push(`${inp} → ${tap} ${JSON.stringify(pv)}: ${g}`);
+  }
+  const g10 = dB(H({}, 10)); if (Math.abs(g10 + 3.01) > 0.2) bad.push(`AC at 10 Hz ${g10}`);
+  for (const f of [20, 100, 1000, 5000, 20000]) { const g = dB(H({}, f) / ac(f)); if (Math.abs(g) > 0.1) bad.push(`flat at ${f}: ${g}`); }
+  const shelf = (f, v, lo) => { const G = 10 ** ((v - 5) * 12 / 5 / 20); if (lo) { const fc = 100 / (G < 1 ? G : 1); return Math.hypot(1 + (G - 1) / (1 + (f / fc) ** 2), -(G - 1) * (f / fc) / (1 + (f / fc) ** 2)); } const fc = 5000 * (G < 1 ? G : 1), x = f / fc; return Math.hypot(1 + (G - 1) * x * x / (1 + x * x), (G - 1) * x / (1 + x * x)); };
+  for (const [lo, fl] of [[1, [20, 50, 100, 200, 500]], [0, [2000, 5000, 10000, 20000]]]) for (const v of [0, 2.5, 7.5, 10]) for (const f of fl) {
+    const g = dB(H(lo ? { bs: v } : { tb: v }, f) / ac(f)), w = dB(shelf(f, v, lo));
+    if (Math.abs(g - w) > 0.3) bad.push(`${lo ? 'bass' : 'treble'} ${v} at ${f}: ${g.toFixed(2)} vs ${w.toFixed(2)}`);
+    if (v === 10) rep.push(`${lo ? 'bass' : 'treble'} 10 / 0 at ${f}: ${g.toFixed(2)} / ${dB(H(lo ? { bs: 0 } : { tb: 0 }, f) / ac(f)).toFixed(2)} dB`);
+  }
+  console.log('# 984: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 991 (a stand-in, OURS): LOW PASS 20 · 1000^(v / 10) Hz and HIGH PASS 10 · 1000^(v / 10) Hz one-pole corners (−3 dB) within 2 %, 6 dB/oct; × ATTENUATOR / 10', () => {
+  const bad = [], fs = 192000, A = 1e-3;
+  const R = pv => respOf(rig({ mods: [[1, '991']], pv: { 1: pv }, drive: [[1, 'in', i => (i === 0 ? A : 0)]], taps: [[1, 'out']] }).render(frames(1)).t[0].map(x => x / A), fs);
+  for (const lp of [3, 5, 7]) { const want = 20 * 1000 ** (lp / 10), g = crossAt(R({ lp, hp: 0 }), -3.0103, want / 4, Math.min(want * 4, 60000)); if (!near(g, want, 0.02)) bad.push(`LP ${lp}: ${g} vs ${want}`); }
+  for (const hp of [3, 5, 7]) { const want = 10 * 1000 ** (hp / 10), g = crossAt(R({ hp, lp: 10 }), -3.0103, want / 4, want * 4); if (!near(g, want, 0.02)) bad.push(`HP ${hp}: ${g} vs ${want}`); }
+  const r = R({ lp: 5, hp: 0 }), s = dB(r(632.46 * 16)) - dB(r(632.46 * 8)); if (Math.abs(s + 6) > 0.3) bad.push(`LP slope ${s}`);
+  const a = R({ at: 5 }), b = R({}); if (!near(a(1000) / b(1000), 0.5, 1e-9)) bad.push(`ATTENUATOR 5: ${a(1000) / b(1000)}`);
+  assert.deepEqual(bad, []);
+});
+
+test('9c the 901C (OUTPUT ± = ± in · AMPLITUDE / 10, railed) and the CP3 (the CP3A\'s maths: the mixer, MIX ±, EXT, bit for bit with the same inputs and values)', () => {
+  const bad = [], x = i => 9 * Math.sin(i * 0.01) + 4 * Math.sin(i * 0.3);
+  const c = solo('901c', { pv: { am: 8 }, drive: [['in', x]], taps: ['p', 'n'] }).render(400).t, rail = PM().rail;
+  for (let i = 0; i < c[0].length; i++) if (c[0][i] !== rail(0.8 * x(i)) || c[1][i] !== rail(-0.8 * x(i))) { bad.push(`901C at ${i}`); break; }
+  const pv = { x1: 9, x2: 3, x4: 6, ms: 8, ra: 4 }, dr = [['m1', i => 5 * Math.sin(i * 0.02)], ['m2', i => 3 * Math.cos(i * 0.05)], ['m4', i => 7 * Math.sin(i * 0.001)], ['x4', i => 2 * Math.sin(i * 0.03)]];
+  const a = solo('cp3', { pv, drive: dr, taps: ['mo', 'mn', 'xr'] }).render(800).t, b = solo('cp3a', { pv, drive: dr, taps: ['mo', 'mn', 'xr'] }).render(800).t;
+  a.forEach((y, k) => { if (!bitEq(y, b[k])) bad.push(`CP3 ≠ CP3A on ${k}`); });
+  if (!(absMax(a[0]) > 11 && absMax(a[1]) <= 12)) bad.push('the rails (the asymmetric clip)');
+  assert.deepEqual(bad, []);
+});
+
+// a 1960s slice over the evaluator: three 901Bs on a 901A (and one undriven) and the 901 into the 984 / CP3, the 904C, the 902 on
+// a 911, the 905 then the 991 to MAIN OUT; the 912 following the 984's second bus rides the 904C's centre and starts a second 911
+// onto its bandwidth; the 901C from the 901's sine into the CP3
+function slice9c(o = {}) {
+  const { pg, pv } = payloadOf([[1, '901a'], [2, '901b', 1], [3, '901b', 1], [4, '901b', 1], [5, '901'], [6, '901c'], [7, '984'], [8, '904c'], [9, '902'], [10, '911'],
+    [11, '905'], [12, '912'], [13, '991'], [14, 'cp3'], [15, '911'], [16, '901b']],
+  [[0, 'kp1', 1, 'f1'], [2, 'saw', 7, 'i1'], [3, 'saw', 7, 'i2'], [4, 'pls', 7, 'i3'], [5, 'tri', 14, 'm1'], [16, 'sin', 14, 'm2'], [6, 'n', 14, 'm3'], [14, 'mo', 7, 'i4'],
+    [0, 'kp2', 5, 'f1'], [5, 'sin', 6, 'in'], [7, 'o1', 8, 'in'], [8, 'out', 9, 'i1'], [0, 'ks1', 10, 'trg'], [10, 'out', 9, 'c1'], [9, 'o2', 11, 'in'], [11, 'out', 13, 'in'],
+    [13, 'out', 0, 'out'], [7, 'o2', 12, 'in'], [12, 'co', 8, 'c1'], [12, 'st', 15, 'trg'], [15, 'out', 8, 'b1']],
+  { 0: { ov: 6 }, 2: { vn: -0.05 }, 4: { vn: 0.05, rg: 2 }, 5: { rg: 2, fq: 1 }, 7: { l21: 10, l31: 6, l41: 4, bs: 7, tb: 3 }, 8: { fc: -2, bw: 1.5 }, 9: { fc: 0 }, 10: { t1: 1, t2: 5, es: 6, t3: 4 },
+    11: { mx: 5 }, 12: { rs: 0, th: 4 }, 13: { lp: 8, hp: 1 }, 14: { x1: 5, x2: 6, x3: 4, ms: 4 }, 15: { t1: 2, t2: 4, es: 0, t3: 3 }, 16: { vn: 1, rg: 2 } });
+  return machine(Object.assign({ pg, pv }, o));
+}
+test('9c over the evaluator, a 1960s slice (every 9c type live): no loop step, no error, sounding, finite; per sample (ps) = block; span invariance (4, 128, random); reset() replays a bounce; no allocation in the render path', () => {
+  const { sc } = libM(), bad = [], notes = line('lead', 48000);
+  const a = slice9c(), b = slice9c(), c = slice9c(), d = slice9c();
+  const mon = a.mc.mon(); if (a.errs.length || a.g.why.length || mon.steps.some(s => s.loop === 1) || mon.live.length < 16) bad.push(`errors / loop / live ${a.errs} ${a.g.why} ${mon.live.length}`);
+  b.mc.ps = 1;
+  let seed = 9; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const ya = a.render(frames(0.6), { notes }), yb = b.render(frames(0.6), { notes }), yc = c.render(frames(0.6), { notes, span: () => 4 }), yd = d.render(frames(0.6), { notes, span: () => 4 * (1 + Math.floor(rnd() * 40)) });
+  if (!same(ya, yb)) bad.push('per sample ≠ block');
+  if (!same(ya, yc) || !same(ya, yd)) bad.push('spans');
+  if (!ya.every(Number.isFinite) || !(absMax(ya) > 0.01)) bad.push(`finite, sounding: ${absMax(ya)}`);
+  const F = frames(0.2), after = notes.filter(x => x[0] >= F), e = slice9c(), f = slice9c({ F0: F });
+  e.render(F, { notes }); e.mc.reset();
+  if (!same(e.render(frames(0.2), { notes: after }), f.render(frames(0.2), { notes: after }))) bad.push('reset ≠ a fresh machine');
+  const m = slice9c(); m.render(frames(0.3), { notes });
+  const st = []; for (let k = 0; k < 100; k++) st.push([frames(0.3) + 4 * k, 40 + (k * 7) % 30, 0.7, k % 3 === 2 ? 0 : 1]);
+  const y = noAlloc(sc, () => m.render(frames(0.2), { notes: st, span: () => 4 * (1 + (seed++ % 32)) }));
+  if (!y.every(Number.isFinite)) bad.push('no-alloc run not finite');
+  assert.deepEqual(bad, []);
+});
+
+test('9c: a 984 patched into itself (o1 → i1 at 1.25, and a bus into another\'s input: a one-member loop step) stays finite and inside the rails; a 905 in a loop with a 902 the same', () => {
+  const bad = [];
+  let { pg, pv } = payloadOf([[1, '921'], [2, '984']], [[1, 'saw', 2, 'i2'], [2, 'o1', 2, 'i1'], [2, 'o2', 2, 'i3'], [2, 'o1', 0, 'out']], { 2: { m1: 10, l21: 10, l32: 10, l31: 10, m2: 10 } });
+  let r = machine({ pg, pv }), y = r.render(frames(2));
+  if (!r.mc.mon().steps.some(s => s.loop === 1) || !y.every(Number.isFinite) || absMax(y) / (0.15 * 0.7) > 12.0001) bad.push(`984 loop: ${absMax(y)}`);
+  ({ pg, pv } = payloadOf([[1, '921'], [2, '905'], [3, '902']], [[1, 'saw', 3, 'i1'], [3, 'o2', 2, 'in'], [2, 'out', 3, 'i2'], [2, 'out', 0, 'out']], { 2: { mx: 8 }, 3: { fc: 6 } }));
+  r = machine({ pg, pv }); y = r.render(frames(3));
+  if (!r.mc.mon().steps.some(s => s.loop === 1) || !y.every(Number.isFinite) || absMax(y) / (0.15 * 0.7) > 12.0001) bad.push(`905 loop: ${absMax(y)}`);
+  assert.deepEqual(bad, []);
+});
+
+// IMPL-9c §3 G2 (reported; gated at three times the targets, as stage 9 / 9b): a module's ctl + run alone (costOf's floor included)
+test('9c CPU per type at OS 4 (node, reported; gated at three times IMPL-9c G2): 901 one output / all eight, 901A, 901B (driven, its width the driver\'s), 901C, 904C (CV / none), 905, 912, 984 (four buses), 991, CP3', () => {
+  const sw = (m, k, v) => { m.p[k] = m.t[k] = v; m.mv = 1; };
+  const C = [
+    ['901 saw (f1 patched)', 0.0018, () => costOf('901', m => { m.om = 2; return [[0, 'cv1']]; })],
+    ['901 all eight', 0.0032, () => costOf('901', m => { m.om = 255; return [[0, 'cv1']]; })],
+    ['901A (f1 patched)', 0.0012, () => costOf('901a', m => { m.om = 3; return [[0, 'cv1']]; })],
+    ['901B saw (driven)', 0.0016, () => costOf('901b', m => { m.om = 2; return [[0, 'env'], [1, 'cv1']]; })],
+    ['901C', 0.0005, () => costOf('901c', () => [[0, 'saw']])],
+    ['904C band pass (c1 patched)', 0.008, () => costOf('904c', () => [[0, 'mix'], [1, 'cv1']])],
+    ['904C band reject (no CV)', 0.008, () => costOf('904c', m => { sw(m, 0, 0); return [[0, 'mix']]; })],
+    ['905', 0.008, () => costOf('905', () => [[0, 'mix']])],
+    ['912 (follow + compare)', 0.002, () => costOf('912', m => { m.om = 3; return [[0, 'mix'], [1, 'env']]; })],
+    ['984 (four inputs, four buses, tone on)', 0.005, () => costOf('984', m => { sw(m, 20, 7); sw(m, 21, 3); return [[0, 'saw'], [1, 'mix'], [2, 'env'], [3, 'cv1']]; })],
+    ['991', 0.001, () => costOf('991', () => [[0, 'mix']])],
+    ['CP3 mix (3 inputs)', 0.0007, () => costOf('cp3', m => { m.om = 3; return [[0, 'mix'], [1, 'mix'], [2, 'mix']]; }, [0])],
+  ];
+  const rep = [], bad = [];
+  for (const [nm, lim, f] of C) { const t = f(); rep.push(`${nm} ${t.toFixed(5)}`); if (!(t <= 3 * lim)) bad.push(`${nm}: ${t} > 3 × ${lim}`); }
+  const m = slice9c(); m.render(frames(0.3), { notes: line('lead', 48000) });
+  const t0 = performance.now(); m.render(frames(1)); rep.push(`the 1960s slice (16 modules, machine) ${((performance.now() - t0) / 1000).toFixed(4)}`);
+  console.log('# CPU 9c (OS 4, node; s per s): ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
 });

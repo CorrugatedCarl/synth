@@ -1539,10 +1539,10 @@ const PT_DIR = { in: 0, out: 1, any: 2 };
 // audio past the trigger threshold — clamps, sync, audio-rate FM) round-robin from the controller's source sections' and the
 // earlier modules' outputs of its plug kind (a DAG: block steps), the controller's other sections the same, each multiple
 // driven once; MAIN OUT summing every 1/4" output and the multiples' other jacks (× 0.031: every output computed), an S output
-// nothing reads summed into the last S input. → { a, b (a + each module's inputs fed by the one before it, a back cord to module
-// 1 and a self cord on the last module: loop steps, ramps inside them), c (b without its last module: a retiring one), v0 (the
-// defaults), v1 (every knob off its default, every switch moved up) } or null. IMPL-9b §3.1 (skeptic #7): pick (a Set of
-// types, the controller always in) builds the same over those types only — ptWarms' parts
+// nothing reads summed into the last S input. → { a, b (a + each module's inputs fed by the one before it, a ring through every
+// loop-capable module and a self cord on K: one loop step, ramps inside it), c (b without K: a retiring one), v0 (the defaults),
+// v1 (every knob off its default, every switch moved up) } or null. IMPL-9b §3.1 (skeptic #7): pick (a Set of types, the
+// controller always in) builds the same over those types only — ptWarms' parts
 function ptWarm(F, f, pick) {
   const X = ptTab(F);
   return X === null ? null : ptWarmOf(X, f, pick || null);
@@ -1600,8 +1600,17 @@ function ptWarmOf(X, f, pick) {
   // an S output nothing reads: summed into the last S input fed (the controller's, after every module's: no loop)
   const sIn = cords.findLast(e => jk[mods.find(m => m[0] === e[2])[1]][e[3]].s === 1);
   if (sIn) for (const x of pool[1]) if (!cords.some(e => e[0] === x[0] && e[1] === x[1])) cords.push([x[0], x[1], sIn[2], sIn[3], 1]);
-  const a = cords.concat(sink), K = mods[mods.length - 1], o = jk[K[1]].findIndex(j => j.d === 1 && j.s === 0);
-  const i1 = mods.length > 1 ? jk[mods[1][1]].findIndex(j => j.d === 0 && j.s === 0) : -1, iK = jk[K[1]].findIndex(j => j.d === 0 && j.s === 0);
+  // the loop-capable modules (IMPL-9c fix E), in the part's order: a section with a 1/4" input and a 1/4" output — its loop output
+  // the first such output, its loop inputs that section's 1/4" inputs. K = the last with two loop inputs or more (else the last):
+  // its self cord on the first, the ring's on its last
+  const a = cords.concat(sink), LC = [];
+  for (const [m, t] of mods.slice(1)) {
+    const J = jk[t], o = J.findIndex(j => j.d === 1 && j.s === 0 && J.some(q => q.d === 0 && q.s === 0 && q.sec === j.sec));
+    if (o >= 0) LC.push({ m, o, I: J.flatMap((j, k) => (j.d === 0 && j.s === 0 && j.sec === J[o].sec ? [k] : [])) });
+  }
+  const kx = LC.findLastIndex(x => x.I.length > 1), L = LC.length ? LC[kx >= 0 ? kx : LC.length - 1] : null;
+  const K = L !== null ? mods.find(x => x[0] === L.m) : mods[mods.length - 1], o = L !== null ? L.o : -1, iK = L !== null ? L.I[0] : -1;
+  const i1 = mods.length > 1 ? jk[mods[1][1]].findIndex(j => j.d === 0 && j.s === 0) : -1;
   // b: every 1/4" input of a module also fed (× 2.3) by the module before it — a large, moving source on every trigger, sync and
   // control input whatever the round robin gave it (a 921's clamp, a 921B's sync window: the event paths) —, then the loops
   const chain = [];
@@ -1609,10 +1618,15 @@ function ptWarmOf(X, f, pick) {
     const q = jk[mods[k - 1][1]].findIndex(j => j.d === 1 && j.s === 0);
     if (q >= 0) jk[mods[k][1]].forEach((j, i) => { if (j.d === 0 && j.s === 0) chain.push([mods[k - 1][0], q, mods[k][0], i, 2.3]); });
   }
+  // the ring (IMPL-9c fix E; 9b's back cord, K → module 1, closed a loop only where the chain ran unbroken from module 1 to the
+  // last module — the table's order decided it): each loop-capable module's loop output into the next one's last loop input, the
+  // last one's into the first's — one loop step holding every loop-capable class of the part, so the evaluator's per-sample call
+  // (loopRun's ms[k].run) meets every such class in the warm-up and stays generic past V8's four maps, whatever the order
+  const ring = LC.length > 1 ? LC.map((x, k) => { const y = LC[(k + 1) % LC.length]; return [x.m, x.o, y.m, y.I[y.I.length - 1], 0.53]; }) : [];
   // (IMPL-9b: the self cord is that input's only source — a lone late read, the loop's pre feed; c leaves every normalled input
   // unfed — its normal read in its place, under a ramp — and module 1's first 1/4" input empty: back to b, a ramp from nothing)
   const self = o >= 0 && iK >= 0 ? [[K[0], o, K[0], iK, 0.47]] : [], tyOf = n => mods.find(m => m[0] === n)[1];
-  const b = a.concat(chain, o >= 0 && i1 >= 0 ? [[K[0], o, mods[1][0], i1, 0.53]] : []).filter(e => !self.length || e[2] !== K[0] || e[3] !== iK).concat(self);
+  const b = a.concat(chain, ring).filter(e => !self.length || L.I.length < 2 || e[2] !== K[0] || e[3] !== iK).concat(self);
   const c = b.filter(e => e[0] !== K[0] && e[2] !== K[0] && !jk[tyOf(e[2])][e[3]].nm && (e[2] !== mods[1][0] || e[3] !== i1 || mods.length < 2));
   const pg = (M, E) => ({ v: 1, f, mods: M.map(x => x.slice()), cords: E.map(x => x.slice()) });
   const vals = off => {

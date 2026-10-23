@@ -128,7 +128,7 @@ test('IMPL-P skeptic #1: midOf / endOf take patch-core\'s id grammar — a modul
   for (const bad of ['m0', 'm01', 'm1000000', 'm12345678', 'm-1', 'mx', 'c']) assert.equal(CP.midOf('i1', 'i1/' + bad), null, bad);
 });
 
-test('faceJacks: every face (the 25 modules — 9b: their rear terminals never on a face — and the console) — one spec per face jack of its type, id j-<port>, module-local (geometry\'s body px + BAR_H), "<title> · <legend>", sig / dir from the table, its hit circle ≤ the pitch; [] without a layout', () => {
+test('faceJacks: every face (the 35 modules — 9b: their rear terminals never on a face — and the console) — one spec per face jack of its type, id j-<port>, module-local (geometry\'s body px + BAR_H), "<title> · <legend>", sig / dir from the table, its hit circle ≤ the pitch; [] without a layout', () => {
   for (const ty of MG.ORDER) {
     const L = cvPanel.moduleLayout(ty), model = cvPanel.moduleModel(ty), g = cvPanel.geometry(L, model), J = CP.faceJacks(L, model, ty.toUpperCase() + ' 1'), T = MG.TYPES[ty];
     assert.deepEqual(J.map(j => j.id).sort(), T.jacks.filter(j => !j.rear).map(j => CP.JACK_PRE + j.id).sort(), ty);
@@ -467,7 +467,7 @@ test('add (a tap: its row\'s first free slot; a drop: where released, on the dot
   assert.deepEqual([R.edits.at(-1).label, R.rec().cords.length, R.rec().mods.m7, R.t.lay['i1/m7'], R.V.modules.has('i1/m7'), R.t.dev.i1.vals.p.m7.re, R.notes.at(-1)],
     ['Delete 904A 1', n0 - 4, undefined, undefined, false, 6, 'Deleted 904A 1 and 4 cords · tap to undo [tap]']);
   R.H.remove('m2');
-  assert.deepEqual([R.rec().mods.m3.drv, R.rec().mods.m4.drv, R.H.title(R.t, 'i1', 'm3').sub], [undefined, undefined, ''], 'the 921Bs undriven');
+  assert.deepEqual([R.rec().mods.m3.drv, R.rec().mods.m4.drv, R.H.title(R.t, 'i1', 'm3').sub], [undefined, undefined, 'not driven'], 'the 921Bs undriven (9c fix N1: their bar says so)');
   assert.equal(R.H.remove('c'), false, 'the controller has no Delete');
   // a new module: never an orphan's number (m7's knobs live on)
   assert.equal(R.H.add('911'), 'm16');
@@ -494,7 +494,7 @@ test('presets / Init / Tidy: Patches… (each a step "Load <name>" carrying the 
   const R = rig();
   assert.deepEqual(R.H.items(R.t, 'i1', 'c').map(i => i.label), ['Patches', 'Tidy patch']);
   assert.deepEqual(R.H.items(R.t, 'i1', 'c')[0].sub.map(i => i.label || '—'), ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells',
-    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed', '—', 'Init patch'], '(9b) the thirteen');
+    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed', 'Drift choir', 'Follower wah', 'Spring pluck', '—', 'Init patch'], '(9b, 9c) the sixteen');
   assert.deepEqual(R.H.items(R.t, 'i1', 'c')[0].sub.filter(i => i.checked).map(i => i.label), ['Classic bass']);
   assert.deepEqual(R.H.items(R.t, 'i1', 'm3').map(i => i.label || '—'), ['Duplicate', 'Driver', '—', 'Delete']);
   assert.deepEqual(R.H.items(R.t, 'i1', 'm3')[1].sub.map(i => i.label + (i.checked ? '*' : '')), ['921A 1*', 'None']);
@@ -779,6 +779,51 @@ test('(9b) a set on a 900 Series (IMPL-9b §1.2): setLoad(\'s55\') loads Sequenc
   Q.V.destroy(); Q.H.destroy();
 });
 
+test('(9c fix, review 2 N1) a linked module added or duplicated with no driver of its type having room runs on its own — a notice names the type and the way out ("Every 901A already drives three — …", "No 901A in this patch — …"), its bar says "not driven"; with room: no notice, "on <driver>"', () => {
+  const N = (d, m, none) => (none ? `No ${d} in this patch` : `Every ${d} already drives three`) + ` — this ${m} runs on its own; add a ${d} to drive it`;
+  const R = rig();                                                          // the Model 15: one 921A driving two 921Bs
+  R.notes.length = 0;
+  const b3 = R.H.add('921b');
+  assert.deepEqual([R.rec().mods[b3].drv, R.H.title(R.t, 'i1', b3).sub, R.notes], ['m2', 'on 921A 1', []], 'room for a third: driven, nothing said');
+  const b4 = R.H.add('921b');
+  assert.deepEqual([R.rec().mods[b4].drv, R.H.title(R.t, 'i1', b4).sub, R.notes], [undefined, 'not driven', [N('921A', '921B')]], 'the fourth: three is a 921A\'s fan-out');
+  R.notes.length = 0;
+  const d = R.H.duplicate(b3);                                              // its driver is full: undriven too
+  assert.deepEqual([R.rec().mods[d].drv, R.notes], [undefined, [N('921A', '921B')]]);
+  R.notes.length = 0;
+  const x = R.H.add('901b');                                                // a 901B with no 901A anywhere
+  assert.deepEqual([R.rec().mods[x].drv, R.H.title(R.t, 'i1', x).sub, R.notes], [undefined, 'not driven', [N('901A', '901B', true)]]);
+  R.notes.length = 0;
+  R.H.remove('m2');                                                         // the 921A gone: its 921Bs are undriven (the delete's own notice only)
+  R.notes.length = 0;
+  const y = R.H.add('921b');
+  assert.deepEqual([R.rec().mods[y].drv, R.notes], [undefined, [N('921A', '921B', true)]], 'no 921A at all');
+  R.notes.length = 0;
+  R.H.add('921a');
+  assert.deepEqual(R.notes, [], 'a driver itself: nothing to say (and a module without a link never)');
+  R.H.add('911');
+  assert.deepEqual(R.notes, []);
+  R.V.destroy(); R.H.destroy();
+});
+
+test('(9c fix, review 2 F2) a module tapped in (or duplicated) is shown to the host — deps.show(key) after the step, which brings it into view when it lies off the band (main.js modShow); a drop (it lands under the finger) is not, a refused add shows nothing', () => {
+  const shown = [], R = rig({ deps: { show: k => shown.push(k) } });
+  const m = R.H.add('911');
+  assert.deepEqual([m, shown], ['m13', ['i1/m13']], 'a tap: the new module, after the step (its module is in the view)');
+  assert.equal(R.V.modules.has('i1/m13'), true);
+  R.H.add('995', { x: 1003, y: -610 });
+  assert.deepEqual(shown, ['i1/m13'], 'a drop: not');
+  const d = R.H.duplicate('m12');
+  assert.deepEqual(shown, ['i1/m13', 'i1/' + d], 'a duplicate: its place is a free slot too');
+  assert.equal(R.H.add('nope'), null);
+  assert.equal(shown.length, 2, 'nothing added: nothing shown');
+  R.V.destroy(); R.H.destroy();
+  // without the dep (a host that does not move the camera): the add works as before
+  const Q = rig();
+  assert.equal(Q.H.add('911'), 'm13');
+  Q.V.destroy(); Q.H.destroy();
+});
+
 test('(9b, review 2 F4) the routing panels reach modules by ordinal, so a delete / add / duplicate that renumbers one moves their lit rows — the step\'s notice says so (the 993\'s routing now reaches 911 2, 911 3: the modules by their titles before the step); a delete no lit row reaches says nothing more; a row that loses its module says "no longer reaches"', () => {
   const R = rig({ set: 's55' }), mid = (ty, n = 1) => Object.keys(R.rec().mods).filter(k => R.rec().mods[k].t === ty).sort((a, b) => +a.slice(1) - +b.slice(1))[n - 1];
   R.H.preset('Routed');
@@ -804,7 +849,7 @@ test('(9b, review 2 F4) the routing panels reach modules by ordinal, so a delete
   A.t.dev.i1.vals = PT.setKnob(A.t.dev.i1.vals, A.rec(), cp3, 'r1', 1);
   A.notes.length = 0;
   A.H.add('921b');
-  assert.deepEqual(A.notes, [], 'a 921B moves no driver row: no notice');
+  assert.deepEqual(A.notes, ['Every 921A already drives three — this 921B runs on its own; add a 921A to drive it'], 'a 921B moves no driver row: no routing notice (it is the seventh on two 921As: undriven, its notice says so — 9c fix N1)');
   A.H.add('921a');
   assert.equal(A.notes.at(-1), 'Added 921A 3 · CP3A 3\'s routing now reaches 921A 3 · tap to undo [tap]');
   // a duplicate of a driver does the same (a 921A 3 → 4: the CP3A's rows keep their ordinals, so nothing moves) — and a duplicate of a 911 reaches no row

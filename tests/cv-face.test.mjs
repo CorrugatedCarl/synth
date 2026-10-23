@@ -134,11 +134,15 @@ test('1i faces: every keyboard face ≤ 10.8 M px at dpr 2 (< BASE_MAX_PX) — b
 });
 
 /* ---- (9, IMPL-9 §2.2, §8.4) the 900 Series faces: the console and the nine module faces (outer px, the 40 px bar included);
-   (9b, IMPL-9b §2.1, §4.2, §8.4) + the sixteen System 35 / 55 faces: 4 MU 448 × 512, 8 MU 864 × 512, console height × 352 */
+   (9b, IMPL-9b §2.1, §4.2, §8.4) + the sixteen System 35 / 55 faces: 4 MU 448 × 512, 8 MU 864 × 512, console height × 352;
+   (9c, IMPL-9c §1.0, §3 G6) + the ten 1960s faces: the 901 3 MU 352 × 512, the 904C / 905 2 MU, the 984 4 MU 448 × 512, the CP3 console 448 × 352 */
 const FACES_9 = { ctl: [864, 352], 921: [224, 512], '921a': [128, 512], '921b': [128, 512], 923: [128, 512], '904a': [128, 512], '907a': [352, 512], 911: [128, 512], 902: [128, 512], 995: [128, 512],
   '904b': [128, 512], 914: [448, 512], '911a': [128, 512], '903a': [128, 512], 960: [864, 512], 962: [128, 512], 992: [128, 512], 993: [128, 512], 994: [128, 512],
-  cp2: [352, 352], cp3a: [448, 352], cp4a: [352, 352], cp35: [448, 352], cp8a: [224, 352], 961: [352, 352], clk: [224, 352] };
-test('9 / 9b faces: §2.2\'s sizes (1 MU 128 × 512 … 8 MU 864 × 512; console height 224 / 352 / 448 × 352; the console 864 × 352) = moog-core\'s w / h; each 1:1 at rest at dpr 2 (baseLevel 2) in ≤ 6 MB of base + mips (the 960 ≤ 9 MB); the Model 15 set ≈ 24.4 MB, under a fifteenth of FACE_BUDGET_BYTES; the System 35 ≈ 43.7 MB, the System 55 ≈ 72.6 MB (IMPL-9b §4.2: ≈ 74), under a fifth', async () => {
+  cp2: [352, 352], cp3a: [448, 352], cp4a: [352, 352], cp35: [448, 352], cp8a: [224, 352], 961: [352, 352], clk: [224, 352],
+  901: [352, 512], '901a': [128, 512], '901b': [128, 512], '901c': [128, 512], '904c': [224, 512], 905: [224, 512], 912: [128, 512], 984: [448, 512], 991: [128, 512], cp3: [448, 352] };
+// the System IIIc's modules in their numbering order (IMPL-9c §2: 36 + the controller; `S3C` in moog-core must agree once K lands it)
+const S3C_FACES = ['901', '901a', '901a', '901a', ...Array(9).fill('901b'), '903a', '994', '912', '904a', '904b', '904c', '905', '914', '911', '911', '911', '911a', '902', '902', '902', '984', '992', '993', 'cp3', 'cp3', 'cp3', 'cp3', 'cp8a'];
+test('9 / 9b / 9c faces: §2.2\'s sizes (1 MU 128 × 512 … 8 MU 864 × 512; console height 224 / 352 / 448 × 352; the console 864 × 352) = moog-core\'s w / h; each 1:1 at rest at dpr 2 (baseLevel 2) in ≤ 6 MB of base + mips (the 960 ≤ 9 MB); the Model 15 set ≈ 24.4 MB, under a fifteenth of FACE_BUDGET_BYTES; the System 35 ≈ 43.7 MB, the System 55 ≈ 72.6 MB (IMPL-9b §4.2: ≈ 74), under a fifth; (9c) the System IIIc\'s 36 modules + the controller ≈ 69.8 MB, under the System 55\'s and a fifth', async () => {
   const P = await import('../cv-panel.js?v=9'), MG = await import('../moog-core.js?v=9'), { MODELS } = await import('../models.js?v=9');
   const bytes = (w, H) => w * (H - BAR_H) * 4 * 4 * 4 / 3; // dpr 2: 4 device px a world px, RGBA, + mips
   eq1(MG.ORDER_ALL.slice().sort(), Object.keys(FACES_9).sort(), 'every type');
@@ -154,6 +158,12 @@ test('9 / 9b faces: §2.2\'s sizes (1 MU 128 × 512 … 8 MU 864 × 512; console
   const set = ts => ['ctl', ...ts].reduce((a, t) => a + bytes(...FACES_9[t]), 0), s35 = set(MG.S35), s55 = set(MG.S55);
   eq1([Math.round(s35 / 1e5) / 10, Math.round(s55 / 1e5) / 10], [43.7, 72.6], 'the sets\' faces (MB)');
   assert.ok(s55 <= 74e6 && s55 <= FACE_BUDGET_BYTES / 5, 'the System 55: ' + (s55 / 1e6).toFixed(1) + ' MB');
+  // (9c) each 9c face (a 1 MU 1.29 MB … the 984 4.51 MB) and the System IIIc (the literal numbering list; the table's S3C, when it has one, the same modules)
+  eq1(['901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3'].map(t => Math.round(bytes(...FACES_9[t]) / 1e4) / 100), [3.54, 1.29, 1.29, 1.29, 2.26, 2.26, 1.29, 4.51, 1.29, 2.98], 'the 9c faces (MB)');
+  const s3c = set(S3C_FACES);
+  eq1([S3C_FACES.length, Math.round(s3c / 1e5) / 10], [36, 69.8], 'the System IIIc\'s faces (MB)');
+  assert.ok(s3c <= s55 && s3c <= FACE_BUDGET_BYTES / 5, 'the System IIIc: ' + (s3c / 1e6).toFixed(1) + ' MB');
+  if (MG.S3C) eq1(MG.S3C.slice().sort(), S3C_FACES.slice().sort(), 'moog-core\'s S3C = the IIIc\'s modules');
 });
 
 /* ---- the maths */

@@ -163,13 +163,15 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
 });
 
 // (9b, IMPL-9b §4.3) the set tiles beside the Model 15's: System 35 (one wood wedge: nine narrow faces over eight, a console strip of five panels, no cords) and System 55
-// (two wood-ended cabinets, the upper narrower: sixteen faces — one a sequencer — over fourteen, a console strip of seven panels, four coloured cords). Ours, no text, no logo.
-test('set tiles (IMPL-9b §4.3): SET_ART s35 / s55 — tile and chip render, their own drawings with the contract\'s module counts, distinct silhouettes, no text', () => {
-  const SIZES = [A.TILE, A.CHIP, { w: 300, h: 120 }, { w: 40, h: 40 }], IDS = ['s35', 's55'];
+// (two wood-ended cabinets, the upper narrower: sixteen faces — one a sequencer — over fourteen, a console strip of seven panels, four coloured cords). (9c, IMPL-9c §2) The System
+// IIIc: a wide wood cabinet under a narrow tower — sixteen faces over fifteen, a console strip of five panels, three coloured cords. Ours, no text, no logo.
+test('set tiles (IMPL-9b §4.3; IMPL-9c §2): SET_ART s35 / s55 / s3c — tile and chip render, their own drawings with the contract\'s module counts, distinct silhouettes, no text', () => {
+  const SIZES = [A.TILE, A.CHIP, { w: 300, h: 120 }, { w: 40, h: 40 }], IDS = ['s35', 's55', 's3c'];
   assert.deepEqual(Object.keys(A.SET_ART), IDS, 'one descriptor per set tile (SIL keys stay the MODELS ids)');
-  assert.ok(!('s35' in A.SIL) && !('s55' in A.SIL));
+  assert.ok(!('s35' in A.SIL) && !('s55' in A.SIL) && !('s3c' in A.SIL));
   const mine = [A.SET_ART.s35.name, A.SET_ART.s35.modules, [...A.SET_ART.s35.rows], A.SET_ART.s35.console, A.SET_ART.s55.name, A.SET_ART.s55.modules, [...A.SET_ART.s55.rows], A.SET_ART.s55.console];
   assert.deepEqual(mine, ['System 35', 22, [9, 8], 5, 'System 55', 37, [16, 14], 7], 'the labels\' counts: 17 + 5 = 22, 30 + 7 = 37 (the controller not counted)');
+  assert.deepEqual([A.SET_ART.s3c.name, A.SET_ART.s3c.modules, [...A.SET_ART.s3c.rows], A.SET_ART.s3c.console, A.SET_ART.s3c.body], ['System IIIc', 36, [16, 15], 5, 'tower'], '31 + 5 = 36: the IIIc\'s two Tidy rows and its console row');
   for (const id of IDS) {
     const d = A.SET_ART[id];
     assert.ok(Object.isFrozen(d) && Object.isFrozen(d.rows) && Object.isFrozen(d.outline) && d.outline.every(p => Object.isFrozen(p)), id + ': frozen');
@@ -193,11 +195,14 @@ test('set tiles (IMPL-9b §4.3): SET_ART s35 / s55 — tile and chip render, the
       for (const bad of ['<text', '<image', '<use', '<script', '<foreignobject', 'href', 'xlink', 'url(', 'font', '<lineargradient', '<pattern', ' id="', 'moog', 'system', 'model', '900']) assert.ok(!lo.includes(bad), at + ': no ' + bad);
     }
   }
-  const T = { s35: A.setArt('s35'), s55: A.setArt('s55') }, C = { s35: A.setChip('s35'), s55: A.setChip('s55') }, m15 = A.art('m900'), m15c = A.chip('m900');
+  const T = { s35: A.setArt('s35'), s55: A.setArt('s55'), s3c: A.setArt('s3c') }, C = { s35: A.setChip('s35'), s55: A.setChip('s55'), s3c: A.setChip('s3c') }, m15 = A.art('m900'), m15c = A.chip('m900');
   // the faces and the console panels, counted: 17 + 5 on the wedge, 30 + 7 on the stack (the chip keeps them as blocks)
   const faces = g => count(g, /<polygon points="[^"]*" fill="#2b2926"/g), panels = g => count(g, /<polygon points="[^"]*" fill="#383430"/g);
   assert.deepEqual([faces(T.s35), panels(T.s35), faces(C.s35), panels(C.s35)], [17, 5, 17, 5], 's35: 9 + 8 faces, 5 console panels (tile and chip)');
   assert.deepEqual([faces(T.s55), panels(T.s55), faces(C.s55), panels(C.s55)], [30, 7, 30, 7], 's55: 16 + 14 faces, 7 console panels (tile and chip)');
+  assert.deepEqual([faces(T.s3c), panels(T.s3c), faces(C.s3c), panels(C.s3c)], [31, 5, 31, 5], 's3c: 16 + 15 faces, 5 console panels (tile and chip)');
+  assert.equal(count(T.s3c, /r="0.62" fill="#d4cfc4"/g) + count(T.s3c, /r="0.32" fill="#f2a33a"/g), 0, 's3c: no sequencer');
+  assert.equal(count(T.s3c, /r="0.7" fill="#d4cfc4"/g), 14, 's3c: one wide filter bank, two rows of seven small knobs');
   assert.equal(count(T.s55, /r="0.32" fill="#f2a33a"/g), 8, 's55: the sequencer\'s lamp row (eight)');
   assert.equal(count(T.s55, /r="0.62" fill="#d4cfc4"/g), 24, 's55: the sequencer\'s three rows of eight dots');
   assert.equal(count(T.s35, /r="0.62" fill="#d4cfc4"/g) + count(T.s35, /r="0.32" fill="#f2a33a"/g), 0, 's35: no sequencer');
@@ -210,12 +215,15 @@ test('set tiles (IMPL-9b §4.3): SET_ART s35 / s55 — tile and chip render, the
     assert.equal(count(T.s35 + C.s35, new RegExp(`#${col}`, 'g')), 0, col + ': the wedge has no cords');
   }
   assert.equal(count(T.s55, /stroke="#b06ad9"/g), 0, 'the Model 15\'s fifth (purple) cord is not on the System 55');
-  assert.deepEqual([A.SET_ART.s35.cords, A.SET_ART.s55.cords], [0, 4]);
+  assert.deepEqual([A.SET_ART.s35.cords, A.SET_ART.s55.cords, A.SET_ART.s3c.cords], [0, 4, 3]);
+  for (const col of ['d8452f', 'e6b422', '3b82c4']) assert.deepEqual([count(T.s3c, new RegExp(`stroke="#${col}"`, 'g')), count(T.s3c, new RegExp(`r="0.72" fill="#${col}"`, 'g')), count(C.s3c, new RegExp(`stroke="#${col}"`, 'g'))], [1, 2, 1], 's3c ' + col + ': a cord, a plug each end, kept at chip size');
+  assert.equal(count(T.s3c, /#3fae5a/g), 0, 's3c: three cords, not four');
   // wood: the System 35 is one wooden polygon (its outline, drawn), the System 55 two wooden cabinets (the outline's rectangles); the Model 15 is a dark case with no wood
   const WOODFILL = '#74421f';
   assert.ok(T.s35.includes(`<polygon points="${A.SET_ART.s35.outline.map(p => p.join(',')).join(' ')}" fill="${WOODFILL}"`), 's35: its outline is the wooden body');
   assert.ok(T.s55.includes('<rect x="7" y="2" width="82" height="27.4" fill="#74421f"/>') && T.s55.includes('<rect x="3" y="29.4" width="90" height="23.6" fill="#74421f"/>'), 's55: its outline is the two cabinets');
-  assert.ok(!m15.includes(WOODFILL) && !m15c.includes(WOODFILL) && [T.s35, C.s35, T.s55, C.s55].every(g => g.includes(WOODFILL)), 'both sets are wood, the Model 15 is not');
+  assert.ok(T.s3c.includes('<rect x="24" y="3.5" width="48" height="25.5" fill="#74421f"/>') && T.s3c.includes('<rect x="3" y="29" width="90" height="24" fill="#74421f"/>'), 's3c: its outline is the cabinet and its tower');
+  assert.ok(!m15.includes(WOODFILL) && !m15c.includes(WOODFILL) && [T.s35, C.s35, T.s55, C.s55, T.s3c, C.s3c].every(g => g.includes(WOODFILL)), 'the sets are wood, the Model 15 is not');
   // distinct silhouettes: the System 35 a wedge (wider at every step down), the System 55 a step (two cabinets, constant width within each, the upper a step narrower), four corners vs eight
   const wAt = (poly, y) => { const xs = []; poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; if ((p[1] - y) * (q[1] - y) < 0) xs.push(p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])); }); return Math.max(...xs) - Math.min(...xs); };
   const O = i => A.SET_ART[i].outline, bb = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
@@ -227,10 +235,16 @@ test('set tiles (IMPL-9b §4.3): SET_ART s35 / s55 — tile and chip render, the
   const step = wAt(O('s55'), 25) / wAt(O('s55'), 35);
   assert.ok(step < 0.95 && step > 0.85, 's55: the upper one a step narrower');
   assert.ok(bb(O('s55'))[3] - bb(O('s55'))[1] > bb(O('s35'))[3] - bb(O('s35'))[1], 'the stack is the taller');
+  // the System IIIc: eight corners, a cabinet 90 wide and a tower 48 wide centred on it (a half; the System 55's upper is 82 of 90), the tower the taller part
+  assert.equal(O('s3c').length, 8);
+  assert.equal(wAt(O('s3c'), 40), 90); assert.equal(wAt(O('s3c'), 10), 48); assert.equal(wAt(O('s3c'), 20), 48);
+  const mid = (poly, y) => { const xs = []; poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; if ((p[1] - y) * (q[1] - y) < 0) xs.push(p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])); }); return (Math.max(...xs) + Math.min(...xs)) / 2; };
+  assert.equal(mid(O('s3c'), 10), mid(O('s3c'), 40), 's3c: the tower is centred on the cabinet');
+  assert.ok(wAt(O('s3c'), 10) / wAt(O('s3c'), 40) < 0.6 && bb(O('s3c'))[3] - bb(O('s3c'))[1] > bb(O('s35'))[3] - bb(O('s35'))[1], 's3c: a narrow tower (under 60 %) and taller than the wedge');
   for (const i of IDS) { const b = bb(O(i)); assert.ok(b[0] >= 0 && b[1] >= 0 && b[2] <= 96 && b[3] <= 56, i + ': inside the design box'); }
   // three tiles, three chips, all different from each other and from the other wooden cabinets
-  assert.equal(new Set([m15, T.s35, T.s55, A.art('modular'), A.art('minimoog')]).size, 5);
-  assert.equal(new Set([m15c, C.s35, C.s55]).size, 3);
+  assert.equal(new Set([m15, T.s35, T.s55, T.s3c, A.art('modular'), A.art('minimoog')]).size, 6);
+  assert.equal(new Set([m15c, C.s35, C.s55, C.s3c]).size, 4);
   // an unknown set id: the Model 15's tile (the 900 Series' own), not a new drawing; that tile is untouched (its fourteen faces, stage 9's pin)
   assert.equal(A.setArt('nope'), m15);
   assert.equal(A.setArt('m15', A.CHIP), m15c);

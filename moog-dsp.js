@@ -248,9 +248,64 @@
         params: [P('dv', 2, 0, 5, 1), P('md', 0, 0, 1, 1), P('ln', 0, 0, 31, 1)],    // LENGTH: OFF, 2 … 32 steps (index + 1; P-2 (b))
         nsec: 1,
       },
+      // stage 9c (IMPL-9c §1.0, lane V): the 1960s types, appended — the rows above untouched
+      901: {
+        jacks: [J('f1', 'i', 'v'), J('f2', 'i', 'v'), J('f3', 'i', 'v'), J('sin', 'o', 'v'), J('saw', 'o', 'v'), J('tri', 'o', 'v'), J('pls', 'o', 'v'),
+          J('vsin', 'o', 'v'), J('vsaw', 'o', 'v'), J('vtri', 'o', 'v'), J('vpls', 'o', 'v')],
+        params: [P('fv', 0, -5, 6), P('rg', 3, 0, 5, 1), P('fq', 0, -6, 6), P('pw', 50, 10, 90), ...ids('v', 4).map(id => P(id, 10, 0, 10))],
+        nsec: 1,
+      },
+      '901a': {
+        jacks: [J('f1', 'i', 'v'), J('f2', 'i', 'v'), J('f3', 'i', 'v')],
+        params: [P('fv', 0, -5, 6), P('fq', 0, -6, 6), P('pw', 50, 10, 90)],
+        nsec: 1, xout: 2,                               // r (the converted control: 1 at 0 V) and the width offset over the rear link
+      },
+      '901b': {
+        jacks: [J('sin', 'o', 'v'), J('saw', 'o', 'v'), J('tri', 'o', 'v'), J('pls', 'o', 'v'), J('vsin', 'o', 'v'), J('vsaw', 'o', 'v'), J('vtri', 'o', 'v'), J('vpls', 'o', 'v')],
+        params: [P('rg', 3, 0, 5, 1), P('vn', 0, -6, 6), ...ids('v', 4).map(id => P(id, 10, 0, 10))],
+        nsec: 1, xin: 2,                                // the link's two inputs (ins 0, 1)
+      },
+      '901c': {
+        jacks: [J('in', 'i', 'v'), J('p', 'o', 'v'), J('n', 'o', 'v')],
+        params: [P('am', 10, 0, 10)],
+        nsec: 1,
+      },
+      '904c': {
+        jacks: [J('in', 'i', 'v'), J('c1', 'i', 'v'), J('c2', 'i', 'v'), J('b1', 'i', 'v'), J('out', 'o', 'v')],
+        params: [P('md', 2, 0, 2, 1), P('fc', 0, -6, 6), P('bw', 1, 0, 3)],
+        nsec: 1,
+      },
+      905: {
+        jacks: [J('in', 'i', 'v'), J('out', 'o', 'v')],
+        params: [P('mx', 5, 0, 10)],
+        nsec: 1,
+      },
+      912: {
+        jacks: [J('in', 'i', 'v', 0, '', 1), J('co', 'o', 'v', 0), J('ci', 'i', 'v', 1, 'co'), J('st', 'o', 's', 1)],
+        params: [P('rs', 1, 0, 2, 1), P('th', 5, 0, 10)],
+        nsec: 2,
+      },
+      984: {
+        jacks: [...ids('i', 4).map(id => J(id, 'i', 'v', 0, '', 1)), ...ids('o', 4).map(id => J(id, 'o', 'v'))],
+        params: [...[1, 2, 3, 4].flatMap(i => [1, 2, 3, 4].map(o => P('l' + i + o, i === o ? 10 : 0, 0, 10))), ...ids('m', 4).map(id => P(id, 8, 0, 10)),
+          P('bs', 5, 0, 10), P('tb', 5, 0, 10)],
+        nsec: 1,
+      },
+      991: {
+        jacks: [J('in', 'i', 'v'), J('out', 'o', 'v')],
+        params: [P('lp', 10, 0, 10), P('hp', 0, 0, 10), P('at', 10, 0, 10)],
+        nsec: 1,
+      },
+      cp3: {
+        jacks: [...ids('m', 4).map(id => J(id, 'i', 'v', 0)), J('mo', 'o', 'v', 0), J('mn', 'o', 'v', 0), J('x4', 'i', 'v', 1), J('xr', 'o', 'v', 1),
+          ...ids('a', 4).map(id => J(id, 'a', 'v', 2))],
+        params: [...ids('x', 4).map(id => P(id, 7, 0, 10)), P('ms', 5, 0, 10), ...ids('r', 4).map(id => P(id, 0, 0, 1, 1)), P('ra', 10, 0, 10)],
+        nsec: 3,
+      },
     };
     const ORDER = ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995',
-      '904b', '914', '911a', '903a', '960', '961', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', 'clk'];
+      '904b', '914', '911a', '903a', '960', '961', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', 'clk',
+      '901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3'];
     // momentary events and live lamps (IMPL-9b §1.5 / §1.6): the ids in order (= moog-core's `ev` / `lamps`); every type a row
     const EV0 = { 960: ['on', 'off', 'sh', ...ids('e', 9)], 962: ids('e', 3) }, LAMP0 = { 960: [...ids('l', 9), 'lo'], 962: ids('l', 3), clk: ['lr'] };
     const DIR = { i: 'in', o: 'out', a: 'any' };
@@ -268,7 +323,8 @@
       const ps = S.params;                              // the values' ranges (coefficients clamp into them)
       PS[t] = { n: ps.length, def: ps.map(p => p[1]), lo: Float64Array.from(ps.map(p => p[2])), hi: Float64Array.from(ps.map(p => p[3])) };
     }
-    const LINK = Object.freeze({ '921b': Object.freeze({ from: '921a', def: Object.freeze([0, 0]) }) });
+    const LINK = Object.freeze({ '921b': Object.freeze({ from: '921a', def: Object.freeze([0, 0]) }),
+      '901b': Object.freeze({ from: '901a', def: Object.freeze([1, 0]) }) });   // (9c: undriven r = 1 — a constant feed — and 50 %)
 
     // the module's common fields (each class calls it first, in the same order). Every field that can ever hold a double (or an
     // integer past 2^30) starts as one — `x = 0.5; x = 0` — here and in every constructor below: V8 changes an object's map when
@@ -1556,15 +1612,625 @@
       setSalt(s) { this.salt = (s | 0) >>> 0; }
     }
 
+    /* ============================================================ stage 9c (IMPL-9c §1, lane V): the 1960s types — every class
+     * written out (the megamorphic lesson), every numeric field a double from its constructor where it can ever hold one, no
+     * allocation outside the constructors (the 905's lines grow at a setOS only when the base rate itself grows). Numbers: RM §10's
+     * 9c rows, each with its tag; a stand-in (the 901C, 991, 905) is ours, its plate says OURS. */
+
+    /* ------------------------------------------------------------ 901 family: the bench levels, the sine shaper, the footages */
+    // the bench set [R T-OSC2, RM §1.3 MS-901B]: saw 1.73, triangle 2.25, sine 1.41, pulse 2.4 V p-p (±1.2 V at every width — not
+    // the 921B's); the sine a diode-shaped triangle — the soft knee (t − c·t³) / (1 − c), c 0.314: THD 2.0 % [C]. RANGE Lo / 32′ …
+    // 2′ = −8 / −2 … +2 oct about 8′ (C4 at 0 V): Lo 1.02 Hz at 0 V, 32 mHz … 65 Hz over FIXED VOLTAGE (RM's bench 35 mHz … 70 Hz)
+    const B_S = Math.sqrt(3) / 2, B_T = 1.125, B_N = 0.705, B_P = 1.2, SH_C = 0.314, SH_K = 1 / (1 - SH_C);
+    const OCT9 = rg => (rg === 0 ? -8 : rg - 3);
+
+    /* ------------------------------------------------------------ 901: oscillator (a 901A and a 901B on one panel) */
+    // f = C4 · 2^(ΣV + FIXED VOLTAGE + range + FINE / 6 + 2·drift) (the 921's law, 1 V/oct, self-contained) ≤ 0.45 · fs; PULSE WIDTH
+    // 10 … 90 %, no width jack [R]; the 921's phase and event solver (no reset: no sync, no clamp); four fixed outputs at the bench
+    // set, four variable ones = the fixed × LEVEL / 10 [R the span, C linear]; drift twice the 921's walk in the exponent [C]
+    class M901 {
+      constructor(h) {
+        base(this, h, '901');
+        this.ph = this.pS = this.pT = this.pR = this.kc = this.kv = this.pwk = this.dr = this.dv = this.rs = this.dk = 0.25;
+        this.o = new Osc(); this.ph = 0; this.ql = 1; this.pS = -1; this.pT = -1; this.pR = 1; this.oml = -1;
+        this.kc = 0; this.kv = 0; this.pwk = 0.5; this.dr = 0; this.dv = 0; this.rs = 1; this.dk = 0;
+        this.lv = new Float64Array(4);
+        this.setSalt(this.salt); this.rate(); this.coef();
+      }
+      rate() { this.kc = C4 / this.fs; this.dk = 1 - Math.exp(-(4 * this.os / this.fs) / 2); }
+      coef() {
+        const p = this.p, L = this.lv;
+        this.kv = cl(p[0], -5, 6) + OCT9(cl(p[1], 0, 5) | 0) + cl(p[2], -6, 6) / 6; this.pwk = cl(p[3], 10, 90) / 100;
+        L[0] = B_N * cl(p[4], 0, 10) / 10; L[1] = B_S * cl(p[5], 0, 10) / 10; L[2] = B_T * cl(p[6], 0, 10) / 10; L[3] = B_P * cl(p[7], 0, 10) / 10;
+      }
+      flush() {}
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        drift(this);
+        if (this.om !== this.oml) { this.oml = this.om; const p = this.ph; this.pS = 2 * p - 1; this.pT = triU(p); this.pR = this.ql; }
+      }
+      run(sec, i0, n) {
+        const I = this.i_, f1 = I[0], f2 = I[1], f3 = I[2], Zb = this.zb, U = this.outs, O = this.o, om = this.om, L = this.lv;
+        const oN = U[0], oS = U[1], oT = U[2], oR = U[3], vN = U[4], vS = U[5], vT = U[6], vR = U[7];
+        const wN = (om & 1) !== 0, wS = (om & 2) !== 0, wT = (om & 4) !== 0, wR = (om & 8) !== 0, xN = (om & 16) !== 0, xS = (om & 32) !== 0, xT = (om & 64) !== 0, xR = (om & 128) !== 0;
+        const mN = wN || xN, mT = mN || wT || xT, mS = wS || xS, mR = wR || xR, gN = L[0], gS = L[1], gT = L[2], gR = L[3];
+        const kc = this.kc, kv = this.kv + 2 * this.dv, w = this.pwk;
+        const p1 = f1 !== Zb, p2 = f2 !== Zb, p3 = f3 !== Zb, fp = p1 || p2 || p3;   // (unpatched inputs: the converter once a chunk)
+        let dt = kc * ex2(kv); if (dt > 0.45) dt = 0.45;
+        let ph = this.ph, ql = this.ql, pS = this.pS, pT = this.pT, pR = this.pR;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          if (fp) { let v = p1 ? f1[i] : 0; if (p2) v += f2[i]; if (p3) v += f3[i]; dt = kc * ex2(v + kv); if (dt > 0.45) dt = 0.45; }
+          let p = ph + dt, cS = 0, cT = 0, cR = 0;
+          if (p >= 1 || (ph < 0.5 && p >= 0.5) || (p < w) !== (ql > 0)) {
+            p = O.ev(ph, dt, w, -1, 0, ql); ql = O.q;
+            pS += O.s0; pT += O.t0; pR += O.r0; cS = O.s1; cT = O.t1; cR = O.r1;
+          }
+          ph = p;
+          if (mT) {
+            if (mN) { const s = (pT - SH_C * pT * pT * pT) * SH_K; if (wN) oN[i] = B_N * s; if (xN) vN[i] = gN * s; }
+            if (wT) oT[i] = B_T * pT; if (xT) vT[i] = gT * pT;
+            pT = (p < 0.5 ? 4 * p - 1 : 3 - 4 * p) + cT;
+          }
+          if (mS) { if (wS) oS[i] = B_S * pS; if (xS) vS[i] = gS * pS; pS = 2 * p - 1 + cS; }
+          if (mR) { if (wR) oR[i] = B_P * pR; if (xR) vR[i] = gR * pR; pR = ql + cR; }
+        }
+        this.ph = ph; this.ql = ql; this.pS = pS; this.pT = pT; this.pR = pR;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.ph = 0; this.ql = 1; this.pS = -1; this.pT = -1; this.pR = 1; this.dv = 0; this.rs = seedOf(this.salt, this.n); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; this.rs = seedOf(this.salt, this.n); }
+    }
+
+    /* ------------------------------------------------------------ 901A: oscillator controller (a driver: no front output) */
+    // it converts [R? RM §1.4 ZB-EVO]: link 0 = r = 2^(ΣV + FIXED VOLTAGE + FINE / 6) — dimensionless, 1 at 0 V: the current its
+    // 901Bs' ramps are linear in (each 901B's footage multiplies it, as a timing capacitor) —, one ex2 a sample; link 1 = the width
+    // offset (PULSE WIDTH − 50 %) / 100. No range of its own [C §11]
+    class M901A {
+      constructor(h) { base(this, h, '901a'); this.kv = this.pwk = this.r0 = 0.25; this.kv = 0; this.pwk = 0; this.r0 = 1; this.coef(); }
+      coef() { const p = this.p; this.kv = cl(p[0], -5, 6) + cl(p[1], -6, 6) / 6; this.pwk = (cl(p[2], 10, 90) - 50) / 100; this.r0 = ex2(this.kv); }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, f1 = I[0], f2 = I[1], f3 = I[2], Zb = this.zb, U = this.outs, ro = U[0], wo = U[1], om = this.om, kv = this.kv, e = i0 + n;
+        const p1 = f1 !== Zb, p2 = f2 !== Zb, p3 = f3 !== Zb;
+        if ((om & 1) !== 0) {
+          if (p1 || p2 || p3) for (let i = i0; i < e; i++) { let v = kv; if (p1) v += f1[i]; if (p2) v += f2[i]; if (p3) v += f3[i]; ro[i] = ex2(v); }
+          else { const r = this.r0; for (let i = i0; i < e; i++) ro[i] = r; }
+        }
+        if ((om & 2) !== 0) { const w = this.pwk; for (let i = i0; i < e; i++) wo[i] = w; }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.coef(); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 901B: oscillator (driven by a 901A) */
+    // a ramp linear in its driver's r: f = max(0, f_nom · (r + k − 1)) · 2^(2·drift), f_nom = C4 · 2^range (the 901's footages),
+    // k = 2^(FREQUENCY · 2/9) (×0.397 … ×2.52 at ±6: ±1 oct and a major third [R? emu]) — the vernier a fixed number of Hz, (k − 1) ·
+    // f_nom, so two 901Bs on one driver beat at one rate across the keys [R? RM §1.4]; undriven (r = the link's constant 1) k ·
+    // f_nom; tuned below its driver (r < 1 − k: low keys, k < 1) it stalls — f = 0, a relaxation core does not run backwards: the
+    // phase holds, the outputs a held level [C §11]. ≤ 0.45 · fs; the width from link 1 (50 % undriven, 5 … 95 %); outputs as the
+    // 901's; drift per oscillator (one driver's 901Bs wander apart) [C]
+    class M901B {
+      constructor(h) {
+        base(this, h, '901b');
+        this.ph = this.pS = this.pT = this.pR = this.kf = this.ko = this.km = this.dr = this.dv = this.rs = this.dk = 0.25;
+        this.o = new Osc(); this.ph = 0; this.ql = 1; this.pS = -1; this.pT = -1; this.pR = 1; this.oml = -1;
+        this.kf = 0; this.ko = 0; this.km = 0; this.dr = 0; this.dv = 0; this.rs = 1; this.dk = 0;
+        this.lv = new Float64Array(4);
+        this.setSalt(this.salt); this.rate(); this.coef();
+      }
+      rate() { this.kf = C4 / this.fs; this.dk = 1 - Math.exp(-(4 * this.os / this.fs) / 2); }
+      coef() {
+        const p = this.p, L = this.lv;
+        this.ko = OCT9(cl(p[0], 0, 5) | 0); this.km = ex2(cl(p[1], -6, 6) * (2 / 9)) - 1;
+        L[0] = B_N * cl(p[2], 0, 10) / 10; L[1] = B_S * cl(p[3], 0, 10) / 10; L[2] = B_T * cl(p[4], 0, 10) / 10; L[3] = B_P * cl(p[5], 0, 10) / 10;
+      }
+      flush() {}
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        drift(this);
+        if (this.om !== this.oml) { this.oml = this.om; const p = this.ph; this.pS = 2 * p - 1; this.pT = triU(p); this.pR = this.ql; }
+      }
+      run(sec, i0, n) {
+        const I = this.i_, rl = I[0], dw = I[1], Zb = this.zb, U = this.outs, O = this.o, om = this.om, L = this.lv;
+        const oN = U[0], oS = U[1], oT = U[2], oR = U[3], vN = U[4], vS = U[5], vT = U[6], vR = U[7];
+        const wN = (om & 1) !== 0, wS = (om & 2) !== 0, wT = (om & 4) !== 0, wR = (om & 8) !== 0, xN = (om & 16) !== 0, xS = (om & 32) !== 0, xT = (om & 64) !== 0, xR = (om & 128) !== 0;
+        const mN = wN || xN, mT = mN || wT || xT, mS = wS || xS, mR = wR || xR, gN = L[0], gS = L[1], gT = L[2], gR = L[3];
+        const kd = this.kf * ex2(this.ko + 2 * this.dv), km = this.km, wp = dw !== Zb;
+        let w = 0.5, ph = this.ph, ql = this.ql, pS = this.pS, pT = this.pT, pR = this.pR;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          const x = rl[i] + km;
+          let dt = x > 0 ? kd * x : 0; if (dt > 0.45) dt = 0.45;
+          if (wp) { w = 0.5 + dw[i]; w = w >= 0.05 ? w <= 0.95 ? w : 0.95 : 0.05; }
+          let p = ph + dt, cS = 0, cT = 0, cR = 0;
+          if (p >= 1 || (ph < 0.5 && p >= 0.5) || (p < w) !== (ql > 0)) {
+            p = O.ev(ph, dt, w, -1, 0, ql); ql = O.q;
+            pS += O.s0; pT += O.t0; pR += O.r0; cS = O.s1; cT = O.t1; cR = O.r1;
+          }
+          ph = p;
+          if (mT) {
+            if (mN) { const s = (pT - SH_C * pT * pT * pT) * SH_K; if (wN) oN[i] = B_N * s; if (xN) vN[i] = gN * s; }
+            if (wT) oT[i] = B_T * pT; if (xT) vT[i] = gT * pT;
+            pT = (p < 0.5 ? 4 * p - 1 : 3 - 4 * p) + cT;
+          }
+          if (mS) { if (wS) oS[i] = B_S * pS; if (xS) vS[i] = gS * pS; pS = 2 * p - 1 + cS; }
+          if (mR) { if (wR) oR[i] = B_P * pR; if (xR) vR[i] = gR * pR; pR = ql + cR; }
+        }
+        this.ph = ph; this.ql = ql; this.pS = pS; this.pT = pT; this.pR = pR;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.ph = 0; this.ql = 1; this.pS = -1; this.pT = -1; this.pR = 1; this.dv = 0; this.rs = seedOf(this.salt, this.n); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; this.rs = seedOf(this.salt, this.n); }
+    }
+
+    /* ------------------------------------------------------------ 901C: output stage (a stand-in, OURS) */
+    // an oscillator output as a control voltage: OUTPUT + = in · AMPLITUDE / 10, OUTPUT − its inverse ("two CV outputs 180° apart"
+    // [R MSG-901C]; the rest ours [C]), railed
+    class M901C {
+      constructor(h) { base(this, h, '901c'); this.g = 0.25; this.g = 1; this.coef(); }
+      coef() { this.g = cl(this.p[0], 0, 10) / 10; }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const x = this.i_[0], U = this.outs, po = U[0], no = U[1], g = this.g, om = this.om, a = (om & 1) !== 0, b = (om & 2) !== 0;
+        for (let i = i0, e = i0 + n; i < e; i++) { const y = g * x[i]; if (a) po[i] = rail(y); if (b) no[i] = rail(-y); }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 904C: filter coupler (self-contained, §10 Q3) */
+    // a coupled pair inside the module [C]: a four-stage high-pass and a four-stage low-pass in the 904B's buffered one-pole form
+    // (the 904A at k 0 is four one-poles through tr: the input through the ladder's soft compression, × KI in / × KO out), their
+    // corners placed by the −3 dB points (a 4-pole's at 0.435 × its stages' corner), symmetric about the centre in the bilinear's
+    // warped domain: f0 = 2^(CENTER + 8 + c1 + c2) Hz (4 Hz … 16.4 kHz over the knob: the 904A's middle range; 1 V/oct [R]), B =
+    // BANDWIDTH + b1 oct, clamped 0 … 6 (+1 V widens an octave: one corner up, the other down [R RM PAT]). BAND PASS = HP → LP in
+    // series [R PAT], the HP's −3 dB at f0 · 2^(−B/2), the LP's at f0 · 2^(B/2), made up to 0 dB at f0 ((1 + gH / gL)⁴: +6 dB at B
+    // 0) [C]; BAND REJECT = the input less that band pass — a null at f0 at every B (RM's parallel sum of the pair notches near
+    // one spacing only: −19 dB at B 0, −4 dB at B 1, measured, §12) [C]; OFF = the input as it is (the pair asleep, cleared
+    // when it wakes) [C]; railed
+    const R435 = 1 / Math.sqrt(Math.pow(2, 0.25) - 1), TMAX = tanp(0.46 * Math.PI);
+    class M904C {
+      constructor(h) {
+        base(this, h, '904c');
+        this.h0 = this.h1 = this.h2 = this.h3 = this.l0 = this.l1 = this.l2 = this.l3 = this.kx = this.kb = this.pif = this.GH = this.GL = this.M = 0.25;
+        this.h0 = 0; this.h1 = 0; this.h2 = 0; this.h3 = 0; this.l0 = 0; this.l1 = 0; this.l2 = 0; this.l3 = 0;
+        this.kx = 8; this.kb = 1; this.pif = 0; this.GH = 0; this.GL = 0; this.M = 1; this.md = 2; this.mdl = 2; this.xm = 0.46 * Math.PI;
+        this.rate(); this.coef();
+      }
+      rate() { this.pif = Math.PI / this.fs; }
+      coef() {
+        const p = this.p;
+        this.md = cl(p[0], 0, 2) | 0; this.kx = cl(p[1], -6, 6) + 8; this.kb = cl(p[2], 0, 3);
+        let x = this.pif * ex2(this.kx); if (x > this.xm) x = this.xm;
+        const t = tanp(x), r = ex2(0.5 * this.kb) * R435, q = 1 + 1 / (r * r);
+        let gL = t * r, gH = t / r; if (gL > TMAX) gL = TMAX;
+        this.GL = gL / (1 + gL); this.GH = gH / (1 + gH); this.M = q * q * q * q;
+      }
+      // (the eight states flushed every chunk, as the 904B's: near fs / 4 a stage falls fast in silence)
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        if (this.md !== this.mdl) { if (this.mdl === 1) this.reset(); this.mdl = this.md; }
+        if (this.h0 < TINY && this.h0 > -TINY) this.h0 = 0; if (this.h1 < TINY && this.h1 > -TINY) this.h1 = 0; if (this.h2 < TINY && this.h2 > -TINY) this.h2 = 0; if (this.h3 < TINY && this.h3 > -TINY) this.h3 = 0;
+        if (this.l0 < TINY && this.l0 > -TINY) this.l0 = 0; if (this.l1 < TINY && this.l1 > -TINY) this.l1 = 0; if (this.l2 < TINY && this.l2 > -TINY) this.l2 = 0; if (this.l3 < TINY && this.l3 > -TINY) this.l3 = 0;
+      }
+      flush() {}
+      run(sec, i0, n) {
+        const I = this.i_, xi = I[0], c1 = I[1], c2 = I[2], b1 = I[3], out = this.outs[0], Zb = this.zb, md = this.md, e = i0 + n;
+        if (md === 1) { for (let i = i0; i < e; i++) out[i] = xi[i]; return; }
+        const q1 = c1 !== Zb, q2 = c2 !== Zb, qb = b1 !== Zb, cv = q1 || q2 || qb, pif = this.pif, xm = this.xm, kx = this.kx, kb = this.kb, bp = md === 2;
+        let GH = this.GH, GL = this.GL, M = this.M, r = ex2(0.5 * kb) * R435;
+        let h0 = this.h0, h1 = this.h1, h2 = this.h2, h3 = this.h3, l0 = this.l0, l1 = this.l1, l2 = this.l2, l3 = this.l3;
+        for (let i = i0; i < e; i++) {
+          if (cv) {
+            let v = kx; if (q1) v += c1[i]; if (q2) v += c2[i];
+            if (qb) { let B = kb + b1[i]; B = B >= 0 ? B <= 6 ? B : 6 : 0; r = ex2(0.5 * B) * R435; const q = 1 + 1 / (r * r), q2_ = q * q; M = q2_ * q2_; }
+            let x = pif * ex2(v); if (x > xm) x = xm;
+            const t = tanp(x); let gL = t * r; if (gL > TMAX) gL = TMAX; const gH = t / r;
+            GL = gL / (1 + gL); GH = gH / (1 + gH);
+          }
+          const u = KI * xi[i], a = u * tr(u);
+          let v = (a - h0) * GH, l = v + h0; h0 = l + v; const y0 = a - l;
+          v = (y0 - h1) * GH; l = v + h1; h1 = l + v; const y1 = y0 - l;
+          v = (y1 - h2) * GH; l = v + h2; h2 = l + v; const y2 = y1 - l;
+          v = (y2 - h3) * GH; l = v + h3; h3 = l + v; const y3 = y2 - l;
+          v = (y3 - l0) * GL; l = v + l0; l0 = l + v;
+          v = (l - l1) * GL; l = v + l1; l1 = l + v;
+          v = (l - l2) * GL; l = v + l2; l2 = l + v;
+          v = (l - l3) * GL; l = v + l3; l3 = l + v;
+          const y = M * l;
+          out[i] = rail(KO * (bp ? y : a - y));
+        }
+        this.h0 = h0; this.h1 = h1; this.h2 = h2; this.h3 = h3; this.l0 = l0; this.l1 = l1; this.l2 = l2; this.l3 = l3;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.h0 = 0; this.h1 = 0; this.h2 = 0; this.h3 = 0; this.l0 = 0; this.l1 = 0; this.l2 = 0; this.l3 = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 905: spring reverberation (OURS, every number [C]) */
+    // out = −rail((1 − m) · in + m · wet), m = MIX / 10 — the whole output phase-inverted [R MS-905; R? the dry too], the crossfade
+    // linear [C]: at 0 the input inverted, bit for bit. The tank — the repo's Spring IR's structure and numbers (smpgen.js
+    // springTrain64; not its code): three recirculating echo lines at 25 / 31 / 37 ms (RT60 2.5 s, each echo the last's inverse)
+    // summed, then one shared chain of 120 first-order allpasses (a 0.6: the dispersion — the "drip"), a damping one-pole (8 kHz) and
+    // the wet gain (a 100 ms 1 kHz burst's wet energy = its dry energy); its input the house rails. The wet path runs at a nominal
+    // 44.1 / 48 kHz inside the class whatever the context (IMPL-9c §1.3, skeptic #2, review 1 F1: an allpass's dispersion is per
+    // sample — at the context's own rate the drip was gone at 88.2 … 192 kHz, and the cost and the lines grew with it): the
+    // railed input of a group of G chunks (CH = 4 · OS: four base samples; G = 1 at 44.1 / 48 kHz, 2 at 88.2 / 96, 4 at 176.4 /
+    // 192 — four tank samples a group) decimated by R through half-band FIRs (≥ 60 dB on every alias into 0 … 0.4 × the tank's
+    // rate), the tank run over those four (the chain four samples a stage at once), the wet interpolated back by the same
+    // half-bands for the next G chunks — at the group's last sample (CH − 1 of its last chunk), so a loop member's n = 1 gives the
+    // same bits; the filters' delay, that chunk and the group's wait taken off the echo lines' output taps (the echoes on time
+    // within an OS sample); the dry at the OS rate. R = the largest power of two ≤ OS, doubled while the tank stays ≥ 44.1 kHz
+    // (and CH / R whole): OS · 2^⌊log2(base / 44.1 k)⌋ at the app's rates. The 44.1 kHz family's chain is its own (71 × 0.5014:
+    // the 48 kHz chain's group delay over 1 … 16 kHz within 2.5 µs rms — 120 × 0.6 there was 1.6 × its drip), its 1 kHz delay's
+    // difference off the taps too (the echoes on 48 kHz's); a rate of neither family takes the nearer's. Lines sized from the
+    // tank's rate (a power of two each), allocated here; flushed on write; the chain, the damping and the filters' histories in
+    // flush(); a chunk number that does not follow the last clears the tank (a 905 frozen by a pull replays nothing when
+    // re-patched); reset() clears it
+    const SP_MS = [25, 31, 37], SP_RT = 2.5, SP_N = 120, SP_A = 0.6, SP_FD = 8000, SP_KW = 0.45489, SP_N44 = 71, SP_A44 = 0.5014;
+    // a half-band FIR (a Kaiser-windowed sinc at a quarter of its rate: N = 4K − 1 taps, the centre 0.5, every other tap 0): the
+    // K distinct odd taps h[c ± (2j + 1)], j = 0 … K − 1. Each stage kills only what its own fold would bring into 0 … 0.4 × the base
+    // rate fb (the later stages take the rest): the last, 2fb → fb, B: K 11, β 6 (passband 0.2 of its rate, ≥ 62 dB from 0.3); 4fb →
+    // 2fb A4: K 4, β 6.5 (0.1, ≥ 68 dB from 0.4); 8fb → 4fb A8: K 3, β 6 (0.05, ≥ 70 dB from 0.45); 16fb → 8fb and 32fb → 16fb
+    // (only past osCap's 384 kHz: 96 kHz × 8, 176.4 / 192 kHz × 4 / 8) A8 again, its band the narrower — tests/moog-dsp
+    function halfBand(K, beta) {
+      const c = 2 * K - 1, w = x => { let s = 1, t = 1; for (let k = 1; k < 60; k++) { t *= (x / (2 * k)) * (x / (2 * k)); s += t; } return s; };
+      const h = new Float64Array(K);
+      for (let j = 0; j < K; j++) { const x = 2 * j + 1; h[j] = Math.sin(Math.PI * x / 2) / (Math.PI * x) * w(beta * Math.sqrt(1 - (x / c) * (x / c))) / w(beta); }
+      return h;
+    }
+    const HB = [halfBand(11, 6), halfBand(4, 6.5), halfBand(3, 6)];         // by the stage's distance from the tank's rate
+    HB.push(HB[2], HB[2]);
+    // the three, written out (a decimator's n outputs at centres m0, m0 + 2 …; an interpolator's two outputs an input from h on)
+    const [B0, B1, B2, B3, B4, B5, B6, B7, B8, B9, B10] = HB[0];
+    const [A40, A41, A42, A43] = HB[1];
+    const [A80, A81, A82] = HB[2];
+    function decB(X, m0, n, Y, o) { for (let q = 0; q < n; q++) { const m = m0 + 2 * q; Y[o + q] = 0.5 * X[m] + B0 * (X[m - 1] + X[m + 1]) + B1 * (X[m - 3] + X[m + 3]) + B2 * (X[m - 5] + X[m + 5]) + B3 * (X[m - 7] + X[m + 7]) + B4 * (X[m - 9] + X[m + 9]) + B5 * (X[m - 11] + X[m + 11]) + B6 * (X[m - 13] + X[m + 13]) + B7 * (X[m - 15] + X[m + 15]) + B8 * (X[m - 17] + X[m + 17]) + B9 * (X[m - 19] + X[m + 19]) + B10 * (X[m - 21] + X[m + 21]); } }
+    function intB(X, h, n, Y, o) { for (let j = 0; j < n; j++) { const e = h + j; Y[o + 2 * j] = 2 * (B0 * (X[e - 10] + X[e - 11]) + B1 * (X[e - 9] + X[e - 12]) + B2 * (X[e - 8] + X[e - 13]) + B3 * (X[e - 7] + X[e - 14]) + B4 * (X[e - 6] + X[e - 15]) + B5 * (X[e - 5] + X[e - 16]) + B6 * (X[e - 4] + X[e - 17]) + B7 * (X[e - 3] + X[e - 18]) + B8 * (X[e - 2] + X[e - 19]) + B9 * (X[e - 1] + X[e - 20]) + B10 * (X[e] + X[e - 21])); Y[o + 2 * j + 1] = X[e - 10]; } }
+    function decA4(X, m0, n, Y, o) { for (let q = 0; q < n; q++) { const m = m0 + 2 * q; Y[o + q] = 0.5 * X[m] + A40 * (X[m - 1] + X[m + 1]) + A41 * (X[m - 3] + X[m + 3]) + A42 * (X[m - 5] + X[m + 5]) + A43 * (X[m - 7] + X[m + 7]); } }
+    function intA4(X, h, n, Y, o) { for (let j = 0; j < n; j++) { const e = h + j; Y[o + 2 * j] = 2 * (A40 * (X[e - 3] + X[e - 4]) + A41 * (X[e - 2] + X[e - 5]) + A42 * (X[e - 1] + X[e - 6]) + A43 * (X[e] + X[e - 7])); Y[o + 2 * j + 1] = X[e - 3]; } }
+    function decA8(X, m0, n, Y, o) { for (let q = 0; q < n; q++) { const m = m0 + 2 * q; Y[o + q] = 0.5 * X[m] + A80 * (X[m - 1] + X[m + 1]) + A81 * (X[m - 3] + X[m + 3]) + A82 * (X[m - 5] + X[m + 5]); } }
+    function intA8(X, h, n, Y, o) { for (let j = 0; j < n; j++) { const e = h + j; Y[o + 2 * j] = 2 * (A80 * (X[e - 2] + X[e - 3]) + A81 * (X[e - 1] + X[e - 4]) + A82 * (X[e] + X[e - 5])); Y[o + 2 * j + 1] = X[e - 2]; } }
+    class M905 {
+      constructor(h) {
+        base(this, h, '905');
+        this.m = this.g0 = this.g1 = this.g2 = this.sd = this.gd = 0.25; this.m = 0.5; this.g0 = 0; this.g1 = 0; this.g2 = 0; this.sd = 0; this.gd = 0;
+        this.R = 1; this.S = 0; this.CH = 4; this.nb = 4; this.lc = -2; this.dirty = 0; this.wp = 0; this.LM = 0;
+        this.ns = 0; this.ap = 0.25; this.G = 0; this.gp = 1; this.wo = 1;  // the chain's stages and coefficient, the group (rate())
+        this.p0 = 1; this.p1 = 1; this.p2 = 1; this.o0 = 1; this.o1 = 1; this.o2 = 1;
+        this.L0 = null; this.L1 = null; this.L2 = null;
+        this.z = new Float64Array(SP_N + 1);                                 // the chain: z[0] its input's last, z[s] stage s's last output
+        this.db = [new Float64Array(128), new Float64Array(128), new Float64Array(128)];   // the decimator's stages: history, then the chunk
+        this.ib = [new Float64Array(128), new Float64Array(128), new Float64Array(128)];   // the interpolator's
+        this.xd = new Float64Array(BL); this.wt = new Float64Array(BL); this.wb = new Float64Array(BL);   // base in, base wet, the OS-rate wet
+        this.rate(); this.coef();
+      }
+      rate() { // the tank's rate fs / R (44.1 / 48 kHz: F1); its chain; the lines (grown only when the tank's rate grows); the taps
+        // less the filters' delay, a chunk and the chain's 1 kHz delay over the 48 kHz chain's (0 there)
+        const CH = 4 * this.os;
+        let R = 1, S = 0; while ((R * 2 <= this.os || this.fs / (R * 2) >= 44100) && CH % (R * 2) === 0) { R *= 2; S++; }
+        this.R = R; this.S = S; this.CH = CH; this.nb = CH / R; this.G = this.nb < 4 && 4 % this.nb === 0 ? 4 / this.nb : 1;
+        const nB = Math.max(128, 64 + 4 * R);                                // a stage's history (≤ 42) and a group (4R at the OS rate)
+        if (this.db.length < S || this.db[0].length < nB) { this.db = []; this.ib = []; for (let s = 0; s < Math.max(3, S); s++) { this.db.push(new Float64Array(nB)); this.ib.push(new Float64Array(nB)); } }
+        if (this.wb.length < 4 * R) this.wb = new Float64Array(4 * R);
+        const fb = this.fs / R, P = SP_MS.map(ms => Math.max(1, Math.round(ms * 1e-3 * fb))), f44 = Math.abs(fb - 44100) < Math.abs(fb - 48000);
+        this.ns = f44 ? SP_N44 : SP_N; this.ap = f44 ? SP_A44 : SP_A;
+        const tc = (n, a, r) => n * (1 - a * a) / (1 + 2 * a * Math.cos(2 * Math.PI * 1000 / r) + a * a) / r;
+        let N = 1; while (N < P[2] + 2) N *= 2;
+        if (this.L0 === null || this.L0.length < N) { this.L0 = new Float64Array(N); this.L1 = new Float64Array(N); this.L2 = new Float64Array(N); }
+        this.LM = this.L0.length - 1;
+        // (OS samples: each stage's centre at its rate, both ways; + 1 (a group's wet follows its step) + CH − R (the next chunk's)
+        // + G − 1 chunks (the tank's group, below))
+        let D = 1 + CH - R + (this.G - 1) * CH; for (let s = 0; s < S; s++) D += 2 * (2 * HB[S - 1 - s].length - 1) * (1 << s);
+        const d = Math.round(D / R) - Math.round((tc(SP_N, SP_A, 48000) - tc(this.ns, this.ap, fb)) * fb);
+        this.p0 = P[0]; this.p1 = P[1]; this.p2 = P[2]; this.o0 = P[0] - d; this.o1 = P[1] - d; this.o2 = P[2] - d;
+        this.g0 = -Math.pow(10, -3 * P[0] / fb / SP_RT); this.g1 = -Math.pow(10, -3 * P[1] / fb / SP_RT); this.g2 = -Math.pow(10, -3 * P[2] / fb / SP_RT);
+        const g = Math.tan(Math.PI * Math.min(SP_FD, 0.45 * fb) / fb); this.gd = g / (1 + g);
+        this.clear();
+      }
+      coef() { this.m = cl(this.p[0], 0, 10) / 10; }
+      clear() {
+        this.L0.fill(0); this.L1.fill(0); this.L2.fill(0); this.z.fill(0); this.sd = 0;
+        for (let s = 0; s < this.db.length; s++) { this.db[s].fill(0); this.ib[s].fill(0); }
+        this.wb.fill(0); this.gp = 0; this.wo = 0; this.dirty = 0;
+      }
+      flush() {
+        const z = this.z; for (let s = 0; s <= SP_N; s++) if (z[s] < TINY && z[s] > -TINY) z[s] = 0;
+        if (this.sd < TINY && this.sd > -TINY) this.sd = 0;
+        for (let s = 0; s < this.S; s++) { const a = this.db[s], b = this.ib[s]; for (let k = 0; k < a.length; k++) { if (a[k] < TINY && a[k] > -TINY) a[k] = 0; if (b[k] < TINY && b[k] > -TINY) b[k] = 0; } }
+        const c = this.wb; for (let k = 0; k < c.length; k++) if (c[k] < TINY && c[k] > -TINY) c[k] = 0;
+      }
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        if (cc !== this.lc + 1 && this.dirty !== 0) this.clear();
+        this.lc = cc;
+      }
+      run(sec, i0, n) {
+        const x = this.i_[0], out = this.outs[0], m = this.m, k = 1 - m, wb = this.wb, w = this.wo, CH1 = this.CH - 1;
+        this.dirty = 1;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          out[i] = -rail(k * x[i] + m * wb[w + i]);
+          if (i === CH1) this.chunk(x);
+        }
+      }
+      // the chunk's wet path (at its last sample): decimate → the tank → interpolate into wb (the next chunk's); stage s's filter
+      // HB[S − 1 − s], its history then the new samples (the decimator's 2c, the interpolator's 2K − 1), the history kept after it.
+      // Below four tank samples a chunk (88.2 … 192 kHz) the path waits for a group of G chunks (four tank samples: the chain four
+      // samples a stage at once — one at a time it is a serial chain, ≈ 2 × the cost —, the filters a call a group): the chunks'
+      // input gathered, the group's wet the next G chunks' (wb from wo)
+      chunk(x) {
+        const S = this.S, CH = this.CH, G = this.G, gp = this.gp, xd = this.xd, db = this.db, ib = this.ib;
+        if (S === 0) { for (let j = 0; j < CH; j++) xd[j] = rail(x[j]); this.tank(CH); const wt = this.wt, wb = this.wb; for (let j = 0; j < CH; j++) wb[j] = wt[j]; return; }
+        const B0 = db[0], o0 = 2 * (2 * HB[S - 1].length - 1) + gp * CH;
+        for (let j = 0; j < CH; j++) B0[o0 + j] = rail(x[j]);
+        if (gp !== G - 1) { this.gp = gp + 1; this.wo = this.gp * CH; return; }
+        this.gp = 0; this.wo = 0;
+        let L = G * CH;
+        for (let s = 0; s < S; s++) { // L inputs → L / 2 outputs, into the next stage's new region (or xd)
+          const f = S - 1 - s, c = 2 * HB[f].length - 1, B = db[s], last = s === S - 1, Y = last ? xd : db[s + 1], o = last ? 0 : 2 * (2 * HB[f - 1].length - 1);
+          if (f === 0) decB(B, c + 1, L >> 1, Y, o); else if (f === 1) decA4(B, c + 1, L >> 1, Y, o); else decA8(B, c + 1, L >> 1, Y, o);
+          for (let j = 0, e = 2 * c; j < e; j++) B[j] = B[L + j];
+          L >>= 1;
+        }
+        this.tank(L);
+        const wt = this.wt, wb = this.wb;
+        for (let s = S - 1; s >= 0; s--) { // L inputs → 2L outputs (the odd ones the centre's copy), into the next stage's (or wb)
+          const f = S - 1 - s, h = 2 * HB[f].length - 1, B = ib[s], last = s === 0, Y = last ? wb : ib[s - 1], o = last ? 0 : 2 * HB[f + 1].length - 1;
+          if (s === S - 1) for (let j = 0; j < L; j++) B[h + j] = wt[j];
+          if (f === 0) intB(B, h, L, Y, o); else if (f === 1) intA4(B, h, L, Y, o); else intA8(B, h, L, Y, o);
+          for (let j = 0; j < h; j++) B[j] = B[L + j];
+          L <<= 1;
+        }
+      }
+      // the tank over nb of its samples xd → wt (four but where a chunk holds more): the three lines, the chain (four samples a stage
+      // at once when nb is 4), the damping
+      tank(nb) {
+        const LM = this.LM, L0 = this.L0, L1 = this.L1, L2 = this.L2, xd = this.xd, wt = this.wt, g0 = this.g0, g1 = this.g1, g2 = this.g2;
+        const p0 = this.p0, p1 = this.p1, p2 = this.p2, o0 = this.o0, o1 = this.o1, o2 = this.o2;
+        let wp = this.wp;
+        for (let j = 0; j < nb; j++) {
+          wp = (wp + 1) & LM;
+          const v = xd[j];
+          let w0 = v + g0 * L0[(wp - p0) & LM]; if (w0 < TINY && w0 > -TINY) w0 = 0;
+          let w1 = v + g1 * L1[(wp - p1) & LM]; if (w1 < TINY && w1 > -TINY) w1 = 0;
+          let w2 = v + g2 * L2[(wp - p2) & LM]; if (w2 < TINY && w2 > -TINY) w2 = 0;
+          L0[wp] = w0; L1[wp] = w1; L2[wp] = w2;
+          wt[j] = L0[(wp - o0) & LM] + L1[(wp - o1) & LM] + L2[(wp - o2) & LM];
+        }
+        this.wp = wp;
+        const z = this.z, A = this.ap, NS = this.ns;
+        if (nb === 4) {
+          let a0 = wt[0], a1 = wt[1], a2 = wt[2], a3 = wt[3], q = z[0];
+          z[0] = a3;
+          for (let s = 1; s <= NS; s++) {
+            const o = z[s], y0 = A * (a0 - o) + q, y1 = A * (a1 - y0) + a0, y2 = A * (a2 - y1) + a1, y3 = A * (a3 - y2) + a2;
+            z[s] = y3; q = o; a0 = y0; a1 = y1; a2 = y2; a3 = y3;
+          }
+          wt[0] = a0; wt[1] = a1; wt[2] = a2; wt[3] = a3;
+        } else for (let j = 0; j < nb; j++) {
+          let t = wt[j], q = z[0];
+          z[0] = t;
+          for (let s = 1; s <= NS; s++) { const o = z[s], y = A * (t - o) + q; z[s] = y; q = o; t = y; }
+          wt[j] = t;
+        }
+        const gd = this.gd;
+        let sd = this.sd;
+        for (let j = 0; j < nb; j++) { const v = (wt[j] - sd) * gd, lp = v + sd; sd = lp + v; wt[j] = SP_KW * lp; }
+        this.sd = sd;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.clear(); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 912: envelope follower */
+    // section 0 FOLLOW: the input AC-coupled (10 Hz, the 921B's coupler [C]) → a positive and a negative peak detector (an ideal
+    // charge, an exponential release toward 0 V: RESPONSE short / medium / long 0.01 / 0.03 / 0.1 s [R? emu]) → Vpp = pos − neg
+    // (peak to peak: a 10 % pulse reads its p-p, not 1.8 × it [C]), smoothed by the attack (a one-pole at ¼ of the release [C]) →
+    // CONTROL OUT = 5 + 0.5 · log2(KC · Vpp / 1 V) V, 0 … 6.5 V [R RM §3.4 the table, the map's fit: 31 mV → 2.49 … 4 V → 6.0 within
+    // 0.2 V; KC per position sets 250 Hz, 500 mV p-p to 4.5 V — the trimmers' calibration — C below 31 mV, to 0 V at ≈ 1 mV p-p];
+    // the ripple the circuit's (≈ 1 V at 50 Hz on SHORT). log2 its own: the exponent tracked, a degree-5 fit of log2(1 + m) (≤ 1.7e-5
+    // oct). Section 1 COMPARE: COMPARATOR IN (normalled to CONTROL OUT) closes S-TRIG OUT above `on`, opens it below `off` —
+    // THRESHOLD 0 / 5 / 10 → 0.32 / 0.12, 2.88 / 0.2, 5.7 / 0.3 V [R MS-912], piecewise linear between [C]
+    const RS912 = [0.01, 0.03, 0.1], KC912 = [1.17493, 1.06184, 1.01995], ON912 = [0.32, 2.88, 5.7], OFF912 = [0.12, 0.2, 0.3], LG12 = Math.pow(2, -12);
+    const LG = [1.4418798958320402, -0.7088652179675984, 0.4152455610665571, -0.19351652538765898, 0.04526829291750429];
+    class M912 {
+      constructor(h) {
+        base(this, h, '912');
+        this.hp = this.ap = this.ps = this.ng = this.vs = this.dk = this.ka = this.kc = this.ahp = this.on = this.off = 0.25;
+        this.hp = 0; this.ap = 0; this.ps = 0; this.ng = 0; this.vs = 0; this.dk = 1; this.ka = 1; this.kc = 1; this.ahp = 1; this.on = 2.88; this.off = 0.2;
+        this.ex = 0; this.st = 0;
+        this.rate(); this.coef();
+      }
+      rate() { this.ahp = 1 / (1 + TAU * 10 / this.fs); }
+      coef() {
+        const p = this.p, r = cl(p[0], 0, 2) | 0, t = RS912[r], th = cl(p[1], 0, 10), j = th <= 5 ? 0 : 1, f = th <= 5 ? th / 5 : (th - 5) / 5;
+        this.dk = Math.exp(-1 / (t * this.fs)); this.ka = 1 - Math.exp(-4 / (t * this.fs)); this.kc = KC912[r];
+        this.on = ON912[j] + (ON912[j + 1] - ON912[j]) * f; this.off = OFF912[j] + (OFF912[j + 1] - OFF912[j]) * f;
+      }
+      flush() {
+        if (this.hp < TINY && this.hp > -TINY) this.hp = 0; if (this.ps < TINY && this.ps > -TINY) this.ps = 0;
+        if (this.ng < TINY && this.ng > -TINY) this.ng = 0; if (this.vs < TINY && this.vs > -TINY) this.vs = 0;
+      }
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, e = i0 + n;
+        if (sec === 0) {
+          const x = I[0], co = U[0], ahp = this.ahp, dk = this.dk, ka = this.ka, kc = this.kc;
+          let hp = this.hp, ap = this.ap, ps = this.ps, ng = this.ng, vs = this.vs, ex = this.ex;
+          for (let i = i0; i < e; i++) {
+            const a = x[i]; hp = ahp * (hp + a - ap); ap = a;
+            ps = hp > ps ? hp : ps * dk; ng = hp < ng ? hp : ng * dk;
+            vs += (ps - ng - vs) * ka;
+            const v = kc * vs;
+            let c = 0;
+            if (v > LG12) {
+              while (v >= EXT[ex + 21]) ex++;
+              while (v < EXT[ex + 20]) ex--;
+              const m = v * EXT[20 - ex] - 1;
+              c = 5 + 0.5 * (ex + m * (LG[0] + m * (LG[1] + m * (LG[2] + m * (LG[3] + m * LG[4])))));
+              c = c > 0 ? c < 6.5 ? c : 6.5 : 0;
+            }
+            co[i] = c;
+          }
+          this.hp = hp; this.ap = ap; this.ps = ps; this.ng = ng; this.vs = vs; this.ex = ex;
+        } else {
+          const x = I[1], so = U[1], on = this.on, off = this.off;
+          let st = this.st;
+          for (let i = i0; i < e; i++) { const v = x[i]; if (st === 0) { if (v > on) st = 1; } else if (v < off) st = 0; so[i] = st; }
+          this.st = st;
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.hp = 0; this.ap = 0; this.ps = 0; this.ng = 0; this.vs = 0; this.st = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 984: four-channel matrix mixer */
+    // one section [map §3d]: each input AC-coupled (10 Hz) [R AC; C the corner]; bus o = rail(tone(1.25 · MASTER_o / 10 · Σ_i
+    // LEVEL_io / 10 · in_i)) — 1.25 through a channel at 10 / 10, tone flat [R]; linear tapers, not inverted [C]; the defaults (the
+    // diagonal at 10, the masters at 8) four unity channels [C]. BASS / TREBLE global, flat at 5 [R]: first-order shelves ±12 dB
+    // (linear in dB over the knob) at 100 Hz / 5 kHz, a cut the boost's mirror [C], each read bus its own two states (a shelf at 5
+    // skipped: the bus as it is); an unread bus costs nothing (om), an unpatched input adds nothing (its coupler cleared)
+    const SH984 = [100, 5000];
+    class M984 {
+      constructor(h) {
+        base(this, h, '984');
+        this.ahp = this.gl = this.gh = this.al = this.ah = 0.25; this.ahp = 1; this.gl = 0; this.gh = 0; this.al = 0; this.ah = 0; this.fl = 0; this.fh = 0;
+        this.c = new Float64Array(16); this.hp = new Float64Array(4); this.xp = new Float64Array(4);
+        this.sl = new Float64Array(4); this.sh = new Float64Array(4);
+        this.rate(); this.coef();
+      }
+      rate() { this.ahp = 1 / (1 + TAU * 10 / this.fs); }
+      coef() { // (a cut's corner × 1 / G low, × G high: the boost's mirror in dB)
+        const p = this.p, c = this.c, fs = this.fs;
+        for (let o = 0; o < 4; o++) { const g = 1.25 * cl(p[16 + o], 0, 10) / 10; for (let i = 0; i < 4; i++) c[4 * o + i] = g * cl(p[4 * i + o], 0, 10) / 10; }
+        const bs = cl(p[20], 0, 10), tb = cl(p[21], 0, 10), Gl = Math.pow(10, (bs - 5) * 12 / 5 / 20), Gh = Math.pow(10, (tb - 5) * 12 / 5 / 20);
+        this.fl = bs === 5 ? 0 : 1; this.fh = tb === 5 ? 0 : 1; this.gl = Gl - 1; this.gh = Gh - 1;
+        const a = Math.tan(Math.PI * Math.min(SH984[0] / (Gl < 1 ? Gl : 1), 0.45 * fs) / fs), b = Math.tan(Math.PI * Math.min(SH984[1] * (Gh < 1 ? Gh : 1), 0.45 * fs) / fs);
+        this.al = a / (1 + a); this.ah = b / (1 + b);
+      }
+      flush() {
+        const a = this.hp, b = this.sl, d = this.sh;
+        for (let k = 0; k < 4; k++) { if (a[k] < TINY && a[k] > -TINY) a[k] = 0; if (b[k] < TINY && b[k] > -TINY) b[k] = 0; if (d[k] < TINY && d[k] > -TINY) d[k] = 0; }
+      }
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      // per sample, the four inputs' couplers then each read bus (a loop member's n = 1 pays one setup a sample, not one per input / bus)
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, Zb = this.zb, om = this.om, e = i0 + n, ahp = this.ahp, HP = this.hp, XP = this.xp, C = this.c, SL = this.sl, SH = this.sh;
+        const x0 = I[0], x1 = I[1], x2 = I[2], x3 = I[3], p0 = x0 !== Zb, p1 = x1 !== Zb, p2 = x2 !== Zb, p3 = x3 !== Zb;
+        const r0 = (om & 1) !== 0, r1 = (om & 2) !== 0, r2 = (om & 4) !== 0, r3 = (om & 8) !== 0, y0 = U[0], y1 = U[1], y2 = U[2], y3 = U[3];
+        const fl = this.fl, fh = this.fh, gl = this.gl, gh = this.gh, al = this.al, ah = this.ah;
+        const c00 = C[0], c01 = C[1], c02 = C[2], c03 = C[3], c10 = C[4], c11 = C[5], c12 = C[6], c13 = C[7];
+        const c20 = C[8], c21 = C[9], c22 = C[10], c23 = C[11], c30 = C[12], c31 = C[13], c32 = C[14], c33 = C[15];
+        let h0 = p0 ? HP[0] : 0, h1 = p1 ? HP[1] : 0, h2 = p2 ? HP[2] : 0, h3 = p3 ? HP[3] : 0, q0 = p0 ? XP[0] : 0, q1 = p1 ? XP[1] : 0, q2 = p2 ? XP[2] : 0, q3 = p3 ? XP[3] : 0;
+        let l0 = SL[0], l1 = SL[1], l2 = SL[2], l3 = SL[3], k0 = SH[0], k1 = SH[1], k2 = SH[2], k3 = SH[3];
+        for (let i = i0; i < e; i++) {
+          let a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+          if (p0) { const v = x0[i]; h0 = ahp * (h0 + v - q0); q0 = v; a0 = h0; }
+          if (p1) { const v = x1[i]; h1 = ahp * (h1 + v - q1); q1 = v; a1 = h1; }
+          if (p2) { const v = x2[i]; h2 = ahp * (h2 + v - q2); q2 = v; a2 = h2; }
+          if (p3) { const v = x3[i]; h3 = ahp * (h3 + v - q3); q3 = v; a3 = h3; }
+          if (r0) { let s = c00 * a0 + c01 * a1 + c02 * a2 + c03 * a3;
+            if (fl !== 0) { const v = (s - l0) * al, lp = v + l0; l0 = lp + v; s += gl * lp; }
+            if (fh !== 0) { const v = (s - k0) * ah, lp = v + k0; k0 = lp + v; s += gh * (s - lp); }
+            y0[i] = rail(s); }
+          if (r1) { let s = c10 * a0 + c11 * a1 + c12 * a2 + c13 * a3;
+            if (fl !== 0) { const v = (s - l1) * al, lp = v + l1; l1 = lp + v; s += gl * lp; }
+            if (fh !== 0) { const v = (s - k1) * ah, lp = v + k1; k1 = lp + v; s += gh * (s - lp); }
+            y1[i] = rail(s); }
+          if (r2) { let s = c20 * a0 + c21 * a1 + c22 * a2 + c23 * a3;
+            if (fl !== 0) { const v = (s - l2) * al, lp = v + l2; l2 = lp + v; s += gl * lp; }
+            if (fh !== 0) { const v = (s - k2) * ah, lp = v + k2; k2 = lp + v; s += gh * (s - lp); }
+            y2[i] = rail(s); }
+          if (r3) { let s = c30 * a0 + c31 * a1 + c32 * a2 + c33 * a3;
+            if (fl !== 0) { const v = (s - l3) * al, lp = v + l3; l3 = lp + v; s += gl * lp; }
+            if (fh !== 0) { const v = (s - k3) * ah, lp = v + k3; k3 = lp + v; s += gh * (s - lp); }
+            y3[i] = rail(s); }
+        }
+        HP[0] = h0; HP[1] = h1; HP[2] = h2; HP[3] = h3; XP[0] = q0; XP[1] = q1; XP[2] = q2; XP[3] = q3;
+        SL[0] = l0; SL[1] = l1; SL[2] = l2; SL[3] = l3; SH[0] = k0; SH[1] = k1; SH[2] = k2; SH[3] = k3;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.hp.fill(0); this.xp.fill(0); this.sl.fill(0); this.sh.fill(0); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 991: filter and attenuator (a stand-in, OURS) */
+    // RM: "LP + HP filters with attenuator", no controls or ranges found (RM §8) — ours: in → a one-pole low-pass (LOW PASS: 20 ·
+    // 1000^(v / 10) Hz, open at 10: 20 kHz) → a one-pole high-pass (HIGH PASS: 10 · 1000^(v / 10) Hz, 10 Hz at 0) → × ATTENUATOR /
+    // 10 → out (the 923's / CP2's sections' maths: trapezoidal, prewarped, ≤ 0.45 · fs), railed
+    class M991 {
+      constructor(h) { base(this, h, '991'); this.l = this.h = this.gl = this.gh = this.g = 0.25; this.l = 0; this.h = 0; this.gl = 0; this.gh = 0; this.g = 1; this.coef(); }
+      coef() {
+        const p = this.p, lim = 0.45 * this.fs;
+        const fl = Math.min(lim, 20 * Math.pow(1000, cl(p[0], 0, 10) / 10)), fh = Math.min(lim, 10 * Math.pow(1000, cl(p[1], 0, 10) / 10));
+        const gl = Math.tan(Math.PI * fl / this.fs), gh = Math.tan(Math.PI * fh / this.fs);
+        this.gl = gl / (1 + gl); this.gh = gh / (1 + gh); this.g = cl(p[2], 0, 10) / 10;
+      }
+      flush() { if (this.l < TINY && this.l > -TINY) this.l = 0; if (this.h < TINY && this.h > -TINY) this.h = 0; }
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const x = this.i_[0], o = this.outs[0], GL = this.gl, GH = this.gh, g = this.g;
+        let sl = this.l, sh = this.h;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          let v = (x[i] - sl) * GL; const y = v + sl; sl = y + v;
+          v = (y - sh) * GH; const l = v + sh; sh = l + v;
+          o[i] = rail(g * (y - l));
+        }
+        this.l = sl; this.h = sh;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.coef(); }
+      reset() { this.l = 0; this.h = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ CP3: mixer and routing (the 901 systems' console mixer) */
+    // the CP3A's behaviour as built [R MS-CPANELS55; IMPL-9c §1.7], written out (a class per type: `base` is keyed by it): section
+    // 0 Σ m_k · LEVEL_k / 10 × MASTER / 5 → MIX + (railed: the asymmetric +12 / −6 clip — the original CP3's own), MIX − its inverse;
+    // 1 EXT IN × EXT LEVEL / 10 to the rear output the fourth routing switch's bus row takes; 2 the multiple (the evaluator's). The
+    // routing switches are bus rows (moog-core: to the 901As, the 901, the 921As, the 921s by number)
+    class MCP3 {
+      constructor(h) { base(this, h, 'cp3'); this.lv = new Float64Array(4); this.ra = 0.25; this.ra = 1; this.coef(); }
+      coef() { const p = this.p, ms = cl(p[4], 0, 10) / 5; for (let k = 0; k < 4; k++) this.lv[k] = cl(p[k], 0, 10) / 10 * ms; this.ra = cl(p[9], 0, 10) / 10; }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, e = i0 + n;
+        if (sec === 0) {
+          const m1 = I[0], m2 = I[1], m3 = I[2], m4 = I[3], mo = U[0], mn = U[1], L = this.lv, l1 = L[0], l2 = L[1], l3 = L[2], l4 = L[3], Zb = this.zb;
+          const om = this.om, a = (om & 1) !== 0, b = (om & 2) !== 0, q2 = m2 !== Zb, q3 = m3 !== Zb, q4 = m4 !== Zb;
+          for (let i = i0; i < e; i++) {
+            let x = l1 * m1[i]; if (q2) x += l2 * m2[i]; if (q3) x += l3 * m3[i]; if (q4) x += l4 * m4[i];
+            if (a) mo[i] = rail(x); if (b) mn[i] = rail(-x);
+          }
+        } else if (sec === 1) {
+          const x = I[4], o = U[2], g = this.ra;
+          for (let i = i0; i < e; i++) o[i] = g * x[i];
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
     for (const C of [M921, M921A, M921B, M923, M904A, M907A, M911, M902, M995, Ctl]) Object.defineProperty(C.prototype, 'ins', insAcc);
     // the 960 / 961 / 962's ins: insAcc's, and any access marks their patched-input lists stale (the evaluator re-wires a slot only
     // through it: make()'s whole array, install()'s m.ins[k] = …) — the lists rebuilt at the next ctl, not every chunk
     const insAccL = { get() { this.ld = 1; return this.i_; }, set(a) { insAcc.set.call(this, a); this.ld = 1; } };
     for (const C of [M904B, M914, M911A, M903A, M992, M993, M994, MCP2, MCP3A, MCP4A, MCP35, MCP8A, MClk]) Object.defineProperty(C.prototype, 'ins', insAcc);
     for (const C of [M960, M961, M962]) Object.defineProperty(C.prototype, 'ins', insAccL);
-    const T = Object.freeze({ ctl: Ctl, 921: M921, '921a': M921A, '921b': M921B, 923: M923, '904a': M904A, '907a': M907A, 911: M911, 902: M902, 995: M995,
+    for (const C of [M901, M901A, M901B, M901C, M904C, M905, M912, M984, M991, MCP3]) Object.defineProperty(C.prototype, 'ins', insAcc);
+    // (9c: the 901B's key before the 921B's — no longer for the warm-up's loops: since fix E engine.js's ptWarmOf rings every
+    // loop-capable module of a part, whatever the order; kept because the order fixes the warm payload list, whose sha256
+    // tests/engine-track pins — moved, it re-pins)
+    const T = Object.freeze({ ctl: Ctl, 921: M921, '921a': M921A, '901b': M901B, '921b': M921B, 923: M923, '904a': M904A, '907a': M907A, 911: M911, 902: M902, 995: M995,
       '904b': M904B, 914: M914, '911a': M911A, '903a': M903A, 960: M960, 961: M961, 962: M962, 992: M992, 993: M993, 994: M994,
-      cp2: MCP2, cp3a: MCP3A, cp4a: MCP4A, cp35: MCP35, cp8a: MCP8A, clk: MClk });
+      cp2: MCP2, cp3a: MCP3A, cp4a: MCP4A, cp35: MCP35, cp8a: MCP8A, clk: MClk,
+      901: M901, '901a': M901A, '901c': M901C, '904c': M904C, 905: M905, 912: M912, 984: M984, 991: M991, cp3: MCP3 });
     const EV = Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze((EV0[t] || []).slice())])));
     const LAMPS = Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze((LAMP0[t] || []).slice())])));
     globalThis.PatchMoog = Object.freeze({
@@ -1573,7 +2239,11 @@
       RANGE: Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze(SPEC[t].params.map(p => Object.freeze([p[2], p[3]])))]))),
       // the constants (tests, docs/canvas/research-moog-modules.md §10)
       K: Object.freeze({ C4, EMAX, AS, AN, AT, AR, KI, KO, FB: Object.freeze(FB.slice()), Q_BP, Q_SH, G_BP, G_SH, OV911, WP_S, WM_S, PINK_K,
-        F914: Object.freeze(F914.slice()), D914, Q914, Q914S, G914, FL914, FH914, V960, STEP_T: Object.freeze(STEP_T.slice()) }),
+        F914: Object.freeze(F914.slice()), D914, Q914, Q914S, G914, FL914, FH914, V960, STEP_T: Object.freeze(STEP_T.slice()),
+        // 9c (lane V)
+        B_S, B_T, B_N, B_P, SH_C, SP_MS: Object.freeze(SP_MS.slice()), SP_RT, SP_N, SP_A, SP_FD, SP_KW, SP_N44, SP_A44, HB: Object.freeze(HB.map(h => Object.freeze(Array.from(h)))),
+        R435, RS912: Object.freeze(RS912.slice()), KC912: Object.freeze(KC912.slice()), ON912: Object.freeze(ON912.slice()), OFF912: Object.freeze(OFF912.slice()),
+        SH984: Object.freeze(SH984.slice()) }),
       ex2, tanp, rail, psin, KW,
     });
   } catch (err) {

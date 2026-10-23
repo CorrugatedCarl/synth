@@ -5315,8 +5315,8 @@ function srcModeUI(mode) {
   else if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
   else if (v === 'moog') { // ((9, review 2 F4) the Moog modules view: what a tap really does here — a module tile adds it to a 900 Series, the Model 15 tile loads Classic bass; on another instrument a tile makes it a 900 Series; (9b) the set tiles named: System 35 / 55 load their set, laid out)
     const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”');
-    if (ptShown()) p.append(tx('Tap a module to add it to '), nm, tx(', or drag it where you want it. '), h('b', null, 'Model 15'), tx(' loads Classic bass over the patch; '), h('b', null, 'System 35'), tx(' and '), h('b', null, 'System 55'), tx(' bring their whole set, patched and laid out (tap to undo). Drag a tile onto the track list for a new track.'));
-    else p.append(tx('Tap a module to replace the '), h('b', null, curModel().name), tx(' on '), nm, tx(' with a 900 Series holding it — '), h('b', null, 'Model 15'), tx(', '), h('b', null, 'System 35'), tx(' or '), h('b', null, 'System 55'), tx(' for a whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.'));
+    if (ptShown()) p.append(tx('Tap a module to add it to '), nm, tx(', or drag it where you want it. '), h('b', null, 'Model 15'), tx(' loads Classic bass over the patch; '), h('b', null, 'System 35'), tx(', '), h('b', null, 'System 55'), tx(' and '), h('b', null, 'System IIIc'), tx(' bring their whole set, patched and laid out (tap to undo). Drag a tile onto the track list for a new track.'));
+    else p.append(tx('Tap a module to replace the '), h('b', null, curModel().name), tx(' on '), nm, tx(' with a 900 Series holding it — '), h('b', null, 'Model 15'), tx(', '), h('b', null, 'System 35'), tx(', '), h('b', null, 'System 55'), tx(' or '), h('b', null, 'System IIIc'), tx(' for a whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.'));
   } else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, curModel().name), ' on ',
     h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
 }
@@ -7349,6 +7349,7 @@ const PATCH = cvPatch.patchHost({
     notice(text, ms);
   },
   undo: () => undo(),
+  show: key => modShow(key), // ((9c fix, review 2 F2) a module tapped in / duplicated: off the band, the camera brings it in — the modulators' rule)
   // (9b, IMPL-9b §1.5, §1.6) a face's momentary event to the node (ptEv); the lamps' heard clock (the drums')
   ev: (t, dev, mid, id) => ptEv(ptT(t), dev, mid, id),
   heard: ts => (ctx && ctx !== holdCtx ? outFrame(ts) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000),

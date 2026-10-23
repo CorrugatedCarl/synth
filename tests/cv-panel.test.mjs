@@ -31,6 +31,9 @@ import './v8-guard.mjs';
 // the type's, twice, missing; a rear terminal placed; lite off a patch face, a lite fin pointer; a face with no params and
 // no jacks valid), geometry().evs / .lamps, the art (event caps, unlit lamps, a lite face's skirts and caps, a patch face's
 // inert parts without an extras strip), the lite live layer (3 elements a control: the 960's 121, the 914's 43).
+// Stage 9c (IMPL-9c §1.0, §4 lane X): the module faces 26 → 36 (panels/m900c.js: the 901 family, 904C, 905, 912, 984, 991, CP3 — 3 MU 352 ×
+// 512 and the 984's 4 MU 448 × 512 new; the CP3 console 448 × 352), every param and jack by the table's ids; the stand-ins' plates say OURS,
+// no maker word (the 905's tank maker too); the 984's matrix by rows and columns, the 901's columns, the 901B's rows; G6's painted counts.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1217,10 +1220,13 @@ const PJ_LAYOUT = {
   ],
   extras: { ids: [] },
 };
-const TYPES9 = MG.ORDER; // every module type (9: nine, 9b: 25 — the controller's face is m900's console)
+const TYPES9 = MG.ORDER; // every module type (9: nine, 9b: 25, 9c: 35 — the controller's face is m900's console)
 // (9b) the 5U and the console-height sizes by MU (IMPL-9b §2.1: 4 MU 448, 8 MU 864; a console panel × 352)
 const SIZE9 = { module: { 1: [128, 512], 2: [224, 512], 3: [352, 512], 4: [448, 512], 8: [864, 512] }, console: { 2: [224, 352], 3: [352, 352], 4: [448, 352] } };
 const S9 = ['921', '921a', '921b', '923', '904a', '907a', '911', '902', '995']; // stage 9's module types (panels/m900.js)
+// the 9b types (panels/m900b.js) and the 9c types (panels/m900c.js), literal: a type added to the table without a face file is told
+const B9 = ['904b', '914', '911a', '903a', '960', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '961', 'clk'];
+const C9 = ['901', '901a', '901b', '901c', '904c', '905', '912', '984', '991', 'cp3'];
 
 test('9 validate: a live patch jack — each broken rule reported (one mutation per rule), naming the field; the fixture with its three jacks validates', () => {
   assert.deepEqual(P.validate(PJ_LAYOUT, PJ_MODEL), []);
@@ -1287,7 +1293,7 @@ test('9 the art: a patch jack drawn at full contrast (no opacity), titled with i
 });
 
 test('9 moduleModel / moduleLayout: a synthetic model per module type (memoised; the controller and unknown types: null), its face validated (a broken fixture: null, said once), the console is m900\'s hardware layout', () => {
-  eq1(TYPES9.filter(t => MG.TYPES[t].face === 'console'), ['961', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a'], '(9b) the console-height types are modules too');
+  eq1(TYPES9.filter(t => MG.TYPES[t].face === 'console').sort(), ['961', 'clk', 'cp2', 'cp3', 'cp35', 'cp3a', 'cp4a', 'cp8a'], '(9b, 9c) the console-height types are modules too');
   for (const t of TYPES9) {
     const m = P.moduleModel(t), T = MG.TYPES[t];
     assert.equal(P.moduleModel(t), m, t + ': memoised');
@@ -1311,9 +1317,9 @@ test('9 moduleModel / moduleLayout: a synthetic model per module type (memoised;
   assert.equal(P.moduleLayout('911'), P.moduleLayoutOf('911'), 'the real face again');
 });
 
-test('9 / 9b the faces: the console and the 25 module faces valid; §2.2\'s sizes (1 / 2 / 3 / 4 / 8 MU, the console-height 2 / 3 / 4 MU, the console) = moog-core\'s w / h; every param once, live; the ports = the type\'s jack ids but the rear terminals (a socket where sig s); the event buttons and lamps = the type\'s; hit boxes ≥ 28 px and disjoint (the event buttons\' too), the 14 mm jack circles inside the body; only trunks and the CP8A dimmed; original art', () => {
+test('9 / 9b / 9c the faces: the console and the 35 module faces valid; §2.2\'s sizes (1 / 2 / 3 / 4 / 8 MU, the console-height 2 / 3 / 4 MU, the console) = moog-core\'s w / h; every param once, live; the ports = the type\'s jack ids but the rear terminals (a socket where sig s); the event buttons and lamps = the type\'s; hit boxes ≥ 28 px and disjoint (the event buttons\' too), the 14 mm jack circles inside the body; only trunks and the CP8A dimmed; original art', () => {
   const faces = [['m900', P.layoutOf('m900'), modelOf('m900'), MG.TYPES.ctl], ...TYPES9.map(t => [t, P.moduleLayoutOf(t), P.moduleModel(t), MG.TYPES[t]])];
-  const INERT = { cp3a: ['jack', 'jack', 'jack', 'jack'], cp4a: ['jack', 'jack', 'jack', 'jack'], cp35: ['jack', 'jack', 'jack', 'jack'], cp8a: ['switch', 'lamp', 'fuse', 'fuse'] };
+  const INERT = { cp3a: ['jack', 'jack', 'jack', 'jack'], cp4a: ['jack', 'jack', 'jack', 'jack'], cp35: ['jack', 'jack', 'jack', 'jack'], cp8a: ['switch', 'lamp', 'fuse', 'fuse'], cp3: ['jack', 'jack', 'jack', 'jack'] };
   for (const [t, L, m, T] of faces) {
     assert.deepEqual(P.validate(L, m), [], t);
     const s = P.sizeOf(L, m), g = P.geometry(L, m);
@@ -1471,8 +1477,11 @@ test('9b validate: an event button, a live lamp, a rear terminal, lite — each 
   // the faces' file: { <type>: layout } only (tests/moog-core.test.mjs reads every exported object)
   const B = await import('../panels/m900b.js?v=9');
   eq1([Object.keys(B), B.default], [['MODULES'], undefined]);
-  eq1(Object.keys(B.MODULES).sort(), TYPES9.filter(t => !S9.includes(t)).sort(), 'the sixteen 9b types');
-  for (const t of TYPES9) assert.equal(P.MODULE_LAYOUTS[t], S9.includes(t) ? P.moduleLayoutOf(t) : B.MODULES[t], t + ': merged by panels/index.js');
+  eq1(Object.keys(B.MODULES).sort(), B9.slice().sort(), 'the sixteen 9b types');
+  const Cc = await import('../panels/m900c.js?v=9');
+  eq1([Object.keys(Cc), Cc.default, Object.keys(Cc.MODULES).sort()], [['MODULES'], undefined, C9.slice().sort()], '(9c) the ten 9c types, no default export');
+  eq1(TYPES9.slice().sort(), [...S9, ...B9, ...C9].sort(), 'every module type has its face file (a type added to the table: told here)');
+  for (const t of TYPES9) assert.equal(P.MODULE_LAYOUTS[t], S9.includes(t) ? P.moduleLayoutOf(t) : B9.includes(t) ? B.MODULES[t] : Cc.MODULES[t], t + ': merged by panels/index.js');
 });
 
 test('9b geometry().evs / .lamps: body px = the layout\'s mm × 2 + the centring (three decimals), the type\'s labels, an event button\'s press box (≥ 28 px), a lamp\'s d; no widget, no Tab stop, not in hitBoxes(); a jack\'s widest circle kept off an event button; every existing panel: none', () => {
@@ -1549,4 +1558,61 @@ test('9b render (lite): a knob or a rotary is its widget and a pointer (3 elemen
     assert.equal(all(rt).filter(n => n.getAttribute && (n.getAttribute('data-port') || n.getAttribute('data-ev') || n.getAttribute('data-lamp'))).length, 0, t);
   }
   eq1([counts['960'], counts['914']], [121, 43]);
+});
+
+/* ---------------------------------------------------------------- (9c, IMPL-9c §1.0, §4 lane X) the 1960s extras' faces */
+test('9c the faces (panels/m900c.js): the ten types at §1.0\'s widths (the 901 3 MU, the 904C / 905 2 MU, the 984 4 MU, the CP3 console 4 MU), lite, every param and jack by the table\'s ids (the 912\'s trigger output a socket, the CP3\'s rear terminal never); the stand-ins\' plates say OURS (901C, 904C, 905, 991); no maker word anywhere, "Gibbs" (the 905\'s tank) included', () => {
+  const SZ = { 901: [352, 512], '901a': [128, 512], '901b': [128, 512], '901c': [128, 512], '904c': [224, 512], 905: [224, 512], 912: [128, 512], 984: [448, 512], 991: [128, 512], cp3: [448, 352] };
+  const N = { 901: [8, 11], '901a': [3, 3], '901b': [6, 8], '901c': [1, 3], '904c': [3, 5], 905: [1, 2], 912: [2, 4], 984: [22, 8], 991: [3, 2], cp3: [10, 11] }; // [params, front jacks]
+  const OURS = { '901c': /OURS — A STAND-IN/, '904c': /OURS — THE LOW PASS AND HIGH PASS/, 905: /OURS — OUR OWN MODEL/, 991: /OURS — A STAND-IN/ };
+  for (const t of C9) {
+    const L = P.moduleLayoutOf(t), m = P.moduleModel(t), g = P.geometry(L, m), s = P.sizeOf(L, m), svg = P.decorSvg(L, m);
+    eq1([L.id, L.lite, [s.w, s.h], [m.controls.length, g.jacks.length]], ['pm-' + t, true, SZ[t], N[t]], t);
+    eq1(g.jacks.filter(j => j.kind === 'strig').map(j => j.port), t === '912' ? ['st'] : [], t + ': the S-trigger sockets');
+    if (OURS[t]) assert.match(svg, OURS[t], t + ': a stand-in: its plate says OURS');
+    const words = L.hw + ' ' + JSON.stringify(L.notes) + ' ' + [...svg.matchAll(/<(?:text|title|tspan)[^>]*>([^<]*)</g)].map(x => x[1]).join(' ');
+    assert.doesNotMatch(words, new RegExp('\\b(' + [...P.MAKERS, 'Gibbs', 'Bode', 'Pratt', 'Cinch'].join('|') + ')\\b', 'i'), t + ': no maker word');
+  }
+  assert.equal(P.moduleModel('cp3').jacks.some(j => j.rear), true, 'the CP3 has its rear terminal');
+  eq1(P.geometry(P.moduleLayoutOf('cp3'), P.moduleModel('cp3')).jacks.map(j => j.port).includes('xr'), false, 'never placed');
+  eq1(P.moduleLayoutOf('cp3').controls.filter(c => c.inert).map(c => c.label), ['TRUNK 1', 'TRUNK 2', 'TRUNK 3', 'TRUNK 4'], 'the trunks drawn, dimmed');
+  eq1(P.moduleLayoutOf('cp3').controls.filter(c => c.kind === 'button').map(c => [c.id, c.cycle, c.led]), [['r1', [0, 1], 'cap'], ['r2', [0, 1], 'cap'], ['r3', [0, 1], 'cap'], ['r4', [0, 1], 'cap']], 'the routing: lit push switches');
+});
+
+test('9c the 901 family\'s layouts: the 901\'s four columns (level knob over its fixed and its variable jack, sine · sawtooth · triangle · pulse), the 901B\'s four rows (fixed jack · level knob · variable jack on one line), the 984\'s matrix (an input\'s jack at its row\'s head, a bus\'s master and output under its column; l<i><o> = row i, column o)', () => {
+  const at = (L, f) => { const c = L.controls.find(f); assert.ok(c, 'a control'); return [c.x, c.y]; };
+  const byId = (L, id) => at(L, c => c.id === id), byPort = (L, p) => at(L, c => c.port === p);
+  const L1 = P.moduleLayoutOf('901'), W = ['sin', 'saw', 'tri', 'pls'];
+  for (let k = 0; k < 4; k++) eq1([byId(L1, 'v' + (k + 1))[0], byPort(L1, W[k])[0], byPort(L1, 'v' + W[k])[0]], [byId(L1, 'v' + (k + 1))[0], byId(L1, 'v' + (k + 1))[0], byId(L1, 'v' + (k + 1))[0]], '901 column ' + W[k]);
+  for (let k = 0; k < 3; k++) assert.ok(byId(L1, 'v' + (k + 1))[0] < byId(L1, 'v' + (k + 2))[0], '901: the columns in the table\'s order');
+  assert.ok(byPort(L1, 'sin')[1] < byPort(L1, 'vsin')[1] && byPort(L1, 'vsin')[1] < byPort(L1, 'f1')[1], '901: fixed, variable, then the control inputs');
+  const LB = P.moduleLayoutOf('901b');
+  for (let k = 0; k < 4; k++) {
+    const f = byPort(LB, W[k]), v = byPort(LB, 'v' + W[k]), l = byId(LB, 'v' + (k + 1));
+    eq1([f[1], v[1], f[0] < l[0] && l[0] < v[0]], [l[1], l[1], true], '901B row ' + W[k]);
+    if (k) assert.ok(byId(LB, 'v' + k)[1] < l[1], '901B: the rows in the table\'s order');
+  }
+  const L4 = P.moduleLayoutOf('984');
+  for (let i = 1; i <= 4; i++) for (let o = 1; o <= 4; o++) {
+    const [x, y] = byId(L4, 'l' + i + o);
+    eq1([x, y], [byId(L4, 'l' + 1 + o)[0], byId(L4, 'l' + i + 1)[1]], 'l' + i + o + ': column ' + o + ', row ' + i);
+    eq1([byPort(L4, 'i' + i)[1], byId(L4, 'm' + o)[0], byPort(L4, 'o' + o)[0]], [y, x, x], 'i' + i + ' at row ' + i + '\'s head; m' + o + ' and o' + o + ' under column ' + o);
+    assert.ok(byPort(L4, 'i' + i)[0] < byId(L4, 'l' + i + 1)[0] && byId(L4, 'l' + i + o)[1] < byId(L4, 'm' + o)[1] && byId(L4, 'm' + o)[1] < byPort(L4, 'o' + o)[1], 'the signal flows left to right, top to bottom');
+    if (o > 1) assert.ok(byId(L4, 'l' + i + (o - 1))[0] < x, 'columns left to right');
+    if (i > 1) assert.ok(byId(L4, 'l' + (i - 1) + o)[1] < y, 'rows top to bottom');
+  }
+  assert.ok(byId(L4, 'bs')[0] > byId(L4, 'l14')[0] && byId(L4, 'tb')[0] > byId(L4, 'l14')[0] && byId(L4, 'bs')[1] < byId(L4, 'tb')[1], 'the 984: BASS over TREBLE, right of the matrix (one pair for all four buses)');
+});
+
+test('9c DOM budget (IMPL-9c §3 G6): a face\'s live layer is 3 elements a control (+ 1); with a span a jack and the bar (≤ 6) every 9c face ≤ 90 painted, the 984 (22 knobs, 8 jacks) ≤ 130', () => {
+  const got = {};
+  for (const t of C9) {
+    const m = P.moduleModel(t), d = fresh(), rt = d.createElement('div'); d.body.append(rt);
+    P.render(rt, P.moduleLayout(t), m, fakeApi(m, d));
+    const live = all(rt.childNodes[1]).length, jacks = P.geometry(P.moduleLayoutOf(t), m).jacks.length, painted = live + jacks + 6;
+    eq1(live, 1 + 3 * m.controls.length, t + ': 3 elements a control');
+    assert.ok(painted <= (t === '984' ? 130 : 90), t + ': ' + painted);
+    got[t] = painted;
+  }
+  eq1(got, { 901: 1 + 24 + 11 + 6, '901a': 1 + 9 + 3 + 6, '901b': 1 + 18 + 8 + 6, '901c': 1 + 3 + 3 + 6, '904c': 1 + 9 + 5 + 6, 905: 1 + 3 + 2 + 6, 912: 1 + 6 + 4 + 6, 984: 1 + 66 + 8 + 6, 991: 1 + 9 + 2 + 6, cp3: 1 + 30 + 11 + 6 }, 'the counts');
 });

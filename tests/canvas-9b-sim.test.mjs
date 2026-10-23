@@ -135,21 +135,21 @@ test('review 2 N3: the set tiles carry the load estimate the Model 15 tile shows
   const tiles = sh.shell.tiles, txt = b => (b.children.find(c => c.className === 'cv-tcost') || {}).textContent;
   const want = (id, f) => { const r = MG.makeSet(id, {}); return COSTM.label(COSTM.estimate({ kind: 'synth', model: 'm900', patch: r.rec, vals: r.vals }, f)); };
   tiles.setView('moog');
-  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 1), want('s55', 1)], 'the set tiles');
+  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 1), want('s55', 1), want('s3c', 1)], 'the set tiles (9c: the System IIIc\'s too)');
   assert.equal(/^(~\d+|<1) %$/.test(txt(tiles.setTile('s55'))), true, txt(tiles.setTile('s55')));
   assert.equal(txt(tiles.tiles().find(b => b.getAttribute('data-model') === 'm900')), COSTM.label(COSTM.estimate('m900', 1)), 'beside the Model 15 tile\'s');
   api.store.set('synth.cv.devFactor', 10); cv.costLabels();
-  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 10), want('s55', 10)], 'a slower device: ×10');
+  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 10), want('s55', 10), want('s3c', 10)], 'a slower device: ×10');
   assert.notEqual(txt(tiles.setTile('s55')), want('s55', 1));
   api.store.set('synth.cv.devFactor', 0); cv.costLabels();
-  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 1), want('s55', 1)], 'back');
+  assert.deepEqual(tiles.setTiles().map(txt), [want('s35', 1), want('s55', 1), want('s3c', 1)], 'back');
 });
 
 test('the lead\'s fixture check (§7.2 phase 2): the System 55 tile on track 1 → a 900 Series of 37 modules; the payload with the routing rows of none (every switch off: the CP2\'s always-on two); a note transposes; ▶ starts the sequence ({t: seq, s: {pg}} then the song); a 993 switch → a new pk posted, no History step', async () => {
   const tiles = sh.shell.tiles;
   tiles.setView('moog');
   assert.deepEqual(tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['m900'], 'the Moog modules view: the Model 15 tile');
-  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55'], 'then the set tiles System 35 / System 55');
+  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55', 's3c'], 'then the set tiles System 35 / System 55 / System IIIc');
   const t0 = T();
   assert.equal(I(t0, dev(t0)).model, 'minimoog');
   node(t0).posted.length = 0;

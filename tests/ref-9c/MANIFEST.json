@@ -1,0 +1,15 @@
+{
+  "note": "Frozen 1960s sound (IMPL-9c D2): verbatim copies of patch-dsp.js, moog-dsp.js (the ten 1960s circuits: the 901 family, the 904C, the 905, the 912, the 984, the 991, the CP3) and engine.js at the stage 9c acceptance commit. Never edit: tests/golden-moog-c.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "e7babd59d3122e70de66668a9c1806bb6026832c",
+  "files": {
+    "patch-dsp.js": {
+      "sha256": "96a54628aec65df3437a901a4e3df22a1dd0fe4f1dea43cb3a1ae0c19415e9e2"
+    },
+    "moog-dsp.js": {
+      "sha256": "f08f4186e701748feaebd6f191527ba77a6beaf535d3ab4eb27c606c0d06f639"
+    },
+    "engine.js": {
+      "sha256": "ef15c45e81782a5d24f52b5c6d13042b08f44bfd1e44796cd29cf3a20b849554"
+    }
+  }
+}

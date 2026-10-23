@@ -401,6 +401,38 @@ export function m9sPatch() {
   set(tg, { f1: 1, t1: 1, t2: 1, t3: 1, e1: 1, e2: 1, e3: 1 });
   return { rec, vals };
 }
+// IMPL-9c §3 G3: m9c — the System IIIc set (MG.makeSet('s3c')) re-patched as a classic voice, ≈ 30 modules live: the keys through
+// multiple A to the three 901As (each driving three 901Bs at a vernier spread) and PITCH 2 on the 901; the ten oscillators through
+// three CP3s' mixers (the 901 with the first three) into the 984 (the 903A's pink on its fourth input), its three buses through the
+// 904C (BAND PASS), the 904A and the 904B, each into a 902 on its own 911 (S-TRIG 1 / 2 and the GATE's converter), the 902s mixed
+// by the fourth CP3 into the 905 → MAIN OUT; the bass line as roll notes
+/** The m9c patch: the System IIIc set patched as the classic voice above → { rec, vals }. */
+export function m9cPatch() {
+  const m = MG.makeSet('s3c', {}), z = PT.initPatch(m.rec, m.vals);
+  let rec = z.rec, vals = z.vals;
+  const T = t => ofType(rec, t), [osc] = T('901'), da = T('901a'), ob = T('901b'), [nz] = T('903a'), [mx] = T('984'), [bp] = T('904c'), [lp] = T('904a'), [hp] = T('904b');
+  const en = T('911'), am = T('902'), cp = T('cp3'), [rv] = T('905');
+  const plug = (a, b) => { const r = PT.plug(rec, a, b); if (!r.id) throw new Error('m9c: ' + a + ' → ' + b + ': ' + r.why); rec = r.rec; };
+  for (const [a, b] of [['c.kp1', 'c.a1'], ['c.a2', da[0] + '.f1'], ['c.a3', da[1] + '.f1'], ['c.a4', da[2] + '.f1'], ['c.kp2', osc + '.f1'],
+    [ob[0] + '.saw', cp[0] + '.m1'], [ob[1] + '.saw', cp[0] + '.m2'], [ob[2] + '.pls', cp[0] + '.m3'], [osc + '.saw', cp[0] + '.m4'],
+    [ob[3] + '.saw', cp[1] + '.m1'], [ob[4] + '.tri', cp[1] + '.m2'], [ob[5] + '.pls', cp[1] + '.m3'],
+    [ob[6] + '.saw', cp[2] + '.m1'], [ob[7] + '.sin', cp[2] + '.m2'], [ob[8] + '.saw', cp[2] + '.m3'],
+    [cp[0] + '.mo', mx + '.i1'], [cp[1] + '.mo', mx + '.i2'], [cp[2] + '.mo', mx + '.i3'], [nz + '.pk1', mx + '.i4'],
+    [mx + '.o1', bp + '.in'], [mx + '.o2', lp + '.in'], [mx + '.o3', hp + '.in'],
+    [bp + '.out', am[0] + '.i1'], [lp + '.out', am[1] + '.i1'], [hp + '.out', am[2] + '.i1'],
+    ['c.ks1', en[0] + '.trg'], ['c.ks2', en[1] + '.trg'], ['c.kg', 'c.vi'], ['c.vo', en[2] + '.trg'],
+    [en[0] + '.out', am[0] + '.c1'], [en[1] + '.out', am[1] + '.c1'], [en[2] + '.out', am[2] + '.c1'],
+    [am[0] + '.o2', cp[3] + '.m1'], [am[1] + '.o2', cp[3] + '.m2'], [am[2] + '.o2', cp[3] + '.m3'], [cp[3] + '.mo', rv + '.in'], [rv + '.out', 'c.out']]) plug(a, b);
+  const set = (mid, o) => { for (const [k, v] of Object.entries(o)) vals = PT.setKnob(vals, rec, mid, k, v); };
+  [0.05, -0.05, 0.1, -0.1, 0.2, -0.2].forEach((vn, k) => set(ob[[1, 2, 4, 5, 7, 8][k]], { vn }));
+  set(ob[3], { rg: 2 }); set(ob[6], { rg: 4 }); set(osc, { rg: 2 });
+  set(mx, { l12: 0, l22: 6, l32: 0, l33: 8, l13: 4, l41: 2, bs: 6, tb: 4 });
+  set(bp, { md: 2, fc: 1, bw: 1.5 }); set(lp, { fc: 0, re: 4 }); set(hp, { fc: -1 });
+  [[0.5, 4, 3, 7], [1, 5, 4, 6], [2, 4, 3, 5]].forEach(([t1, t2, t3, es], k) => set(en[k], { t1, t2, t3, es }));
+  for (const c of cp.slice(0, 3)) set(c, { x1: 5, x2: 5, x3: 5, x4: 5 });
+  set(cp[3], { x1: 6, x2: 6, x3: 6 }); set(rv, { mx: 4 });
+  return { rec, vals };
+}
 /** A 900 Series track (kind 'track'): { rec, vals } (a patch record and the device's vals: the routing panels' bus rows in the
  *  payload); o.notes held from the start, o.song: the bass line as roll notes (one bar looping from tick 0) with the transport playing. */
 export function patchTrack({ rec, vals }, o = {}) {
@@ -549,6 +581,9 @@ export function scenarios() {
       kind: 'track', build: () => patchTrack(m9qPatch()) },
     { id: 'm9s', label: '900 Series: the System 55 set as a classic voice — seven oscillators, two CP3As, the 914, the 904B, the 904A (regeneration 6), two 902s; five 911s, three routed by the 993 (two through the 911A); a bass line', node: 0.055, ipad: 0.04, jsc: 0.042,
       kind: 'track', build: () => patchTrack(m9sPatch(), { song: true }) },
+    // IMPL-9c §3 G3 (jsc / ipad from m9s's ratios): the System IIIc set's row
+    { id: 'm9c', label: '900 Series: the System IIIc set as a classic voice — ten oscillators (nine 901Bs on three 901As, the 901) through three CP3s, the 984, the 904C / 904A / 904B into three 902s on three 911s, the fourth CP3 into the 905; a bass line', node: 0.06, ipad: 0.044, jsc: 0.046,
+      kind: 'track', build: () => patchTrack(m9cPatch(), { song: true }) },
     // IMPL-M §6 G4: the master processor per quantum at 48 kHz (env.mkMaster; jsc: the macOS shell's target, × 7 the Low floor)
     { id: 'master-empty', label: 'Master: an empty rack, no meters (the copy path: the processor alone)', node: 0.001, ipad: 0.001, jsc: 0.001,
       kind: 'master', meters: false, build: () => ({}) },

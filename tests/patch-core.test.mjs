@@ -14,6 +14,9 @@ import './v8-guard.mjs';
 // (off, in back), the sets (makeSet = loadPreset; loadSet(id) / setNeeds; over a Model 15 / a System 35), Tidy's console row and
 // the wide rack, freeSlot with a console row, the thirteen presets on their sets, an older build (stage 9's normPatch / pruneVals /
 // payload keep a 9b record whole and play its Model 15 part) and the frozen Model 15 records (skeptic #1).
+// IMPL-9c (lane K9c): D3's literal 9b lists and the 9b records' hashes; the 901B → 901A link (a driver's own linked type: the fuzz's
+// invariants), the System IIIc (36 modules, three 901Bs a 901A, Tidy), the CP3's bus rows onto the 901As and the 901, a 9c record
+// through ref-P's (9b's) core: every module and cord kept, the 901Bs' drivers dropped (§11).
 // Pure: no DOM; only numbers / strings / plain records go into assert.
 // Run alone: node --max-old-space-size=2048 --test tests/patch-core.test.mjs
 import test from 'node:test';
@@ -27,6 +30,12 @@ import * as REF from './ref-P/patch-core.js?v=9';                       // 9dde7
 
 const SRC = readFileSync(new URL('../patch-core.js', import.meta.url), 'utf8');
 const T = MG.TYPES;
+// the stage 9b lists, literal (IMPL-9c D3): the types and presets ref-P (9dde7e6) and ref-9-core know — never read off the live table,
+// which 9c grows (a 9c type has no ref-P target, a 9c preset no ref-P loadPreset)
+const ORDER_9B = ['921', '921a', '921b', '923', '903a', '904a', '904b', '907a', '914', '902', '911', '911a', '995', '994', '960', '961', '962', 'clk',
+  'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993'];
+const PRESETS_9B = ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells', 'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel',
+  'Step bass', 'Routed'];
 const J = x => JSON.parse(JSON.stringify(x));
 const freeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const k of Object.keys(o)) freeze(o[k]); } return o; };
 const rng = seed => () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -162,8 +171,10 @@ function invariants(r) {
     else ok(c.via === 'pin' && c.c === undefined, 'pin');
     ok(c.g === undefined || (c.g >= 0 && c.g <= 4 && c.g !== 1), 'g');
   }
-  for (const k of ks) if (r.mods[k].drv) ok(r.mods[k].t === '921b' && r.mods[r.mods[k].drv] && r.mods[r.mods[k].drv].t === '921a', 'drv ' + k);
-  for (const k of ks) ok(ks.filter(j => r.mods[j].drv === k).length <= 3, 'drives ≤ 3');
+  // (9c: a driven module is of a linked type, its driver of that type's `link.to`; a driver drives at most its linked type's `max` — three, for the
+  // 921A and the 901A alike)
+  for (const k of ks) if (r.mods[k].drv) { const L = T[r.mods[k].t] && T[r.mods[k].t].link; ok(L && r.mods[r.mods[k].drv] && r.mods[r.mods[k].drv].t === L.to, 'drv ' + k); }
+  for (const k of ks) { const L = Object.values(T).find(x => x.link && x.link.to === r.mods[k].t); ok(ks.filter(j => r.mods[j].drv === k).length <= (L ? L.link.max : 0), 'drives ≤ max'); }
   return bad;
 }
 
@@ -615,8 +626,7 @@ test('ordinal, title, presetNames', () => {
   const m = M15().rec;
   assert.deepEqual(['m3', 'm4', 'm9', 'm10', 'm1', 'c', 'm99'].map(k => PT.ordinal(m, k)), [1, 2, 1, 2, 1, 1, 0]);
   assert.deepEqual(['m4', 'c', 'm2', 'm99'].map(k => PT.title(m, k)), ['921B 2', 'Controller', '921A 1', '']);
-  assert.deepEqual(PT.presetNames('moog'), ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells',
-    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed']);
+  assert.deepEqual(PT.presetNames('moog'), [...PRESETS_9B, 'Drift choir', 'Follower wah', 'Spring pluck']);
   assert.deepEqual(PT.presetNames('x'), []);
 });
 
@@ -636,8 +646,8 @@ function sectionGraph(rec) {
 const reach = (E, from) => { const seen = new Set([from]), st = [from]; while (st.length) for (const n of E.get(st.pop()) || []) if (!seen.has(n)) { seen.add(n); st.push(n); } return seen; };
 const hasCycle = E => [...E.keys()].some(n => [...(E.get(n) || [])].some(m => reach(E, m).has(n)));
 
-test('the presets (§2.5; IMPL-9b §2.6): each normPatch-valid on its set (stage 9\'s six the Model 15), no feedback loop, sounding through MAIN OUT', () => {
-  const setOf = p => [MG.M15, MG.S35, MG.S55].find(set => { const c = {}; for (const t of set) c[t] = (c[t] || 0) + 1; return p.mods.every(([, t]) => (c[t] = (c[t] || 0) - 1) >= 0); });
+test('the presets (§2.5; IMPL-9b §2.6; IMPL-9c §2): each normPatch-valid on its set (stage 9\'s six the Model 15; the System IIIc\'s Drift choir its set; Follower wah / Spring pluck a Model 15 + a 912 / a 905), no feedback loop, sounding through MAIN OUT', () => {
+  const setOf = p => [MG.M15, MG.S35, MG.S55, MG.S3C, [...MG.M15, '912'], [...MG.M15, '905']].find(set => { const c = {}; for (const t of set) c[t] = (c[t] || 0) + 1; return p.mods.every(([, t]) => (c[t] = (c[t] || 0) - 1) >= 0); });
   for (const p of MG.PRESETS) {
     const set = setOf(p), x = PT.loadPreset(PT.fresh('moog'), {}, p.name, { ensure: set });
     assert.equal(x.why, undefined, p.name);
@@ -728,7 +738,7 @@ test('IMPL-9b §1.4: bus rows — resolved by ordinals from the switches in vals
   const d2 = PT.removeModule(rec, dr[0]).rec;
   assert.deepEqual(PT.busRows(d2, 'moog', v).filter(x => cp3.includes(x.panel)).map(arrow), [`c.kp1→${dr[1]}.f3`]);
   assert.deepEqual(PT.busInfo(d2, 'moog', v, cp3[2]).map(x => [x.sw.join(), x.on, x.ok, x.why]), [['r1', false, false, 'Off'],
-    ['r2', true, false, 'No 921A / 921 3 in this patch'], ['r3', false, false, 'Off'], ['r4', false, false, 'Off']]);
+    ['r2', true, false, 'No 3rd of 921A / 921 in this patch'], ['r3', false, false, 'Off'], ['r4', false, false, 'Off']]);
   const few = recOf('993', '911', '911', '911a');                          // two 911s: the right 911 is missing
   const fv = lit({}, few, 'm1', 't3');
   assert.deepEqual(PT.busInfo(few, 'moog', fv, 'm1').find(x => x.sw.join() === 't3'), { i: 5, sw: ['t3'], on: true, a: 'm4.o2', b: null, ok: false, why: 'No 911 3 in this patch' });
@@ -875,7 +885,7 @@ test('IMPL-9b §1.4 (skeptic #6): a preset switches off every routing panel it d
 });
 
 test('IMPL-9b §1.2: the sets — makeSet = loadPreset(fresh, vals, starter, { ensure: set }); loadSet(id); setNeeds; a System 55 over a Model 15 / a System 35', () => {
-  for (const id of ['m15', 's35', 's55']) for (const vals of [undefined, {}, { gl: 4, p: {} }, { tu: 9, p: { m3: { _t: '904a', fc: 1 }, m7: { _t: '911', t1: 2 } } }]) {
+  for (const id of ['m15', 's35', 's55', 's3c']) for (const vals of [undefined, {}, { gl: 4, p: {} }, { tu: 9, p: { m3: { _t: '904a', fc: 1 }, m7: { _t: '911', t1: 2 } } }]) {
     const S = MG.FAMILY.sets[id], a = MG.makeSet(id, vals), b = PT.loadPreset(PT.fresh('moog'), vals || {}, S.starter, { ensure: S.set });
     assert.equal(b.why, undefined, id);
     assert.deepEqual(a.rec, b.rec, id); assert.deepEqual(a.vals, b.vals, id);
@@ -890,6 +900,15 @@ test('IMPL-9b §1.2: the sets — makeSet = loadPreset(fresh, vals, starter, { e
   // the drivers: three 921Bs on each 921A in the 55; two each in the 35 after Swept band rebinds them
   const drives = r => idsOf(r, '921a').map(d => Object.keys(r.mods).filter(k => r.mods[k].drv === d).length);
   assert.deepEqual([drives(s55.rec), drives(s35.rec)], [[3, 3], [2, 2]]);
+  // IMPL-9c §2: the System IIIc — 36 modules patched as Drift choir; the nine 901Bs three to each of the three 901As (link max 3: the first driver with
+  // room, RM:99), over a Model 15 (+ 31: it shares the 904A, two 911s and two 902s) the same three-three-three
+  const s3c = MG.makeSet('s3c', {}), d901 = r => idsOf(r, '901a').map(d => Object.keys(r.mods).filter(k => r.mods[k].drv === d).length);
+  assert.deepEqual([Object.keys(s3c.rec.mods).length, s3c.rec.name, s3c.rec.cords.length, d901(s3c.rec)], [36, 'Drift choir', 10, [3, 3, 3]]);
+  assert.deepEqual([PT.setNeeds(PT.fresh('moog'), 's3c'), PT.setNeeds(MG.model15({}).rec, 's3c'), PT.setNeeds(s3c.rec, 's3c'), PT.setNeeds(s3c.rec, 's55')], [36, 31, 0, 37 - 15]);
+  const L3 = PT.loadSet(MG.model15({}).rec, MG.model15({}).vals, 's3c');
+  assert.deepEqual([L3.why, L3.added.length, Object.keys(L3.rec.mods).length, L3.rec.name, d901(L3.rec)], [undefined, 31, 43, 'Drift choir', [3, 3, 3]]);
+  assert.deepEqual(PT.normPatch(J(L3.rec), 'moog'), L3.rec);
+  assert.equal(PT.setNeeds(PT.fresh('moog'), 's3c'), MG.S3C.length);
   // setNeeds / loadSet over a Model 15 (+ 27 = 39) and a System 35 (+ 19 = 41)
   const m = MG.model15({});
   assert.deepEqual([PT.setNeeds(m.rec, 's55'), PT.setNeeds(s35.rec, 's55'), PT.setNeeds(PT.fresh('moog'), 's35'), PT.setNeeds(m.rec, 'm15'), PT.setNeeds(m.rec), PT.setNeeds(m.rec, 'nope')],
@@ -906,8 +925,8 @@ test('IMPL-9b §1.2: the sets — makeSet = loadPreset(fresh, vals, starter, { e
 });
 
 test('IMPL-9b §4.4: Tidy — the console row flush above the controller, the cabinet rows above it, the wide rack; freeSlot on those lines', () => {
-  const W = { s35: [1120, 1376, 1920], s55: [2624, 2368, 2496] };
-  for (const id of ['s35', 's55']) {
+  const W = { s35: [1120, 1376, 1920], s55: [2624, 2368, 2496], s3c: [2272, 2752, 2016] };       // (9c: the IIIc's rows, each one 22 MU line)
+  for (const id of ['s35', 's55', 's3c']) {
     const { rec } = MG.makeSet(id, {}), L = PT.rackLayout(rec), ks = Object.keys(rec.mods), con = k => MG.CONSOLE.includes(rec.mods[k].t);
     const row = k => (con(k) ? 2 : MG.ROWS.findIndex(r => r.includes(rec.mods[k].t)));
     assert.equal(ks.filter(k => L[k]).length, ks.length);
@@ -949,7 +968,7 @@ test('IMPL-9b §1.1 (skeptic #11): an older build — stage 9\'s normPatch / pru
   const [c35] = idsOf(rec, 'cp35'), [c4] = idsOf(rec, 'cp4a');
   rec = plugAll(rec, [['c.kp2', c35 + '.i1'], [c35 + '.o1', idsOf(rec, '904b')[0] + '.c1'], ['c.ks2', c4 + '.ti']]);
   vals = lit(PT.setKnob(vals, rec, c35, 'a1', 6), rec, c4, 't1');
-  assert.deepEqual([...new Set(Object.values(rec.mods).map(x => x.t))].sort(), [...MG.ORDER].sort(), 'every type');
+  assert.deepEqual([...new Set(Object.values(rec.mods).map(x => x.t))].sort(), [...ORDER_9B].sort(), 'every type (the 9b list: a 9c type has no stage 9 core)');
   const O = OLD.normPatch(J(rec), 'moog');
   assert.deepEqual(O, rec, 'kept whole: modules, drivers, cords');
   assert.deepEqual(OLD.pruneVals(J(vals), O), PT.pruneVals(vals, rec), 'its knobs kept');
@@ -959,6 +978,71 @@ test('IMPL-9b §1.1 (skeptic #11): an older build — stage 9\'s normPatch / pru
   const keep = new Set(P.mods.filter(x => !x[0] || s9.has(x[1])).map(x => x[0]));
   assert.deepEqual(OLD.payload(rec).pg, { v: 1, f: 'moog', mods: P.mods.filter(x => keep.has(x[0])), cords: P.cords.filter(c => keep.has(c[0]) && keep.has(c[2])) });
   assert.ok(OLD.payload(rec).pg.mods.length < P.mods.length && OLD.payload(rec).pg.cords.length < P.cords.length);
+});
+
+test('IMPL-9c §1.7: the CP3\'s four routing switches — CP3 k → the k-th 901A by number, then the 901, then the 921As, then the 921s (the one port id f3); a delete moves them; no rows without vals', () => {
+  const S = MG.makeSet('s3c', {}), rec = S.rec, cp3 = idsOf(rec, 'cp3'), da = idsOf(rec, '901a'), [o901] = idsOf(rec, '901');
+  assert.deepEqual([cp3.length, da.length, o901 !== undefined], [4, 3, true]);
+  assert.deepEqual(PT.busRows(rec, 'moog', S.vals), [], 'no CP3 switch lit, no CP2: no row');
+  assert.deepEqual(PT.busRows(rec, 'moog'), []);
+  let v = S.vals;
+  cp3.forEach((p, i) => { v = lit(v, rec, p, 'r' + (i + 1)); });                                // panel k's switch k: KEYBOARD / WHEEL / PRESSURE / EXT
+  assert.deepEqual(PT.busRows(rec, 'moog', v).map(x => x.panel + ' ' + arrow(x)), [`${cp3[0]} c.kp1→${da[0]}.f3`, `${cp3[1]} c.kw→${da[1]}.f3`, `${cp3[2]} c.ka→${da[2]}.f3`,
+    `${cp3[3]} ${cp3[3]}.xr→${o901}.f3`], 'the 4th CP3 reaches the 901 once the three 901As are taken');
+  assert.deepEqual(PT.busInfo(rec, 'moog', v, cp3[3]).map(x => [x.sw.join(), x.on, x.ok]), [['r1', false, false], ['r2', false, false], ['r3', false, false], ['r4', true, true]]);
+  assert.equal(PT.isBusKnob(rec, cp3[0], 'r2'), true); assert.equal(PT.isBusKnob(rec, cp3[0], 'ms'), false);
+  // the list order is 901As, then the 901, then the 921As, then the 921s: delete 901A 1 and each CP3 moves up one place (the 4th has none left) …
+  const d1 = PT.removeModule(rec, da[0]).rec;
+  assert.deepEqual(PT.busRows(d1, 'moog', v).map(x => x.panel + ' ' + arrow(x)), [`${cp3[0]} c.kp1→${da[1]}.f3`, `${cp3[1]} c.kw→${da[2]}.f3`, `${cp3[2]} c.ka→${o901}.f3`]);
+  assert.equal(PT.busInfo(d1, 'moog', v, cp3[3]).find(x => x.sw.join() === 'r4').why, 'No 4th of 901A / 901 / 921A / 921 in this patch', '(9c fix, review 2 N2) an ordinal before the list of types: never "921 4", which reads as a module title');
+  // … and a 5th / 6th CP3 reach a 921A and a 921 added after them
+  let more = rec;
+  for (const t of ['921a', '921', 'cp3', 'cp3']) more = PT.addModule(more, S.vals, t).rec;
+  const [d921] = idsOf(more, '921a'), [o921] = idsOf(more, '921'), cps = idsOf(more, 'cp3');
+  const v2 = lit(lit(S.vals, more, cps[4], 'r1'), more, cps[5], 'r1');
+  assert.deepEqual(PT.busRows(more, 'moog', v2).map(x => x.panel + ' ' + arrow(x)), [`${cps[4]} c.kp1→${d921}.f3`, `${cps[5]} c.kp1→${o921}.f3`]);
+  // a payload with the rows: the cords part follows the rows, and the driven 901Bs / their drivers keep the stage-9 port order of the 901A (f1 f2 f3)
+  const P0 = PT.payload(rec, 'moog').pg, P1 = PT.payload(rec, 'moog', v).pg;
+  assert.deepEqual([P1.cords.length - P0.cords.length, P1.mods.length === P0.mods.length], [4, true]);
+  assert.deepEqual(T['901a'].jacks.map(j => j.id), ['f1', 'f2', 'f3']);
+});
+
+test('9c fix (review 2 N2): a row listing several types that finds none says "No <k>th of <the types> in this patch" — the ordinal English (1st … 4th, 11th … 13th, 21st … 23rd), never "<type> <k>"; one type keeps its title form "No 911 3 in this patch"', () => {
+  const rec = recOf(...Array(23).fill('cp3')), cps = idsOf(rec, 'cp3'), want = k => k + (k % 100 >= 11 && k % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][k % 10] || 'th');
+  assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 21, 22, 23].map(want), ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd']);
+  for (const k of [1, 2, 3, 4, 11, 12, 13, 21, 22, 23]) {
+    const mid = cps[k - 1], v = lit({}, rec, mid, 'r1');
+    assert.equal(PT.busInfo(rec, 'moog', v, mid).find(x => x.sw.join() === 'r1').why, `No ${want(k)} of 901A / 901 / 921A / 921 in this patch`, 'CP3 ' + k);
+  }
+  const few = recOf('993', '911', '911', '911a');
+  assert.equal(PT.busInfo(few, 'moog', lit({}, few, 'm1', 't3'), 'm1').find(x => x.sw.join() === 't3').why, 'No 911 3 in this patch', 'one type: its title form');
+});
+
+test('9c fix (review 1 F3): a CP3 / CP3A row another type\'s panel already routes names the panel that holds it — "Already routed by CP3A 1" for the CP3, "Already routed by CP3 1" for the CP3A (the first panel by number keeps the route)', () => {
+  for (const [types, scan, holder, text] of [[['921a', 'cp3a', 'cp3'], 'm3', 'm2', 'Already routed by CP3A 1'], [['921a', 'cp3', 'cp3a'], 'm3', 'm2', 'Already routed by CP3 1']]) {
+    const rec = recOf(...types), v = lit(lit({}, rec, 'm2', 'r1'), rec, 'm3', 'r1');
+    assert.deepEqual(PT.busRows(rec, 'moog', v).map(x => x.panel + ' ' + arrow(x)), [`${holder} c.kp1→m1.f3`], types.join() + ': one connection, the first panel\'s');
+    assert.equal(PT.busInfo(rec, 'moog', v, scan).find(x => x.sw.join() === 'r1').why, text, types.join());
+    assert.equal(PT.busInfo(rec, 'moog', v, holder).find(x => x.sw.join() === 'r1').why, '', 'the holder: a connection');
+  }
+});
+
+test('IMPL-9c §11: a 9c record through 9b\'s core (ref-P, tests/ref-P) — every module and cord kept, the 901Bs\' drivers lost (an unknown type\'s link is unknown): re-linked by hand after the update', () => {
+  const S = MG.makeSet('s3c', {});
+  const O = REF.normPatch(J(S.rec), 'moog');
+  assert.deepEqual(Object.keys(O.mods), Object.keys(S.rec.mods), 'every module kept, by shape');
+  assert.deepEqual(Object.values(O.mods).map(m => m.t), Object.values(S.rec.mods).map(m => m.t));
+  assert.deepEqual(O.cords, S.rec.cords, 'every cord kept (an end on a newer type is kept by its port syntax)');
+  const drv = r => Object.keys(r.mods).filter(k => r.mods[k].drv);
+  assert.deepEqual([drv(S.rec).length, drv(O).length], [9, 0], 'the nine drivers dropped');
+  assert.deepEqual(REF.normPatch(J(O), 'moog'), O, 'and 9b\'s own normPatch of that is idempotent');
+  // the drivers are all that differs: the new build restores nothing by itself, a hand re-link (setDriver) does
+  let r = O;
+  for (const k of idsOf(S.rec, '901b')) r = PT.setDriver(r, k, S.rec.mods[k].drv).rec;
+  assert.deepEqual(r, S.rec, 're-linked by hand: the record as it was');
+  // a 9b record in this build is whole (nothing of 9b changed): its 921Bs keep their drivers
+  const W = MG.makeSet('s55', {});
+  assert.deepEqual(PT.normPatch(J(W.rec), 'moog'), W.rec);
 });
 
 // skeptic #1: the Model 15 records as stage 9 built them — payload(rec).pk and sha256 of JSON.stringify of pvOf(vals), rec and vals —
@@ -987,6 +1071,50 @@ test('skeptic #1 (IMPL-9b §8.2): the Model 15 records frozen — model15, makeS
   for (const f of ['patch-core.js', 'moog-core.js']) assert.equal(sha(readFileSync(new URL('./ref-9-core/' + f, import.meta.url), 'utf8')), M.files[f].sha256, f);
 });
 
+// IMPL-9c D3 (b): the 9b records — System 35 / 55 (makeSet, loadSet fresh and over a Model 15 / a System 35) and the seven 9b presets (on
+// their set and on a fresh record) — pk without and with vals (Routed's bus rows; the CP2's always-on rows), pvOf, rec, vals, hash-pinned
+// by lane K9c from the base tree (5c7e65a) before its first edit: 9b's own promise of this pin (above) was never kept, and the ref-P
+// differentials below see these only against a frozen copy — this is the second guard (a 9c change to makeSet, the sets or the shared
+// types would move a hash here). `all` = sha256 of the whole loadSet result (added, bound, back too).
+const FROZEN_9B = {
+  'makeSet s35': { pk: '0b180547', pkv: '0b180547', pv: 'cb677f8daf6925ab9e4418c8c56ca479b8998c7d3efbcca24e49a71ab83eb075', rec: '423cbc10a7802afc0bacec768ee201a9775af35f6ddbbb3b0ecdc577ef5d1288', vals: '7771f595a68a7e9e83ef66b5141b69e1a613ae4b12e110131fa8b8ee0b906362' },
+  'makeSet s55': { pk: 'e125309b', pkv: 'afd31db8', pv: '8d8cc4745e41c43326ff78c9a79e2a32f0b72ed643916f1055456319c0a5d06d', rec: '83402fdc54ebf26e424e660d555c061d454d059df5fed789a48bfb254a7e2baa', vals: '0a9246a65bb832b783c3b3b1ad3aca737018d57d4f23cd438cf758e31887ea1a' },
+  'loadSet s35': { pk: '0b180547', pkv: '0b180547', pv: 'cb677f8daf6925ab9e4418c8c56ca479b8998c7d3efbcca24e49a71ab83eb075', rec: '423cbc10a7802afc0bacec768ee201a9775af35f6ddbbb3b0ecdc577ef5d1288', vals: '7771f595a68a7e9e83ef66b5141b69e1a613ae4b12e110131fa8b8ee0b906362' },
+  'loadSet s55': { pk: 'e125309b', pkv: 'afd31db8', pv: '8d8cc4745e41c43326ff78c9a79e2a32f0b72ed643916f1055456319c0a5d06d', rec: '83402fdc54ebf26e424e660d555c061d454d059df5fed789a48bfb254a7e2baa', vals: '0a9246a65bb832b783c3b3b1ad3aca737018d57d4f23cd438cf758e31887ea1a' },
+  'loadSet m15 → s35': { pk: 'd57a9041', pkv: 'd57a9041', pv: '95cb18c2c3fb3be9dd54dd9919caf04c7423f4020a8d99d677c300dfb5d815da', rec: 'd917b226a60fce22df37b9356f3c356a13e717ef389b23350f0c93be2d2bd4c8', vals: '63b01cf3a74bfde67b03091005ded58fd9bb7abda75d4c472e33a7838f801058', all: '06769abefbdab42990963a22b33361f66cfca3e2ffa5801755a79d5f29a52533' },
+  'loadSet m15 → s55': { pk: '7f4ece05', pkv: 'f6b8779e', pv: '81bf3721183b3ed2187867ad6d2d4619f9391a9b7c83c0db8866a6fc709f351e', rec: 'd655a821ccdf5af30fa6f5351a90d8b406f20441831c0a794499e1b6b8229ab3', vals: '6b83a3999c77042a5bd7fa9772066944cc92f66f510888352a7912c9b52be18b', all: 'c59144c7cfe6ae3f9a51372d48f13b916a79b861ff7149d8b117d138cf74328e' },
+  'loadSet s35 → s55': { pk: 'd7e0f486', pkv: 'c5546355', pv: '4a1234431d23fe97e4e27a853b262c784d014276277c8d1cf84b147b187035bf', rec: 'd65744d96b91e7aca343e2bfbcd33c4258f5b19a0e723206f854aa08844a8ec0', vals: 'e4b3caad85271f25e2574dad9ed609471c2a0d7b9f8a47728970848de001c0a5', all: '21fc7b703dbbd6fdb21e476e7fad978a1f3a79433c927bc6786dfa1bee6d24b3' },
+  'Swept band': { pk: '0b180547', pkv: '0b180547', pv: 'cb677f8daf6925ab9e4418c8c56ca479b8998c7d3efbcca24e49a71ab83eb075', rec: '423cbc10a7802afc0bacec768ee201a9775af35f6ddbbb3b0ecdc577ef5d1288', vals: '7771f595a68a7e9e83ef66b5141b69e1a613ae4b12e110131fa8b8ee0b906362' },
+  'Swept band (fresh)': { pk: '197cf6f7', pkv: '197cf6f7', pv: '35a9e069662507a2087931d2e42ffa178e873392966a176d8ecc7a36d5b84217', rec: '1257be2e59cf6314648ef402be4f600f81dba03fc8490b5224f2e3dbf821ab88', vals: 'b6558359199df02aca03a36ed4f3b5c4eea41b5a44467a9f5b4f624adc161ee3' },
+  Sequence: { pk: 'e125309b', pkv: 'afd31db8', pv: '8d8cc4745e41c43326ff78c9a79e2a32f0b72ed643916f1055456319c0a5d06d', rec: '83402fdc54ebf26e424e660d555c061d454d059df5fed789a48bfb254a7e2baa', vals: '0a9246a65bb832b783c3b3b1ad3aca737018d57d4f23cd438cf758e31887ea1a' },
+  'Sequence (fresh)': { pk: '73bf7322', pkv: '73bf7322', pv: '05d6d04a9374b6a23b063976e5a7e1db89487dc1129a1661965d53507fc99a6a', rec: 'cbd254e72052afad71110d8ebd70f8a94e1c4d421a3f45d013186bda4317fa54', vals: 'a1ab6d3a5a69de418ba396f6c313fdac2970a57e8c4a819a0f32a26b5a3fdaaf' },
+  'Twenty-four steps': { pk: 'a9ec9d0e', pkv: 'c943b295', pv: '7e2753efd15ddec06665dab575ad24bbba26f5f6770285c08d612abc79162114', rec: '283b9d8bb3a3b6d21f1ca8ee194cc16fba93bcbf3e0235a163a053438300b964', vals: '55bb5f5230f508b3d8d56d15ad795ec8de77dc5e2c0d19688db8a50003271edf' },
+  'Twenty-four steps (fresh)': { pk: '5344a2bc', pkv: '5344a2bc', pv: 'e12d7f76ec8e4014103334ceb55732c083bceffcf45b72b2104f96d4734a82a7', rec: '96f27627579d29cf1380b50744d8801e23730d11a2899f002633498b4dc1f23f', vals: '4d541c8bf0b5c3cbc1acd3ed7dddfefd0ace8714fb589fa135fc9ff445ecd062' },
+  'Echo strikes': { pk: 'f2e352a8', pkv: '6f4038ab', pv: '40b053052ebe19c7887e6fa4c50eb3cda68735b21b374a0e684f4972c222ea52', rec: '4e8a3ab6d7ccd331787caaddfba41ea9e3d5207a4d48fdd4d919d8f36ff499eb', vals: 'ab94e07095708b300e147aa64e86c675ff36dd63827f8af39bd6d448aae9c748' },
+  'Echo strikes (fresh)': { pk: '1a420722', pkv: '1a420722', pv: '423d9f2116cc728a6bda5872f27bf57da13d40f57483d290c0a1b41fc64012cc', rec: 'fb500b77d7ebf45d8d7279de03f9f55a22d65b8aa20c80a4801dea9f6a0f7358', vals: 'e7352b4fd2c98b2973ec4dbb4db5dc7ea3b5b5a5702c05d4d743120a3805bdc7' },
+  Vowel: { pk: 'eb6417d0', pkv: '06f0b213', pv: '9cf6fb9c836e7f9ca4976d27022fb39810336774094f720a4878a2124106adfd', rec: '16795e018b785fae3b181e0b422ee26845ba0734996a7f09210af7216c2eaf05', vals: 'cd21e2693d525e0ae675a28b69fb1c3a9e70a32c17a5a1afe57f81dd953ac5ad' },
+  'Vowel (fresh)': { pk: '20345b5f', pkv: '20345b5f', pv: 'c7f7f833cde4e30429985121e8cb903ced1fb2bf8c46814e4d134cff273dad2e', rec: 'cddd2da5e2cb49ca6a27805c43979ddeae027516f94e345e5ed7a5ae24e70f33', vals: '5ee52438a0a180dd6ced2fe51315747209dda61a7742dde28fe0ec12ebcfe531' },
+  'Step bass': { pk: 'aa77fbb4', pkv: 'f2b934d7', pv: 'bd10a6a32fa858981e5d7b8796c2f71ea000681526b788b58b53e5988313f7c6', rec: '76a76e457e69d585d775b6fdec322fc72c4a9ec89ce65fd38a672e4618f047ef', vals: '633575adedffa8dc4264d0707cc3e73d6ae5bfb176034c0c34d88059a782c15b' },
+  'Step bass (fresh)': { pk: 'ec478c21', pkv: 'ec478c21', pv: '8f2a350d3f53c06160ad681361093be60c1a84ee5d6946bb737d77752ec6c451', rec: '7597ccb9ca14b8f36d3d8acf0adc440bae1dceb5b931879423fb73d4b3b0501e', vals: 'a4d30d7ab0f661f9c71c9bbc7d7a34f832e4abac33f87d56edc476de8f72e587' },
+  Routed: { pk: 'd009943b', pkv: '3d1dc7c5', pv: '3c35d18686d84b66c9afa43d75b3bd081a019e28948d93ab962b12323cd1a64f', rec: 'a3fb56c8f479a328b8886cf39f387038e6c9ff0e9f69e3d9abd8ce9a3389444d', vals: '8b89178361e1363da5c838e6e3442a92ffbb6e46ad3121c66188cd9d4326405c' },
+  'Routed (fresh)': { pk: 'd7680e3d', pkv: 'cdd294ea', pv: 'c9810fd0d63d3f4a05c0b92b0064c864797e5e2dfd73b9c25848b9a71429f45f', rec: '734b752fe9f04cd851e20935b93ec90a5265bc9a723bcb0ec65041326f455860', vals: '6a483f6d7563d1903110e346d9b47a323d7b00f042a7125936049ccef361ec9b' },
+};
+test('IMPL-9c D3: the 9b records frozen — makeSet / loadSet of the System 35 / 55 and the seven 9b presets: pk with and without vals, pvOf, rec, vals as at the base', () => {
+  const sha = x => createHash('sha256').update(x).digest('hex');
+  const row = ({ rec, vals }) => ({ pk: PT.payload(rec).pk, pkv: PT.payload(rec, 'moog', vals).pk, pv: sha(JSON.stringify(MG.pvOf(vals))), rec: sha(JSON.stringify(rec)), vals: sha(JSON.stringify(vals)) });
+  const now = {}, m15 = MG.model15({}), s35 = MG.makeSet('s35', {});
+  for (const id of ['s35', 's55']) now['makeSet ' + id] = row(MG.makeSet(id, {}));
+  for (const id of ['s35', 's55']) now['loadSet ' + id] = row(PT.loadSet(PT.fresh('moog'), {}, id));
+  for (const id of ['s35', 's55']) { const L = PT.loadSet(m15.rec, m15.vals, id); now['loadSet m15 → ' + id] = Object.assign(row(L), { all: sha(JSON.stringify(L)) }); }
+  const L2 = PT.loadSet(s35.rec, s35.vals, 's55');
+  now['loadSet s35 → s55'] = Object.assign(row(L2), { all: sha(JSON.stringify(L2)) });
+  for (const n of PRESETS_9B.slice(6)) {
+    now[n] = row(PT.loadPreset(PT.fresh('moog'), {}, n, { ensure: n === 'Swept band' ? MG.S35 : MG.S55 }));
+    now[n + ' (fresh)'] = row(PT.loadPreset(PT.fresh('moog'), {}, n));
+  }
+  assert.deepEqual(now, FROZEN_9B);
+});
+
 /* ------------------------------------------------------------------------------------------------------------------------------------
    IMPL-P lane B (§3, §7 B): no artificial caps — the bounds, the one id grammar, the two linear host paths, freeSlot.
    ref-P = patch-core.js / moog-core.js verbatim at 9dde7e6 (tests/ref-P/MANIFEST.json); inside the old bounds the new code equals it. */
@@ -994,7 +1122,7 @@ test('skeptic #1 (IMPL-9b §8.2): the Model 15 records frozen — model15, makeS
 // a random valid record: nMods modules of random types, plugged at random through canPlug until nPlug cords, then nPin pins (copies of
 // cords' ends, outside the one-plug rule); every id < 4096
 function bigRec(seed, nMods, nPlug, nPin = 0) {
-  const R = rng(seed), pick = a => a[Math.floor(R() * a.length)], types = MG.ORDER.filter(t => !['960', '961', '962'].includes(t));
+  const R = rng(seed), pick = a => a[Math.floor(R() * a.length)], types = ORDER_9B.filter(t => !['960', '961', '962'].includes(t));
   let r = PT.fresh('moog');
   for (let i = 0; i < nMods; i++) r = PT.addModule(r, {}, pick(types)).rec;
   const ends = PT.jacksOf(r).map(j => j.end);
@@ -1164,7 +1292,7 @@ test('IMPL-P D6: inside the old bounds the core is 9dde7e6\'s — normPatch, pay
     for (let i = 0; i < 4; i++) { const e = pick(ends); assert.deepEqual(PT.cordAt(r, e), REF.cordAt(r, e)); }
   }
   for (const s of [undefined, 'm15', 's35', 's55']) assert.deepEqual(PT.loadSet(PT.fresh('moog'), {}, s), REF.loadSet(PT.fresh('moog'), {}, s), 'loadSet ' + s);
-  for (const n of PT.presetNames('moog')) assert.deepEqual(PT.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), REF.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), n);
+  for (const n of PRESETS_9B) assert.deepEqual(PT.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), REF.loadPreset(PT.fresh('moog'), {}, n, { ensure: MG.M15 }), n);
 });
 
 test('IMPL-P: ref-P is the 9dde7e6 core verbatim and untouched', () => {
@@ -1186,4 +1314,29 @@ test('IMPL-P skeptic #1: no 4-digit module-id pattern and no 4096 id bound left 
   assert.deepEqual(bad, []);
   assert.equal(/e\[0\] <= 4096/.test(readFileSync(new URL('patch-dsp.js', root), 'utf8')), false);
   assert.ok(ID4.test('x = /^m\\d{1,4}$/.test(k)') && ID4.test('x = /^m([1-9]\\d{0,3})$/.exec(k)'), 'the pattern finds what it looks for');
+});
+
+// IMPL-9c D2: the 9c records frozen at 9c's acceptance (e7babd5, 2026-10-23) — the System IIIc's makeSet / loadSet (fresh, over a
+// Model 15, over a System 55) and the three 9c presets on their set and fresh; pk with and without vals, pvOf, rec, vals (FROZEN_9B's form)
+const FROZEN_9C = {
+  'makeSet s3c': { pk: '16e66faf', pkv: '16e66faf', pv: '984a9648cf83112261bd91ec69b7633156bb1eee06279ad95f12c2da85526433', rec: '93e7dfa6f156a64947d52998123fca24ea0fc583d1a469cc5f43850513aaff06', vals: '6a460ec0fbd8316d48952b8881ed337bb464769320842a546e656b2cab7ab607' },
+  'loadSet s3c': { pk: '16e66faf', pkv: '16e66faf', pv: '984a9648cf83112261bd91ec69b7633156bb1eee06279ad95f12c2da85526433', rec: '93e7dfa6f156a64947d52998123fca24ea0fc583d1a469cc5f43850513aaff06', vals: '6a460ec0fbd8316d48952b8881ed337bb464769320842a546e656b2cab7ab607' },
+  'loadSet m15 → s3c': { pk: 'ef10ea06', pkv: 'ef10ea06', pv: 'ae01f26c98606558da1d23730f09267f56d81686100ba78129a08145044108b1', rec: 'dad7f27e5ac6839949a86918f46726cde8fa8ec8aa708b8f7b3a5ddb0a415b49', vals: 'ab128b6f28a3eb823c873cb5654f1e4ce70ea844d3fe305f15cdd32ef7cc3f9a', all: 'c5413af23bfa7196417686561eb479aa76d5161a3dc74a1cf60d841c11a3999f' },
+  'loadSet s55 → s3c': { pk: '28d1cb9d', pkv: 'dce1f866', pv: '11f06c1f9b77df6547a29f31be2a09ae68702cf2a7b1b996cf35f34859ea6206', rec: '94af0ec82f8b136e870108ef98704e303390fb86f9cfe9b42603cab261f2df7d', vals: '9ea8eb18795115f77466b0adcee4077f71ba41687ea32e0e3ba9c4b0ccd5fdb3', all: 'f5ead528f5d8fe72e86bd0bae1d3e1d07742d00d4d1dc126ed8a367e6dd76536' },
+  'Drift choir': { pk: '16e66faf', pkv: '16e66faf', pv: '984a9648cf83112261bd91ec69b7633156bb1eee06279ad95f12c2da85526433', rec: '93e7dfa6f156a64947d52998123fca24ea0fc583d1a469cc5f43850513aaff06', vals: '6a460ec0fbd8316d48952b8881ed337bb464769320842a546e656b2cab7ab607' },
+  'Drift choir (fresh)': { pk: 'dc838e27', pkv: 'dc838e27', pv: '240f7e515d4bb178dbff07a249a20e9e7bfcb2fd0b3a73599fcb71978115e0cd', rec: '4ef3b9d8a7970c57fe0588a26cb398fffd7beedbd5f10ffd8d1590343c970360', vals: '2a38253f313364914bb88fa4d821ffab0e0b4cb964c36b2ab773edef0cf976de' },
+  'Follower wah (fresh)': { pk: '21e5a3d5', pkv: '21e5a3d5', pv: 'e17d321dd4a29fb02d1cf1f81148f71cfb0c15aa8a89be9e58dbfd41080d84d3', rec: '47c7b7036643042c202f4e6e5292d7414cb55e33035a0c85ade0a5bb9f15bc35', vals: '37973dab3706aa7c36b502c140132b551a608a673b9bc50035bdc5a375287217' },
+  'Spring pluck (fresh)': { pk: 'b77875be', pkv: 'b77875be', pv: '8d2fa326e692b8c46abba1f5bb5752e3b35b6a2e5db23e42d3e0f973c4337893', rec: 'aa6b14c30d4e43c51ba16c7fc501a593ece4fe6e28bbca9cf49c06f48ac659e4', vals: '0203cebda10ec619c1a53e4289b7cdcd3527aff6d3b09c752f4d255ab4a79034' },
+};
+test('IMPL-9c D2: the 9c records frozen — the System IIIc and the three 9c presets as at 9c\'s acceptance', () => {
+  const sha = x => createHash('sha256').update(x).digest('hex');
+  const row = ({ rec, vals }) => ({ pk: PT.payload(rec).pk, pkv: PT.payload(rec, 'moog', vals).pk, pv: sha(JSON.stringify(MG.pvOf(vals))), rec: sha(JSON.stringify(rec)), vals: sha(JSON.stringify(vals)) });
+  const now = {}, m15 = MG.model15({}), s55 = MG.makeSet('s55', {});
+  now['makeSet s3c'] = row(MG.makeSet('s3c', {}));
+  now['loadSet s3c'] = row(PT.loadSet(PT.fresh('moog'), {}, 's3c'));
+  { const L = PT.loadSet(m15.rec, m15.vals, 's3c'); now['loadSet m15 → s3c'] = Object.assign(row(L), { all: sha(JSON.stringify(L)) }); }
+  { const L = PT.loadSet(s55.rec, s55.vals, 's3c'); now['loadSet s55 → s3c'] = Object.assign(row(L), { all: sha(JSON.stringify(L)) }); }
+  now['Drift choir'] = row(PT.loadPreset(PT.fresh('moog'), {}, 'Drift choir', { ensure: MG.S3C }));
+  for (const n of ['Drift choir', 'Follower wah', 'Spring pluck']) now[n + ' (fresh)'] = row(PT.loadPreset(PT.fresh('moog'), {}, n));
+  assert.deepEqual(now, FROZEN_9C);
 });
