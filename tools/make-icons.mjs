@@ -2,7 +2,9 @@
 // index.html's header and SVG favicon — on the site's dark background, with no dependencies: every pixel is computed
 // from signed distances (rounded square, the mark's polyline with round caps and joins) with a one-pixel anti-aliasing
 // ramp, composited in premultiplied RGBA, and written as an 8-bit RGBA PNG (per-row filter choice, node:zlib deflate).
-//   node tools/make-icons.mjs          writes icons/*.png (deterministic: the same pixels on every run)
+// The iPad app's icon (`opaque`) is the same artwork as an 8-bit RGB PNG, colour type 2, no alpha channel at all: the App
+// Store refuses an icon with one, and iOS rounds the corners itself.
+//   node tools/make-icons.mjs          writes every ICONS file (deterministic: the same pixels on every run)
 // The tests (tests/pwa.test.mjs) decode the committed files with decodePng and compare them with renderIcon.
 import { deflateSync, inflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -21,6 +23,7 @@ export const ICONS = Object.freeze([
   { file: 'icons/icon-maskable-512.png', kind: 'maskable', size: 512 },
   { file: 'icons/apple-touch-icon-180.png', kind: 'apple', size: 180 },
   { file: 'icons/favicon-32.png', kind: 'favicon', size: 32 },
+  { file: 'app/ios/SYNTH/Assets.xcassets/AppIcon.appiconset/icon-1024.png', kind: 'apple', size: 1024, opaque: true },
 ]);
 // per kind: corner radius (× size; 0 = full bleed), mark width (× size), glow and graticule on/off
 const LOOK = {
@@ -104,36 +107,45 @@ function chunk(type, data) {
   return Buffer.concat([head, data, tail]);
 }
 const paeth = (a, b, c) => { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; };
-// the five PNG filters of one row (bpp 4): filtered bytes of `type`
-function filterRow(type, row, prev, out) {
+// the five PNG filters of one row (bpp bytes a pixel): filtered bytes of `type`
+function filterRow(type, row, prev, out, bpp = 4) {
   for (let i = 0; i < row.length; i++) {
-    const a = i >= 4 ? row[i - 4] : 0, b = prev ? prev[i] : 0, c = prev && i >= 4 ? prev[i - 4] : 0;
+    const a = i >= bpp ? row[i - bpp] : 0, b = prev ? prev[i] : 0, c = prev && i >= bpp ? prev[i - bpp] : 0;
     const p = type === 0 ? 0 : type === 1 ? a : type === 2 ? b : type === 3 ? (a + b) >> 1 : paeth(a, b, c);
     out[i] = (row[i] - p) & 0xff;
   }
   return out;
 }
 export const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-export function encodePng(w, h, rgba) {
-  const stride = w * 4, raw = Buffer.alloc((stride + 1) * h), tmp = new Uint8Array(stride);
+// `opaque`: 8-bit RGB (colour type 2), the pixels flattened onto the background first (a no-op for a full-bleed icon, whose alpha is 255)
+export function encodePng(w, h, rgba, opaque = false) {
+  const bpp = opaque ? 3 : 4, stride = w * bpp, raw = Buffer.alloc((stride + 1) * h), tmp = new Uint8Array(stride);
+  let px = rgba;
+  if (opaque) {
+    px = new Uint8Array(w * h * 3);
+    for (let i = 0, o = 0; i < w * h; i++) {
+      const a = rgba[i * 4 + 3] / 255;
+      for (let c = 0; c < 3; c++) px[o++] = Math.round(rgba[i * 4 + c] * a + BG[c] * (1 - a));
+    }
+  }
   for (let y = 0; y < h; y++) {
-    const row = rgba.subarray(y * stride, (y + 1) * stride), prev = y ? rgba.subarray((y - 1) * stride, y * stride) : null;
+    const row = px.subarray(y * stride, (y + 1) * stride), prev = y ? px.subarray((y - 1) * stride, y * stride) : null;
     let best = 0, bestSum = Infinity;
     for (let t = 0; t < 5; t++) { // minimum sum of absolute differences (the usual heuristic)
-      filterRow(t, row, prev, tmp);
+      filterRow(t, row, prev, tmp, bpp);
       let s = 0; for (let i = 0; i < stride; i++) s += tmp[i] < 128 ? tmp[i] : 256 - tmp[i];
       if (s < bestSum) { bestSum = s; best = t; }
     }
     raw[y * (stride + 1)] = best;
-    raw.set(filterRow(best, row, prev, tmp), y * (stride + 1) + 1);
+    raw.set(filterRow(best, row, prev, tmp, bpp), y * (stride + 1) + 1);
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // 8-bit RGBA, deflate, adaptive filtering, no interlace
+  ihdr[8] = 8; ihdr[9] = opaque ? 2 : 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // 8-bit RGB / RGBA, deflate, adaptive filtering, no interlace
   return Buffer.concat([PNG_SIG, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
 }
-// The decoder the tests use (8-bit RGBA, non-interlaced — what encodePng writes): { w, h, rgba, chunks: [types] };
-// throws on a bad signature or chunk CRC.
+// The decoder the tests use (8-bit RGBA or RGB, non-interlaced — what encodePng writes): { w, h, rgba, chunks: [types], ctype };
+// a colour type 2 (RGB) file comes back with alpha 255 in `rgba`; throws on a bad signature or chunk CRC.
 export function decodePng(buf) {
   if (!Buffer.from(buf.subarray(0, 8)).equals(PNG_SIG)) throw new Error('not a PNG');
   let p = 8, w = 0, h = 0, depth = 0, ctype = 0, inter = 0;
@@ -148,26 +160,31 @@ export function decodePng(buf) {
     else if (type === 'IEND') break;
     p += 12 + n;
   }
-  if (depth !== 8 || ctype !== 6 || inter !== 0) throw new Error('decodePng reads 8-bit RGBA non-interlaced PNGs only');
-  const raw = inflateSync(Buffer.concat(idat)), stride = w * 4, rgba = new Uint8Array(stride * h);
+  if (depth !== 8 || (ctype !== 6 && ctype !== 2) || inter !== 0) throw new Error('decodePng reads 8-bit RGBA or RGB non-interlaced PNGs only');
+  const bpp = ctype === 6 ? 4 : 3, raw = inflateSync(Buffer.concat(idat)), stride = w * bpp, px = new Uint8Array(stride * h);
   for (let y = 0; y < h; y++) {
     const t = raw[y * (stride + 1)], src = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)), o = y * stride;
     for (let i = 0; i < stride; i++) {
-      const a = i >= 4 ? rgba[o + i - 4] : 0, b = y ? rgba[o - stride + i] : 0, c = y && i >= 4 ? rgba[o - stride + i - 4] : 0;
+      const a = i >= bpp ? px[o + i - bpp] : 0, b = y ? px[o - stride + i] : 0, c = y && i >= bpp ? px[o - stride + i - bpp] : 0;
       const pr = t === 0 ? 0 : t === 1 ? a : t === 2 ? b : t === 3 ? (a + b) >> 1 : t === 4 ? paeth(a, b, c) : NaN;
       if (Number.isNaN(pr)) throw new Error('bad filter type ' + t);
-      rgba[o + i] = (src[i] + pr) & 0xff;
+      px[o + i] = (src[i] + pr) & 0xff;
     }
   }
-  return { w, h, rgba, chunks };
+  let rgba = px;
+  if (bpp === 3) { // RGB → RGBA, A = 255
+    rgba = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) { rgba[i * 4] = px[i * 3]; rgba[i * 4 + 1] = px[i * 3 + 1]; rgba[i * 4 + 2] = px[i * 3 + 2]; rgba[i * 4 + 3] = 255; }
+  }
+  return { w, h, rgba, chunks, ctype };
 }
 
 /* ------------------------------------------------------------------ CLI */
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const ROOT = new URL('../', import.meta.url);
-  mkdirSync(new URL('icons/', ROOT), { recursive: true });
   for (const I of ICONS) {
-    const png = encodePng(I.size, I.size, renderIcon(I.kind, I.size));
+    const png = encodePng(I.size, I.size, renderIcon(I.kind, I.size), !!I.opaque);
+    mkdirSync(new URL('./', new URL(I.file, ROOT)), { recursive: true });
     writeFileSync(new URL(I.file, ROOT), png);
     console.log(I.file + '  ' + I.size + '×' + I.size + '  ' + png.length + ' bytes');
   }

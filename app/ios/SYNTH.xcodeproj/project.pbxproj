@@ -1,0 +1,247 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000020 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000010 /* App.swift */; };
+		A00000000000000000000021 /* ShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* ShellViewController.swift */; };
+		A00000000000000000000022 /* SchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000012 /* SchemeHandler.swift */; };
+		A00000000000000000000023 /* SiteBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000013 /* SiteBundle.swift */; };
+		A00000000000000000000024 /* Bridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000014 /* Bridge.swift */; };
+		A00000000000000000000025 /* FileExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000015 /* FileExport.swift */; };
+		A00000000000000000000026 /* AudioSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000016 /* AudioSession.swift */; };
+		A00000000000000000000027 /* Smoke.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000017 /* Smoke.swift */; };
+		A00000000000000000000028 /* SmokeSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000018 /* SmokeSteps.swift */; };
+		A0000000000000000000002A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001A /* Assets.xcassets */; };
+		A0000000000000000000002B /* Smoke.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001B /* Smoke.js */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000006 /* SYNTH.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SYNTH.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000007 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		A00000000000000000000010 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		A00000000000000000000011 /* ShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellViewController.swift; sourceTree = "<group>"; };
+		A00000000000000000000012 /* SchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemeHandler.swift; sourceTree = "<group>"; };
+		A00000000000000000000013 /* SiteBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiteBundle.swift; sourceTree = "<group>"; };
+		A00000000000000000000014 /* Bridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bridge.swift; sourceTree = "<group>"; };
+		A00000000000000000000015 /* FileExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExport.swift; sourceTree = "<group>"; };
+		A00000000000000000000016 /* AudioSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSession.swift; sourceTree = "<group>"; };
+		A00000000000000000000017 /* Smoke.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Smoke.swift; sourceTree = "<group>"; };
+		A00000000000000000000018 /* SmokeSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeSteps.swift; sourceTree = "<group>"; };
+		A00000000000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A0000000000000000000001A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A0000000000000000000001B /* Smoke.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = Smoke.js; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000032 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000003 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000007 /* Config.xcconfig */,
+				A00000000000000000000004 /* SYNTH */,
+				A00000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000004 /* SYNTH */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000010 /* App.swift */,
+				A00000000000000000000011 /* ShellViewController.swift */,
+				A00000000000000000000012 /* SchemeHandler.swift */,
+				A00000000000000000000013 /* SiteBundle.swift */,
+				A00000000000000000000014 /* Bridge.swift */,
+				A00000000000000000000015 /* FileExport.swift */,
+				A00000000000000000000016 /* AudioSession.swift */,
+				A00000000000000000000017 /* Smoke.swift */,
+				A00000000000000000000018 /* SmokeSteps.swift */,
+				A0000000000000000000001B /* Smoke.js */,
+				A00000000000000000000019 /* Info.plist */,
+				A0000000000000000000001A /* Assets.xcassets */,
+			);
+			path = SYNTH;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000006 /* SYNTH.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000002 /* SYNTH */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000045 /* Build configuration list for PBXNativeTarget "SYNTH" */;
+			buildPhases = (
+				A00000000000000000000030 /* Sources */,
+				A00000000000000000000032 /* Frameworks */,
+				A00000000000000000000031 /* Resources */,
+				A00000000000000000000033 /* Bundle the site */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SYNTH;
+			productName = SYNTH;
+			productReference = A00000000000000000000006 /* SYNTH.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A00000000000000000000002 = {
+						CreatedOnToolsVersion = 27.1;
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000044 /* Build configuration list for PBXProject "SYNTH" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000003;
+			productRefGroup = A00000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000002 /* SYNTH */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000031 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0000000000000000000002A /* Assets.xcassets in Resources */,
+				A0000000000000000000002B /* Smoke.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A00000000000000000000033 /* Bundle the site */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Bundle the site";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "\"$SRCROOT/../../tools/app-bundle.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000020 /* App.swift in Sources */,
+				A00000000000000000000021 /* ShellViewController.swift in Sources */,
+				A00000000000000000000022 /* SchemeHandler.swift in Sources */,
+				A00000000000000000000023 /* SiteBundle.swift in Sources */,
+				A00000000000000000000024 /* Bridge.swift in Sources */,
+				A00000000000000000000025 /* FileExport.swift in Sources */,
+				A00000000000000000000026 /* AudioSession.swift in Sources */,
+				A00000000000000000000027 /* Smoke.swift in Sources */,
+				A00000000000000000000028 /* SmokeSteps.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000040 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000007 /* Config.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		A00000000000000000000041 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000007 /* Config.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		A00000000000000000000042 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000007 /* Config.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		A00000000000000000000043 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000007 /* Config.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000044 /* Build configuration list for PBXProject "SYNTH" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000040 /* Debug */,
+				A00000000000000000000041 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000045 /* Build configuration list for PBXNativeTarget "SYNTH" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000042 /* Debug */,
+				A00000000000000000000043 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

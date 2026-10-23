@@ -1,2 +1,8 @@
 .claude/
 .DS_Store
+# the iPad app (app/ios): the team lives only in Local.xcconfig; Xcode's per-user state and build output never ship
+app/ios/Local.xcconfig
+app/ios/*.xcodeproj/xcuserdata/
+app/ios/*.xcodeproj/project.xcworkspace/xcuserdata/
+app/ios/build/
+app/ios/DerivedData/

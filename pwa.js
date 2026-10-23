@@ -15,7 +15,9 @@
 // iPad: the browser's full screen (WebKit's) keeps its own controls, may stop fast tapping with a "typing in full
 // screen" warning, and a pinch may leave it (WebKit 227387: any pinch, the page's own zoom or an editor's) — the first full
 // screen there says that the installed app is the full-screen one.
-// The pure parts (platform, appButtons, installSteps, fullscreenApi, isStandalone, swAllowed) are exported for the tests.
+// The iPad app (IMPL-A, its WKWebView: window.SYNTH_SHELL, synth://app/) is the installed app by definition: neither
+// button, never the sheet, no service worker (initApp's controller says `shell`).
+// The pure parts (platform, appButtons, installSteps, fullscreenApi, inShell, isStandalone, swAllowed) are exported for the tests.
 
 /* ------------------------------------------------------------------ pure parts */
 // { ios, ipad, mac, browser: 'safari' | 'chrome' | 'firefox' | 'edge' | 'other', safariVersion, desktopUA, inApp }
@@ -115,12 +117,16 @@ export function fullscreenApi(doc) {
   };
 }
 const mm = (win, q) => { try { return !!(win && typeof win.matchMedia === 'function' && win.matchMedia(q).matches); } catch (err) { return false; } };
-// running as the installed app: iOS's navigator.standalone or the display-mode the manifest asks for. The fullscreen
-// display mode is the installed app on Android only (its display_override): desktop browsers report it for a window in
-// full screen (F11, the browser's own command) and, like Chrome on Android, for the page in full screen (fsActive).
-export function isStandalone(win, nav, fsActive) {
+// the iPad app (IMPL-A §3.1): its WKWebView injects window.SYNTH_SHELL (an object) at document start and serves the
+// site as synth://app/ — either sign; no browser has them
+export const inShell = (win, loc) => !!(win && win.SYNTH_SHELL && typeof win.SYNTH_SHELL === 'object') || !!(loc && loc.protocol === 'synth:');
+// running as the installed app: the iPad app (inShell), iOS's navigator.standalone or the display-mode the manifest asks
+// for. The fullscreen display mode is the installed app on Android only (its display_override): desktop browsers report
+// it for a window in full screen (F11, the browser's own command) and, like Chrome on Android, for the page in full
+// screen (fsActive).
+export function isStandalone(win, nav, fsActive, loc) {
   const android = /Android/.test(String((nav && nav.userAgent) || ''));
-  return !!(nav && nav.standalone === true) || mm(win, '(display-mode: standalone)') || (android && !fsActive && mm(win, '(display-mode: fullscreen)'));
+  return inShell(win, loc) || !!(nav && nav.standalone === true) || mm(win, '(display-mode: standalone)') || (android && !fsActive && mm(win, '(display-mode: fullscreen)'));
 }
 // service workers only on https: (the site) and on the local development hosts
 export const swAllowed = loc => !!loc && (loc.protocol === 'https:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(String(loc.hostname || '')));
@@ -141,7 +147,8 @@ export function initApp(opts) {
   const P = platform(nav), FS = fullscreenApi(doc), sheetOK = sheetFor(P);
   const say = (t, ms) => { if (typeof o.notice === 'function') o.notice(t, ms); };
   let deferred = null, installed = false, persistAsked = false;
-  const standalone = () => isStandalone(win, nav, FS.active());
+  const shell = inShell(win, loc); // (the iPad app: installed by definition — no buttons, no sheet, no service worker)
+  const standalone = () => isStandalone(win, nav, FS.active(), loc);
 
   function sync() {
     const b = appButtons({ standalone: standalone(), fs: FS.enabled, prompt: !!deferred, sheet: sheetOK, installed });
@@ -305,7 +312,9 @@ export function initApp(opts) {
     // returns to the front after an hour
     if (x) x.onclick = () => { if (!reloading) later = shown; hideToast(); };
   }
-  const swc = nav.serviceWorker;
+  // (the iPad app: none — its site is the bundle it was built with, IMPL-A §7.3; WebKit has no worker for synth: today,
+  // and the guard keeps the update toast out should a later one expose it)
+  const swc = shell ? null : nav.serviceWorker;
   if (swc && typeof swc.register === 'function' && swAllowed(loc)) {
     controlled = !!swc.controller;
     swc.addEventListener('controllerchange', () => {
@@ -340,5 +349,5 @@ export function initApp(opts) {
   }
 
   sync();
-  return { sync, sheetOpen, openSheet, closeSheet, platform: P, state: () => ({ deferred: !!deferred, installed, reg, reloading }), accept };
+  return { sync, sheetOpen, openSheet, closeSheet, platform: P, state: () => ({ deferred: !!deferred, installed, reg, reloading }), accept, shell };
 }

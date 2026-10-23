@@ -1,0 +1,56 @@
+// SYNTH — every build setting of app/ios/SYNTH.xcodeproj (IMPL-A §1.2): the pbxproj carries none, so a settings change is a
+// one-line diff here. The team lives ONLY in the gitignored Local.xcconfig (DEVELOPMENT_TEAM = <the user's personal team>; it may
+// also override PRODUCT_BUNDLE_IDENTIFIER for a free team) — never pick the team in Xcode's Signing UI (that writes it into the
+// pbxproj). Local.xcconfig is included LAST (the file's last line): in an xcconfig a later assignment wins, so it overrides
+// anything here. Simulator builds: xcodebuild … -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO.
+
+PRODUCT_NAME = SYNTH
+PRODUCT_BUNDLE_IDENTIFIER = com.domlavin.synth
+MARKETING_VERSION = 0.1
+CURRENT_PROJECT_VERSION = 1
+// the Run Script phase stamps the real build number (the commit count, §7.1)
+
+SDKROOT = iphoneos
+IPHONEOS_DEPLOYMENT_TARGET = 17.5
+// 17.5: Pencil Pro haptics (stage B); isInspectable 16.4, WKDownload 14.5, callAsyncJavaScript 14
+TARGETED_DEVICE_FAMILY = 2
+// iPad only
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTS_MACCATALYST = NO
+SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES
+// §8 (a): the same binary on an Apple-silicon Mac, kept possible
+
+SWIFT_VERSION = 5.0
+SWIFT_STRICT_CONCURRENCY = minimal
+SWIFT_OPTIMIZATION_LEVEL[config=Debug] = -Onone
+SWIFT_OPTIMIZATION_LEVEL[config=Release] = -O
+SWIFT_COMPILATION_MODE[config=Release] = wholemodule
+SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Debug] = DEBUG
+OTHER_SWIFT_FLAGS[config=Debug] = -DSMOKE
+// the smoke / console hooks compile into Debug only — and act only with the -smoke launch argument (§9.2)
+EXCLUDED_SOURCE_FILE_NAMES[config=Release] = Smoke.js
+// the smoke's page script ships in Debug builds only
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+// DEVELOPMENT_TEAM from Local.xcconfig
+
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = SYNTH/Info.plist
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+// the bundle phase reads the repo and writes a dynamic file set
+DEBUG_INFORMATION_FORMAT = dwarf
+DEBUG_INFORMATION_FORMAT[config=Release] = dwarf-with-dsym
+ONLY_ACTIVE_ARCH[config=Debug] = YES
+ENABLE_TESTABILITY[config=Debug] = YES
+VALIDATE_PRODUCT[config=Release] = YES
+COPY_PHASE_STRIP = NO
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+CLANG_ENABLE_MODULES = YES
+CLANG_ENABLE_OBJC_ARC = YES
+ALWAYS_SEARCH_USER_PATHS = NO
+SWIFT_EMIT_LOC_STRINGS = NO
+
+// the local overrides last (fix R2-F1: a later assignment wins — the team, a free team's bundle id); nothing below this line
+#include? "Local.xcconfig"

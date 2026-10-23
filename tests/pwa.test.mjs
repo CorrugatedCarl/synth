@@ -1,7 +1,7 @@
 // The installed app (owner I): manifest.webmanifest, the icons (tools/make-icons.mjs), index.html's app tags, the
 // precache list (sw.js ASSETS / STATIC against tools/precache.mjs's crawl of what the page requests, its BUILD against
 // the files' hash) and the service worker's logic in a fake worker scope — caches, fetch, clients and timers faked:
-// install / activate (the fonts kept at install), the fetch strategies (AudioWorklet and Worker scripts served offline
+// install / activate (the bundled fonts precached with the shell, the old fonts cache dropped), the fetch strategies (AudioWorklet and Worker scripts served offline
 // from the precache, an error page never replacing the cached app), the update messages — plus pwa.js's pure parts
 // (platforms, button visibility, install steps, the Fullscreen API wrapper).
 // Run: node --test tests/pwa.test.mjs
@@ -46,6 +46,7 @@ test('icons: valid PNGs (signature, chunk CRCs, IHDR … IEND) of the stated siz
   for (const I of ICONS) {
     const buf = readFileSync(new URL(I.file, ROOT)), P = decodePng(buf);
     assert.deepEqual([P.w, P.h], [I.size, I.size], I.file);
+    assert.equal(P.ctype, I.opaque ? 2 : 6, I.file + ': colour type 2 (RGB, no alpha channel) when opaque, else 6 (RGBA)');
     assert.equal(P.chunks[0], 'IHDR'); assert.equal(P.chunks.at(-1), 'IEND');
     const ref = renderIcon(I.kind, I.size);
     let worst = 0;
@@ -57,6 +58,10 @@ test('icons: valid PNGs (signature, chunk CRCs, IHDR … IEND) of the stated siz
       for (let k = 3; k < P.rgba.length; k += 4) assert.equal(P.rgba[k], 255, I.file + ': full bleed (iOS / Android mask it)');
     } else assert.equal(A(0, 0), 0, I.file + ': transparent corner');
   }
+  // the iPad app's icon (IMPL-A §1.4): one 1024 px opaque PNG, the apple artwork, where AppIcon.appiconset/Contents.json names it
+  const app = ICONS.filter(I => I.opaque);
+  assert.deepEqual(app.map(I => [I.file, I.kind, I.size]), [['app/ios/SYNTH/Assets.xcassets/AppIcon.appiconset/icon-1024.png', 'apple', 1024]]);
+  assert.deepEqual(ICONS.filter(I => !I.opaque).map(I => I.file.split('/')[0]), ['icons', 'icons', 'icons', 'icons', 'icons'], 'the five web icons are as they were');
   // the mark is the brand orange (#f2a33a) somewhere in each icon, on the dark background
   for (const I of ICONS) {
     const P = decodePng(readFileSync(new URL(I.file, ROOT)));
@@ -70,7 +75,7 @@ test('icons: valid PNGs (signature, chunk CRCs, IHDR … IEND) of the stated siz
   }
 });
 
-test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the app meta tags, viewport-fit=cover, CORS Google Fonts; header buttons and sheet present', () => {
+test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the app meta tags, viewport-fit=cover, the bundled fonts (no Google Fonts); header buttons and sheet present', () => {
   const has = re => assert.match(HTML, re);
   has(/<link rel="manifest" href="manifest\.webmanifest">/);
   has(/<link rel="apple-touch-icon" href="icons\/apple-touch-icon-180\.png">/);
@@ -81,9 +86,12 @@ test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the a
   has(/<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/);
   has(/<meta name="apple-mobile-web-app-title" content="SYNTH">/);
   has(/<meta name="viewport" content="[^"]*viewport-fit=cover/);
-  const fonts = [...HTML.matchAll(/<link [^>]*href="https:\/\/fonts\.googleapis\.com\/css2[^>]*>/g)].map(m => m[0]);
-  assert.equal(fonts.length, 3);
-  for (const l of fonts) assert.match(l, /\scrossorigin[\s>]/, 'a CORS request (the worker keeps only answers it can check): ' + l);
+  // the fonts are the site's own (fonts/, IMPL-A §3.3): one stylesheet at ?v=N, Inter preloaded as a CORS font fetch (a font preload must
+  // say crossorigin to match the @font-face request), and no third-party host, preconnect or noscript fallback left
+  assert.match(HTML, new RegExp('<link rel="stylesheet" href="fonts/fonts\\.css\\?v=' + N + '">'));
+  assert.match(HTML, /<link rel="preload" as="font" type="font\/woff2" crossorigin href="fonts\/InterVariable\.woff2">/);
+  assert.ok(HTML.indexOf('fonts/fonts.css') < HTML.indexOf('style.css?v='), 'fonts.css before style.css');
+  assert.doesNotMatch(HTML, /fonts\.googleapis\.com|fonts\.gstatic\.com|rel="preconnect"/);
   for (const id of ['install', 'fullscreen', 'installSheet', 'update']) assert.match(HTML, new RegExp('<[a-z]+ id="' + id + '"[^>]*\\shidden[\\s>]'), id + ' starts hidden');
   has(/id="fullscreen"[^>]*aria-pressed="false"/);
   assert.match(HTML, /installed app keeps its own projects/, 'the in-app help says so');
@@ -242,7 +250,8 @@ test('sw install: precaches every shell URL with cache: no-cache (revalidated, n
   const want = S.assets.map(f => ORIGIN + '/' + f + '?v=' + N).concat(S.statics.map(f => new URL(f, ORIGIN + '/').href));
   assert.deepEqual(keys.slice().sort(), want.slice().sort());
   assert.ok(E.fetches.filter(f => f.url.startsWith(ORIGIN)).every(f => f.cache === 'no-cache'), 'cache: no-cache');
-  assert.equal(E.stores.get('synth-fonts-v1').m.size, 0, 'the fonts unreachable (404): the install goes on without them');
+  assert.deepEqual([...E.stores.keys()], [SHELL], 'one cache, the shell (the fonts in it): no synth-fonts-v1 any more');
+  assert.deepEqual(E.fetches.filter(f => !f.url.startsWith(ORIGIN)), [], 'nothing asked of another origin (no Google Fonts)');
   assert.equal(E.skipped, 0, 'a new worker waits (no skipWaiting at install)');
   assert.equal(E.claimed, 0);
   assert.equal(await textOf(await shell.match(ORIGIN + '/')), fileText('index.html'), 'the page as ./');
@@ -256,46 +265,35 @@ test('sw install: precaches every shell URL with cache: no-cache (revalidated, n
   await assert.rejects(E3.install(), /precache: .*wt\.js\?v=\d+ → 404/);
 });
 
-test('sw install keeps the page\'s Google Fonts (stylesheet + its latin font files; the first launch loaded them before the worker controlled the page): CORS requests, never a failed install for them, cached ones not fetched again', async () => {
-  const href = /<link rel="stylesheet" crossorigin href="(https:\/\/fonts\.googleapis\.com\/css2\?[^"]+)"/.exec(HTML)[1];
-  const inter = 'https://fonts.gstatic.com/s/inter/v18/latin.woff2', mono = 'https://fonts.gstatic.com/s/jetbrainsmono/v20/latin.woff2';
-  const cyr = 'https://fonts.gstatic.com/s/inter/v18/cyrillic.woff2';
-  const css = `/* cyrillic */\n@font-face { font-family: 'Inter'; font-weight: 400; src: url(${cyr}) format('woff2'); unicode-range: U+0301; }\n` +
-    `/* latin */\n@font-face { font-family: 'Inter'; font-weight: 400; src: url(${inter}) format('woff2'); unicode-range: U+0000-00FF; }\n` +
-    `/* latin */\n@font-face { font-family: 'Inter'; font-weight: 700; src: url(${inter}) format('woff2'); unicode-range: U+0000-00FF; }\n` +
-    `/* latin */\n@font-face { font-family: 'JetBrains Mono'; src: url(${mono}) format('woff2'); unicode-range: U+0000-00FF; }\n`;
+test('sw install precaches the bundled fonts with the shell (fonts.css at ?v=N, the three woff2 files as statics, all no-cache, byte for byte), serves them offline, asks no one else; a font file gone from the site fails the install', async () => {
+  const files = ['fonts/InterVariable.woff2', 'fonts/JetBrainsMono-Regular.woff2', 'fonts/JetBrainsMono-SemiBold.woff2'];
+  const same = async (res, f) => Buffer.from(await res.arrayBuffer()).equals(readFileSync(new URL(f, ROOT))); // (never assert.* on 350 KB of bytes)
   const E = swScope();
-  E.routes.set(href, { body: css, ct: 'text/css' });
-  E.routes.set(inter, { body: 'INTER', ct: 'font/woff2' });
-  E.routes.set(mono, { body: 'MONO', ct: 'font/woff2' });
-  E.routes.set(cyr, { body: 'CYR', ct: 'font/woff2' });
   await E.install();
-  const F = E.stores.get('synth-fonts-v1');
-  assert.deepEqual([...F.m.keys()].sort(), [href, inter, mono].sort(), 'the stylesheet and the latin files (each once)');
-  assert.equal(E.timers.length, 0, 'the FONT_WAIT timer is cleared');
-  // offline, the page's fonts come from that cache
+  const shell = E.shell();
+  for (const f of files) {
+    const hit = await shell.match(ORIGIN + '/' + f);
+    assert.ok(hit && await same(hit, f), f + ' precached, as served');
+    assert.ok(E.fetches.some(x => x.url === ORIGIN + '/' + f && x.cache === 'no-cache'), f + ' revalidated at install');
+  }
+  assert.equal(await textOf(await shell.match(ORIGIN + '/fonts/fonts.css?v=' + N)), fileText('fonts/fonts.css'));
+  assert.equal(E.fetches.filter(f => !f.url.startsWith(ORIGIN)).length, 0, 'no third-party request');
+  // offline: the page's fonts (cache first from the precache — the last test below) and its stylesheet come from the shell cache
   E.online = false;
-  assert.equal(await textOf(await E.get(href, { dest: 'style' })), css);
-  assert.equal(await textOf(await E.get(inter, { dest: 'font' })), 'INTER');
-  // the next version's install: cached ones are not fetched again
-  E.online = true;
-  const n = E.fetches.length;
-  await E.install();
-  assert.equal(E.fetches.slice(n).filter(f => !f.url.startsWith(ORIGIN)).length, 0);
-  // the font hosts unreachable: the install still succeeds, without fonts
+  for (const f of files) assert.ok(await same(await E.get('/' + f, { dest: 'font' }), f), f + ' offline');
+  assert.equal(await textOf(await E.get('/fonts/fonts.css?v=' + N, { dest: 'style' })), fileText('fonts/fonts.css'));
+  // a font file missing at the CDN: no install — a worker without its fonts would show system faces for a whole version
   const E2 = swScope();
-  E2.routes.set(href, { type: 'opaque' });
-  await E2.install();
-  assert.ok(E2.shell().m.size > 40);
-  assert.equal(E2.stores.get('synth-fonts-v1').m.size, 0, 'an opaque answer is never kept');
+  E2.routes.set('/fonts/JetBrainsMono-SemiBold.woff2', { body: 'gone', status: 404 });
+  await assert.rejects(E2.install(), /precache: .*JetBrainsMono-SemiBold\.woff2 → 404/);
 });
 
-test('sw activate: the other synth-* caches go (previous shells), the fonts cache and other apps\' caches stay; the open windows are claimed', async () => {
+test('sw activate: the other synth-* caches go (previous shells, and the retired Google fonts cache synth-fonts-v1), other apps\' caches stay; the open windows are claimed', async () => {
   const E = swScope();
   for (const n of ['synth-shell-v6', 'synth-shell-v5', 'synth-fonts-v1', 'someone-else', 'synth-fonts-v0', 'synth-shell-v' + N + '-0123456789ab']) E.stores.set(n, new FakeCache());
   await E.install();
   await E.activate();
-  assert.deepEqual([...E.stores.keys()].sort(), ['someone-else', 'synth-fonts-v1', SHELL].sort(), 'an older build of this version goes too');
+  assert.deepEqual([...E.stores.keys()].sort(), ['someone-else', SHELL].sort(), 'an older build of this version goes too; so does synth-fonts-v1');
   assert.equal(E.claimed, 1);
 });
 
@@ -434,32 +432,14 @@ test('sw other same-origin GETs: network first; offline the cached copy, then th
   await assert.rejects(E.fetch('/not-here.txt').res, /Failed to fetch/);
 });
 
-test('sw Google Fonts: stale-while-revalidate with CORS answers only (never an opaque one); offline with nothing cached an empty stylesheet (system fonts), a font file fails', async () => {
+test('sw Google Fonts: gone — the worker has no font strategy (the font hosts, a stylesheet or a file, are the browser\'s: no respondWith), keeps no fonts cache, and the page is not asked for them', async () => {
   const E = swScope();
-  const css = 'https://fonts.googleapis.com/css2?family=Inter', woff = 'https://fonts.gstatic.com/s/inter/v1/a.woff2';
-  E.routes.set(css, { body: '@font-face{font-family:Inter}', ct: 'text/css' });
-  E.routes.set(woff, { body: 'WOFF2', ct: 'font/woff2' });
-  assert.match(await textOf(await E.get(css, { dest: 'style' })), /Inter/);
-  assert.equal(await textOf(await E.get(woff, { dest: 'font' })), 'WOFF2');
-  const F = E.stores.get('synth-fonts-v1');
-  assert.deepEqual([...F.m.keys()].sort(), [css, woff].sort());
-  // cached copy first, the network refreshes it behind
-  E.routes.set(css, { body: '@font-face{font-family:Inter2}', ct: 'text/css' });
-  assert.doesNotMatch(await textOf(await E.get(css)), /Inter2/);
-  assert.match(await textOf(await F.match(css)), /Inter2/);
-  // an opaque (no-cors) answer is passed on, never kept
-  const css2 = 'https://fonts.googleapis.com/css2?family=Mono';
-  E.routes.set(css2, { type: 'opaque' });
-  await E.get(css2);
-  assert.ok(!F.m.has(css2));
-  // offline: cached ones still served; missing stylesheet → empty CSS; missing font file → network error
-  E.online = false;
-  assert.equal(await textOf(await E.get(woff)), 'WOFF2');
-  const empty = await E.get(css2);
-  assert.equal(empty.status, 200);
-  assert.equal(empty.headers.get('content-type'), 'text/css');
-  assert.doesNotMatch(await textOf(empty), /font-face/);
-  await assert.rejects(E.fetch('https://fonts.gstatic.com/s/inter/v1/b.woff2').res, /Failed to fetch/);
+  await E.install();
+  for (const u of ['https://fonts.googleapis.com/css2?family=Inter', 'https://fonts.gstatic.com/s/inter/v1/a.woff2']) {
+    assert.equal(E.fetch(u, { dest: u.includes('css2') ? 'style' : 'font' }).handled, false, u);
+  }
+  assert.equal(E.stores.has('synth-fonts-v1'), false);
+  assert.doesNotMatch(SW, /fonts\.(?:googleapis|gstatic)\.com/, 'sw.js names no font host');
 });
 
 test('sw leaves POST, range requests and other origins to the browser (no respondWith)', async () => {
@@ -615,4 +595,73 @@ test('pwa.js installSteps(): Share → Add to Home Screen for Safari and Chrome 
   const mac = pwa.installSteps(pwa.platform(UA.macSafari));
   assert.match(flat(mac)[0], /File › \[dock\]Add to Dock/);
   assert.match(mac.note, /separately from Safari’s/);
+});
+
+/* ------------------------------------------------------------------ the iPad app's shell (IMPL-A §3.1–3.2, G3; lane W1) */
+test('pwa.js inShell(): the iPad app\'s marker (window.SYNTH_SHELL, an object) or its scheme (synth:) — never a browser (no marker; https, http, file, localhost)', () => {
+  const M = { SYNTH_SHELL: { os: 'ipados', post() {} } };
+  assert.equal(pwa.inShell(M, { protocol: 'synth:', hostname: 'app' }), true);
+  assert.equal(pwa.inShell(M, { protocol: 'https:', hostname: 'canvas.domlavin.com' }), true, 'the marker alone');
+  assert.equal(pwa.inShell({}, { protocol: 'synth:', hostname: 'app' }), true, 'the scheme alone (the script-free sign)');
+  assert.equal(pwa.inShell(M, undefined), true, 'a harness without location');
+  for (const [w, l, why] of [[{}, { protocol: 'https:', hostname: 'canvas.domlavin.com' }, 'the site'], [{}, { protocol: 'http:', hostname: 'localhost' }, 'the local preview'],
+    [{}, { protocol: 'file:', hostname: '' }, 'file:'], [undefined, undefined, 'nothing'], [null, null, 'null'], [{ SYNTH_SHELL: null }, { protocol: 'https:' }, 'a null marker'],
+    [{ SYNTH_SHELL: 'x' }, { protocol: 'https:' }, 'a string is no marker'], [{ SYNTH_SHELL: true }, { protocol: 'https:' }, 'nor a boolean'], [{}, {}, 'no protocol']]) {
+    assert.equal(pwa.inShell(w, l), false, why);
+  }
+});
+
+test('pwa.js isStandalone(win, nav, fsActive, loc): the iPad app counts as installed (Install app and Full screen hidden, the sheet never opens) — every browser answer of the three-argument calls unchanged; swAllowed refuses the app\'s synth://app', () => {
+  const win = q => ({ matchMedia: m => ({ matches: q.includes(m) }) });
+  const shellWin = Object.assign(win([]), { SYNTH_SHELL: { os: 'ipados' } }), synth = { protocol: 'synth:', hostname: 'app' }, site = { protocol: 'https:', hostname: 'canvas.domlavin.com' };
+  assert.equal(pwa.isStandalone(shellWin, UA.ipadSafari, false, synth), true, 'the app: the marker and the scheme');
+  assert.equal(pwa.isStandalone(win([]), UA.ipadSafari, false, synth), true, 'the scheme alone');
+  assert.equal(pwa.isStandalone(shellWin, UA.ipadSafari, false), true, 'the marker alone (no location given)');
+  assert.equal(pwa.isStandalone(shellWin, UA.ipadSafari, true, synth), true, 'whatever the page\'s full screen');
+  // (A1) the browsers: the three-argument calls, and a fourth argument that is the site or the local preview — today's answers
+  for (const loc of [undefined, site, { protocol: 'http:', hostname: 'localhost' }]) {
+    assert.equal(pwa.isStandalone(win([]), {}, false, loc), false);
+    assert.equal(pwa.isStandalone(win([]), { standalone: true }, false, loc), true, 'iOS home-screen app');
+    assert.equal(pwa.isStandalone(win(['(display-mode: standalone)']), {}, false, loc), true);
+    assert.equal(pwa.isStandalone(win(['(display-mode: fullscreen)']), UA.android, false, loc), true);
+    assert.equal(pwa.isStandalone(win(['(display-mode: fullscreen)']), UA.android, true, loc), false);
+    for (const k of ['winChrome', 'firefox', 'macSafari', 'ipadSafari']) assert.equal(pwa.isStandalone(win(['(display-mode: fullscreen)']), UA[k], false, loc), false, k);
+    assert.equal(pwa.isStandalone({ matchMedia() { throw new Error('x'); } }, {}, false, loc), false);
+  }
+  assert.deepEqual((b => [b.fs, b.install])(pwa.appButtons({ standalone: pwa.isStandalone(shellWin, UA.ipadSafari, false, synth), fs: true, sheet: true, prompt: true })), [false, false], 'nothing to install in the app');
+  assert.equal(pwa.swAllowed(synth), false, 'no service worker on synth://app');
+});
+
+/* ------------------------------------------------------------------ R2-F2: the bundled fonts are cache first */
+test('sw bundled fonts (R2-F2): cache first from this worker\'s precache — a font whose network fetch never settles is still answered at once (a slow network no longer holds the page\'s load or draws system faces), without a request; a font gone from the shell cache, a query and any other file take the network', async () => {
+  const files = ['fonts/InterVariable.woff2', 'fonts/JetBrainsMono-Regular.woff2', 'fonts/JetBrainsMono-SemiBold.woff2'];
+  const same = async (res, f) => Buffer.from(await res.arrayBuffer()).equals(readFileSync(new URL(f, ROOT))); // (never assert.* on 350 KB of bytes)
+  const settled = (p, ms = 300) => Promise.race([Promise.resolve(p).then(r => ({ r }), e => ({ e })), new Promise(r => setTimeout(r, ms, null))]); // (a real timer: the fake scope's are manual)
+  const E = swScope();
+  await E.install();
+  const releases = files.map(f => E.hold('/' + f)); // the network answers never (lie-fi)
+  const n = E.fetches.length;
+  for (const f of files) {
+    const fe = E.fetch('/' + f, { dest: 'font' });
+    assert.ok(fe.handled, f + ' handled by the worker');
+    const got = await settled(fe.res);
+    assert.ok(got && got.r, f + ': answered from the precache while the network never settles');
+    assert.ok(await same(got.r, f), f + ': the precached bytes');
+    await fe.done();
+  }
+  assert.equal(E.fetches.length, n, 'a hit asks no one: the BUILD hash covers the bytes, so the precache is the build\'s font');
+  // not in this worker's shell cache (cleared, or a page newer than the worker): the network's answer, the way every unversioned file goes
+  releases.forEach(r => r());
+  await E.shell().delete(ORIGIN + '/' + files[0]);
+  assert.ok(await same(await E.get('/' + files[0], { dest: 'font' }), files[0]), 'a miss is fetched');
+  assert.equal(E.fetches.length, n + 1);
+  // only the precached font files are cache first: another URL (a query, a file that is not in STATIC) waits for the network as before
+  for (const u of ['/fonts/InterVariable.woff2?x=1', '/fonts/Unlisted.woff2']) {
+    const release = E.hold(u), fe = E.fetch(u, { dest: 'font' });
+    assert.equal(await settled(fe.res, 100), null, u + ': network first, still waiting');
+    release();
+  }
+  // and offline a precached font is the same bytes
+  E.online = false;
+  assert.ok(await same(await E.get('/' + files[1], { dest: 'font' }), files[1]), 'offline');
 });

@@ -131,6 +131,14 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    stages: Xcode 27.1 is installed (`xcode-select` → Xcode), the iOS 27.0 simulator runtime holds the iPads (27.1's only the "iPhone
    Duo"); the simulator **SYNTH iPad Pro 13** (iOS 27.0) exists. Process: Fable 5.1 for the spike / contract / native bridges / reviews,
    Opus 5.5 for builders, Sonnet for mechanical lanes. The user's Apple Developer account / TestFlight is their step.
+14. **(2026-10-23.)** **Stage A (the iPad app) built** (contract IMPL-A; the spike spike-app.md): `app/ios/SYNTH.xcodeproj` (hand-written
+   pbxproj + `Config.xcconfig`; the team / a bundle-id suffix only in the gitignored `app/ios/Local.xcconfig`, included last), Swift ≈ 600
+   lines (scheme handler, downloads, dialogs, audio session, lifecycle); the site enters the bundle from **HEAD** via
+   `tools/app-bundle.sh` (commit first — a dirty tree refuses); **`tools/app-smoke.sh`** builds, installs and checks the app on the
+   simulator **SYNTH iPad Pro 13** (iOS 27.0; `-smokeMode log` for by-hand review). The web side: the fonts are local (`fonts/`, OFL texts
+   precached), the shell seams dormant in browsers (`window.SYNTH_SHELL`). To install on the user's iPad (their free Apple ID): they add the
+   Apple ID in Xcode → Settings → Accounts, connect the iPad by cable (Trust), turn on Developer Mode; the lead builds signed with the
+   personal team and installs (`xcrun devicectl`); every 7 days a reinstall. Stage B next: CoreMIDI, Pencil Pro haptics, the Mac.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

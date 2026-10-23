@@ -22,6 +22,14 @@ arrangement). Installable PWA, used heavily on the user's iPad Pro (iPadOS, Chro
 - DNS is on Cloudflare (CNAMEs `synth` and `canvas` → corrugatedcarl.github.io, grey cloud); the user edits DNS. HTTPS is enforced on both
   Pages sites (if a cert stalls: remove and re-add the custom domain via the Pages API).
 
+## The iPad app (stage A, docs/canvas/IMPL-A.md)
+
+- `app/ios/` wraps the site in a WKWebView over `synth://app/`, fully offline. The bundle is the **committed** tree's precache list
+  (`tools/app-bundle.sh`; a dirty tree refuses — commit first). `tools/app-smoke.sh` builds, installs and checks it on the simulator
+  "SYNTH iPad Pro 13" (iOS 27.0 runtime; 27.1's has no iPads). Never commit `app/ios/Local.xcconfig` (the user's team / bundle-id suffix).
+- The fonts are local (`fonts/`, Inter + JetBrains Mono, OFL texts beside them); `node tools/precache.mjs --write` covers them.
+- The user installs with a free Apple ID over a cable (7-day re-sign); before any switch to the paid Program, every project is saved to Files.
+
 ## Release hygiene
 
 - Every import/URL carries `?v=N` and `VERSION` in main.js / assets.js / sw.js matches (lint enforces). `main` is at v=10, `canvas` at v=9

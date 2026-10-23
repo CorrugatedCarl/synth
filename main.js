@@ -11,7 +11,7 @@ import * as CG from './cv-graph.js?v=9';
 import * as CMOD from './cv-model.js?v=9';
 import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=9';
 import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=9';
-import { initApp } from './pwa.js?v=9';
+import { initApp, inShell } from './pwa.js?v=9';
 import * as AC from './audioclock.js?v=9';
 import { installGestures } from './gesture.js?v=9';
 // stage 1b canvas shell (docs/canvas/IMPL-1b.md): SHELL lane cv-tray / cv-art, WORLD lane cv-world, MODULES lane cv-module / cv-cables
@@ -56,6 +56,12 @@ import * as cvPatch from './cv-patch.js?v=9';
 import * as MUI from './master-ui.js?v=9';
 
 const VERSION = '9';
+// The iPad app (IMPL-A §3): its WKWebView injects the marker window.SYNTH_SHELL (an object: os, app, build, sha, site,
+// restarted, post(m) → a promise of the native reply) and serves the site as synth://app/. SHELL is that marker there, null
+// in every browser — where each shell seam below is dormant (A1). shellEng: the engine's on / off as last told to native
+// (Q4: the screen stays awake while it is on); shellBootMs: performance.now() at the end of boot (probe)
+const SHELL = inShell(globalThis, globalThis.location) && globalThis.SYNTH_SHELL && typeof globalThis.SYNTH_SHELL === 'object' ? globalThis.SYNTH_SHELL : null;
+let shellEng = false, shellBootMs = 0;
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -74,6 +80,9 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // store, holding the user's own older project, stays unlocked).
 let booted = false;
 const early = [];
+// (IMPL-A §5.4) the app reloaded the page after the system reclaimed its WebContent process: said first, once (the
+// marker's `restarted` is one-shot — native swaps it back after ready)
+if (SHELL && SHELL.restarted === true) early.push(['SYNTH restarted (the system reclaimed memory) — the project came back from its last autosave', 20000]);
 let readOnly = 0; // the newer schema met by the store (0: none) — the session is locked
 // nothing may save the current project (readOnly first: goReadOnly may run before `project` exists)
 const roNow = () => !!readOnly || !!(project && project.newerSchema > CM.SCHEMA);
@@ -1355,6 +1364,9 @@ function notice(txt, ms) { clearTimeout(noticeT); noticeT = 0; showNotice(txt); 
 function stickyNotice(txt) { sticky = txt; if (!noticeT) showNotice(idleNotice()); }
 function powerUI() {
   const c = ctx || pendCtx, run = !!c && c.state === 'running', cpu = $('#cpu'), hold = !!c && c === holdCtx;
+  // (IMPL-A §3.2 item 4) the app: the engine on / off told to native on each change — every power transition passes here
+  // (powerOn, its failure, powerOff, resync); native keeps the screen awake while it is on (Q4)
+  if (SHELL && !!c !== shellEng) { shellEng = !!c; shellPost({ t: 'engine', on: shellEng }); }
   $('#power').setAttribute('aria-pressed', run ? 'true' : 'false');
   clearTimeout(pauseT);
   if (ctx && !hold) rateText(); else $('#rate').textContent = c ? 'Starting engine…' : 'Engine off';
@@ -3236,23 +3248,30 @@ function clipToTrack(trackId, notes) {
   notice(`Copied ${notes.length} note${notes.length === 1 ? '' : 's'} to “${tr.name}”`, 3000);
 }
 // TUN FILE ▸ Load .scl/.kbm/.tun… (§13.10): a file picker; the texts through tuning.js (tuningState keeps a loaded
-// .scl when only a .kbm comes, §11.4) → {name, kind, scl, kbm, tab} | {error} | null (cancelled)
+// .scl when only a .kbm comes, §11.4) → {name, kind, scl, kbm, tab} | {error} | null (cancelled). iOS / iPadOS (the app,
+// Safari): no accept — its document picker greys a .scl under this filter (an unknown extension's dynamic type); the
+// extension and tuningState check the file instead; the input sits hidden in the document while open (the app's WKWebView
+// never fires change on a detached one — the module pickers' way, wk.js pickFile) (IMPL-A fix R1-F3)
 function tuningFile(cur) {
   return new Promise(res => {
     const inp = h('input');
-    inp.type = 'file'; inp.multiple = true; inp.accept = '.scl,.kbm,.tun,text/plain';
+    inp.type = 'file'; inp.multiple = true; inp.accept = isIOS() ? '' : '.scl,.kbm,.tun,text/plain';
+    inp.style.display = 'none';
+    const done = r => { inp.remove(); res(r); };
     inp.onchange = async () => {
       const fs = [...(inp.files || [])];
-      if (!fs.length) { res(null); return; }
+      if (!fs.length) { done(null); return; }
       const files = {};
       for (const f of fs.slice(0, 3)) {
-        if (f.size > 16384) { res({ error: f.name + ' is too large' }); return; }
+        if (f.size > 16384) { done({ error: f.name + ' is too large' }); return; }
         const ext = (/\.(scl|kbm|tun)$/i.exec(f.name) || [])[1];
         if (ext) files[ext.toLowerCase()] = await f.text();
         if (ext && !files.name) files.name = f.name.replace(/\.(scl|kbm|tun)$/i, '');
       }
-      res(core.tuningState(files, cur || null));
+      done(core.tuningState(files, cur || null));
     };
+    inp.addEventListener('cancel', () => done(null));
+    document.body.appendChild(inp);
     inp.click();
   });
 }
@@ -3909,8 +3928,11 @@ function drumFiles() {
   return new Promise(res => {
     const inp = h('input');
     inp.type = 'file'; inp.accept = 'audio/*,.wav,.wave,.aif,.aiff,.aifc,.flac,.ogg,.mp3,.m4a';
-    inp.onchange = () => res([...(inp.files || [])]);
-    inp.addEventListener('cancel', () => res(null));
+    inp.style.display = 'none'; // (in the document: a detached input never fires change / cancel in the app's WKWebView — IMPL-A fixer N)
+    const done = r => { inp.remove(); res(r); };
+    inp.onchange = () => done([...(inp.files || [])]);
+    inp.addEventListener('cancel', () => done(null));
+    document.body.appendChild(inp);
     inp.click();
   });
 }
@@ -4396,19 +4418,7 @@ function initTransport() {
   $('#fFile').onchange = async e => {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
-    if (!f) return;
-    try {
-      if (/\.midi?$/i.test(f.name) || f.type.includes('midi')) importMidiFile(new Uint8Array(await f.arrayBuffer()), f.name);
-      else {
-        let o;
-        try { o = JSON.parse(await f.text()); } catch { throw new Error('Not a valid project file'); }
-        flush(); // a pending autosave of the current project lands first
-        // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
-        await restoreEmbedded(o);
-        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); curDevs.clear(); applyRestore(p);
-        if (p.newerSchema) readOnlyNotice(); // (saved by a newer build: this project read-only, the store not locked)
-      }
-    } catch (err) { alert('Could not open that file: ' + err.message); }
+    if (f) await openFile(f);
   };
   $('#fBounce').onclick = () => openBounce();
   $('#bCancel').onclick = () => { $('#modal').hidden = true; };
@@ -4416,12 +4426,34 @@ function initTransport() {
   bounceButton();
   pressOrTap($('#modal'), e => e.target.id === 'modal', () => { $('#modal').hidden = true; }); // the backdrop (a finger: on release)
 }
+// Open / Import… (#fFile) and a file the iPad app was handed from the Files app (SYNTH_SHELL.openFile, IMPL-A §4.3): f a
+// File (or a Blob with a name) — a MIDI file imported, else a project (its embedded assets into their stores, the schema
+// gate's read-only notice); true when opened
+async function openFile(f) {
+  try {
+    if (/\.midi?$/i.test(f.name) || f.type.includes('midi')) importMidiFile(new Uint8Array(await f.arrayBuffer()), f.name);
+    else {
+      let o;
+      try { o = JSON.parse(await f.text()); } catch { throw new Error('Not a valid project file'); }
+      flush(); // a pending autosave of the current project lands first
+      // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
+      await restoreEmbedded(o);
+      const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); curDevs.clear(); applyRestore(p);
+      if (p.newerSchema) readOnlyNotice(); // (saved by a newer build: this project read-only, the store not locked)
+    }
+  } catch (err) { alert('Could not open that file: ' + err.message); return false; }
+  return true;
+}
 function slug(s) { return (s || 'untitled').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'untitled'; }
 // The files the page hands over (Save, Export MIDI, Bounce WAV, presets, wavetables…). The iPad / iPhone home-screen app
 // may not download a blob: link (iPadOS has ignored it there, or shown the file with no way back): there the share sheet
 // takes the file (Save to Files, AirDrop…). Sharing needs a fresh tap: a file that is ready later (a bounce, a slow save)
-// is offered to tap through `later(go)` (the caller's own control), else on the notice line.
+// is offered to tap through `later(go)` (the caller's own control), else on the notice line. The iPad app: the download
+// link before any of that — its WKDownload takes the blob to the share sheet without a copy in the page (IMPL-A §4.1,
+// the lead's call: the bridge kept +290 MB of WebContent heap after a 100 MB file); the sheet's outcome never reaches the
+// page, so a caller's `later` is offered every time (the bounce's Save WAV…: the same file again, no re-render).
 function download(blob, name, later) {
+  if (SHELL) { saveLink(blob, name); if (typeof later === 'function') later(() => saveLink(blob, name)); return; }
   const file = shareable(blob, name);
   if (file) shareFile(file, later, false); else saveLink(blob, name);
 }
@@ -4454,6 +4486,100 @@ function shareFile(file, later, again) {
     console.warn('SYNTH: sharing ' + file.name + ' (' + (err && err.message) + ') — downloading it instead');
     saveLink(file, file.name);
   });
+}
+/* ---------------------------------------------- the iPad app's seams (IMPL-A §3.2, §4.1, §5) — SHELL only */
+// a message to native nothing waits for (engine, bg, ready): never throws here
+function shellPost(m) {
+  try { quiet(SHELL.post(m)); } catch (err) { console.warn('SYNTH: the app did not take “' + (m && m.t) + '”', err); }
+}
+// The bridge (§4.1) — SYNTH_SHELL.save only (the smoke's integrity step; download() takes the link): the file announced
+// (native opens tmp/<id>/<name>; no room → refused), sent as base64 in 2 MiB slices with their offset (a script message
+// carries no ArrayBuffer), one in flight (each awaits its reply), then `end` — native closes it and shows the share sheet
+// and answers when the sheet closes, { ok: true, done }. Any refusal: `abort` (native deletes what it has), then the
+// download link (the app's WKDownload, §2.4). Resolves with end's reply, or { ok: false, error } after the fallback.
+const SHELL_CHUNK = 2 * 1024 * 1024;
+let shellN = 0; // (transfer ids: per transfer, unique across reloads)
+async function shellSave(blob, name) {
+  const id = 'f' + Date.now().toString(36) + '-' + (++shellN);
+  const ask = async m => { const r = await SHELL.post(m); if (!r || r.ok !== true) throw new Error((r && r.error) || 'refused'); return r; };
+  try {
+    await ask({ t: 'file', id, name, type: blob.type, size: blob.size });
+    for (let at = 0; at < blob.size; at += SHELL_CHUNK) await ask({ t: 'chunk', id, at, b64: await b64Of(blob.slice(at, at + SHELL_CHUNK)) });
+    return await ask({ t: 'end', id });
+  } catch (err) {
+    const why = (err && err.message) || String(err);
+    console.warn('SYNTH: saving ' + name + ' through the app failed (' + why + ') — downloading it instead');
+    try { quiet(SHELL.post({ t: 'abort', id })); } catch { /* no bridge at all */ }
+    saveLink(blob, name);
+    return { ok: false, error: why };
+  }
+}
+// base64 of a Blob (a slice): the builtin where there is one, else 32 KiB runs through fromCharCode (one apply over 2 MiB
+// passes JavaScriptCore's argument limit) and btoa; and back (native → page: SHELL.openFile)
+async function b64Of(b) {
+  const u8 = new Uint8Array(await b.arrayBuffer());
+  if (typeof u8.toBase64 === 'function') return u8.toBase64();
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function bytesOf(b64) {
+  if (typeof Uint8Array.fromBase64 === 'function') return Uint8Array.fromBase64(b64);
+  const s = atob(b64), u8 = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+  return u8;
+}
+// ⚙ Sound in background (the user's Q2 answer: a setting, the app only, default on — a device setting): off, the context is
+// suspended while the page is hidden (boot's visibilitychange) and an interruption's end waits for the page to come back
+const BG_KEY = 'synth.shell.bg';
+const bgOn = () => store.get(BG_KEY, true) !== false;
+const bgHeld = () => !!SHELL && document.hidden && !bgOn();
+// the OUT scope's analyser read once: the largest |sample| of its window (0 with the engine off) — probe's `peak`
+function anPeak() {
+  if (!an || typeof an.getFloatTimeDomainData !== 'function') return 0;
+  const a = new Float32Array(an.fftSize);
+  an.getFloatTimeDomainData(a);
+  let p = 0;
+  for (let i = 0; i < a.length; i++) { const v = Math.abs(a[i]); if (v > p) p = v; }
+  return p;
+}
+// Help & about in the app (§3.2 item 6): the help text's App part (the browser's full screen, Install app) becomes the
+// app's — the build it runs (the marker; app-build.json's date, read once), how projects cross from a browser, and the
+// engine's rate and latencies while it is on (the device pass reads them here, §5.4). index.html keeps the web's text.
+let shellBuild = null, shellBuildP = null;
+function shellAppText() {
+  const b = shellBuild || {}, sha = String(b.short || SHELL.sha || ''), day = typeof b.date === 'string' ? b.date.slice(0, 10) : '';
+  const ms = x => (Number.isFinite(x) ? (x * 1000).toFixed(1) : '—');
+  let t = ' this is the SYNTH app' + (SHELL.app ? ' ' + SHELL.app + (SHELL.build ? ' (' + SHELL.build + ')' : '') : '');
+  if (sha) t += ', build ' + sha + (day ? ' (' + day + ')' : '');
+  t += ' · site v' + VERSION + '. Projects saved in Safari or Chrome are separate: Save the file there and Open / Import… it here (or open it from the Files app).';
+  if (ctx) t += ` Audio now: ${kHz(ctx.sampleRate)} kHz, base latency ${ms(ctx.baseLatency)} ms, output latency ${ms(ctx.outputLatency)} ms.`;
+  return t;
+}
+function shellHelp(parts) {
+  const b = [...parts.querySelectorAll('b')].find(x => x.textContent === 'App:');
+  if (!b) return;
+  let n;
+  while ((n = b.nextSibling) && !(n.nodeType === 1 && /:$/.test(n.textContent))) n.remove(); // (up to the next label, if any)
+  const t = document.createTextNode(shellAppText());
+  b.after(t);
+  if (!shellBuildP) {
+    try { shellBuildP = fetch('app-build.json').then(r => r.json()).then(j => { shellBuild = j && typeof j === 'object' ? j : null; }, () => {}); } catch { shellBuildP = Promise.resolve(); }
+  }
+  shellBuildP.then(() => { t.textContent = shellAppText(); });
+}
+if (SHELL) {
+  // native → page (the shell queues each until { t: 'ready' }, §4.3): a file opened from the Files app (Share → SYNTH) —
+  // the same path as Open / Import…, true when opened; an audio interruption's end — the context resumed without a tap
+  // (§5.3; another t ignored)
+  SHELL.openFile = (name, b64) => openFile(new File([bytesOf(String(b64 || ''))], String(name || 'file')));
+  SHELL.on = m => { if (m && m.t === 'resume' && !bgHeld()) wake(); };
+  // the smoke's and the device pass's window into the engine (§9.2); the bridge by itself (the smoke's 100 MB integrity
+  // check — no caller in the page)
+  SHELL.probe = () => ({ ctx: ctx ? ctx.state : null, sr: ctx ? ctx.sampleRate : null,
+    baseLatency: ctx && Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : null, outputLatency: ctx && Number.isFinite(ctx.outputLatency) ? ctx.outputLatency : null,
+    nodes: nodes.size, master: !!mnode, peak: anPeak(), held: held.size, cpu: $('#cpu').textContent, store: store.mode, bootMs: shellBootMs });
+  SHELL.save = (blob, name) => shellSave(blob, name);
 }
 function importMidiFile(bytes, fname) {
   const r = S.importMIDI(bytes);
@@ -4639,9 +4765,10 @@ async function bounce() {
     // (the numbers are the file's, after scaling: the peak too)
     const done = `Done: ${(auto ? chs[0].length / sr : secs).toFixed(1)} s rendered in ${((performance.now() - t0) / 1000).toFixed(1)} s${kept} · peak ${dB(20 * Math.log10(Math.max(1e-9, peak * k)))} dBFS${peak > 0.999 && !norm && !lufs ? ' (scaled to avoid clipping)' : ''}${loud}${lnote}.`;
     note.textContent = done;
-    // (the home-screen app on iPad / iPhone shares the file, which needs a fresh tap after a render: Save WAV… here)
+    // (the home-screen app on iPad / iPhone shares the file, which needs a fresh tap after a render: Save WAV… here; the
+    // iPad app's sheet comes up by itself and Save WAV… offers it again — IMPL-A §4.1)
     download(new Blob([wav], { type: 'audio/wav' }), `${slug(project.name)}-${sr / 1000}k-${bits}${bits === 32 ? 'f' : 'bit'}.wav`, share => {
-      note.textContent = done + ' Tap Save WAV… to keep the file.';
+      note.textContent = done + (SHELL ? ' Closed the sheet without saving? Tap Save WAV… to share it again.' : ' Tap Save WAV… to keep the file.');
       go.textContent = 'Save WAV…';
       go.onclick = () => { bounceButton(); share(); };
     });
@@ -5399,6 +5526,7 @@ function meterUI() {
 }
 // ≡ → Help & about: today's help text and the footer, moved into a sheet in #ov while it is open
 function helpSheet() {
+  if (SHELL) shellHelp($('#helpParts')); // (the app: its own App sentence — IMPL-A §3.2 item 6)
   const parts = $('#helpParts'), kids = [...parts.children], body = h('div', 'cv-help');
   for (const k of kids) body.append(k);
   if (shell.sheet) shell.sheet.close();
@@ -5498,6 +5626,20 @@ function initShell() {
     vf.append('New Serums open as ', vs);
     gp.append(vf);
     shell.sxView = vs;
+    // (IMPL-A, Q2) the app only — "Sound in background": on (the default), a held note or a playing song keeps sounding
+    // when the app leaves the screen (its audio background mode, §5.2); off, the sound pauses until the app is back.
+    // Native is told ({ t: 'bg', on }) at boot and on each change
+    if (SHELL) {
+      const bf = h('div', 'field'), bb = h('button', 'tt'), bt = h('p', 'cv-ghint', 'Keep playing when you switch apps');
+      bb.type = 'button'; bb.id = 'cvBg'; bt.id = 'cvBgHint'; bb.setAttribute('aria-describedby', bt.id);
+      bb.title = 'On: a held note or a playing song keeps sounding when you switch to another app or lock the screen. Off: the sound pauses until you come back';
+      const ui = () => { const on = bgOn(); bb.setAttribute('aria-pressed', on ? 'true' : 'false'); bb.textContent = on ? 'On' : 'Off'; };
+      bb.onclick = () => { store.set(BG_KEY, !bgOn()); ui(); shellPost({ t: 'bg', on: bgOn() }); };
+      ui();
+      bf.append(h('span', null, 'Sound in background'), bb);
+      gp.append(h('h3', null, 'App'), bf, bt);
+      shell.bg = bb;
+    }
   }
   // the top tray animates its height from now on (not from the stylesheet's 48 px to the restored height at load)
   setTimeout(() => $('#topTray').classList.remove('still'), 80); // (a timer: a page opened in a background tab gets no frames)
@@ -8625,6 +8767,9 @@ function boot() {
     if (document.hidden) { releaseKeys(); PADS.release(); PADS.hwDark(); perfLetGo(); DRUM.release(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake(); // ((7a) the pads, a held CLEAR; (8) the Pads modules' canvas holds, the hardware lights dark — §8.4)
     monitors.sync();
   });
+  // (IMPL-A, Q2) the app with Sound in background off: the context suspended while the page is hidden — the wake() above
+  // resumes it when the page is back
+  if (SHELL) document.addEventListener('visibilitychange', () => { const c = ctx || pendCtx; if (bgHeld() && c && c.state === 'running') quiet(c.suspend()); });
   window.addEventListener('scroll', () => { pageScrollT = performance.now(); }, { capture: true, passive: true });
   const sr = $('#sr'), os = $('#os'), drift = $('#drift'), mst = $('#master'), vel = $('#vel');
   if (![...os.options].some(o => +o.value === settings.os)) settings.os = 4;
@@ -8678,6 +8823,9 @@ function boot() {
   recoveredNotice(pre);
   if (readOnly) goReadOnly(readOnly); // a newer project met while starting: Save disabled, the notice (SPEC-canvas §5.8)
   requestAnimationFrame(frame);
+  // (IMPL-A §3.2 item 4) the app: the page is up — the Sound in background setting, then ready (native's queued calls, an
+  // open from Files or a resume, wait for it; the restart flag goes back to false)
+  if (SHELL) { shellBootMs = performance.now(); shellPost({ t: 'bg', on: bgOn() }); shellPost({ t: 'ready' }); }
 }
 // §12.6 storage: a project autosaved by a session that could not open the database (it ran on the older localStorage copy)
 // was kept separately by this run's re-sync (appstore '#rec:'): offered as a project file to download (open it with

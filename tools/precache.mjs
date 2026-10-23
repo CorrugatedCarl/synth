@@ -7,13 +7,18 @@
 //                  panels/<model>.js) and every 'x.js?v=' + VERSION string (AudioWorklet modules, Workers: against the
 //                  page), followed through the files they name;
 //   main.js        DSP_FILES (the AudioWorklet scripts, addModule(f + '?v=' + VERSION), also injected by wk.loadDSP);
-//   smprender.js   its DSP list and engine.js (importScripts with the worker's own ?v=).
+//   smprender.js   its DSP list and engine.js (importScripts with the worker's own ?v=);
+//   stylesheets    every relative url(…) of a versioned .css (fonts/fonts.css → the woff2 files) is a static, resolved against the
+//                  stylesheet's directory — not data: URIs (style.css's select arrow), fragments (url(#knobShine)) or other schemes;
+//                  a url(…) naming a file that is not in the site is a problem (an install would fail on its 404);
+//   licences       the OFL-*.txt texts beside a bundled font (the SIL OFL wants the licence with every copy; the iPad app's bundle
+//                  is these lists, so it carries them): statics too — licenceFiles().
 // sw.js BUILD is a hash of those files' contents (buildHash): its precache is a cache of that build, so a change deployed
 // without a VERSION bump still reaches the installed app (a new worker, a new precache, the update toast).
 //   node tools/precache.mjs           prints the lists and the build
 //   node tools/precache.mjs --write   rewrites sw.js's lists, its BUILD (and its VERSION = main.js VERSION)
 // tests/pwa.test.mjs checks sw.js against appRequests() and buildHash(), and every site script against the crawl.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +30,29 @@ const arrayOf = (src, name) => {
   if (!m) throw new Error('precache: no ' + name + ' list');
   return [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]);
 };
+
+// the files a stylesheet's url(…) names, as written (quoted or not; comments skipped). A data: URI (style.css's select arrow),
+// another scheme, //host and a #fragment (url(#knobShine) in an SVG fill) are not files of ours.
+export function cssUrls(css) {
+  const out = [];
+  for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/\burl\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)/g)) {
+    const spec = (m[1] ?? m[2] ?? m[3]).trim();
+    if (spec && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(spec)) out.push(spec);
+  }
+  return out;
+}
+
+// The SIL OFL asks every copy of a font to carry the licence, and the iPad app's bundle is exactly sw.js's lists: the OFL texts
+// (OFL-*.txt, OFL.txt) in the directory of a listed font file are statics too — the page never requests them; the web worker caches
+// them with the fonts. [statics] → ['fonts/OFL-Inter.txt', …], sorted; none for a directory with no font listed.
+export function licenceFiles(statics, root = ROOT) {
+  const out = new Set();
+  for (const dir of new Set(statics.filter(s => /\.(?:woff2?|ttf|otf)$/i.test(s) && s.includes('/')).map(s => s.slice(0, s.lastIndexOf('/'))))) {
+    if (!existsSync(new URL(dir + '/', root))) continue; // (a missing font is a problem of the url() crawl)
+    for (const n of readdirSync(new URL(dir + '/', root))) if (/^OFL(?:-.+)?\.txt$/.test(n)) out.add(dir + '/' + n);
+  }
+  return [...out].sort();
+}
 
 // { version, versioned: [files requested at ?v=version], statics: [unversioned local URLs, './' first], problems: [] }
 export function appRequests(root = ROOT) {
@@ -70,6 +98,15 @@ export function appRequests(root = ROOT) {
       for (const d of arrayOf(src, 'DSP').concat('engine.js')) addV(d, N, f);
     }
   }
+  // the stylesheets' url(…): the bundled fonts. Unversioned like the icons (content, revalidated at install); a ?v=N query stays versioned.
+  for (const f of [...versioned].filter(x => x.endsWith('.css'))) {
+    for (const spec of cssUrls(read(f, root))) {
+      const [path, q] = spec.split('#')[0].split('?'), file = rel(path, f), v = (/^v=(\d+)$/.exec(q || '') || [])[1];
+      if (!existsSync(new URL(file, root))) problems.push(f + ': url(' + spec + ') names ' + file + ', which is not in the site');
+      if (v) addV(file, v, f); else statics.add(file);
+    }
+  }
+  for (const f of licenceFiles([...statics], root)) statics.add(f); // the OFL texts beside the fonts (the app bundle = the lists)
   return { version: N, versioned: [...versioned].sort(), statics: ['./', ...[...statics].filter(s => s !== './').sort()], problems };
 }
 
@@ -98,7 +135,8 @@ const wrap = (items, indent) => {
   if (cur.trim()) lines.push(cur.replace(/\s+$/, ''));
   return lines.join('\n');
 };
-export function writeSw(root = ROOT) {
+// sw.js as --write would leave it: { src, R } (nothing written — tests/fonts.test.mjs compares it with the committed file)
+export function renderSw(root = ROOT) {
   const R = appRequests(root);
   if (R.problems.length) throw new Error('precache:\n  ' + R.problems.join('\n  '));
   let src = read('sw.js', root);
@@ -108,6 +146,10 @@ export function writeSw(root = ROOT) {
   src = src.replace(/const BUILD = '[0-9a-f]+';/, "const BUILD = '" + R.build + "';");
   src = src.replace(/const ASSETS = \[[^\]]*\];/, 'const ASSETS = [\n' + wrap(R.versioned, '  ') + '\n];');
   src = src.replace(/const STATIC = \[[^\]]*\];/, 'const STATIC = [\n' + wrap(R.statics, '  ') + '\n];');
+  return { src, R };
+}
+export function writeSw(root = ROOT) {
+  const { src, R } = renderSw(root);
   writeFileSync(new URL('sw.js', root), src);
   return R;
 }

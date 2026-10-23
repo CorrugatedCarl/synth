@@ -631,8 +631,16 @@ Stage A does (a)'s setting and (c)'s file discipline; nothing else.
 
 ### 9.2 The headless smoke: `tools/app-smoke.sh` [C] (lane N; the reviewers and the lead run it; the user never needs it)
 ```
-tools/app-smoke.sh [--udid 6F9F…] [--no-build] [--run <label>] [--base]
+tools/app-smoke.sh [--udid 6F9F…] [--no-build] [--run <label>] [--base] [--mode bg|log]
 ```
+**The log alone, for a by-hand review (fix R1-F5): `--mode log`** — the script builds (unless `--no-build`), installs and launches with
+`-smoke <run> -smokeMode log`, prints the log's path (`<data container>/Library/Caches/smoke/<run>.jsonl`) and exits. In that mode the
+Debug shell writes the log exactly as under the steps — every `req`, `nav`, `console` (Smoke.js's hooks), `scene`, `vis`, `engine`,
+`dialog`, `download`, `sheet`, `open` line — and **drives nothing**: no step, no status probe, no sheet closed after 2 s, no dialog
+answered after 1 s (`Smoke.drives` false; `Smoke.on` stays the gate of the log only). So Save → Files, ≡ → New → OK, a prompt's OK
+can be done for real and logged; the "no network" check of §9.3 = that log's `req` lines (only `synth://app/`, all 200) and no
+`console` line. A relaunch with the same command (`xcrun simctl launch <udid> <bundle id> -smoke <run> -smokeMode log`, printed)
+appends to the same log. The bundle id is read from the built app (a `Local.xcconfig` may override it, §1.2 / fix R2-F1).
 `--base` (lane N, on 0dd10f5's site: no `SYNTH_SHELL.probe` / `save`, no shell-aware pwa.js, Google Fonts links): only the **native half**
 is gated — launch, the request log, the guard (§2.4 item 4, the blocked Google stylesheet loads its positive control), the storage round-trip,
 `WKDownload` via an injected `<a download>` of a 1 KB and a 100 MB `blob:`, the bridge via N's own Debug JS implementing §4.1's messages,
@@ -759,17 +767,34 @@ Only the real iPad answers (the one consolidated pass; the probe and the Debug l
 - **Storage eviction** with `navigator.storage.persist()` denied (spike §1): the default data store survived relaunch and reinstall on the
   simulator; a device under storage pressure is untested. A native export / backup of the data store is a stage-B option if it bites.
 - **Background audio** (§5.2) and `visibilitychange` in a backgrounded WKWebView: measured on the simulator, confirmed on the device.
-- **Interruptions and route changes** (§5.3): a real call, real headphones, real Bluetooth.
+- **Interruptions and route changes** (§5.3): a real call, real headphones, real Bluetooth — the context back without a tap after the call
+  (`{ t: 'resume' }`), as after a JS dialog (fix R1-F4, simulator-proven).
 - **The audio session in WebKit's hands** (§5.1): with the Ring / Silent switch on silent SYNTH still sounds; Music (or a metronome app)
   keeps playing when SYNTH's engine starts (`.mixWithOthers` honoured or not); the `avsession` lines vs what is heard.
-- **The camera path** (§1.3, §4.2): the wavetable editor's image import → Take Photo → the permission prompt, no crash.
-- **The window controls** (§6.3) in a windowed scene on the real iPad, if the simulator's answer was unclear.
+- **The camera and microphone paths** (§1.3, §4.2): the wavetable editor's image import → Take Photo → the camera prompt; an `audio/*`
+  picker (FX rack › Convolve › Load IR…, a drum sample, an oscillator / wavetable-editor sample) and the tuning picker (no accept on iOS,
+  fix R1-F3) → Take Video → the camera and the microphone prompts (fix R1-F2: `NSMicrophoneUsageDescription`, "SYNTH does not record
+  audio; iPadOS asks only if you choose Take Video in a file picker.") — no crash either way. The simulator offers the menus but has no camera: the kill and the prompts are device-only.
+- **Screen awake** (Q4, §5.3): `isIdleTimerDisabled` follows `{ t: 'engine' }` and the foreground — the simulator never dims; code-level
+  only until the device pass (the iPad stays lit with the engine on, sleeps with it off).
+- **`UIRequiresFullScreen` left out (reviewer 1, §6.3's question answered)**: on iPadOS 26 (the simulator, Full Screen Apps / Windowed Apps /
+  Stage Manager each tried) the shell launches full screen, never windowed, with no resize grabber (it hides the home indicator — the flag
+  the windowable experiments lacked); adding the key (deprecated there) changed nothing, so it stays out and the page never moves. **The
+  risk, recorded**: a window frame persisted by a windowable build of the **same bundle id** is honoured — installed over such a build the
+  shell ran in a 396 × 486 window, and there the `.minimal` controls pill sits exactly on ≡: the first tap on ≡'s spot expands the pill,
+  ≡ opens on a later tap. The fallback, should a future iPadOS window the app: the key (one line in Info.plist). Device: the same check
+  on the real iPad (Stage Manager on), once.
 - **The team switch** (§7.2): moving to the paid Program deletes the free-team app and its projects — said to the user before it happens.
 - **Apple Pencil**: pressure / hover / aftertouch in a WKWebView (the simulator has no Pencil); haptics are stage B.
-- **The edge gestures' feel** with the status bar hidden (`.all` deferral: the first swipe from an edge shows the system's hint); the home
-  indicator over the keyboard tray's bottom row.
+- **The edge gestures** (fix R1-F1: no edge deferral now — `.all` left WebKit's `visualViewport.scale` at 1.333 after every Home /
+  app-switcher round trip, the canvas's pinch lost to the page zoom; and it bought nothing): the first swipe from an edge acts (the Sources
+  pull tab at the left, the Dock from the very bottom — as measured with `.all` too); the home indicator (still auto-hidden) over the
+  keyboard tray's bottom row; on the device once more: Home → back → a canvas pinch zooms the canvas, no "page zoomed" chip.
 - **Performance** in the shell vs Safari (the same JavaScriptCore with the JIT, spike §5): `tests/bench.html` is not bundled (§1.5); a shell
   bench is a stage-B item if the user's pass feels different.
+**Still open after both reviews and the fixes — device-only, for the one iPad pass**: the camera and microphone prompts (Take Photo /
+Take Video, no kill), the Apple Pencil, a real interruption (a call, Siri) and route changes, the Ring / Silent switch (and Music beside
+SYNTH), the idle timer, jetsam, latency, background audio on the lock screen, the windowed-scene check above, Home → back → a canvas pinch.
 Not in stage A (by scope): CoreMIDI (midi.js shows "not supported" — stage B feeds `window.SYNTH_SHELL.midi` through midi.js:247 / 349 / 396
 [R]); Pencil Pro haptics (stage B: `UICanvasFeedbackGenerator`, iPadOS 17.5+, the deployment target already allows it); the Mac (§8);
 iPhone (`TARGETED_DEVICE_FAMILY = 2`); a document browser, iCloud, in-place saving (§4.3); several windows (`UIApplicationSupportsMultipleScenes`
@@ -803,13 +828,310 @@ Mac via a native shell later, haptics / CoreMIDI in stage B, `.mixWithOthers` (b
 
 ### Lane N
 
+**Built (worktree from 8174b60; commits ed7c2d0 + the notes commit)**: `app/ios/` — `SYNTH.xcodeproj` (hand-written, ids
+`A000…`, four configurations each `baseConfigurationReference` → `Config.xcconfig`, `buildSettings = {}`; a shared scheme), `Config.xcconfig`
+(§1.2's settings; `#include? "Local.xcconfig"` first), `SYNTH/Info.plist` (§1.3; `UIBackgroundModes [audio]` always — Q2 is the page's setting),
+`Assets.xcassets` (AppIcon `Contents.json` naming `icon-1024.png` — built here with an uncommitted `sips` upscale of icons/icon-512.png; W2's
+PNG replaces it; `LaunchBackground` #0c0d0f), nine Swift files (≈ 560 lines): `SiteBundle` (the `site/` map built once at launch, `key(for:)`,
+the MIME table — Foundation only), `SchemeHandler` (serial utility queue, the answer on main only while the task is live, `stop` removes it;
+no-store; a `Range` header logged under -smoke — WebKit + Foundation only), `Bridge` (`WKScriptMessageHandlerWithReply`, §10's messages +
+`bg` + `log`; decode / write on a serial queue, replies on main; `at` checked, a free-space check with 16 MiB headroom, `closeAll()` on
+termination), `FileExport` (the `Presenter`: ONE queue for share sheets and JS dialogs, `settle` once per item, `abandonAll` answers the
+defaults; the sheet as a popover from the web view's top centre; `sanitise`; the tmp sweep; SHA-256 via CryptoKit — Apple's, not third-party),
+`AudioSession`, `ShellViewController` (§2.3's configuration, the rule list compiled before any load — no list, no page —, the policy
+download → allow → cancel, `WKDownloadDelegate`, the three dialog panels, the marker script, the ready queue, `openDocument` through
+`callAsyncJavaScript` arguments, the restart with the twice-a-minute alert, the idle timer), `App` (one scene; `openURLContexts`;
+`preferredWindowingControlStyle` → `.minimal` on iOS 26), `Smoke` + `SmokeSteps` + `Smoke.js` (Debug `-DSMOKE` AND `-smoke <run>`; `Smoke.js`
+is a bundle resource excluded from Release by `EXCLUDED_SOURCE_FILE_NAMES[config=Release]`). `tools/app-bundle.sh` (§1.5 as written — the
+awk / grep parse, `BUILD` recomputed with `shasum` by `buildHash`'s formula — verified equal to node's `b8dbc89bd93f` on 8174b60 —, `git
+archive`, `app-build.json`, the PlistBuddy stamp; `--dry-run <dir> [--root]`, `--list-from <sw.js>`), `tools/app-smoke.sh` (§9.2; `--base`,
+`--mode bg`, `--no-build`, `--run`; the evaluator is a node heredoc; a WebContent RSS sampler from the Mac side), `tests/app-native.test.mjs`
+(G5: 9 tests — the parse equality, the throwaway-repo behaviours incl. a listed-but-uncommitted file, Info.plist, the Swift greps with a
+comment-stripping regex that keeps `://` inside strings, the frozen interfaces by grep, the pbxproj, the xcconfig, the ignore rules, the assets).
+`.gitignore`: `Local.xcconfig`, xcuserdata, build dirs.
+
+**Smoke `--base` (simulator, 8174b60 → ed7c2d0 bundles)**: PASS, the native half green, 5 pending for W1 / W2 (Install hidden; the fonts;
+`ready`; `probe()`; `{ t: 'engine' }`). Numbers: 127 requests, 123 × 200 + the 4 deliberate `?smoke=404` probes, every one `synth://app/`;
+0 console errors; the negative probe — page `fetch`, `Image` with `http://`, `WebSocket('wss://')`, a module Worker's `fetch`, a stylesheet
+`<link>` — all blocked with the Mac online (**[R?] pinned: the content rule list covers worker loads and WebSockets**); the base tree's three
+Google `<link>`s are the positive control (the capture-phase `error` listener sees them); `secure` true, `protocol` `synth:`, origin
+`synth://app`, 49 keys at 1032 × 1376, `app-build.json` = HEAD; storage round-trip across terminate + relaunch; the run takes 25 s + 4 s.
+**Launch**: 1311 ms launch → `didFinish` on the first run after an install (WebKit cold), 667–704 ms on every relaunch. **Size**: the Debug
+`.app` 9.3 MB (site 8.3 MB). **Memory** (WebContent RSS, the sampler): ≈ 262 MB at `didFinish`, 418 at + 2 s, 480–582 at the engine step
+(a held note; varies run to run), ≈ 578 idle at + 6 s; run max 869–894 MB after the smoke's own 100 MB blobs.
+**§2.1 pinned**: `Index.html` → 404, `panels/` → 404, `nope.js` → 404, `synth://x/…` → "Load failed" (WebKit refuses the other host before
+the handler), `panels/../index.html` → WebKit's URL parser normalises it to `index.html` (200) before the handler sees it — a `..` never reaches
+the map. `?v=9&smoke=ok` → 200 (the query ignored).
+**§4.1 `WKDownload` of a `blob:` from a plain `<a download>`** (wk.js `saveFile`'s shape, clicked from `callAsyncJavaScript` — no user
+activation): **works** — `shouldPerformDownload` true, `.download`, `decideDestinationUsing` with `suggestedFilename` = the `download`
+attribute, 1 KB and 100 MB bytes intact (SHA-256 equal to the page's `crypto.subtle` digest), the 100 MB in 11 ms native (the blob is already
+WebKit's), the sheet follows; the revoke after 4 s did not hurt. **The three module savers need no `SYNTH_SHELL.save` seams** (the lead's
+item #4 closes: nothing to assign). The base tree's `#fSave` (`shareable()` null → `saveLink`) takes the same path: `untitled.synth.json`
+reached the sheet. **The bridge, 100 MB** (N's Debug JS = §4.1's algorithm): 50 chunks, **200 ms** page-side file → `end` sent (this JSC has
+`Uint8Array.prototype.toBase64`), 176 ms native, SHA-256 equal; two saves back to back → two sheets in turn, both replies `{ ok, done }`
+after their sheet; **but the WebContent process rose +286–290 MB** over its level before the save (579 → 869 MB) and stays there (the 50
+slices + 50 base64 strings are garbage the heap keeps; the WKDownload of the same 100 MB added nothing visible). §4.1's budget: time met,
+memory **exceeded** → by the contract's own rule the refinement is `download()` → `saveLink` → `WKDownload` — **left for the lead** (the
+routing line is W1's main.js item 1): keep the bridge for `SYNTH_SHELL.save` (the smoke's integrity step) and route `download()` through
+`saveLink`, losing only `end`'s `done` (the bounce's "Save WAV…" retry without a re-render); or keep the bridge and accept the transient
+heap on big bounces (a 100 MB bounce is 2 min 10 s at 96 kHz / 32-bit). The native half serves both unchanged.
+**§5.1**: the app process's session reads `.playback`, options 1 (`.mixWithOthers`), mode default, 48 kHz, IO 10 ms, outputLatency 0.1 ms,
+route Speaker — identical before and after the engine is on (the app-process reading; WebKit's own session is not visible from here, as
+§5.1 says). `-iobuf` is read in Debug only (`Smoke.ioBuffer`).
+**§5.2 measured** (`--mode bg`: a held engine note + an own context, the app sent behind Safari for 23 s): **`visibilitychange` fires** in the
+backgrounded WKWebView (hidden 140 ms after `sceneDidEnterBackground`, visible 60 ms after `willEnterForeground`); **WebKit keeps
+rendering**: the own context stayed `running` and its `currentTime` advanced 20.5 s over 20.5 s hidden; the engine's stats kept arriving
+(`DSP load n%` updated while hidden) and native → web `callAsyncJavaScript` calls kept answering, so the page's main thread runs; **timers
+are throttled to ≈ 1 Hz** when hidden (the 25 ms `setInterval` ticked 21 times in 20.5 s): the metronome's scheduler would starve while
+worklet-driven sound (the song's notes, Hold-sustained notes) carries on; the keyboard-held note was released by the page's own `hidden` rule
+(main.js:8624 `releaseKeys()`), as the contract expected. Native timers kept firing (the app is not suspended with audio playing). Device
+confirmation: whether iOS keeps the app alive with the engine on but silent (0 voices), and the real lock screen.
+**§5.4 measured**: `kill -9` of the WebContent process at + 7.7 s → `terminated` logged, `presenter.abandonAll()` + `bridge.closeAll()`, the
+page back at + 8.1 s (405 ms) with the marker's `restarted: true`, 49 keys, the guard still blocking (the rule list lives on the configuration);
+the flag stays true on the base tree (the swap happens at W1's `ready`).
+**§6.1 refined [C → R]**: without `UIRequiresFullScreen` iPadOS 26 reports **20 pt at the bottom** through `env(safe-area-inset-bottom)` (the
+spike's 0 came with the key); `ShellWebView` overrides `safeAreaInsets` → `.zero`, so the page reads 0 / 0 / 0 / 0 (A4) with windowing kept.
+**§6.4**: ≡ → New's `confirm` ("Start a new empty project? …") reaches `runJavaScriptConfirmPanel`; the smoke answers Cancel after 1 s; the
+completion is the Presenter's `settle` (once), `abandonAll` answers the default. **§1.2 [R?]**: `defaults read com.apple.dt.Xcode
+IDEProvisioningTeams` does not exist on this Mac (no account in Xcode yet) — the key name stays [R?] until the user adds the Apple ID.
+**Refinements of the contract's text** (reasons): the smoke counts keys as `#keys .key` (the markup is `.key[data-n]`, not `[data-note]`);
+the evaluator gates WebContent RSS **at the engine step** (§9.4's row) and reports the run's max (dominated by the smoke's own 100 MB
+blobs), and records the bridge's rise instead of failing on it (a measurement for the lead, §4.1); `Smoke.js` is a resource file rather than a
+Swift string (reviewable, excluded from Release); CryptoKit for SHA-256 (Apple's framework). **Pending W1 / W2 at integration** (the
+smoke's `pend` lines): Install / Full screen / toast hidden, the fonts loaded from the bundle (`interW` ≠ the fallback), `{ t: 'ready' }` once,
+`SYNTH_SHELL.probe()` at the engine step (`ctx 'running'`, `held ≥ 1`, `peak > 0.01`), `{ t: 'engine', on: true }` (→ the idle timer, the
+after-engine `avsession` line), `openFile` (Open from Files; the native half calls `SYNTH_SHELL.openFile(name, b64)` when present, else logs),
+`SHELL.on({ t: 'resume' })` after an interruption. For reviewer 1: rotation, Split View / the window controls (`.minimal` set), the pickers,
+a real tap's share sheet (the smoke auto-dismisses), the camera key. Not touched: engine / DSP / model files, pwa.js, main.js, sw.js, fonts.
+
 ### Lane W1
+
+(2026-10-23, Opus 5.5; worktree reset to 8174b60. Commits: `2bf515e` the failing tests first, `147a86f` the seams, then these notes.)
+**As built — the interfaces (§10) exactly:**
+- `SHELL` (main.js, after VERSION) = the marker object when `inShell(globalThis, globalThis.location)` **and** `window.SYNTH_SHELL` is an object;
+  else `null` and every seam is dormant. (`synth:` without the marker: pwa.js counts it installed — no buttons, no worker — while main.js's
+  seams stay off: `download()` → `saveLink` → N's `WKDownload`.) pwa.js: `inShell(win, loc)` as §3.1; `isStandalone(win, nav, fsActive, loc)`;
+  `initApp` → `shell` in its controller; the service-worker block reads `swc = shell ? null : nav.serviceWorker` (one guard).
+- **web → native** (`SHELL.post(m)`; a reply that is not `{ ok: true, … }`, a rejected promise or a throwing `post` = refused):
+  `{ t: 'file', id, name, type, size }` → n × `{ t: 'chunk', id, at, b64 }` (2 097 152-byte slices, `at` the byte offset, standard base64 with
+  padding; each awaits its reply — one in flight; `Uint8Array.prototype.toBase64` when present, else 32 KiB `fromCharCode.apply` runs + `btoa`)
+  → `{ t: 'end', id }` (its reply `{ ok: true, done }`: `done === false` → the caller's `later(go)`, `go` re-sends the same blob — offered
+  again on every unsaved close; `done` absent / true → nothing). Any refusal → `{ t: 'abort', id }` (not awaited; also after a refused
+  `file`) and `saveLink(blob, name)`, a `console.warn` "SYNTH: saving <name> through the app failed (<why>) — downloading it instead".
+  `id` = `'f' + Date.now().toString(36) + '-' + n` (`[0-9a-z-]` only). `{ t: 'engine', on }` from `powerUI()` on each change of
+  `!!(ctx || pendCtx)` (nothing at boot with the engine off; a failed power-on posts `true` then `false`). `{ t: 'bg', on }` once at the end
+  of boot and on each toggle. `{ t: 'ready' }` once, the last statement of `boot()` (after `bg`).
+- **native → web**: `SYNTH_SHELL.openFile(name, b64)` → `Promise<boolean>` (true: opened; false: refused — the page's own alert shows);
+  `SYNTH_SHELL.on(m)` → `wake()` for `{ t: 'resume' }`, anything else ignored, and ignored while the page is hidden with Sound in background
+  off; `SYNTH_SHELL.probe()` → `{ ctx, sr, baseLatency, outputLatency, nodes, master, peak, held, cpu, store, bootMs }` (`ctx` the state
+  string; `ctx` / `sr` / both latencies `null` with the engine off; `peak` 0 then; JSON-clean); `SYNTH_SHELL.save(blob, name)` →
+  `Promise<end's reply | { ok: false, error }>`.
+- **Sound in background**: key `synth.shell.bg` (the store: `synthc.shell.bg`), default on. ⚙ gains, after the appended canvas lines and in
+  the app only, an "App" heading, the row "Sound in background" with a `.tt` On / Off toggle (`#cvBg`, `aria-pressed`) and the hint "Keep
+  playing when you switch apps" (`.cv-ghint`). Off: a second `visibilitychange` listener (after the existing one: keys released, saved)
+  suspends a running context when hidden; the existing `wake()` on visible resumes it.
+- **Restart notice**: pushed to `early` at module evaluation (before any storage notice), so it leads boot's one notice line; 20 s.
+- **Help & about**: at each open the text after `<b>App:</b>` up to the next bold "…:" label (none today: App ends the paragraph) is
+  replaced by one text node: "App: this is the SYNTH app 0.1 (412), build 0dd10f5 (2026-10-23) · site v9. Projects saved in Safari or Chrome
+  are separate: Save the file there and Open / Import… it here (or open it from the Files app)." (`app` / `build` / `sha` from the marker,
+  the date from `app-build.json`, fetched once at the first open and filled in when it lands); the committed index.html is untouched.
+**[C] refinements (with reasons):** (1) `bg` also posted at boot — native needs the stored setting at launch and after a reload, not only
+on a toggle. (2) The Help line adds "Audio now: 48 kHz, base latency 2.7 ms, output latency 0.1 ms." while the engine is on — §5.4 wants the
+device's numbers readable there without tools; native's AVAudioSession numbers have no message in §10, so only the page's. (3) A `resume`
+while hidden with the setting off is dropped (it would restart the sound in the background against the setting); `visible` resumes.
+(4) `openFile` answers true / false for `callAsyncJavaScript`; `#fFile`'s handler is `if (f) await openFile(f)` — the same behaviour.
+**Known edge (not fixed, sub-second):** a power-on still warming up (WebKit's held context) when the app is hidden with the setting off
+resumes at the engine's `ready` in the background — the suspend listener only acts on a running context at the moment of hiding.
+**Not touched:** wk.js / sx-host.js / wtedit.js (the three module savers' `SYNTH_SHELL.save` seams wait for the lead's word on lane N's
+`WKDownload` finding); `shareable()`; index.html; sw.js — pwa.test's precache case fails on the BUILD hash only (no new module: the lists are
+unchanged) until the lead's `node tools/precache.mjs --write`.
+**Tests (G1–G3):** `tests/app-shell.test.mjs` (new, 15: one boot as the app — `ua` a WKWebView's, `synth://app`, the marker with a fake
+`post` replying a timer later, `sw` a service worker that exists, a fake `fetch` for app-build.json, a recovered project prepared through two
+store sessions; plus pwa.js `initApp` alone with the marker on https: no `register`); `tests/app-shell-web.test.mjs` (new, 4: Safari on the
+iPad, https, no marker — no `SYNTH_SHELL` made, `shell` false, buttons and the worker as today, the App text untouched, `download()` →
+the link, no suspend on hidden; its three behaviour cases passed on the base too); `tests/pwa.test.mjs` +2 after line 618 (`inShell`;
+`isStandalone` with `loc` — every three-argument answer unchanged; `swAllowed(synth:)` false); `tests/main-sim.mjs` `o.win` (merged into the
+fake window; absent: nothing). Both new files keep a ref'd 1 s beat (cleared in `after`): the sim's timers are unref'd and the fake
+IndexedDB answers on them, so a top-level boot with `idb` would otherwise exit mid-await.
+**A1 proof** (one file at a time, `--max-old-space-size=2048`, at `147a86f`): app-shell 15 / 15, app-shell-web 4 / 4, pwa 23 / 24 (the
+BUILD hash, above), lint 165, canonical-stream 1, golden-classic 8, app 11 (untouched), app-ios 6 (untouched), main 47, canvas-sim 24,
+canvas-M-sim 20, canvas-M-bounce 1, integration 44, cv-shell-sim 17, accessors 30 — all green. No engine / DSP / model file in the diff
+(`git diff 8174b60 --stat`: main.js, pwa.js and the four test files only), so every golden holds by construction.
+**The lead's call after lane N's measure (2026-10-23, on wt-A 1e96078; `bf85664` the tests failing first, then the change):** the
+bridge kept +286–290 MB of WebContent heap after a 100 MB file, a `WKDownload` of the same `blob:` nothing — so in the app **`download()` →
+`saveLink` → `WKDownload`** (every caller: Save, Save as classic, Export MIDI, Bounce WAV, render-last, the Serum exports, the recovered
+notice), no bridge message; the page no longer learns `done`, so a caller's `later` is offered **every time** (the bounce: "Done: … Closed
+the sheet without saving? Tap Save WAV… to share it again.", Save WAV… re-links the same blob — no re-render — and the button goes back to
+Render & download, as on the home-screen path). **`SYNTH_SHELL.save(blob, name)` keeps the bridge** (unchanged shapes and answer; its
+`later` handling dropped — no page caller): the smoke's integrity step, small files (a 100 MB file there costs the heap rise above). G2
+rewritten to it (download link named, no transfer; the bridge cases and the four refusals through `save`); the A1 re-run: app-shell 15,
+app-shell-web 4, canonical-stream 1, main 47, app 11, app-ios 6, lint 165, pwa 23 / 24 (the BUILD hash only: the lead's `--write` again).
 
 ### Lane W2
 
+Worktree branch `worktree-agent-a2c55975244030a92` (reset to 8174b60): `5eb78dd` the icon, `4805aa9` fonts + precache + tests, this notes commit.
+Not pushed. `sw.js` ASSETS / STATIC / BUILD untouched — **run `node tools/precache.mjs --write`** (it adds `fonts/fonts.css` to ASSETS, the three
+woff2 files to STATIC; BUILD `115935aa20f1` on this tree, 101 versioned + 10 static — any later change to a precached file moves it).
+
+**Built (as §3.3 (a), Q3 yes, the lead's variable-file decision)**
+- `fonts/`: `InterVariable.woff2` 352 240 B (Inter 4.001 = 4.1; fvar `wght` 100–900, `opsz` 14–32 default 14, read from the file), `JetBrainsMono-Regular.woff2`
+  92 380 B and `-SemiBold.woff2` 94 484 B (both 2.305, not the 2.304 §3.3 guessed), `OFL-Inter.txt`, `OFL-JetBrainsMono.txt`, `fonts.css` (1.4 KB): Inter
+  `font-weight: 400 800` (not the file's 100–900: Google's faces were 400–800, so a 300 or 900 request clamps as it did), JetBrains Mono 400 and 600,
+  `font-display: swap`, relative urls, `*, *::before, *::after { font-optical-sizing: none !important; }` (the lead's decision, see item 1). 539 KB of woff2 in all. All three carry copyright + OFL notice in their `name`
+  tables (IDs 0 / 13 / 14), which is what the OFL asks of a copy — **the OFL texts themselves are in the repo / web tree but not in the app bundle**
+  (the bundle is the precache list, and the page never requests them); the lead may want a line in Help & about.
+- `index.html`: the four Google lines (+ the comment) → `<link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/InterVariable.woff2">` +
+  `<link rel="stylesheet" href="fonts/fonts.css?v=9">`, before style.css. No `preconnect` left.
+- `sw.js`: `FONTS`, `FONT_HOSTS`, `FONT_KEEP`, `FONT_WAIT`, `precacheFonts`, `font()`, the `let page` it needed, the install's font race and the activate exemption
+  are gone; the fetch handler's two-branch `if` became one early return (same behaviour for same-origin and for other origins). The next activation deletes
+  `synth-fonts-v1`. The woff2 files take `other()` (network first, the precache offline) as §3.3 said.
+- `tools/precache.mjs`: `cssUrls(css)` (exported: `url()` with / without quotes, comments skipped, no `data:` / other scheme / `//host` / `#fragment`) and a
+  crawl of every versioned `.css` → STATIC (a `?v=N` query would stay versioned); a `url()` naming a file that is not in the site is a **problem** (an install
+  fails on one 404). `writeSw` split into `renderSw()` (returns `{ src, R }`, writes nothing) + the writer. style.css's two urls yield nothing, fonts.css's three yield the files;
+  the preload also names Inter, the two JetBrains Mono files come from the CSS crawl alone (tested).
+- `tools/make-icons.mjs` + `app/ios/SYNTH/Assets.xcassets/AppIcon.appiconset/icon-1024.png` (124 263 B, 8-bit RGB, colour type 2, no alpha — `sips`: `hasAlpha: no`):
+  `encodePng(w, h, rgba, opaque)`, `decodePng` reads types 2 and 6 (2 → alpha 255; returns `ctype`), `ICONS` + the 1024 entry (`kind: 'apple'`, `opaque: true`); the
+  CLI creates parent dirs. The five web icons regenerate byte-identical. Contents.json is lane N's (I did not build it in Xcode: not my lane).
+- Tests: `tests/fonts.test.mjs` (G4, 8 tests: fonts.css faces; the woff2 files valid by signature / length field / TrueType flavor / ≤ 400 KB each / ≤ 600 KB total / nothing else in
+  `fonts/`; the files are what the CSS says, read from the woff2 itself — brotli, the `fvar`, `name`, `OS/2` tables; licences; index.html; the crawl; sw.js has no font code;
+  `renderSw()` equals the committed sw.js). `pwa.test.mjs` (my ranges only): header line 4, the icon test (colour type, the 1024 entry), the index test's font lines,
+  the install test's line, the Google-fonts install test → "the bundled fonts install and serve offline, a missing woff2 fails the install", activate (synth-fonts-v1 goes), the
+  Google Fonts SW test → "the worker leaves the font hosts alone".
+
+**Gates (one file at a time, `--max-old-space-size=2048`)**: `app.test` 11 / 11, `lint.test` 165 / 165. `fonts.test` 7 / 8 and `pwa.test` 20 / 22 **in this tree**: the three red ones need sw.js's lists — pwa's "precache: sw.js lists exactly what the page requests", pwa's "sw install precaches the bundled fonts…", fonts.test's
+"precache --write is a no-op". In a scratch copy with `node tools/precache.mjs --write` run: **`pwa.test` 22 / 22, `fonts.test` 8 / 8**. `node tools/precache.mjs`
+(no `--write`) lists `fonts/InterVariable.woff2`, `fonts/JetBrainsMono-Regular.woff2`, `fonts/JetBrainsMono-SemiBold.woff2` in `statics` and `fonts/fonts.css` in `versioned`, `problems: []`.
+
+**The screenshot proof — and the one thing that does not match (the lead's stop condition: opsz)**. Headless Chrome (`--headless=new`, own CDP port 19222 and profile, a dependency-free CDP driver), the base = `git archive 8174b60`
+served on 18931 (Google's CSS, needs the network), this tree on 18932, each view in a clean browser context, 1440 × 900 @ 1×: top bar, Sources (+ view menu, Simple), the Simple panel
+(Fit all), Settings, the track list, the ≡ menu, Help & about, the Master canvas, the Roll, and DX7 / TB-303 / Serum / TR-808 / Prophet-5 / Minimoog panels. Noise floor: base vs base ≤ 15 px
+differ (max 19), mine vs mine 0. Base vs mine (17 views): 3 500–4 300 px of 1.3 M differ at all, 140–260 of them by more than 24 levels, in tiny clusters (Help & about 11 300 / 5 400: its symbols); the Inter text is **pixel-identical** (the Help & about heading, the Sources
+heading: 0 px) — see `specimen` below. Where they differ: (a) JetBrains Mono's antialiasing (the transport display, the key labels), (b) **symbols now drawn by Inter / JetBrains Mono instead of a
+system fallback** (the Help sheet's → ⌘, the Simple panel's ◀ ▶ arrows). Files (scratch, not committed): `scratchpad/app/w2/shots/c-base-dpr1`, `…/c-mineA-dpr1`, diffs `…/diff/A-dpr1` (red = differs > 24),
+`…/specimen/*`, `…/speclh-*`, crops `crop-*.png`.
+1. **opsz**: Inter text sized by `font-size` / `font-weight` (every heading: `.nameplate .mname` 34 / 26 px, `.dlg h2` 17, `.cv-sheet-h h2` 16, `.about h2` 16, body 15) renders **exactly** as Google's: the
+   specimen (21 sizes 7–34 px × 5 weights, longhand properties, DPR 2) has ink ratio mine / base **1.000** in every row and widths within 0.016 px. **But a `font:` shorthand resets
+   `font-optical-sizing` to `auto`**, so `:root { font-optical-sizing: none; }` does not reach an Inter shorthand above 14 px (the Google build was pinned at opsz 14 everywhere, measured):
+   at 34 px the same string is 4.3 % narrower (536.2 vs 560.4 px), at 26 px 2.9 %, 18 px 1.0 %, 15 px 0.2 %. In style.css that is `.cv-fork` (`font: 700 calc(9px * var(--ik, 1))/1 var(--ui)`),
+   `.cv-ptag`, `.cv-htag`, `.cv-cable-x` (`calc(18px * var(--ik))`) — the screen-constant labels, which pass 14 px when the canvas is zoomed out below ~0.64 (`--ik = 1/zoom`), none in the views above — and any canvas
+   `ctx.font = '… 15px+ Inter'` (roll.js / arrange.js use ≤ ~13 px; not exhaustive). Three ways, the lead picks: **(i)** the static Inter instances (the contract's original plan; another download) — exact everywhere,
+   WebKit included; **(ii)** `*, *::before, *::after { font-optical-sizing: none !important; }` in fonts.css instead of the `:root` rule — tested in Chrome: DOM shorthand text then matches Google to 0.01 px (the
+   labels above fixed), **canvas text still takes opsz** (Chrome parses `ctx.font` as a shorthand; 34 px: 536 vs 560), WebKit untested; **(iii)** keep the `:root` rule and accept the tighter shapes on those zoomed-out labels.
+   **DECISION (the lead, 2026-10-23): option (ii), no new download.** `fonts/fonts.css` now carries `*, *::before, *::after { font-optical-sizing: none !important; }` in place of the `:root` rule
+   (an `!important` on every element beats the shorthand's reset), fonts.test asserts that rule and the absence of a `:root` one, and fonts.css's comment says plainly: **known limit — canvas `ctx.font` text above 14 px
+   still takes opsz** (the browser parses `ctx.font` as a shorthand and no stylesheet reaches it); the app's canvas labels are ≤ ~13 px. WebKit's behaviour with the `!important` rule is untested here (reviewer 2, simulator).
+2. **JetBrains Mono SemiBold is ~4 % lighter than Google's 600 — ACCEPTED (the lead)**; the advance widths are identical: ink mine / base 0.954–0.963 at every size for the 600 and 700 rows, 400 / 500 rows 1.000–1.007; advance widths identical (the mono column's
+   widths match to 0.016 px). The file's `OS/2.usWeightClass` is 472 (its designspace coordinate, not 600) — probably Google serving the variable font at a slightly different point of its `avar`. Glyph shapes match
+   in the crops; it is a faint weight difference on the LCD / transport / labels, not a metric one. The 400 face matches.
+3. **Symbols — ACCEPTED (the lead): one set of fonts everywhere; reviewer 2 checks the iPad-relevant ones on the simulator.** (137 distinct non-ASCII characters in the site's files, `fonts.test` / specimen run; the platform font per character read with CSS.getPlatformFontsForNode, base vs mine). Now drawn by **Inter**
+   (UI contexts) instead of a system face: `‒ ⁰ ⁴ ⁵ ⁶ ⁸ ⁹ ⁻ ₀ ₁ ₂ ₄ ₅ ₉ ₋ ₖ ● ♪ ⅓ ⅔ ← → ↔ ⇒ ⇔ ⌘ ⌫ ■ ▶ ◀ ▼ ○ ▲ ★ ✓ √ ∞ ∫ ≈ ≠ ≤ ≥ ⊕` (the frequent ones: → ×2 258, ← ↔ ⇒ ≈ ≤ ≥ √ ▶, ₀ ₁).
+   Still the system fallback in Inter contexts: `≡ ⋯ ✕ ♯ ♭ ▸ ▾ ⚙ ✎ ⏻ ⌈ ⌉ ⌊ ⌋ ∈ ∿ ∥ │ ⧉ ⤢ ⚑ ⛓ ♩ ◉` and the two emoji. Now drawn by **JetBrains Mono** (mono contexts) instead of Menlo / Monaco / Times / Apple Symbols: `≡ ⋯ ✕ ♯ ♭ ▸ ▾ ▲ ▴ ▼ ▶ ◀ ● ○ ◉ ■ ✓ ⌘ ⌫ ← → ↔ ⇒ ⇔ ∈ ∓ ∘ ∩ ∪ ⊆ ⊕ ⌈ ⌉ ⌊ ⌋ ∥ │ └ ┘ ⁰⁴… ₀… ϕ ẋ ẏ √ ∞ ∫ ≈ ≠ ≤ ≥ ⏻`.
+   Visible in the proof: Help & about's arrows and ⌘, the Simple panel's ◀ ▶. (The iPad app's WebKit has other fallbacks than macOS Chrome: it will differ from this list in the other direction.)
+
+**Deviations from the brief**: the commit trailer is `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (the model that did the work; the harness's attribution rule), not the Opus 5.5 line the brief quoted — amend if you want the other.
+The preload is `type="font/woff2"` (the contract's text left the type out). Chrome, the two servers and the scratch contexts are stopped; nothing outside the worktree and the scratchpad was touched (a stray 2-byte file I wrote by a path typo was removed at once).
+
 ### Reviews and fixes
+Two reviewers against 4494195 (findings: the lead's scratchpad `app/review-1.md`, `app/review-2.md`). **Review 1 (the simulator,
+Fable 5.1)**: 2 major · 3 minor; the smoke PASS; by hand: a 900 Series preset, canvas vs page pinch, the pull tabs, rotation, ≡ → New,
+Save → Files → Open round trip, Open With → SYNTH (a quoted name intact), Export MIDI, Bounce WAV (the sheet by itself, Save WAV… the same
+blob), render-last, the three module savers through WKDownload, IR / MIDI / wavetable imports, Sound in background both ways, relaunch,
+`kill -9` of WebContent (reload + notice, project intact; the double-kill alert), only `synth://` requests, 29 min without a reload.
+**Review 2 (the web, Opus 5.5)**: 1 major · 3 minor · 1 nit; the browser build unchanged but for the fonts (no Google request in ≈ 30
+loads; Inter text pixel-identical; Install / Full screen / the sheet / the toast as today; offline fonts; the Swift Apple-only, no network
+or private API). **Fixed**: R1-F1 (major — no edge deferral: the canvas pinch survives Home), R1-F2 (major — `NSMicrophoneUsageDescription`),
+R1-F3 (the tuning picker on iOS: no filter + in the document), R1-F4 (a dialog's close resumes the page), R1-F5 (`--mode log`), R2-F1
+(major — `Local.xcconfig` included last), R2-F2 (the fonts cache-first in the SW), R2-F3 (the dry-run guard), R2-F4 (the OFL texts
+precached and bundled; Help & about credits them), R2-F5 (`isFileURL`), the ♭ / ♯ back to the system face; and the lead: the drum-sample
+picker in the document (fixer N's WKWebView measure) with a guard over every main.js picker; the smoke's memory gate watches the engine's
+own WebContent memory (engine step − boot ≤ 250 MB; +177 MB measured) under a 1 GB ceiling — the simulator's absolute level drifts (the
+same commit 583 → 620 MB).
+
+**Fixer W (R2-F2, R2-F4, R2 ♯), on 4494195.** Not pushed. `sw.js`'s ASSETS / STATIC / BUILD are untouched: **run `node tools/precache.mjs --write`** (STATIC gains `fonts/OFL-Inter.txt`, `fonts/OFL-JetBrainsMono.txt`;
+BUILD moves to `94b3d8a096a0` — fonts.css's bytes changed too; 101 versioned + 12 static). Until then pwa's "precache: sw.js lists exactly what the page requests" and fonts' "precache --write is a no-op" (and app-native's
+"--list-from" parse) are red by design; in a scratch copy with `--write` run: pwa 25 / 25, fonts 10 / 10, app 11 / 11, app-native 8 / 9 (the `.gitignore` case needs a git tree, which the copy lacks; green in the worktree), lint 165 / 165.
+- **F2** (the bundled fonts network-first): sw.js routes a GET whose URL is one of STATIC's `fonts/*.woff2` (exact URL, no query) to `bundledFont()`: this worker's own precache first (`ANY`), a miss → `other()` as before (cleared cache, a page
+  newer than the worker). Safe because BUILD hashes the woff2 bytes. DEV hosts too (the reviewer's repro was 127.0.0.1; a font changed without `--write` fails pwa's BUILD check anyway). Test (red first, pwa.test's last case): a font whose network fetch never
+  settles is answered from the precache within 300 ms with no request; a deleted precache entry is fetched; a `?x=1` URL and a file not in STATIC still wait for the network. The name is `bundledFont` — fonts.test bans a `font(` in sw.js (the Google code).
+  Headless Chrome, a returning visitor with every woff2 held 10 s by the server: the 4494195 tree `load` 10 084 ms with `.SF NS` / `Menlo` at 1.5 s (`document.fonts` loading); this tree `load` 90 ms, `Inter Variable (web)` / `JetBrains Mono (web)`, all three
+  faces loaded, the files `fromServiceWorker`.
+- **F4** (no licence texts in the app bundle): `tools/precache.mjs` `licenceFiles(statics, root)` — the `OFL-*.txt` / `OFL.txt` files in the directory of any listed font file (`.woff2` / `.woff` / `.ttf` / `.otf`) are statics (none for a directory with no font
+  listed); `appRequests()` adds them after the CSS `url()` crawl. The web worker precaches them with the fonts and `app-bundle.sh` (= sw.js's lists) copies them; SiteBundle's MIME table already has `txt`. Tests (fonts.test, red first against a stub):
+  the precache lists both texts whenever it lists woff2 files and nothing else under `fonts/`; `licenceFiles` on a scratch tree (beside a font, `.ttf` too, not `OFLX.txt` / `notes.txt`, none where no font is listed). The existing "fonts/ statics = 3" count now counts `.woff2`.
+  The Help & about credit is the lead's.
+- **♯** (JetBrains Mono's ♯ read close to "#"): both JetBrains Mono `@font-face` rules carry `unicode-range: U+0000-266C, U+2670-10FFFF` — U+266D–266F (♭ ♮ ♯) go back to the system face. The cmap says: Inter has none of the three (it has ♪ ♫, U+266A–266B), JetBrains
+  Mono has ♭ U+266D and ♯ U+266F (no ♮), so Inter needs no rule. Test: each face's cmap is read (formats 4 / 12) and the glyphs its unicode-range excludes must be exactly the ♭ ♯ it has (Inter: none, none lost). Headless Chrome, the TB-303 panel
+  at 1024 × 1366 DPR 2 (own port, own profile; base = `git archive 8174b60`): the platform font of each sequencer `.snote` with a ♯ is one glyph `Menlo` (the ♯) + one JetBrains Mono (web) (the letter) in the base and in this tree, but two JetBrains Mono SemiBold (web) glyphs in 4494195; pixels of the four ♯ halves differing by more than 24 levels, base vs 4494195: 206; base vs this tree: 0 (5 differ at all). Crop: `scratchpad/app/fxW/out/crop-p-tb303-3way.png` (base, 4494195, this tree).
+
+**Fixer N (R1-F1–F5, R2-F1, R2-F3, R2-F5, §11), on c4d075b.** Commits `c519c71` (native: the Swift, Info.plist, Config.xcconfig,
+app-bundle.sh, app-smoke.sh, app-native.test), `3ccfc93` + `e2f31af` (main.js's `tuningFile` + app-shell's case), this notes commit. Not
+pushed. **main.js changed** → sw.js's BUILD is stale: **run `node tools/precache.mjs --write`** (lists unchanged; BUILD → `65c0bb1d9e1a`
+on e2f31af, measured on a scratch copy); until then pwa's "precache: sw.js lists exactly …" and fonts' "--write is a no-op" are red by
+design (scratch copy with `--write`: pwa 25 / 25, fonts 10 / 10) and `app-bundle.sh` refuses to bundle ("sw.js is stale").
+- **R1-F1** (the stuck "page zoomed" chip after Home): `preferredScreenEdgesDeferringSystemGestures` → `[]` (reviewer 1's E7), the
+  `setNeeds…` call gone; `prefersHomeIndicatorAutoHidden` stays true; cv-world.js untouched (A1 — the optional page guard not taken).
+  Supersedes §6.1's `.all` [C]. Test (red first): app-native — the override reads `{ [] }`, no `.all` on it. **By hand** (the fixed build,
+  `-smokeMode log`, reviewer 1's Convolve project): canvas tap → HOME → 10 s → the SYNTH icon; and a second round back through `simctl
+  launch`: the same process (pid unchanged; log inactive → background → hidden → foreground → visible → active), toolbar "79%" and
+  **no chip**; a two-finger pinch on the canvas → the camera 79 → 200 %, then 200 → 36 % (the top bar unscaled: no page zoom). Shots
+  `scratchpad/app/fxN/shots/f1-*.png`.
+- **R1-F2**: `NSMicrophoneUsageDescription` "SYNTH does not record audio; iPadOS asks only if you choose Take Video in a file picker."
+  (supersedes §1.3's "no microphone keys"); app-native asserts it beside the camera's (red first: absent).
+- **R1-F3** (main.js `tuningFile`, two commits): (1) `accept = isIOS() ? '' : '.scl,.kbm,.tun,text/plain'` — the app and Safari on the
+  iPad; the import already checks the file (only `.scl` / `.kbm` / `.tun` names are read, ≤ 16 KB; `tuningState` validates the text; a
+  wrong file answers `{ error: 'no tuning file' }` → sx-host's "Could not read that tuning file: no tuning file"). (2) **Found by hand,
+  beyond the accept**: with the filter gone the .scl could be picked, then nothing happened — measured with scratch builds that log to
+  the smoke log: the **detached** input never got `change` (nor `cancel`) in the WKWebView; appended hidden to the document (the module
+  pickers' way — wk.js, sx-host, sx-ui-osc, wtedit already do) `change` fires. So the input now sits hidden in `document.body` while open
+  and leaves after a pick or a cancel (`cancel` resolves null — a desktop dialog's Cancel was a forever-pending promise before, harmless).
+  Tests (red first: `accept '.scl,…'`, then `hidden false, inDoc false`): app-shell's case — the WKWebView boot: accept '', hidden, in the
+  document; a `notes.txt` → the error; a 19-EDO `.scl` → kind 'scl', name '19-edo'; cancel → null; the input removed each time; the same
+  host with a desktop Chrome UA → the filter. **By hand** (the final page, scratch build with `--write`): Serum › GLOBAL › TUN FILE › Load →
+  WebKit's menu **Photo Library / Take Photo or Video / Choose Files** (no accept = any type: the camera and microphone keys cover the
+  Take entry) → Choose Files: every file selectable (shot `f3-picker-scl-selected.png`) → `r1-notes.mid` → "Could not read that tuning file:
+  no tuning file"; `r1-just.scl` → "Tuning: r1-just", TUN FILE: r1-just (`f3-scl-loaded.png`); 105 requests all `synth://app/`, 0 console
+  lines. **For the lead (not fixed — main.js outside the tuning picker is closed to me)**: `drumFiles()` (main.js ≈ 3922, the drum
+  sample picker) clicks the same kind of **detached** input — by the measurement above its `change` should never fire in the app; the
+  fix is the same three lines (hidden, appended, removed). Every other picker in the site appends its input.
+- **R1-F4**: the dialog's answer — inside the Presenter's `settle` (once; not on `abandonAll`: the process is gone) — calls `resumePage()`
+  → `SYNTH_SHELL.on({ t: 'resume' })` → `wake()`; the page's `bgHeld()` rule (hidden with Sound in background off → nothing) intact.
+  Tests (red first): app-native grep; the smoke's new gate "after the ≡ → New dialog: the engine running again, no tap" on the `end`
+  status — red on reviewer 1's r1a log and on a real run with the pre-fix Swift (`ctx suspended`, "Audio is paused — tap a key or Power
+  to start it"), green with the fix in every run. **By hand** (log mode, a real dialog): power on, transport playing → ≡ → New → 3 s (not
+  answered by itself) → Cancel → 2 s later the clock 1.4.022 / 0:01.512, "DSP load 0%" (`f4-after-cancel-running.png`).
+- **R1-F5**: `Smoke.mode` (`-smokeMode`) and `Smoke.drives = on && mode != "log"`: the steps, the sheets' 2 s auto-dismiss and the
+  dialogs' 1 s auto-answer act on `drives`; `Smoke.on` gates the log and Smoke.js only. `tools/app-smoke.sh --mode log` (§9.2), which
+  also launches the built app's `CFBundleIdentifier` (R2-F1's override). Test (red first): app-native greps. Used for every by-hand check
+  above.
+- **R2-F1**: `#include? "Local.xcconfig"` is Config.xcconfig's last line (the comment says why); app-native asserts it last, one include
+  (red first: line 5). `xcodebuild -showBuildSettings` on scratch copies with a scratch `Local.xcconfig` (`PRODUCT_BUNDLE_IDENTIFIER =
+  com.domlavin.synth.free`, `DEVELOPMENT_TEAM = ABCDE12345`): the old order → `com.domlavin.synth` (the override lost, the team taken), the
+  new → `com.domlavin.synth.free` and the team; without the file → `com.domlavin.synth`. (§1.1's "Config.xcconfig #include?s it" holds.)
+- **R2-F3**: `--dry-run <dir>` resolves `<dir>` (`:A`) and refuses — before anything is removed — `/`, the repo, a folder holding the repo
+  (even with an `app-build.json` lying there), a file, a non-empty folder without `app-build.json`; an empty / new folder or a previous
+  bundle is fine; the Xcode path is unchanged. Test (red first: the sentinel's folder was emptied, exit 0): app-native's new case on a
+  throwaway repo inside a scratch folder.
+- **R2-F5**: `openDocument` → `guard url.isFileURL` first (logged under -smoke); app-native asserts it precedes the read.
+- **§11**: `UIRequiresFullScreen` left out with the windowed-frame risk; the device-only checks listed; the edge line rewritten (no
+  deferral); the idle timer and the microphone added.
+**Gates (one file at a time, `--max-old-space-size=2048`, at e2f31af)**: app-native 10 / 10, app-shell 16 / 16, app-shell-web 4 / 4, app 11 / 11,
+app-ios 6 / 6, main 47 / 47, lint 165 / 165, pwa 24 / 25 (the BUILD hash only — 25 / 25 after `--write`, above).
+**Smoke** (`tools/app-smoke.sh`, own `SYNTH_SMOKE_DIR` under `scratchpad/app/fxN/`): at c519c71 (HEAD then; main.js not yet changed) and
+again on a scratch repo of 3ccfc93 + `--write` (`smoke-final/`): **every gate ok** — the new dialog gate (`ctx running`), 49 keys, insets
+0, fonts from the bundle, the engine (peak 0.17–0.21, DSP load 9–12 %), storage, WKDownload 1 KB / 100 MB, the bridge 100 MB in 187–190 ms,
+six sheets, the guard, 131–136 requests all `synth://app/`, 0 console errors, `.app` 9.8 MB, relaunch 612–706 ms — **except the loose
+"WebContent RSS at the engine step ≤ 600 MB": 618–636 MB in six runs of the fixed build. Not the fixes**: the same smoke with the pre-fix Swift read 636 MB,
+and **reviewer 1's own commit 4494195, rebuilt now, reads 620 MB** (583 MB in r1a this afternoon); the boot level itself moved (the +2 s
+status ≈ 500 MB vs 425 then), with the default project (≡ → New → OK, by hand) and after a simulator reboot alike. Recorded for the lead;
+the gate is not loosened. (Simulator state left: reviewer 1's Convolve project replaced by the default one, then a Serum track with the
+r1-just tuning from the by-hand check; the simulator rebooted once; the installed build is the final page's scratch build.)
 
 ### Acceptance
+- Holding branch `wt-A` (N 76e22bb, W1 dc8a95c + 775b8e0, W2 d77394d; fixers W 8275fc2, N 12b611c; the lead's smoke fixes, picker,
+  docs), from 8174b60. The smoke PASS at 368f27c (launch 0.6–0.7 s, 131+ requests all `synth://app/`, the negative probe blocked online,
+  fonts from the bundle, the engine sounding, storage across relaunch, WKDownload 100 MB intact, dialogs, `.app` 9.8 MB). Sweep: every
+  test file, one at a time. Squashed onto `canvas` as "A"; the web side deployed 2026-10-23; the app built from that commit and installed
+  on the simulator; the user's cable session installs it on the iPad (§7.2).
 
 ## 13. Review log
 

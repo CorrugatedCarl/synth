@@ -1,0 +1,16 @@
+/* SYNTH's two typefaces, bundled (IMPL-A §3.3): no request leaves the site, the installed app and the iPad app work offline.
+   Inter 4.1 (variable, rsms/inter docs/font-files) and JetBrains Mono 2.305 (webfonts), both SIL OFL 1.1 — OFL-*.txt beside.
+   The faces are the ones the site always asked Google for: Inter 400–800 (a request for 300 or 900 clamps as it did), JetBrains
+   Mono 400 and 600 (a 500 takes the 400, a 700 the 600). Inter's `opsz` axis (14–32) stays at its default 14, the shapes the
+   Google-served build showed. The `font:` shorthand resets font-optical-sizing to auto, so a rule on :root would miss every
+   `font: 700 calc(9px * var(--ik)) …` label (style.css's screen-constant labels pass 14 px when the canvas is zoomed out): the
+   rule below is on every element and !important, which beats the shorthand's reset. Known limit: canvas text set through
+   ctx.font above 14 px still takes opsz (the browser parses ctx.font as a shorthand and no stylesheet reaches it); the app's
+   canvas labels are about 13 px or less (IMPL-A §12, lane W2). style.css is untouched.
+   ♭ ♯ (U+266D, U+266F): JetBrains Mono draws them, and its ♯ reads close to "#" beside the TB-303's note names; Google's latin subset
+   never held them, so they came from the system face. The unicode-range on both JetBrains Mono rules is every code point but
+   U+266D–266F, which keeps them there (Inter has none of the three, so it needs no range; IMPL-A §12, R2). */
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400 800; font-display: swap; src: url(InterVariable.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url(JetBrainsMono-Regular.woff2) format('woff2'); unicode-range: U+0000-266C, U+2670-10FFFF; }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 600; font-display: swap; src: url(JetBrainsMono-SemiBold.woff2) format('woff2'); unicode-range: U+0000-266C, U+2670-10FFFF; }
+*, *::before, *::after { font-optical-sizing: none !important; }

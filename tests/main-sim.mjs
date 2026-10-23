@@ -17,7 +17,8 @@
 //    'fullscreen': the display-mode media queries that match), o.navStandalone (iOS navigator.standalone), o.fs (the
 //    Fullscreen API on document.documentElement: 'std' | 'webkit'; none by default), o.sw (a navigator.serviceWorker
 //    fake), o.location (merged into location: protocol, hostname, …; location.reload() counts sim.reloads),
-//    navigator.storage (persisted() / persist() calls in sim.persist), o.vendor (navigator.vendor),
+//    navigator.storage (persisted() / persist() calls in sim.persist), o.vendor (navigator.vendor), o.win (members merged
+//    into the window: the iPad app's marker SYNTH_SHELL, IMPL-A §3.1; a fake fetch),
 //  - the audio clock (R5): o.clock 'webkit' | 'std' — getOutputTimestamp stamped as that engine does, outputLatency /
 //    baseLatency (o.outLat / o.baseLat), a fake performance.now() (sim.ms, moved by sim.run / sim.advance); every context
 //    records its resume / suspend / close calls (ctx.calls), every worklet node the context state it was built in
@@ -324,6 +325,7 @@ export async function bootMain(o = {}) {
     addEventListener: (type, fn) => { (dom.winL[type] || (dom.winL[type] = [])).push(fn); }, removeEventListener() {},
     devicePixelRatio: 1, innerWidth: 1400, innerHeight: 900,
   });
+  if (o.win) Object.assign(G, o.win); // (IMPL-A G1) extras merged into the window: the app shell's marker SYNTH_SHELL, a fetch
   G.indexedDB = o.idb || undefined;
   G.BroadcastChannel = undefined;
   G.Worker = undefined;
