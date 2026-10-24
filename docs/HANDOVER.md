@@ -138,7 +138,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    simulator **SYNTH iPad Pro 13** (iOS 27.0; `-smokeMode log` for by-hand review). The web side: the fonts are local (`fonts/`, OFL texts
    precached), the shell seams dormant in browsers (`window.SYNTH_SHELL`). To install on the user's iPad (their free Apple ID): they add the
    Apple ID in Xcode → Settings → Accounts, connect the iPad by cable (Trust), turn on Developer Mode; the lead builds signed with the
-   personal team and installs (`xcrun devicectl`); every 7 days a reinstall. Stage B next: CoreMIDI, Pencil Pro haptics, the Mac.
+   personal team and installs (`xcrun devicectl`); every 7 days a reinstall. **Installed on the user's iPad 2026-10-23** (team 4RXV48235Y in the gitignored Local.xcconfig, bundle id `com.domlavin.synth.personal`; `xcrun devicectl device install app`; the user trusted the developer in Settings → General → VPN & Device Management; re-sign within 7 days) — "feeling great … smoother than browser version". Stage B next: CoreMIDI and the Mac (Pencil haptics dropped by the user).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)
