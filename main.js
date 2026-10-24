@@ -28,7 +28,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
+import { fitCanvas, menuOpen as wkMenuOpen } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -1360,7 +1360,8 @@ function showNotice(txt) {
   if (act) el.dataset.act = '1'; else if (el.dataset.act) delete el.dataset.act;
 }
 const idleNotice = () => sticky || genTxt;
-function notice(txt, ms) { clearTimeout(noticeT); noticeT = 0; showNotice(txt); if (ms) noticeT = setTimeout(() => { noticeT = 0; showNotice(idleNotice()); }, ms); }
+let noticeLog = null; // (cvDeleteSel, while its paths run: what they say, in order — a refusal's reason joins the press's notice)
+function notice(txt, ms) { if (noticeLog && txt) noticeLog.push(txt); clearTimeout(noticeT); noticeT = 0; showNotice(txt); if (ms) noticeT = setTimeout(() => { noticeT = 0; showNotice(idleNotice()); }, ms); }
 function stickyNotice(txt) { sticky = txt; if (!noticeT) showNotice(idleNotice()); }
 function powerUI() {
   const c = ctx || pendCtx, run = !!c && c.state === 'running', cpu = $('#cpu'), hold = !!c && c === holdCtx;
@@ -4087,6 +4088,7 @@ function deleteTrack(t) {
 
 /* ------------------------------------------------- arrangement + roll */
 let arr = null, roll = null, range = null, lastArea = 'roll', notesClip = null, rangeClip = null;
+let cvArea = false; // (the canvas Delete key) the canvas pressed after the arrangement: its selection, not the bars' range, is Delete's
 function rangeUI() {
   const el = $('#aRange');
   const on = !!range;
@@ -4168,8 +4170,10 @@ function initEditors() {
     // "Drum rows" choice (compact rows: on by default)
     drumRows: t => drumRowsOf(instOf(t)), drumRowsOn: store.get(ROLL_DRUM, true) !== false,
   });
-  $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; }, true);
+  $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; cvArea = false; }, true);
   $('#rollwrap').addEventListener('pointerdown', () => { lastArea = 'roll'; }, true);
+  const vp = $('#viewport');
+  if (vp) vp.addEventListener('pointerdown', () => { cvArea = true; }, { capture: true, passive: true }); // (the canvas Delete key: pressed last, the canvas's)
   rangeUI();
 }
 
@@ -5125,6 +5129,7 @@ function initKeys() {
     if (sk === 'q' && !$('#tab-roll').hidden) { quantizeNow(); return; }
     if ((k === 'delete' || k === 'backspace')) {
       e.preventDefault();
+      if (cvDeleteKey(e)) return; // (the canvas's selected modules, 2026-10-23)
       if (lastArea === 'arr' && range) rangeOp('clear'); else if (!$('#tab-roll').hidden) roll.deleteSelected();
       return;
     }
@@ -5711,6 +5716,73 @@ function cvWorldEscape() {
 }
 function cvWorldKey(e) { return world ? world.key(e) : false; } // canvas shortcuts while focus is in #viewport (0, 1, arrows, ⌘/Ctrl-A) → true
 function cvWheelVeto() { return world ? world.wheelVeto() : false; } // a camera move < 300 ms ago: knobs leave the wheel to the canvas
+/* ---- the canvas Delete key (2026-10-23, the user: "i should be able to delete a selected module with the delete key") */
+// Delete / Backspace — past the keydown handler's gates (no ⌘ / Ctrl / Alt, no repeat, focus out of text entry and selects, no
+// modal / sheet) — on the CANVAS view with something selected there (pressed or focused after the arrangement's bar range: else
+// that range's Delete), no Shift, no popover / menu open: every selected module goes through its own ⋯ menu's Delete / Remove
+// (cvDelOf — a modulator or Pads: modDelete, a 900 Series module with its cords: PATCH.remove, a Serum part: sxRemovePart, which
+// refuses by its own rule while something reads it), the whole press ONE History step (histFold). The instrument (Replace with…
+// instead: one per track), an FX panel, OUT and the master canvas's modules stay: the notice says so, and what stayed beside what
+// went. Never the note keys or the transport (the key is taken here)
+const cvSelIds = W => (W && Array.isArray(W.selection) ? W.selection : W && W.selected ? [W.selected] : []).filter(k => typeof k === 'string');
+const cvPopOpen = () => !!shell.sheet || (shell.menus || []).some(m => m && m.isOpen()) || $('#meter').classList.contains('open') || !!(modLayer && modLayer.isOpen()) || wkMenuOpen();
+const andList = L => (L.length > 1 ? L.slice(0, -1).join(', ') + ' and ' + L[L.length - 1] : L.join(''));
+// module `key`'s ⋯ Delete / Remove (cvMenu's and cv-patch items' calls) → () → bool (done) | null: not removable
+function cvDelOf(t, key) {
+  const kind = kindOfKey(t, key);
+  if (kind === 'mod') return () => modDelete(key);
+  if (kind === 'pm') { const q = pmOf(t, key); return () => PATCH.remove(q.mid); }
+  if (kind === 'part') return () => sxRemovePart(key);
+  return null;
+}
+// → true when the key is the canvas's (taken: nothing else hears it)
+function cvDeleteKey(e) {
+  const W = cvW(), ids = cvSelIds(W), vp = $('#viewport'), a = document.activeElement;
+  if (!W || !cvView || $('#tab-inst').hidden || !ids.length) return false;
+  if (lastArea === 'arr' && range && !cvArea && !(a && vp && (a === vp || vp.contains(a)))) return false; // (the bars' range, pressed last)
+  if (!e.shiftKey && !cvPopOpen()) cvDeleteSel(ids);
+  return true;
+}
+const CV_KEEP = [['inst', 'the instrument'], ['fx', 'the FX panel'], ['out', 'OUT']];
+function cvDeleteSel(ids) {
+  if (cvMaster) { notice('The master canvas’s modules can’t be deleted', 4000); return; }
+  const t = trk(), jobs = [], kept = new Set();
+  for (const key of ids) {
+    if (!cvView.modules.has(key)) continue;
+    const run = cvDelOf(t, key);
+    if (run) jobs.push({ run, title: cvTitle(key).title, verb: kindOfKey(t, key) === 'part' ? 'Remove ' : 'Delete ' }); else kept.add(kindOfKey(t, key)); // (verb: the path's own step label)
+  }
+  const mk = jobs.length ? hist.mark(project) : null, log = [], done = [], why = [];
+  noticeLog = log;
+  try { for (const j of jobs) { const at = log.length; if (j.run()) done.push(j); else why.push(...log.slice(at)); } } finally { noticeLog = null; }
+  const step = done.length ? histFold(mk, done.length > 1 ? 'Delete ' + done.length + ' modules' : done[0].verb + done[0].title) : null;
+  updateUndoUI();
+  if (done.length === 1 && !kept.size && !why.length && log.length) return; // (one module, its path's own notice: "Deleted 902 1 and 2 cords · tap to undo")
+  const nouns = CV_KEEP.filter(x => kept.has(x[0])).map(x => x[1]), list = andList(nouns), out = [];
+  if (done.length) out.push('Deleted ' + (done.length === 1 ? done[0].title : done.length + ' modules'));
+  if (nouns.length) out.push(done.length ? list + (nouns.length > 1 ? ' stay' : ' stays') : list[0].toUpperCase() + list.slice(1) + ' can’t be deleted' + (kept.has('inst') ? ' · to change the instrument, use Replace with… in its ⋯ menu' : ''));
+  out.push(...why);
+  if (!out.length) return;
+  const msg = out.join(' · ') + (step ? ' · tap to undo' : '');
+  for (const s of log) if (s !== msg) noticeActs.delete(s); // (the paths' own taps: their steps are folded into one)
+  if (step) noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (hist.u[hist.u.length - 1] === step) undo(); });
+  notice(msg, step ? 8000 : 5000);
+}
+// ONE History step for a press that ran several recorded edits (cvDeleteSel: each path records its own) — History mark / fold:
+// the step left holds the state at mark (the first one pushed, or the no-op step on top that held it already), labelled `label`
+// (the path's own when it is one module: its step may be that no-op one); the removed Serum parts' ⏻ writes (sxBack's meta
+// {trackId, dev, part, f}, the delete paths' only meta — set on whichever step was on top; one Serum per track) merged onto it
+// → the step | null
+function histFold(mk, label) {
+  const r = mk && hist.fold(mk);
+  if (!r) return null;
+  const st = r.step, partMeta = m => !!m && Array.isArray(m.f) && !!m.dev;
+  const sx = [...(st.meta !== mk.meta && partMeta(st.meta) ? [st.meta] : []), ...r.metas.filter(partMeta)]; // (on the kept step: set in this press — a path's)
+  if (sx.length === 1) st.meta = sx[0];
+  else if (sx.length > 1) st.meta = { trackId: sx[0].trackId, dev: sx[0].dev, parts: sx.map(m => m.part), f: sx.flatMap(m => m.f) };
+  st.label = label;
+  return st;
+}
 /* ---------------------------------------------- cv MODULES: modules, cables, layout, camera prefs */
 // The selected track's modules (cv-module createTrackView, device-driven: one module per device, its key the device id,
 // IMPL-1e §4.1): every device gets an element of its own (cvBodyEl: a ClassicPanel, a SerumUI or an FXRackUI built into
@@ -6521,9 +6593,9 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
 function cvUndoNotice(msg, step, alt, ms = 8000) {
   noticeActs.set(msg, () => {
     noticeActs.delete(msg); notice('', 0);
+    if (hist.u[hist.u.length - 1] === step) { undo(); return; } // (the newest step: undo it — also when the path has no alternative)
     const f = alt();
-    if (!f) return;
-    if (hist.u[hist.u.length - 1] === step) undo(); else f();
+    if (f) f();
   });
   notice(msg, ms);
 }
@@ -7233,7 +7305,7 @@ function sxBackApply(p, { mv, redo, label, noop }) {
     if (noop) notice(`${label || 'That step'} was already ${redo ? 'redone' : 'undone'} in ${cvDevName(t, mv.dev)}`, 4000);
     return;
   }
-  if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? SE.partLabel(mv.part) + '’s power' : 'its routing'} left as it is`, 5000); return; }
+  if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? SE.partLabel(mv.part) + '’s power' : Array.isArray(mv.parts) ? 'the power of ' + andList(mv.parts.map(SE.partLabel)) : 'its routing'} left as it is`, 5000); return; } // ((2026-10-23) parts: a Delete-key press's parts, histFold)
   for (const x of mv.f) sxFieldSet(s, x[0], x[to]);
   sxDirty.add(t.id + '/' + mv.dev);
 }

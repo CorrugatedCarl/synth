@@ -490,6 +490,19 @@ export class History {
     while (this.u.length && snapSame(this.u[this.u.length - 1], cur)) { this._drop(this.u.pop()); n++; }
     return n;
   }
+  // One step for an action that records several edits (the canvas Delete key over a selection: each module's own path
+  // records its step): mark(project) before them, fold(mark) after. The step left holds the state at mark — the first one
+  // they pushed, or the newest step before them when it held that state already (record() pushed nothing for the first
+  // edit then) —; every later one is dropped. → { step, metas: the dropped steps' metas, oldest first (the caller merges
+  // them) } | null (nothing pushed, and the state at mark was not on top)
+  mark(project) { const top = this.u[this.u.length - 1] || null; return { top, meta: top ? top.meta : undefined, same: !!top && snapSame(top, this._snap(project)) }; }
+  fold(mark) {
+    const top = mark && mark.top, i = top ? this.u.lastIndexOf(top) : -1, k = mark && mark.same && i >= 0 ? i : i + 1;
+    if (k >= this.u.length) return null;
+    const gone = this.u.splice(k + 1);
+    for (const e of gone) this._drop(e);
+    return { step: this.u[k], metas: gone.map(e => e.meta) };
+  }
   // canUndo/canRedo only look at the stacks: right after record() the top snapshot may turn out to be a
   // no-op (the edit changed nothing), and undo() then returns null. The *From(project) forms are exact.
   get canUndo() { return this.u.length > 0; }
