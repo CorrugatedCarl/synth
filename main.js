@@ -5106,6 +5106,12 @@ function initKeys() {
     if (t && t.tagName === 'INPUT' && /^(arrow|page|home$|end$)/.test(k)) return; // focused slider/checkbox: native keys
     if (k === ' ' && t && (t.tagName === 'BUTTON' || (t.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(t.type))) && kbFocus(t)) return; // Space activates a keyboard-focused control
     if (e.altKey && !(code in CODEMAP)) return;
+    if (k === 'tab') { // CANVAS ↔ ROLL (2026-10-23, the user: "tab should swap to canvas and back") — past the gates above (no ⌘ / Ctrl / Alt, not in text entry or a select, no dialog / sheet): bare Tab only, no menu / popover / Sources tray open
+      if (e.shiftKey || cvPopOpen() || (shell.src && shell.src.isOpen())) return; // (Shift+Tab, an open menu: the browser's focus move)
+      e.preventDefault(); // (a held key's repeats too: no focus jump, no second toggle)
+      if (!e.repeat) openTab($('#tab-roll').hidden ? 'roll' : 'canvas'); // (cvMaster is a flag: the master canvas is what CANVAS shows again)
+      return;
+    }
     if (e.repeat) { if (pk || k === ' ' || k.startsWith('arrow')) e.preventDefault(); if (inRoll && k.startsWith('arrow')) nudgeKey(e, k); return; }
     if (code in CODEMAP) {
       e.preventDefault();
