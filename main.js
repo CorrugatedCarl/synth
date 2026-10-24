@@ -6593,9 +6593,9 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
 function cvUndoNotice(msg, step, alt, ms = 8000) {
   noticeActs.set(msg, () => {
     noticeActs.delete(msg); notice('', 0);
+    if (hist.u[hist.u.length - 1] === step) { undo(); return; } // (the newest step: undo it — also when the path has no alternative)
     const f = alt();
-    if (!f) return;
-    if (hist.u[hist.u.length - 1] === step) undo(); else f();
+    if (f) f();
   });
   notice(msg, ms);
 }

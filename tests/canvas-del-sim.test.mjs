@@ -295,3 +295,16 @@ test('the master canvas: nothing on it is deleted — its notice says so', async
   assert.deepEqual([keys(), hsteps(), note()], [k0, n0, 'The master canvas’s modules can’t be deleted']);
   MS.off(); await settle(2);
 });
+
+// cvUndoNotice's tap with no alternative (alt() → null) still undoes while its step is the newest — it returned before the undo
+// (a Pads module's "Deleted Pads N · tap to undo", a Serum part's "Added …", a Serum cable's "… · Undo")
+test('a "tap to undo" notice whose path has no alternative undoes its step (Pads deleted from its menu)', async () => {
+  const id = M.add('pads', null); sim.raf(); await settle();
+  assert.ok(id && has(id), 'a Pads module added');
+  const n0 = hsteps();
+  M.del(id); await settle();
+  assert.deepEqual([has(id), hsteps()], [false, n0 + 1]);
+  assert.match(note(), /^Deleted .* · tap to undo$/);
+  sim.$('#notice').onclick(); await settle();
+  assert.deepEqual([has(id), hsteps()], [true, n0], 'the tap undid the delete');
+});
