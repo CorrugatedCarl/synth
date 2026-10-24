@@ -2794,6 +2794,8 @@ export function closeTransient() {
   hideTip();
   for (const f of [...transients]) { try { f(); } catch (err) { console.warn(err); } }
 }
+// menuOpen(): a popup list or context menu of the kit is open (main.js: the canvas Delete key leaves the modules alone then)
+export function menuOpen() { return !!active; }
 // addTransient(fn) → off: fn closes a popup placed over a world element from the top layer (a Serum popover in #ov):
 // closeTransient (the camera's move start) calls it, as it closes the kit's own menus, so nothing is stranded by a pan
 export function addTransient(fn) { if (typeof fn !== 'function') return () => {}; transients.add(fn); return () => transients.delete(fn); }
