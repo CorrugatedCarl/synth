@@ -4,6 +4,11 @@
 // private API (A2, A6); the pbxproj (every .swift referenced, the Run Script phase, no DEVELOPMENT_TEAM, no build settings);
 // Config.xcconfig's settings (§1.2); Local.xcconfig gitignored; the icon set and the launch colour. The smoke (tools/app-smoke.sh)
 // is the dynamic half. Run: node --test tests/app-native.test.mjs  (macOS: plutil, git, zsh)
+// Stage B (IMPL-B §7 B5, lane M): CoreMIDI behind the page's Web MIDI shim — the client / ports / destination, the frozen bridge
+// messages, the gate, the release triple, the caps, the shim as a Resource after the marker, the Bluetooth sheet's settle, the smoke
+// under SMOKE. Two of stage A's assertions are AMENDED by that contract (named so no reviewer reads them as a weakened test):
+// Info.plist now REQUIRES NSBluetoothAlwaysUsageDescription (§4.1), and the exact Swift list gains Midi.swift, MidiBluetooth.swift,
+// SmokeMidi.swift (the A2 / A6 greps cover them too). Recorded in IMPL-A §12 (the lead's decision #11).
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -149,14 +154,18 @@ test('Info.plist: the §1.3 keys, Q2\'s background mode, the document types, the
   // (fix R1-F2) an audio/* accept makes WebKit's upload menu offer Take Video, which records sound: without this key the system
   // kills the app on that tap (a device-only kill, as the camera's)
   assert.match(plist.NSMicrophoneUsageDescription, /^SYNTH does not record audio\b.*Take Video/);
-  for (const k of ['NSAppTransportSecurity', 'UIRequiresFullScreen', 'NSPhotoLibraryUsageDescription', 'NSBluetoothAlwaysUsageDescription', 'WKAppBoundDomains']) assert.equal(k in plist, false, k);
+  // (IMPL-B §4.1 — an amendment of stage A's absent-keys list) the Bluetooth MIDI pairing sheet starts CoreBluetooth: without the key
+  // the system kills the app when it opens; the text names what it is for
+  assert.match(plist.NSBluetoothAlwaysUsageDescription, /^SYNTH connects to Bluetooth MIDI keyboards and pads you pair here\.$/);
+  for (const k of ['NSAppTransportSecurity', 'UIRequiresFullScreen', 'NSPhotoLibraryUsageDescription', 'WKAppBoundDomains']) assert.equal(k in plist, false, k);
 });
 
 /* ------------------------------------------------------------------ the Swift (A2, A6, the frozen interfaces) */
 // code only: block comments and // comments gone (a // after a ':' is a URL inside a string and stays — it must be caught)
 const code = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 test('the Swift sources: no URLSession / Network / http(s) literal / KVC on WebKit (A2, A6); UIKit only outside the three shared files (§8)', () => {
-  assert.deepEqual(SWIFT, ['App.swift', 'AudioSession.swift', 'Bridge.swift', 'FileExport.swift', 'SchemeHandler.swift', 'ShellViewController.swift', 'SiteBundle.swift', 'Smoke.swift', 'SmokeSteps.swift']);
+  // (IMPL-B §10 — an amendment of stage A's exact list) + Midi.swift, MidiBluetooth.swift, SmokeMidi.swift
+  assert.deepEqual(SWIFT, ['App.swift', 'AudioSession.swift', 'Bridge.swift', 'FileExport.swift', 'Midi.swift', 'MidiBluetooth.swift', 'SchemeHandler.swift', 'ShellViewController.swift', 'SiteBundle.swift', 'Smoke.swift', 'SmokeMidi.swift', 'SmokeSteps.swift']);
   const bad = [];
   for (const f of SWIFT) {
     const c = code(read(SRC + f));
@@ -228,14 +237,185 @@ test('the shell: the marker, the offline guard, the navigation policy, the bridg
   assert.ok(existsSync(new URL(SRC + 'Smoke.js', ROOT)));
 });
 
+/* ------------------------------------------------------------------ stage B (IMPL-B §7 B5): CoreMIDI behind the shim */
+test('IMPL-B B5: Midi.swift (CoreMIDI, Foundation, os only) — one client never disposed, a 1.0 input port, the "SYNTH" destination; no network MIDI / CoreBluetooth / own BLE driver; the four bridge messages; midiIn / midiPorts through call() with arguments; the gate on the four names (not foreground), decided at arrival; onScreen from sceneBackground; pageReset on termination and didCommit; the release triple; the caps and the interval named; no isMainThread; the shim a Resource after the marker, in Release; the sheet settles on presentationControllerDidDismiss; the smoke under SMOKE', () => {
+  const midi = read(SRC + 'Midi.swift'), bt = read(SRC + 'MidiBluetooth.swift'), vc = read(SRC + 'ShellViewController.swift'), br = read(SRC + 'Bridge.swift'), sm = read(SRC + 'SmokeMidi.swift');
+  const all = SWIFT.map(f => code(read(SRC + f))).join('\n'), cm = code(midi), cv = code(vc);
+  // §2.1 / §2.4
+  assert.match(cm, /MIDIClientCreateWithBlock\("SYNTH" as CFString, &c\)/);
+  assert.match(cm, /MIDIInputPortCreateWithProtocol\(client, "SYNTH in" as CFString, \._1_0, &inPort\)/);
+  assert.match(cm, /MIDIOutputPortCreate\(client, "SYNTH out" as CFString, &outPort\)/);
+  assert.match(cm, /MIDIDestinationCreateWithProtocol\(client, "SYNTH" as CFString, \._1_0, &appDest\)/);
+  assert.match(cm, /MIDISendEventList\(outPort, dest\.ref/);
+  assert.match(cm, /kMIDIPropertyUniqueID, saved\)/, 'the destination\'s uid persisted (kMIDIIDNotUnique → the assigned one kept)');
+  assert.match(cm, /static let otherApps = "From other apps"/);
+  assert.match(cm, /kMIDIPropertyDisplayName/); assert.match(cm, /kMIDIPropertyOffline/); assert.match(cm, /kMIDIPropertyPrivate/);
+  assert.doesNotMatch(all, /MIDIClientDispose/, 'never disposed (MIDIServices.h:1462–1479)');
+  // B3 / A6
+  for (const re of [/MIDINetworkSession/, /import CoreBluetooth/, /MIDIBluetoothDriver/, /evaluateJavaScript\(/, /kMIDIPropertyAdvanceScheduleTimeMuSec/]) assert.doesNotMatch(all, re, String(re));
+  assert.deepEqual(midi.match(/^import \w+$/gm).sort(), ['import CoreMIDI', 'import Foundation', 'import os']);
+  assert.doesNotMatch(midi, /^import UIKit/m);
+  assert.match(cm, /OSAllocatedUnfairLock/);
+  assert.doesNotMatch(all, /isMainThread/, 'no main-thread assertion (the user\'s device build is Debug)');
+  // §3.1 the frozen messages and their replies
+  for (const t of ['"midi"', '"midi-send"', '"midi-bt"', '"midi-clock"']) assert.ok(br.includes('case ' + t), 'bridge handles ' + t);
+  assert.match(br, /ok\(\["host": host\?\.bridgeMidiClock\(\) \?\? 0\]\)/);
+  assert.match(code(br), /case "smoke-midi" where Smoke\.on:/, 'the by-hand helper message exists only while the smoke is on');
+  assert.match(cv, /func bridgeSmokeMidi\(_ bytes: \[UInt8\]\) \{\s*#if SMOKE\s*if Smoke\.on,/);
+  assert.match(br, /func bridgeMidiSend\(id: String, bytes: \[UInt8\], delay: Double\) -> String\?/);
+  // native → web: the two entry points through call() with arguments, one ordered queue, one in flight
+  assert.match(cm, /"if \(window\.SYNTH_SHELL && SYNTH_SHELL\.midiIn\) SYNTH_SHELL\.midiIn\(b\)"; args = \["b": b\]/);
+  assert.match(cm, /"if \(window\.SYNTH_SHELL && SYNTH_SHELL\.midiPorts\) SYNTH_SHELL\.midiPorts\(list, gen\)"; args = \["list": list, "gen": g\]/);
+  assert.match(cm, /guard !inFlight, !queue\.isEmpty, let host else \{ return \}/);
+  assert.match(cm, /guard let self, gen == self\.pageGen else \{ return \}/, 'a late completion from the old page ignored');
+  assert.match(cv, /func midiCall\(_ body: String, _ args: \[String: Any\], _ done: @escaping \(Bool, String\?\) -> Void\) \{\s*call\(body, args\)/);
+  // §3.4 the gate: the four names in one condition, never `foreground`; decided at arrival. (fix R1-F1 — an amendment of the frozen
+  // expression) a fifth input, `backgroundExpired`: the shell's background task expired behind another app with Sound in background
+  // on → shut until the foreground (iPadOS suspends the process right after; the triple must reach the page before — the sender's proof)
+  const gateLine = cm.split('\n').find(l => /let open = /.test(l));
+  assert.match(gateLine, /let open = ready && midiOpen && \(onScreen \|\| \(backgroundAudio && !backgroundExpired\)\)/); assert.doesNotMatch(gateLine, /foreground/);
+  assert.match(cm, /var backgroundExpired = false \{ didSet \{ updateGate\(\) \} \}/);
+  // (fix R2-F4) drop at arrival only what was stamped while the gate was shut — [closedAt, openedAt) —, never an older or absurd stamp
+  // (another app's stale stamp is delivered with age 2 000, §1.3)
+  assert.match(cm, /guard s\.gateOpen, !\(s\.closedAt != 0 && m\.at >= s\.closedAt && m\.at < s\.openedAt\) else \{ s\.dropped \+= 1; return \}/);
+  assert.match(cm, /var closedAt: UInt64 = 0/); assert.match(cm, /s\.closedAt = now/);
+  const sb = cv.slice(cv.indexOf('func sceneBackground('), cv.indexOf('func sceneBackground(') + 1800);
+  assert.match(sb, /midi\.onScreen = !background/, 'onScreen assigned in sceneBackground');
+  // (fix R1-F1) the background task: taken at sceneDidEnterBackground when midiOpen && backgroundAudio; its expiration handler runs the
+  // gate's release path (midiBackgroundExpired → midi.backgroundExpired = true) and ends the task; ended at the foreground and whenever
+  // the gate shuts (gateChanged); the foreground clears the flag. No silent-audio keep-alive anywhere (the lead's decision (b))
+  assert.match(sb, /if midi\.midiOpen && backgroundAudio && midiTask == \.invalid \{\s*midiTask = UIApplication\.shared\.beginBackgroundTask\(withName: "synth\.midi"\) \{ \[weak self\] in self\?\.midiBackgroundExpired\(\) \}/);
+  assert.match(sb, /else \{\s*midi\.backgroundExpired = false\s*endMidiTask\(\)/);
+  assert.match(cv, /func midiBackgroundExpired\(\) \{[\s\S]*?midi\.backgroundExpired = true[\s\S]*?endMidiTask\(\)\s*\n\s*\}/);
+  assert.match(cv, /private func endMidiTask\(\) \{ if midiTask != \.invalid \{ UIApplication\.shared\.endBackgroundTask\(midiTask\); midiTask = \.invalid \} \}/);
+  assert.match(cv, /midi\.gateChanged = \{ \[weak self\] open in if !open \{ self\?\.endMidiTask\(\) \} \}/);
+  assert.match(cm, /var gateChanged: \(\(Bool\) -> Void\)\?/); assert.match(cm, /gateChanged\?\(open\)/);
+  assert.doesNotMatch(all, /AVAudioPlayer|AVAudioEngine|AVAudioSourceNode|keepAlive|keep_alive/, 'no host-side silent-audio keep-alive');
+  assert.match(cm, /func pageReset\(\) \{[\s\S]*?midiOpen = false\s*\n\s*\}/);
+  // (fix R2-N2) termination: pageReset FIRST (the masks and the queue cleared, nothing built for the dead page), then ready = false
+  assert.match(cv.slice(cv.indexOf('func webViewWebContentProcessDidTerminate('), cv.indexOf('private func restart(')), /midi\.pageReset\(\); midi\.ready = false/, 'termination resets midi, pageReset first');
+  assert.match(cv.slice(cv.indexOf('didCommit n: WKNavigation!'), cv.indexOf('func webView(_ w: WKWebView, didFinish')), /midi\.pageReset\(\)/, 'didCommit resets midi');
+  assert.match(cv, /func bridgeReady\(\) \{\s*ready = true\s*midi\.ready = true/); assert.match(cv, /midi\.backgroundAudio = on/);
+  // the release triple (CC 64 = 0, bend centre, CC 123) — (fix R1-F2) in THREE PASSES over every selected port, so the order holds across
+  // ports and channels (the page's held / sustain are per channel: another port's CC 123 must never precede this port's CC 64 = 0) —,
+  // the caps and the interval as named constants, the thinner's exemptions
+  assert.match(cm, /d1: 64, d2: 0\)/); assert.match(cm, /d1: 0, d2: 0x40\)/); assert.match(cm, /d1: 123, d2: 0\)/);
+  assert.ok(cm.indexOf('d1: 64, d2: 0)') < cm.indexOf('d1: 0, d2: 0x40)') && cm.indexOf('d1: 0, d2: 0x40)') < cm.indexOf('d1: 123, d2: 0)'), 'sustain up, bend centre, then All Notes Off');
+  const rel = cm.slice(cm.indexOf('private func releases('), cm.indexOf('// MARK: receive'));
+  assert.equal((rel.match(/for \(uid, m\) in sel \{/g) || []).length, 3, 'three passes over the selected ports');
+  assert.ok(rel.indexOf('d1: 64, d2: 0)') < rel.indexOf('for (uid, m) in sel {', rel.indexOf('for (uid, m) in sel {') + 1) && rel.lastIndexOf('for (uid, m) in sel {') < rel.indexOf('d1: 123, d2: 0)'), 'the sustain pass first, the All Notes Off pass last');
+  assert.match(rel, /for \(uid, _\) in sel \{ s\.masks\.removeValue\(forKey: uid\) \}/);
+  // (fix R1-F9) the notes on since the last release are a 128-bit set per channel: a note-off (or a velocity-0 note-on) clears its note,
+  // CC 120 / 123 the channel; a channel sounds while any note is set — so a port that played and released sends no stale CC 123
+  assert.match(cm, /var held = \[UInt64\]\(repeating: 0, count: 32\)/);
+  assert.match(cm, /case 0x90 where d2 > 0: s\.masks\[uid, default: Masks\(\)\]\.note\(ch, d1, on: true\)/);
+  assert.match(cm, /case 0x80, 0x90: s\.masks\[uid\]\?\.note\(ch, d1, on: false\)/, 'a velocity-0 note-on is a note-off for the masks');
+  assert.match(cm, /else if d1 == 120 \|\| d1 == 123 \{ s\.masks\[uid\]\?\.allOff\(ch\) \}/);
+  // (fix R2-F2) a never-thinned overflow: every (port, channel) in the dropped buffer owes the whole triple — a pedal-up / bend centre /
+  // note-off inside it already cleared its bit — marked BEFORE the buffer is emptied
+  const ov = cm.slice(cm.indexOf('if s.pending.count > Self.neverThinnedCap {'), cm.indexOf('s.nextThin = max('));
+  assert.match(ov, /for m in s\.pending where m\.st < 0xF0 \{ s\.masks\[m\.uid, default: Masks\(\)\]\.dirty\(Int\(m\.st & 0x0f\)\) \}/);
+  assert.ok(ov.indexOf('.dirty(') < ov.indexOf('s.pending.removeAll()') && ov.indexOf('s.pending.removeAll()') < ov.indexOf('releases(&s, ports: nil, at: now)'), 'dirty → empty → release');
+  assert.match(cm, /mutating func dirty\(_ ch: Int\) \{ let b = UInt16\(1 << ch\); sus \|= b; bend \|= b; held\[2 \* ch\] \|= 1 \}/);
+  // (fix R2-F3) connections keyed uid → endpoint ref: a source re-created under the same uniqueID is a new ref → disconnect the dead
+  // one, release its channels, connect the new one (the page's list unchanged)
+  assert.match(cm, /private var connected: \[Int32: MIDIEndpointRef\] = \[:\]/);
+  assert.match(cm, /for p in src \{ if let old = connected\[p\.uid\], old != p\.ref \{ dead\.insert\(p\.uid\) \} \}/); assert.match(cm, /let stale = dead/);
+  assert.match(cm, /for \(uid, ref\) in connected where stale\.contains\(uid\) \{ _ = MIDIPortDisconnectSource\(inPort, ref\); connected\.removeValue\(forKey: uid\) \}/);
+  assert.match(cm, /for p in src where connected\[p\.uid\] == nil \{ if MIDIPortConnectSource\(inPort, p\.ref, UnsafeMutableRawPointer\(bitPattern: Int\(p\.uid\)\)\) == noErr \{ connected\[p\.uid\] = p\.ref \} \}/);
+  assert.doesNotMatch(cm, /connected = ids/);
+  // (fix R2-N1 / N5) the client is made on a utility queue — at launch (prepare, from the shell after the page starts loading) and for
+  // the page's { t: 'midi' } (open replies when it exists: the bridge's reply handler waits); the ports and the destination are made
+  // when missing at EVERY open (a failed input port is retried, never left 0 behind a live client)
+  assert.match(cm, /func prepare\(\) \{ if client == 0 \{ createClient\(\) \} \}/);
+  assert.match(cm, /func open\(_ done: @escaping \(\[String: Any\]\) -> Void\) \{/);
+  // (a dedicated utility Thread whose run loop stays alive, not a GCD worker: made on a worker, the client missed its notifications in
+  // two of three harness runs — CoreMIDI may bind them to the creating thread's run loop)
+  assert.match(cm, /let t = Thread \{ \[weak self\] in\s*var c = MIDIClientRef\(\)/); assert.match(cm, /t\.qualityOfService = \.utility/);
+  assert.match(cm, /RunLoop\.current\.add\(Foundation\.Port\(\), forMode: \.default\)/);
+  assert.match(cm, /if inPort == 0 \{/); assert.match(cm, /if outPort == 0 \{/); assert.match(cm, /if appDest == 0 \{/);
+  assert.match(cm, /\["ports": portList\(\), "gen": gen, "h": Self\.hostMs\]/);
+  assert.match(cv, /startGuarded\(\)\s*midi\.prepare\(\)/, 'the client prepared right after the page load starts');
+  assert.match(br, /host\.bridgeMidiOpen \{ r in if let e = r\["error"\] as\? String \{ no\(e\) \} else \{ ok\(r\) \} \}/);
+  assert.match(br, /func bridgeMidiOpen\(_ done: @escaping \(\[String: Any\]\) -> Void\)/);
+  // (fix R2-N3) oneList: one withUnsafeMutablePointer scope — the packet pointer MIDIEventListInit returns is used only inside it
+  const ol = cm.slice(cm.indexOf('static func oneList('), cm.indexOf('/// The shared counters'));
+  assert.match(ol, /withUnsafeMutablePointer\(to: &list\) \{ lp in/); assert.match(ol, /MIDIEventListInit\(lp, \._1_0\)/); assert.match(ol, /MIDIEventListAdd\(lp, /);
+  assert.doesNotMatch(ol, /MIDIEventListInit\(&list|MIDIEventListAdd\(&list/);
+  // (fix R1-F8) a `ports` call's line carries the drops waiting to ride; the gate lines carry the counters (a log-mode reader sees a drop at once)
+  assert.match(cm, /case \.ports\(let list, let g\):[\s\S]*?dropped = lock\.withLock \{ \$0\.dropped \}/);
+  assert.match(cm, /Smoke\.log\(\["k": "midiGate", "open": open, "released": n, [^\n]*"backgroundExpired": backgroundExpired, [^\n]*"counters": counters\]\)/);
+  assert.match(cm, /static let flushIntervalMs: Double = 2\b/); assert.match(cm, /static let pendingCap = 2048\b/); assert.match(cm, /static let neverThinnedCap = 4096\b/); assert.match(cm, /static let maxAgeMs: Double = 2000\b/);
+  assert.match(cm, /guard m\.d1 < 120, !\(64\.\.\.69\)\.contains\(m\.d1\) else \{ return nil \}/, 'CC 64–69 and 120–127 never thinned');
+  // §2.3 the UMP walk sizes every type; F8 / FE dropped; CV2 counted
+  assert.match(cm, /umpWords = \[1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4\]/);
+  assert.match(cm, /st != 0xF8 && st != 0xFE/); assert.match(cm, /else if type == 0x4 \{ cv2 \+= 1 \}/);
+  // §1.1 the shim: a Resource (Release too), injected after the marker in installUserScripts (both installs go through it)
+  const pb = read(IOS + 'SYNTH.xcodeproj/project.pbxproj');
+  assert.match(pb, /path = MidiShim\.js;/); assert.match(pb, /MidiShim\.js in Resources \*\/,/);
+  assert.doesNotMatch(read(IOS + 'Config.xcconfig'), /EXCLUDED_SOURCE_FILE_NAMES[^\n]*MidiShim/);
+  const ius = cv.slice(cv.indexOf('private func installUserScripts('), cv.indexOf('private func startGuarded('));
+  const marker = ius.indexOf('uc.addUserScript(WKUserScript(source: src, injectionTime: .atDocumentStart, forMainFrameOnly: true))'), shim = ius.indexOf('forResource: "MidiShim", withExtension: "js"');
+  assert.ok(marker > 0 && shim > marker, 'the shim after the marker');
+  assert.match(ius, /uc\.addUserScript\(WKUserScript\(source: shim, injectionTime: \.atDocumentStart, forMainFrameOnly: true\)\)/);
+  assert.ok(shim < ius.indexOf('forResource: "Smoke"'), 'the shim before the smoke hook');
+  assert.equal((cv.match(/installUserScripts\(/g) || []).length, 4, 'declared + the two installs + the one-shot swap');
+  // §4.1 the Bluetooth sheet: CoreAudioKit's controller through the Presenter; settle on Done, a user dismissal, the auto-dismiss, abandon.
+  // (fix R1-F4) a FORM SHEET, not a popover: a popover's outside tap also reached the page (a Serum matrix cell edited, a key played);
+  // the form sheet's dimmed surround consumes it (and dismisses the sheet — presentationControllerDidDismiss still settles)
+  assert.match(bt, /^import UIKit/m); assert.match(bt, /^import CoreAudioKit/m);
+  assert.match(bt, /CABTMIDICentralViewController\(\)/); assert.match(bt, /presenter\.enqueue\(cancel: closed\)/);
+  assert.match(bt, /nav\.modalPresentationStyle = \.formSheet/); assert.doesNotMatch(code(bt), /\.popover|popoverPresentationController|sourceView|sourceRect/);
+  assert.match(bt, /nav\.presentationController\?\.delegate = nav/); assert.match(bt, /func presentationControllerDidDismiss\(_ presentationController: UIPresentationController\) \{ onClose\?\(\) \}/);
+  assert.match(bt, /nav\.onClose = \{ settle\(closed\) \}/);
+  assert.match(cv, /MidiBluetoothSheet\.present\(via: presenter, autoDismiss: Smoke\.drives \? 2 : nil/);
+  // §8 the smoke's MIDI half: Debug SMOKE and Smoke.drives only (the user's Debug build does nothing without -smoke)
+  assert.match(sm, /^#if SMOKE/m); assert.match(code(sm), /func smokeMidiSteps\(sheetsSoFar: Int\)/);
+  assert.match(code(read(SRC + 'SmokeSteps.swift')), /\] \+ smokeMidiSteps\(sheetsSoFar: 6\) \+ \[/);
+  assert.match(midi, /#if SMOKE\s+if Smoke\.on, smokeSrc == 0 \{ line\["smoke"\] = smokeCreateEndpoints\(\) \}\s+#endif/);
+  assert.match(code(sm), /"SYNTH smoke in" as CFString/); assert.match(code(sm), /"SYNTH smoke out" as CFString/); assert.match(code(sm), /MIDIReceivedEventList\(smokeSrc/);
+  assert.doesNotMatch(code(read(SRC + 'SmokeSteps.swift')), /if Smoke\.mode == "midicold" \{ smokeMidiCold\(\); return \}[\s\S]*?guard Smoke\.drives/, 'the modes are checked after Smoke.drives');
+  assert.match(read(SRC + 'Smoke.js'), /midiOpen: async function/); assert.match(read(SRC + 'Smoke.js'), /midiStall: function/);
+  assert.match(read('tools/app-smoke.sh'), /"step":"ready"/); assert.match(read('tools/app-smoke.sh'), /--mode midicold/);
+});
+
+test('B fixes (reviews 1 and 2, fixer M): the smoke — the relaunch by -smokeMode relaunch (R1-F6: a label ending in "b" is a label), several background round trips per run, step 8b (the background task\'s expiry), the release order checked per kind; Smoke.js\'s comment (own accesses); the harness and the sender tools exist', () => {
+  const steps = code(read(SRC + 'SmokeSteps.swift')), sm = code(read(SRC + 'SmokeMidi.swift')), sh = read('tools/app-smoke.sh'), js = read(SRC + 'Smoke.js');
+  // (fix R1-F6) the relaunch half runs on `-smokeMode relaunch`, never on the label's last letter (`--run r1b` ran it with 50 FAILs)
+  assert.doesNotMatch(steps, /hasSuffix\("b"\)/);
+  assert.match(steps, /if Smoke\.mode == "relaunch" \{/);
+  assert.match(sh, /launch_wait "\$\{RUN\}b" 40 -smokeMode relaunch/);
+  // the script counts the `"step":"ready"` / `"step":"bgdone"` lines: a round trip per pair (steps 8, 8b, 11), not one per run
+  assert.match(sh, /r=\$\(grep -c '"step":"ready"' "\$log"\); d=\$\(grep -c '"step":"bgdone"' "\$log"\)/);
+  assert.match(sh, /if \(\( r > bg \)\); then bg=\$r;/); assert.match(sh, /if \(\( d > fg \)\); then fg=\$d;/);
+  // (fix R1-F1) step 8b: Sound in background on, pedal + note down, hidden → the shell's background task; the Debug shell runs the
+  // expiration path itself (as iPadOS does ≈ 30 s later) → the triple to the still-live page, 3 hidden sends dropped, the foreground reopens
+  assert.match(sm, /func bgTaskStep\(\) -> Step/); assert.match(sm, /self\.midiBackgroundExpired\(\)/);
+  assert.match(sm, /Smoke\.log\(\["k": "midiBgTask", "step": "ready"/); assert.match(sm, /"k": "midiBgTask", "step": "bgdone"/);
+  assert.match(sm, /js\("midiBgTaskTake", "return __smoke\.midiTake\(\)"\)/);
+  // (fix R1-F2) the evaluator: every pedal-up (bn 40 00) before any All Notes Off (bn 7B 00) in the closing batch, whatever the ports' uids
+  assert.match(sh, /const pedalFirst = l => \{ const u = kinds\(l, \/\^b\[0-9a-f\]4000\$\/\), a = kinds\(l, \/\^b\[0-9a-f\]7b00\$\/\);/);
+  assert.match(sh, /gate\(pedalFirst\(gt\)/); assert.match(sh, /gate\(pedalFirst\(b8t\)/);
+  assert.match(sh, /midiBgTask/);
+  // Smoke.js hooks its OWN MIDIAccess (one per requestMIDIAccess() since fixer S's N4), not "the shared" one
+  assert.match(js, /a recorder on the page side of the shim — listeners on every input of the smoke's OWN MIDIAccess/);
+  assert.doesNotMatch(js, /the shared MIDIAccess/);
+  // the tools: the macOS harness around the real Midi.swift (review 2's, made a repeatable gate) and reviewer 1's sender (the simulator's only "other app")
+  assert.ok(existsSync(new URL('tools/midi-harness/run.sh', ROOT)) && existsSync(new URL('tools/midi-harness/main.swift', ROOT)), 'tools/midi-harness/');
+  assert.match(read('tools/midi-harness/run.sh'), /app\/ios\/SYNTH\/Midi\.swift/);
+  assert.match(read('tools/midi-harness/main.swift'), /MemoryDefaults/, 'the harness writes no plist (review 2 found ~/Library/Preferences/midiharness.plist)');
+  assert.match(read('tools/midi-sender.swift'), /xcrun simctl spawn/);
+});
+
 /* ------------------------------------------------------------------ the project, the xcconfig, the ignore rules, the assets */
-test('project.pbxproj: every .swift referenced and compiled, Smoke.js a resource, the Run Script phase calls tools/app-bundle.sh, no build settings, no DEVELOPMENT_TEAM', () => {
+test('project.pbxproj: every .swift referenced and compiled, Smoke.js and MidiShim.js resources, the Run Script phase calls tools/app-bundle.sh, no build settings, no DEVELOPMENT_TEAM', () => {
   const pb = read(IOS + 'SYNTH.xcodeproj/project.pbxproj');
   for (const f of SWIFT) {
     assert.match(pb, new RegExp(`isa = PBXFileReference; lastKnownFileType = sourcecode\\.swift; path = ${f.replace('.', '\\.')};`), f + ' referenced');
     assert.match(pb, new RegExp(`/\\* ${f.replace('.', '\\.')} in Sources \\*/,`), f + ' compiled');
   }
   assert.match(pb, /path = Smoke\.js;/); assert.match(pb, /Smoke\.js in Resources \*\/,/); assert.match(pb, /Assets\.xcassets in Resources \*\/,/);
+  assert.match(pb, /path = MidiShim\.js;/); assert.match(pb, /MidiShim\.js in Resources \*\/,/);
   assert.match(pb, /shellScript = "\\"\$SRCROOT\/\.\.\/\.\.\/tools\/app-bundle\.sh\\"\\n";/);
   assert.match(pb, /shellPath = \/bin\/zsh;/); assert.match(pb, /alwaysOutOfDate = 1;/); assert.match(pb, /"\$\(TARGET_BUILD_DIR\)\/\$\(INFOPLIST_PATH\)",/);
   assert.match(pb, /buildPhases = \(\s*A\w+ \/\* Sources \*\/,\s*A\w+ \/\* Frameworks \*\/,\s*A\w+ \/\* Resources \*\/,\s*A\w+ \/\* Bundle the site \*\/,\s*\);/);

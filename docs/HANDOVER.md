@@ -139,6 +139,13 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    precached), the shell seams dormant in browsers (`window.SYNTH_SHELL`). To install on the user's iPad (their free Apple ID): they add the
    Apple ID in Xcode → Settings → Accounts, connect the iPad by cable (Trust), turn on Developer Mode; the lead builds signed with the
    personal team and installs (`xcrun devicectl`); every 7 days a reinstall. **Installed on the user's iPad 2026-10-23** (team 4RXV48235Y in the gitignored Local.xcconfig, bundle id `com.domlavin.synth.personal`; `xcrun devicectl device install app`; the user trusted the developer in Settings → General → VPN & Device Management; re-sign within 7 days) — "feeling great … smoother than browser version". Stage B next: CoreMIDI and the Mac (Pencil haptics dropped by the user).
+15. **(2026-10-24.)** **Stage B (hardware MIDI in the iPad app) done** (contract IMPL-B): CoreMIDI (`app/ios/SYNTH/Midi.swift`) feeds the
+   page's Web MIDI shim (`MidiShim.js`, a WKUserScript; midi.js unchanged). Tools: `tools/midi-harness/run.sh` (the real Midi.swift on the
+   Mac against a fake host — run it after any Midi.swift change), `tools/midi-sender.swift` (sends into the app's "SYNTH" input from
+   `xcrun simctl spawn`, the simulator's only "other app"). **The user's first MIDI test** (no gear yet — a MIDI-keyboard app): open SYNTH and
+   play one key (or press Power) first; put the keyboard app **beside SYNTH in Split View / Slide Over** (full-screen in front, iPadOS
+   suspends SYNTH after ≈ 30 s in the simulator — the device may differ); in the keyboard app pick the output **"SYNTH"** (or its own
+   virtual output — not both: doubled notes); SYNTH's MIDI button reads "MIDI: From other apps"; a stuck note → Panic. No Mac version.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

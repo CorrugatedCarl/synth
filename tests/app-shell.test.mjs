@@ -8,7 +8,8 @@
 // download link (the app's WKDownload → the share sheet), no bridge message, a caller's `later` offered every time (the
 // bounce's Save WAV…: the same file again, no re-render); SYNTH_SHELL.save (the smoke's) over the chunked bridge (file →
 // 2 MiB chunks with `at`, one in flight → end), abort + the link on any refusal. The browser half (no marker):
-// tests/app-shell-web.test.mjs.
+// tests/app-shell-web.test.mjs. Stage B (IMPL-B §4.1, §6, B4): ⚙ Bluetooth MIDI → Pair a device… posts { t: 'midi-bt' }; the
+// Sound in background hint names other apps; probe().midi = { n, wheel, bend } driven through api.midi.message.
 // Run: node --max-old-space-size=2048 --test tests/app-shell.test.mjs
 import './v8-guard.mjs';
 import test, { after } from 'node:test';
@@ -131,6 +132,7 @@ test('G1 probe() before power-on: no context, nothing built; JSON-clean (a nativ
   assert.deepEqual(JSON.parse(JSON.stringify(p)), p);
   assert.deepEqual([p.ctx, p.sr, p.baseLatency, p.outputLatency, p.nodes, p.master, p.peak, p.held, p.store], [null, null, null, null, 0, false, 0, 0, 'idb']);
   assert.equal(p.cpu, 'Press Power or play a key');
+  assert.deepEqual(p.midi, { n: 0, wheel: 0, bend: 0 }, 'IMPL-B §6: nothing received');
   assert.ok(p.bootMs > 0 && Number.isFinite(p.bootMs), 'bootMs: performance.now() at the end of boot');
 });
 
@@ -180,7 +182,10 @@ test('G1 ⚙ Sound in background (the app only, appended after the canvas lines;
   const gp = sim.$('#gearPop'), rows = gp.children.map(el => el.tagName + ':' + text(el)), bb = T().shell.bg;
   const i = rows.indexOf('H3:App');
   assert.ok(i > 0, rows.join(' | '));
-  assert.deepEqual(rows.slice(i), ['H3:App', 'DIV:Sound in backgroundOn', 'P:Keep playing when you switch apps']);
+  // (fix B R1-F5) the hint must not promise what iPadOS does not keep: the hidden app is suspended ≈ 30 s after it leaves the screen
+  // (the simulator; a MIDI app in front then plays nothing) — Split View is the setup that never hits it
+  assert.deepEqual(rows.slice(i), ['H3:App', 'DIV:Sound in backgroundOn', 'P:Keep playing when you switch apps (iPadOS may pause it after a while — for a MIDI app, use Split View)',
+    'DIV:Bluetooth MIDIPair a device…', 'P:Pair a Bluetooth keyboard or pad controller (USB and other apps need no pairing)'], 'IMPL-B §4.1 / §6 + fix R1-F5: the hint names the pause; the Bluetooth row follows');
   assert.deepEqual([bb.getAttribute('aria-pressed'), bb.textContent, bb.type], ['true', 'On', 'button']);
   const c = sim.ctx(), B = () => sent.filter(m => m.t === 'bg').map(m => m.on);
   let n = c.calls.length;
@@ -198,6 +203,48 @@ test('G1 ⚙ Sound in background (the app only, appended after the canvas lines;
   assert.deepEqual([c.calls.at(-1), c.state], ['resume', 'running'], 'visible: resumed');
   bb.click();
   assert.deepEqual([bb.getAttribute('aria-pressed'), bb.textContent, api.store.get('synth.shell.bg', true), B()], ['true', 'On', true, [true, false, true]]);
+});
+
+test('B4 ⚙ Bluetooth MIDI (IMPL-B §4.1, the app only; after Sound in background): a "Pair a device…" button (#cvBt, described by its hint) — a tap posts { t: \'midi-bt\' } to native, once per tap, and nothing else; a native refusal changes nothing', async () => {
+  const bt = T().shell.bt, gp = sim.$('#gearPop');
+  assert.ok(bt, 'the button');
+  assert.deepEqual([bt.id, bt.type, bt.className, bt.textContent, bt.getAttribute('aria-describedby')], ['cvBt', 'button', 'tt', 'Pair a device…', 'cvBtHint']);
+  const hint = gp.children.find(el => el.id === 'cvBtHint');
+  assert.ok(hint && hint.tagName === 'P', 'the hint paragraph');
+  const k = sent.length;
+  bt.click(); await sim.settle(2);
+  assert.deepEqual(sent.slice(k), [{ t: 'midi-bt' }]);
+  bt.click(); await sim.settle(2);
+  assert.deepEqual(sent.slice(k), [{ t: 'midi-bt' }, { t: 'midi-bt' }], 'one post per tap, no state kept');
+  assert.equal(bt.textContent, 'Pair a device…', 'the button never changes');
+  const rej = SHELL.post; SHELL.post = () => Promise.reject(new Error('refused'));
+  try { bt.click(); await sim.settle(2); } finally { SHELL.post = rej; }
+  assert.equal(bt.textContent, 'Pair a device…', 'a refusal is quiet (the sheet is native\'s)');
+});
+
+test('B4 probe().midi (IMPL-B §6): { n, wheel, bend } — the messages the MIDI host callbacks received (notes, every CC once, bend, channel pressure; the wheel and the pedal ride their CC, never counted twice) and the last wheel / bend; JSON-clean, driven through api.midi.message', async () => {
+  const P = () => SHELL.probe().midi;
+  assert.deepEqual(P(), { n: 0, wheel: 0, bend: 0 }, 'nothing received yet');
+  api.midi.message([0xb0, 1, 127], 100, 'Pad Box');
+  assert.deepEqual(P(), { n: 1, wheel: 1, bend: 0 }, 'CC 1: one message (modCC + the wheel), the wheel at 1');
+  api.midi.message([0xe0, 0x7f, 0x7f], 101, 'Pad Box');
+  const m = P();
+  assert.deepEqual([m.n, m.wheel], [2, 1]);
+  assert.ok(Math.abs(m.bend - 1) < 0.001, 'the bend at full: ' + m.bend);
+  api.midi.message([0x90, 60, 100], 102, 'Pad Box');
+  assert.equal(P().n, 3, 'a note on');
+  assert.equal(SHELL.probe().held, 1, 'the note is held (the same path as any MIDI key)');
+  api.midi.message([0x80, 60, 0], 103, 'Pad Box');
+  assert.equal(P().n, 4, 'a note off');
+  api.midi.message([0xb0, 64, 127], 104, 'Pad Box'); api.midi.message([0xb0, 64, 0], 105, 'Pad Box');
+  assert.equal(P().n, 6, 'the pedal: its CC once each (the sustain ctl is not counted again)');
+  api.midi.message([0xd0, 64], 106, 'Pad Box');
+  assert.equal(P().n, 7, 'channel pressure');
+  api.midi.message([0xe0, 0x00, 0x00], 107, 'Pad Box'); api.midi.message([0xb0, 1, 0], 108, 'Pad Box');
+  assert.deepEqual(P(), { n: 9, wheel: 0, bend: -1 }, 'the last values win; bend −1…1, wheel 0…1');
+  assert.deepEqual(JSON.parse(JSON.stringify(SHELL.probe())), SHELL.probe(), 'still JSON-clean for callAsyncJavaScript');
+  api.midi.message([0xfe], 109, 'Pad Box'); api.midi.message([0xf8], 110, 'Pad Box');
+  assert.equal(P().n, 9, 'clock and active sensing decode to nothing: not counted');
 });
 
 test('G1 Help & about in the app: the App sentence (Install app, the browser\'s full screen) is swapped at open for the app\'s build and how projects cross from the browser — app-build.json read once; the labels around it kept', async () => {

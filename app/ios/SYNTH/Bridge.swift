@@ -9,12 +9,23 @@ import WebKit
 //   engine { on }                    the page's power state (§5.3 idle timer); ready {} (§3.2 item 4: queued native → web calls run)
 //   bg { on }                        the "Sound in background" setting (Q2) — recorded for the session handling
 //   log { … }                        the Debug smoke JS's lines (dropped without -smoke)
+// Stage B (IMPL-B §3.1), the MIDI shim's four:
+//   midi { on: true }                the page opened Web MIDI → the CoreMIDI client exists from now; reply { ok, ports, gen, h } — later,
+//                                    once the client (made on a utility queue) exists: the reply handler waits (fix R2-N5)
+//   midi-send { id, b: [st, d1?, d2?], delay }   one message to the destination `id` (uniqueID string); delay ms ≥ 0; reply { ok }
+//   midi-bt {}                       the Bluetooth MIDI pairing sheet, queued on the Presenter; reply { ok } at once
+//   midi-clock {}                    reply { ok, host }: mach_absolute_time in ms — the smoke's common clock
 // The host (ShellViewController) owns the sheet and the page; decoding and writing happen on a serial queue, replies on main.
 protocol BridgeHost: AnyObject {
     func bridgeEngine(on: Bool)
     func bridgeReady()
     func bridgeBackgroundAudio(on: Bool)
     func bridgeShare(_ fileURL: URL, done: @escaping (Bool) -> Void)
+    func bridgeMidiOpen(_ done: @escaping ([String: Any]) -> Void)          // the reply's fields, or ["error": …] — on main, when the client exists
+    func bridgeMidiSend(id: String, bytes: [UInt8], delay: Double) -> String?   // nil = sent, else the error
+    func bridgeMidiBluetooth()
+    func bridgeMidiClock() -> Double
+    func bridgeSmokeMidi(_ bytes: [UInt8])                                    // Debug -smoke only: a message from "SYNTH smoke in" (the by-hand helper)
 }
 
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
@@ -72,6 +83,19 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "engine": host?.bridgeEngine(on: body["on"] as? Bool ?? false); ok([:])
         case "ready": host?.bridgeReady(); ok([:])
         case "bg": host?.bridgeBackgroundAudio(on: body["on"] as? Bool ?? true); ok([:])
+        case "midi":
+            guard body["on"] as? Bool ?? true else { no("midi: on"); return }
+            guard let host else { no("midi: no host"); return }
+            host.bridgeMidiOpen { r in if let e = r["error"] as? String { no(e) } else { ok(r) } }
+        case "midi-send":
+            guard let id = body["id"] as? String, let b = body["b"] as? [NSNumber], (1...3).contains(b.count), b.allSatisfy({ (0...255).contains($0.intValue) }) else { no("midi-send: id, b"); return }
+            let delay = (body["delay"] as? NSNumber)?.doubleValue ?? 0
+            if let e = host?.bridgeMidiSend(id: id, bytes: b.map { UInt8($0.intValue) }, delay: delay.isFinite ? max(0, delay) : 0) { no(e) } else { ok([:]) }
+        case "midi-bt": host?.bridgeMidiBluetooth(); ok([:])
+        case "midi-clock": ok(["host": host?.bridgeMidiClock() ?? 0])
+        case "smoke-midi" where Smoke.on:   // IMPL-B §10 R1: `__smoke.midiNote(n, v)` for a by-hand run (-smokeMode log) — a note from the smoke source
+            guard let b = body["b"] as? [NSNumber], (1...3).contains(b.count) else { no("smoke-midi: b"); return }
+            host?.bridgeSmokeMidi(b.map { UInt8(truncatingIfNeeded: $0.intValue) }); ok([:])
         case "log":
             if Smoke.on { var d = body; d.removeValue(forKey: "t"); if d["k"] == nil { d["k"] = "log" }; Smoke.log(d) }
             ok([:])

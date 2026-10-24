@@ -2,11 +2,13 @@
 // shows it (https://canvas.domlavin.com, no window.SYNTH_SHELL) — every seam dormant: no SYNTH_SHELL created, app().shell
 // false, Install app and Full screen shown and the service worker registered as today, Help & about's App sentence as
 // committed (app-build.json never asked for), no "Sound in background" line, a hidden page's context never suspended by
-// the page, download() → the download link (saveLink) as today. The app's half: tests/app-shell.test.mjs.
+// the page, download() → the download link (saveLink) as today; stage B (IMPL-B B4): no Bluetooth MIDI row, no Web MIDI, no probe. The
+// app's half: tests/app-shell.test.mjs.
 // Run: node --max-old-space-size=2048 --test tests/app-shell-web.test.mjs
 import './v8-guard.mjs';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { bootMain } from './main-sim.mjs';
 
 const keep = setInterval(() => {}, 1000); // (the sim's timers are unref'd: a ref'd beat keeps the process up while the file runs)
@@ -42,6 +44,26 @@ test('G1′ Safari on the iPad (no marker): no SYNTH_SHELL made, app().shell fal
   const rows = sim.$('#gearPop').children.map(el => el.tagName + ':' + text(el));
   assert.equal(rows.some(r => /Sound in background|^H3:App$|Keep playing/.test(r)), false, rows.join(' | '));
   assert.equal(T().shell.bg, undefined);
+});
+
+test('B4 Safari on the iPad (IMPL-B B1): no ⚙ Bluetooth MIDI row, the "Sound in background" hint absent; navigator.requestMIDIAccess still undefined (no shim in a browser), no probe, nothing posted — the MIDI counters tick harmlessly and are read by nobody', () => {
+  const rows = sim.$('#gearPop').children.map(el => el.tagName + ':' + text(el));
+  assert.equal(rows.some(r => /Bluetooth|Pair a|MIDI app in front|midi-bt/.test(r)), false, rows.join(' | '));
+  assert.equal(T().shell.bt, undefined);
+  assert.equal(typeof globalThis.navigator.requestMIDIAccess, 'undefined', 'no Web MIDI: midiOk() is false, the pads say so');
+  assert.equal('SYNTH_SHELL' in globalThis, false, 'no marker, so no probe to read the counters through');
+  api.midi.message([0x90, 60, 100], 1, 'x'); api.midi.message([0x80, 60, 0], 2, 'x'); // (a browser with MIDI would deliver these: harmless)
+  assert.equal('SYNTH_SHELL' in globalThis, false);
+});
+
+test('B1 the two visible strings (IMPL-B §6): the help sentence names the SYNTH app on iPad beside the browsers, the pads\' NO_MIDI note names it as a place with Web MIDI — the browsers\' wording otherwise as it was', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8'), pads = readFileSync(new URL('../cv-pads.js', import.meta.url), 'utf8');
+  // (fix B R1-F5) the first-test advice rides in the sentence: a MIDI app beside SYNTH in Split View (a hidden SYNTH is suspended after ≈ 30 s)
+  assert.equal(html.split('Or plug in a MIDI controller (Chrome, Edge, Firefox — and the SYNTH app on iPad: USB, Bluetooth, or another MIDI app sending to it; put that app beside SYNTH in Split View) — each track listens on its MIDI channel.').length, 2, 'the help sentence, once');
+  assert.doesNotMatch(html, /plug in a MIDI controller \(Chrome, Edge, Firefox\)/, 'the old wording is gone');
+  assert.doesNotMatch(html, /another MIDI app sending to it\) — each track/, 'the sentence without the Split View advice is gone');
+  const m = /export const NO_MIDI = '([^']*)';/.exec(pads);
+  assert.equal(m && m[1], 'Hardware pad controllers need a browser with Web MIDI — Chrome or Edge on a Mac, or the SYNTH app on iPad. iPad browsers have none.');
 });
 
 test('G1′ Help & about: the App sentence as committed (the stub paragraph untouched), app-build.json never fetched', async () => {

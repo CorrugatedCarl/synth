@@ -696,14 +696,48 @@ test('native hand-over: visualViewport.scale 1.5 → hooks false, [data-cv-nativ
   const chip = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'native');
   eq([world.native, chip.hidden], [false, true]);
   world.setToolbarCollapsed(true); // the page-zoomed chip is a notice, not a tool: it shows beside the one button too
-  vv.scale = 1.5; vv.dispatchEvent(new Ev('resize'));
+  // (amended by fix B R1-F3, deliberately: a real pinch zoom shrinks the visual viewport to innerWidth / scale — the fake now does too;
+  // a scale > 1 at the full width is the iPad app's stale reading, read as 1 — the next test)
+  vv.scale = 1.5; vv.width = 1280 / 1.5; vv.dispatchEvent(new Ev('resize'));
   eq([world.native, vp.hasAttribute('data-cv-native'), chip.hidden, got], [true, true, false, [true]]);
   eq([world.hooks.pan(5, 5, { cx: 300, cy: 300 }), world.hooks.zoom(1.2, 300, 300, { cx: 300, cy: 300 })], [false, false], 'every hook hands back');
   touch(vp, 'pointerdown', 300, 300, 1); touch(vp, 'pointermove', 360, 300, 1); touch(vp, 'pointerup', 360, 300, 1);
   eq(cam(world.cam), { tx: 0, ty: 0, k: 1 }, 'no own pan: the browser pans the zoomed page');
-  vv.scale = 1; vv.dispatchEvent(new Ev('scroll'));
+  vv.scale = 1; vv.width = 1280; vv.dispatchEvent(new Ev('scroll'));
   eq([world.native, vp.hasAttribute('data-cv-native'), chip.hidden, got], [false, false, true, [true, false]]);
   eq(world.hooks.pan(5, 5, { cx: 300, cy: 300 }), true);
+  world.destroy();
+});
+
+// (fix B R1-F3) WebKit in the iPad app leaves visualViewport.scale at 1.333 (= 1376 / 1032) after a Home round trip while the visual
+// viewport's width stays the window's — a state no real pinch zoom produces (a zoom shrinks the width to innerWidth / scale) and no
+// correct browser reports: it is read as scale 1. A real zoom (the width shrunk) still hands over.
+test('native hand-over guard: visualViewport.scale 1.333 with the width still innerWidth (the iPad app after a Home round trip) → no hand-over, no chip; scale 1.5 with the width innerWidth / 1.5 (a real pinch) → hand-over', () => {
+  const d0 = dom.fresh();
+  const vv = new (Object.getPrototypeOf(d0.defaultView).constructor)();
+  vv.scale = 1; vv.width = 1280; vv.height = 800; vv.offsetLeft = 0; vv.offsetTop = 0;
+  const win = d0.defaultView;
+  win.visualViewport = vv;
+  const vp = d0.createElement('div'), w = d0.createElement('div'), ov = d0.createElement('div'), tb = d0.createElement('div');
+  w.setAttribute('data-cv-world', ''); vp.append(w); d0.body.append(vp, ov, tb); place(vp, 0, 100, 1000, 600);
+  const rq = [], env = { win, doc: d0, now: () => T, raf: f => { rq.push(f); return 1; }, caf: () => {}, setTimeout: setT, clearTimeout: clearT };
+  const world = W.createWorld(vp, { world: w, overlay: ov, toolbar: tb, env });
+  const got = [];
+  world.on('native', x => got.push(x.on));
+  const chip = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'native');
+  eq([win.innerWidth, world.native, chip.hidden], [1280, false, true]);
+  // the stale reading: the scale flips to 1.333 after the app came back, the width unchanged (a resize, as WebKit fires it)
+  vv.scale = 1.333; vv.dispatchEvent(new Ev('resize'));
+  eq([world.native, vp.hasAttribute('data-cv-native'), chip.hidden, got], [false, false, true, []], 'not a zoom: the canvas keeps the pinch');
+  eq(world.hooks.pan(5, 5, { cx: 300, cy: 300 }), true, 'the hooks still the canvas\'s');
+  vv.width = 1279.5; vv.dispatchEvent(new Ev('scroll'));                   // (half a px of rounding is still the window's width)
+  eq([world.native, got], [false, []]);
+  // a real pinch zoom: the visual viewport shrinks to innerWidth / scale
+  vv.scale = 1.5; vv.width = 1280 / 1.5; vv.dispatchEvent(new Ev('resize'));
+  eq([world.native, vp.hasAttribute('data-cv-native'), chip.hidden, got], [true, true, false, [true]], 'a real zoom hands over');
+  eq(world.hooks.pan(5, 5, { cx: 300, cy: 300 }), false);
+  vv.scale = 1; vv.width = 1280; vv.dispatchEvent(new Ev('scroll'));
+  eq([world.native, chip.hidden, got], [false, true, [true, false]]);
   world.destroy();
 });
 

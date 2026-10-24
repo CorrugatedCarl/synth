@@ -105,10 +105,11 @@ Cost: the shim is tested in node by **evaluating the file's text** against a fak
 ### 1.2 The surface [C], faithful to Web MIDI where SYNTH touches it (B2)
 ```js
 navigator.requestMIDIAccess(opts?) → Promise<MIDIAccess>
-  // one shared MIDIAccess per page (a second call resolves the same object); opts.sysex === true → reject DOMException('…', 'SecurityError')
-  // (SYNTH never asks — midi.js:354; honest refusal beats a silent lie); opts.software ignored. The first call posts { t: 'midi', on: true }
-  // (§3.1) and resolves on its reply (the current port list); a refused reply → reject (midi.js shows 'MIDI blocked — click to retry').
-  // Only a FULFILLED access is cached: after a rejection the next call posts again (midi.js's retry button, :367–371 / :397, must work).
+  // a NEW MIDIAccess per call with its own port objects, as Chrome (review 2 N4 — fixer S: a second caller's handlers never replace
+  // midi.js's); ONE post { t: 'midi', on: true } per page (§3.1): calls in flight share it, later calls post nothing and resolve from the
+  // known ports; opts.sysex === true → reject DOMException('…', 'SecurityError') (SYNTH never asks — midi.js:354; honest refusal beats a
+  // silent lie); opts.software ignored. A refused reply → reject (midi.js shows 'MIDI blocked — click to retry') and is never kept: the
+  // next call posts again (midi.js's retry button, :367–371 / :397, must work).
 MIDIAccess extends EventTarget: inputs: Map<id, MIDIInput>, outputs: Map<id, MIDIOutput> (plain Maps — midi.js:211 reads `.values()`;
   insertion = first-seen order, which is the order midi.js names the ports on the button), sysexEnabled: false, onstatechange
   (+ addEventListener('statechange')): a MIDIConnectionEvent { port } per changed port — a `state` change OR a `connection` change
@@ -151,12 +152,29 @@ MIDI; dropped.
 A batch carries `h`, native's host time at dispatch (ms, Double — `MIDITimeStamp` is `mach_absolute_time` [R: MIDIServices.h:253–263],
 converted through `mach_timebase_info`), and per message its **age** `h − arrival` (ms, clamped to 0…2 000: a 0 packet timestamp means
 "now" → age 0; a future one → 0; an absurd past one — another app's stale stamp — → 2 000). The shim, with `recv = performance.now()` once
-at the start of `midiIn`, keeps `off` = **the minimum of `recv − h` over the batches of the last 2 s** (a sliding window of (time, sample),
-pruned per batch; the first batch seeds it) and stamps **`timeStamp = min(recv, h − age + off)`**. `recv − h` = the clock offset + that
+at the start of `midiIn`, keeps `off` = **the minimum of `recv − h` over every sample so far** (the `midi` reply's `h` the first, §3.1;
+then one per batch) and stamps **`timeStamp = h − age + off`, clamped to `[recv − 2 000, recv]`**. `recv − h` = the clock offset + that
 batch's transit; its minimum is the offset + the *fastest* transit (≈ the IPC alone), so a batch that waited for a busy page (a pinch, a
-cold face raster at 100+ ms, a dialog) is stamped at its **arrival**, not its delivery — as Chrome stamps it. The window lets `off` rise
-again if the clocks move apart (a WebKit `performance.now()` that keeps counting through a device sleep while `mach_absolute_time` stops
-[R?]); within a window nothing drifts (both are monotonic). Error ≈ the fastest transit (≤ 1 ms expected) + WebKit's `performance.now()`
+cold face raster at 100+ ms, a dialog) is stamped at its **arrival**, not its delivery — as Chrome stamps it.
+**Amended after review 2 (F1, the lead's decision, 2026-10-23)** — the draft's 2 s sliding window emptied after any 2 s without MIDI, so
+the first note of a phrase, the first after the access and any batch held > 2 s were stamped at their delivery (the page's stall folded
+in, B6 broken on its commonest case). Now:
+- **the minimum is kept across silence** (no window): a quiet spell changes nothing; a faster sample lowers it at once (a sample more than
+  2 s *below* is simply a new minimum);
+- **it reseeds only when a sample is more than 2 000 ms above it** — the clocks moved apart (a WebKit `performance.now()` that kept
+  counting through a device sleep while `mach_absolute_time` stopped [R?]; if both are mach-based, as WebKit's MonotonicTime is on
+  Darwin [R?], never). The batch that reseeds is **itself stamped against the kept minimum** (then clamped): one sample cannot tell a
+  clock jump from a page held > 2 s (a dialog), so it takes the bound the two share — at most 2 s off, once (a 3 s dialog: its note
+  stamped `recv − 2 000`, 1 s late, not 3; a jump: the first batch ≤ 2 s early, the next ones exact on the new seed). A later faster
+  sample undoes a stall's reseed at once (it is a new minimum);
+- **every stamp is clamped to `[recv − 2 000, recv]`**: never after the page received it (a future stamp, quantisation), never more than
+  the 2 s the age clamp already allows before it (a batch held 1.5 s whose message was 1 s old natively → `recv − 2 000`, 500 ms late);
+- **the first note after the access**: the reply's sample is `recv − h` of the reply itself — the offset + the reply's own transit,
+  including any wait for a page busy at boot: an upper bound, never below the truth. The first batch is stamped from the better of the
+  reply's sample and its own, so its error ≤ min(the reply's wait, its own) − the fastest transit (0 when either came promptly); the first
+  prompt batch makes every later stamp exact. A later `requestMIDIAccess()` posts nothing, so samples nothing (§1.2, N4).
+Within a page nothing drifts if both clocks are monotonic on one timebase; a page clock running *faster* than the host's would be followed
+only by a reseed (≤ 2 s) — not expected on Darwin [R?]. Error ≈ the fastest transit (≤ 1 ms expected) + WebKit's `performance.now()`
 quantum (1 ms on iOS [R: HANDOVER §5 "1 ms timer resolution"; the smoke's §8 step 5 reads the effective resolution]). The draft's
 `recv − age − lag` (an EMA of the round trip) folded every page stall into the stamp — 100 ms late under a raster — and contradicted B6.
 What it feeds (§0: `recTick` → the recorded position, then `inputQuantize`; the Pads / clip recorders — sx-ui-seq.js:15–17): a note
@@ -321,7 +339,7 @@ a busy page main thread (a pinch, a cold face raster) delays delivery exactly as
 the same thread.
 
 ### 3.4 The gate — when native forwards, and what it releases first (B5)
-Forward only while **`ready && midiOpen && (onScreen || backgroundAudio)`**:
+Forward only while **`ready && midiOpen && (onScreen || (backgroundAudio && !backgroundExpired))`**:
 - `midiOpen` = the page posted `{ t: 'midi', on: true }` since the last main-frame commit (reset by `webViewWebContentProcessDidTerminate`
   and by `webView(_:didCommit:)` — every `load()` **and** a page-initiated `location.reload()` (the read-only notice's Reload, an update)
   that native never started — a restarted page re-opens by itself: `midi.wire()` runs at every boot, main.js:8810; its reply carries the
@@ -450,11 +468,11 @@ one iPad pass (§11), read from `probe().midi` and Help & about's "Audio now" li
 
 | gate | what | file (lane) |
 |---|---|---|
-| **B1 the shim alone** | `MidiShim.js`'s text evaluated (`node:vm`) against a fake window: `navigator` (no `permissions`), `performance.now` (settable), `EventTarget` / `Event` (node's), `SYNTH_SHELL` with a recording `post` that replies `{ ok, ports, gen, h }` a tick later. Cases: `requestMIDIAccess()` posts `{ t: 'midi', on: true }` **once** and resolves the **same** access twice; after a **refused** reply (rejects) the next call **posts again** and can resolve; `{ sysex: true }` rejects a `SecurityError`; `inputs` / `outputs` Maps keyed by `String(uid)` with the record fields, in first-seen order; "From other apps" is an input and never an output; `midiPorts(list, gen)` diff → one `statechange` per changed port on the access **and** the port (`event.port`), a port absent from a list becomes `'disconnected'` and stays in its Map, the same id back flips the **same object**; a list with an older `gen` than the reply's is ignored, and one that lands before the reply is applied silently; **connection**: setting `onmidimessage` on a connected input → `'open'` and one `statechange` **after** the setter returns (a microtask — the event never runs inside the setter), on a disconnected input → `'pending'`, which turns `'open'` when it comes back; a stub `hook` that re-sets every handler on each `statechange` (midi.js's shape) runs exactly 1 + (inputs) times and terminates; `midiIn([h, 0, uid, age, 0x91, 60, 100, uid, 0, 0xd1, 7, 0, uid, 0, 0xf6, 0, 0])` → three `midimessage`s with `data` `[0x91,60,100]`, `[0xd1,7]`, `[0xf6]`; **timestamps** (§1.3) with a settable `performance.now` and chosen `h`: a fast batch then a batch delivered 150 ms late (`recv − h` + 150) → the late batch's `timeStamp` = its arrival + the fast batch's offset (error 0, not 150), `timeStamp ≤ recv` always, the offset recovers upward after the 2 s window; `onmidimessage` and `addEventListener` both fire, in order; a throwing listener does not stop the rest of the batch (`dispatchEvent` reports it — node's `EventTarget` re-throws on `process`: the test installs an `uncaughtException` catcher for that case only); a closed port (`close()`, or no handler) gets nothing; a `'disconnected'` input with a handler still gets its messages; an unknown uid is ignored; `dropped > 0` warns once; `output.send([0x90,36,127])` → `{ t: 'midi-send', id, b: [144,36,127], delay: 0 }` with `b` a plain Array, `send(Uint8Array.of(0x90,36,127,0x80,36,0))` → two posts, `send(d, now + 20)` → `delay ≈ 20`, a data byte ≥ 128 / an empty array → `TypeError`, `0xF0…` → `InvalidAccessError`; `permissions.query({ name: 'midi' })` → `granted`, `{ name: 'geolocation' }` → the original; the file is `'use strict'`, has no `import` / `export`, no `fetch` / `XMLHttpRequest` / `WebSocket` (B3 on the page side) | `tests/app-midi.test.mjs` (S) |
+| **B1 the shim alone** | `MidiShim.js`'s text evaluated (`node:vm`) against a fake window: `navigator` (no `permissions`), `performance.now` (settable), `EventTarget` / `Event` (node's), `SYNTH_SHELL` with a recording `post` that replies `{ ok, ports, gen, h }` a tick later. Cases: `requestMIDIAccess()` posts `{ t: 'midi', on: true }` **once** and resolves a **distinct** access per call, each with its own port objects (N4 — fixer S; the draft's "the same access twice" amended); after a **refused** reply (rejects) the next call **posts again** and can resolve; `{ sysex: true }` rejects a `SecurityError`; `inputs` / `outputs` Maps keyed by `String(uid)` with the record fields, in first-seen order; "From other apps" is an input and never an output; `midiPorts(list, gen)` diff → one `statechange` per changed port on the access **and** the port (`event.port`), a port absent from a list becomes `'disconnected'` and stays in its Map, the same id back flips the **same object**; a list with an older `gen` than the reply's is ignored, and one that lands before the reply is applied silently; **connection**: setting `onmidimessage` on a connected input → `'open'` and one `statechange` **after** the setter returns (a microtask — the event never runs inside the setter), on a disconnected input → `'pending'`, which turns `'open'` when it comes back; a stub `hook` that re-sets every handler on each `statechange` (midi.js's shape) runs exactly 1 + (inputs) times and terminates; `midiIn([h, 0, uid, age, 0x91, 60, 100, uid, 0, 0xd1, 7, 0, uid, 0, 0xf6, 0, 0])` → three `midimessage`s with `data` `[0x91,60,100]`, `[0xd1,7]`, `[0xf6]`; **timestamps** (§1.3) with a settable `performance.now` and chosen `h`: a fast batch then a batch delivered 150 ms late (`recv − h` + 150) → the late batch's `timeStamp` = its arrival + the fast batch's offset (error 0, not 150), `timeStamp ≤ recv` always, the minimum kept across silence and reseeded only by a sample > 2 000 ms above it, every stamp in `[recv − 2 000, recv]` (§1.3 as amended by review 2 F1 — fixer S's cases: after silence, at the access, under a 3 s stall, across a clock jump); `onmidimessage` and `addEventListener` both fire, in order; a throwing listener does not stop the rest of the batch (`dispatchEvent` reports it — node's `EventTarget` re-throws on `process`: the test installs an `uncaughtException` catcher for that case only); a closed port (`close()`, or no handler) gets nothing; a `'disconnected'` input with a handler still gets its messages; an unknown uid is ignored; `dropped > 0` warns once; `output.send([0x90,36,127])` → `{ t: 'midi-send', id, b: [144,36,127], delay: 0 }` with `b` a plain Array, `send(Uint8Array.of(0x90,36,127,0x80,36,0))` → two posts, `send(d, now + 20)` → `delay ≈ 20`, a data byte ≥ 128 / an empty array → `TypeError`, `0xF0…` → `InvalidAccessError`; `permissions.query({ name: 'midi' })` → `granted`, `{ name: 'geolocation' }` → the original; the file is `'use strict'`, has no `import` / `export`, no `fetch` / `XMLHttpRequest` / `WebSocket` (B3 on the page side) | `tests/app-midi.test.mjs` (S) |
 | **B2 midi.js unchanged on the shim** | the same file: `createMidi(host)` with `nav` = the shimmed navigator and a fake button → `wire()` → **auto-enable** (the button 'MIDI: KeyStep, From other apps', title 'Connected MIDI inputs'); a batch note-on → `host.noteOn(60, 100/127, 1, ts)` with the shim's ts; a hot-plug list → `ports(names)` and the button; `send('Pad A', bytes)` → one `midi-send` per output of that name; midi.test.mjs's IMPL-8 rig cases (per-port handlers, `padIn`, `learnPad`, `outputs` / `send`) re-run on the shim instead of the stub access; `midi.js`'s source hash equals d461f7d's (the lead's sweep: `git diff --quiet d461f7d -- midi.js`) | `tests/app-midi.test.mjs` (S) |
 | **B3 the page as the app** | `bootMain` as the WKWebView (app-shell.test's `WK` UA, `synth://app`, `o.win = { SYNTH_SHELL }`) **with the shim evaluated against the sim's window before boot** — through a new additive main-sim option **`o.beforeImport(G)`**, called once right after the navigator is defined (main-sim.mjs:337) and before `await import(url)` (:358); inert for every existing caller (lane S owns that one line, §10): the posts in order **`{ t: 'ready' }` then `{ t: 'midi', on: true }`**, both during boot's settle, no tap (§0 [R] — the draft's "before ready" could not pass: `boot()` is synchronous and `wire()`'s permission promise resolves after it); the `#midi` button 'MIDI: Pad Box, From other apps' (not disabled, no `unsup`); a note-on batch → `probe().held` 1 and the track's node got `{ t: 'on', n: 60 }`; a note-off clears it; CC 1 → the track's node got `{ t: 'wheel', v: 1 }`, bend `E0 7F 7F` → `{ t: 'bend' }` ≈ 1 (the messages, not `probe().midi` — W's, absent at d461f7d); a Pads module: `learn` → a note from the port named 'Pad Box' → `hw = { port: 'Pad Box', ch, n, cc: 0 }`, its light-back → `midi-send` to the 'Pad Box' output id (canvas-8-sim's scenario on the real shim); a Serum MIDI learn → CC 74 → `s.midi['74']` set and `writeCC` moved the knob's value; `midiOk()` true → the pads' hardware row present and the menu item enabled; **B5's page half**: CC 64 127, a note-on, then the release triple (`B0 40 00`, `E0 00 40`, `B0 7B 00`) → the node got `{ t: 'sus', v: false }` before the note's `{ t: 'off' }`, `held` 0. **Not here** (W's, in app-shell.test.mjs, so S never waits on W): the ⚙ Bluetooth row and `probe().midi` | `tests/app-midi-sim.test.mjs` (S; its own boot — one boot per file) + the `beforeImport` line in `tests/main-sim.mjs` (S) |
 | **B4 browsers unchanged** | app-shell.test.mjs (W, the marker without the shim): ⚙'s rows after the canvas lines `['H3:App', 'DIV:Sound in backgroundOn', 'P:Keep playing when you switch apps', 'DIV:Bluetooth MIDIPair a device…', 'P:Pair a Bluetooth keyboard …']` (the exact tail at :184 is W's to extend) and the button posts `{ t: 'midi-bt' }`; `api.midi.message([0xb0, 1, 127])` / `([0xe0, 0x7f, 0x7f])` / a note → `probe().midi` `{ n: 3, wheel: 1, bend: ≈ 1 }`; app-shell-web (no marker): no Bluetooth row, `navigator.requestMIDIAccess` undefined, `midiOk()` false, `probe` absent; `tests/midi.test.mjs`, `canvas-8-sim`, `pads-core.test`, `cv-pads.test` pass untouched; lint (no new site import); pwa.test's index.html case with the new help sentence; the goldens / canonical-stream by construction (no DSP file in the diff — the lead's `git diff --stat`) | existing + `tests/app-shell-web.test.mjs` (W: one case) |
-| **B5 the app's static contract** | app-native.test — additive cases **plus two deliberate edits of stage A's assertions, which this contract amends** (named so no reviewer reads them as a weakened test): :152's absent-keys list loses `NSBluetoothAlwaysUsageDescription` (now a required key with its text; the list keeps ATS, `UIRequiresFullScreen`, `NSPhotoLibraryUsageDescription`, `WKAppBoundDomains`), and :158's exact Swift list gains `Midi.swift`, `MidiBluetooth.swift`, `SmokeMidi.swift` (the A2 / A6 greps then cover them too). Info.plist has `NSBluetoothAlwaysUsageDescription`; the Swift: `MIDIInputPortCreateWithProtocol(` with `._1_0`, `MIDIDestinationCreateWithProtocol(`, no `MIDIClientDispose`, no `MIDINetworkSession`, no `import CoreBluetooth`, no `MIDIBluetoothDriver`, no `evaluateJavaScript(`, the frozen messages `"midi"`, `"midi-send"`, `"midi-bt"`, `"midi-clock"` in Bridge.swift, `midiIn(` / `midiPorts(` called through `call(` with `["b": …]` / `["list": …, "gen": …]`, the gate expression `ready && midiOpen && (onScreen || backgroundAudio)` (or its named equivalent — the test greps the four names in one condition, and **not** `foreground` in it), `onScreen` assigned in `sceneBackground`, `midiOpen = false` in `webViewWebContentProcessDidTerminate` **and** in `didCommit`, the release triple present (`64`, `0x40` / centre, `123`), the 2 048 / 4 096 caps and the 2 ms interval as named constants, no `isMainThread` assertion in the notify path, `presentationControllerDidDismiss` in `MidiBluetooth.swift`; `Midi.swift` imports CoreMIDI, Foundation and `os` only (UIKit only in the file that presents the sheet); `MidiShim.js` referenced as a Resource, **not** in `EXCLUDED_SOURCE_FILE_NAMES`, added by `installUserScripts` **after** the marker (regex: marker `addUserScript` precedes the shim's in the function body); `SmokeMidi.swift` / the MIDI smoke steps under `#if SMOKE` and `Smoke.drives` (IMPL-A's rule: the user's Debug build does nothing without `-smoke`) | `tests/app-native.test.mjs` (M) |
+| **B5 the app's static contract** | app-native.test — additive cases **plus two deliberate edits of stage A's assertions, which this contract amends** (named so no reviewer reads them as a weakened test): :152's absent-keys list loses `NSBluetoothAlwaysUsageDescription` (now a required key with its text; the list keeps ATS, `UIRequiresFullScreen`, `NSPhotoLibraryUsageDescription`, `WKAppBoundDomains`), and :158's exact Swift list gains `Midi.swift`, `MidiBluetooth.swift`, `SmokeMidi.swift` (the A2 / A6 greps then cover them too). Info.plist has `NSBluetoothAlwaysUsageDescription`; the Swift: `MIDIInputPortCreateWithProtocol(` with `._1_0`, `MIDIDestinationCreateWithProtocol(`, no `MIDIClientDispose`, no `MIDINetworkSession`, no `import CoreBluetooth`, no `MIDIBluetoothDriver`, no `evaluateJavaScript(`, the frozen messages `"midi"`, `"midi-send"`, `"midi-bt"`, `"midi-clock"` in Bridge.swift, `midiIn(` / `midiPorts(` called through `call(` with `["b": …]` / `["list": …, "gen": …]`, the gate expression `ready && midiOpen && (onScreen || (backgroundAudio && !backgroundExpired))` (or its named equivalent — the test greps the four names in one condition, and **not** `foreground` in it), `onScreen` assigned in `sceneBackground`, `midiOpen = false` in `webViewWebContentProcessDidTerminate` **and** in `didCommit`, the release triple present (`64`, `0x40` / centre, `123`), the 2 048 / 4 096 caps and the 2 ms interval as named constants, no `isMainThread` assertion in the notify path, `presentationControllerDidDismiss` in `MidiBluetooth.swift`; `Midi.swift` imports CoreMIDI, Foundation and `os` only (UIKit only in the file that presents the sheet); `MidiShim.js` referenced as a Resource, **not** in `EXCLUDED_SOURCE_FILE_NAMES`, added by `installUserScripts` **after** the marker (regex: marker `addUserScript` precedes the shim's in the function body); `SmokeMidi.swift` / the MIDI smoke steps under `#if SMOKE` and `Smoke.drives` (IMPL-A's rule: the user's Debug build does nothing without `-smoke`) | `tests/app-native.test.mjs` (M) |
 | **B6 the smoke** | §8 on the simulator — the lead's gate at integration; lane M's `--base`-style partial on d461f7d's site with **M's uncommitted recorder stub** for `MidiShim.js` (§8 "Lane M's partial": the native half only — the loopback, the batch counts, the call cost, the common clock, `dropped`; the button, midi.js, the engine, `probe().midi` and the ⚙ row pending S / W) | `tools/app-smoke.sh` (M) |
 | **B7 the web suite** | every existing test file in the sweep; lint; the goldens bit-identical | existing (the lead) |
 
@@ -557,7 +575,7 @@ every request still `synth://app/`; the `.app` ≤ 16.5 MB.
 absent = disconnected); the one ordered native → page queue, one call in flight, the 2 ms minimum interval; the shim's timestamp rule
 (§1.3: `min(recv, h − age + off)`, `off` the 2 s minimum of `recv − h`); the port names "From other apps" (the virtual destination as an
 input) and the smoke's "SYNTH smoke in" / "SYNTH smoke out"; the shim's file name `MidiShim.js`, injected after the marker in both
-installs; the gate `ready && midiOpen && (onScreen || backgroundAudio)`, decided at arrival; the release triple (CC 64 = 0, bend centre,
+installs; the gate `ready && midiOpen && (onScreen || (backgroundAudio && !backgroundExpired))`, decided at arrival; the release triple (CC 64 = 0, bend centre,
 CC 123) on gate close / port removal or offline / overflow; the drop and thinning rules (§3.2); `main-sim`'s `o.beforeImport(G)`; `probe().midi = { n, wheel, bend }` (additive to IMPL-A's frozen `probe()`); the ⚙ row's ids
 (`#cvBt`); the smoke log kinds (§8). Rules as every stage: `?v=9` on every new site import (none expected); no lane commits sw.js's lists (the
 lead); no lane touches engine / DSP / model files; S and W never edit the same file; M and S share only `app/ios/SYNTH/` with disjoint files.
@@ -590,6 +608,23 @@ Only the real iPad answers (the one consolidated pass; `probe().midi`, Help & ab
   device [R?]; if a project's pad bindings made in Chrome do not follow, the pad is re-learned in the app (one tap each) — recorded, not fixed.
 - **Background with 0 voices**: whether iPadOS keeps the app alive with the engine on but silent until a MIDI note arrives (IMPL-A §12 N's
   open device check); Sound in background **off** + a keyboard app in front = no sound by design (the gate, §3.4).
+- **Background suspension with Sound in background on (review 1 F1; fixer M)**: in the simulator (iOS 27.0) CoreMIDI deliveries to the
+  hidden app stop **≈ 30 s after `sceneDidEnterBackground`** whether the engine is off, running silent or sounding — the server does not
+  queue them (`dropped` stays 0, nothing arrives on return) — while the process itself keeps answering native timers (the simulator does
+  not truly suspend it). The shell now holds a `beginBackgroundTask` from the background transition while `midiOpen && backgroundAudio`;
+  its **expiration handler** (the live process, ≈ 25–30 s in) runs the gate's release path — the triple reaches the still-live page — and
+  shuts the gate until the foreground, so a note straddling the edge is released, never stuck; messages past the edge are lost (counted,
+  reported in the next batch, the shim warns once). **The device question** (the one iPad pass): whether a *sounding* SYNTH (the audio
+  background mode with real output) keeps receiving past the task's expiry — WebKit attributes its audio to the app, so iPadOS may keep
+  it running, in which case the expiry shuts MIDI while the sound goes on (the gate reopens at the foreground; a note held across the
+  expiry is released by design). No host-side silent-audio keep-alive (the lead's decision: the device may not need it; it would mask
+  the measurement). The how-to's first line stands: a MIDI app **beside** SYNTH in Split View never leaves the screen.
+- **A release arriving mid-learn** (review 1 F9; fixer M — recorded, not fixed: midi.js and the shim are closed to the native fixer):
+  the triple's CC 64 = 0 is a controller < 120, so a *pending Serum MIDI Learn* learns CC 64 if the pedal was down when the gate shut (a
+  Home press with Sound in background off, an unplug, an overflow); a *canvas CC module in learn mode* learns CC 64 or CC 123 (main.js's
+  `modCC` learns every controller). Needs the user mid-learn at the instant of a gate close — rare; the fix would be a page-side skip:
+  native marks the release batch (e.g. a reserved value the shim turns into a flag on the event, or a `release: true` field beside `dropped`
+  in §3.1's array — a protocol amendment for the lead) and the shim / midi.js skip learn for it; recorded in §12.
 - **Background with the engine off** (§3.4, §8 step 11): whether a note can start a never-started AudioContext in a hidden WKWebView [R?] —
   the how-to sidesteps it (play one key in SYNTH first, or Split View / Slide Over).
 - **Other apps**: an app that quits or is switched away mid-note without sending its note-off leaves the note sounding (nothing tells SYNTH)
@@ -598,8 +633,13 @@ Only the real iPad answers (the one consolidated pass; `probe().midi`, Help & ab
   (§1.3) they are held natively until due — the main-thread timer's granularity (≈ 1 ms) and a stall (a dialog) add to their error; a
   sequencer sending clock (F8) gets no sync from SYNTH (dropped, §2.3) — SYNTH has no MIDI clock in or out in any build.
 - **`performance.now()` coarseness** in WebKit (≈ 1 ms [R: HANDOVER §5]) bounds the timestamp precision below Chrome's; recording quantize covers it.
-- **The simulator's MIDI server** ([R?], §8): running at all, and shared with the Mac or not — the smoke's in-app loopback is the proof if
-  it runs, the below-the-server injection (§8) if not; the server path then waits for the iPad pass.
+- **The simulator's MIDI server** ([R?] → R, §8 / §12 lane M): it runs (its own `MIDIServer`), not shared with the Mac — the smoke's in-app
+  loopback is the proof; **the simulator's only "other app"** is `tools/midi-sender.swift` (reviewer 1's probe), a process spawned into
+  the simulator that sends into "SYNTH" (it cannot create endpoints there: `kMIDINotPermitted`).
+- **The "page zoomed · 1:1" chip after a Home round trip** (review 1 F3; stage A's R1-F1 symptom back on iOS 27.0 with the edge deferral
+  already `[]`): WebKit leaves `visualViewport.scale` at 1.333 (= 1376 / 1032, the device's aspect) with the visual viewport's **width still
+  the window's** — a state no real pinch produces (a zoom shrinks the width to `innerWidth / scale`). cv-world.js's one scale read now
+  treats that state as 1 (the A1-safe guard; a real zoom still hands over); the native cause as far as the bisect reached is in §12.
 - **The per-call cost** of `callAsyncJavaScript` on the device vs the simulator (the simulator is an M4 Max): `probe().midi` has no transit
   figure; the device pass reads the feel; a `-smokeMode log` run on the device logs `midiBatch` rtts if the user plugs the iPad into the Mac.
 - Not in stage B (by scope): the Mac (dropped by the user), haptics (dropped), SysEx (B2 — no caller; patch dumps / editor features would need
@@ -628,17 +668,398 @@ uses neither); MIDI out stays what it is — pad lights back to the controller; 
 
 ---------------------------------------------------------------------------------------------------------------------------------
 
+- **(The lead, after the reviews.)** A MIDI learn pending when the gate's release triple arrives (the user mid-learn, the pedal down, at a
+  background expiry / an unplug / an overflow) could learn CC 64 (midi.js:326) or, in a canvas CC module, CC 64 / 123 (main.js's `modCC`):
+  rare; midi.js stays byte-identical (B1) and a marker would change the frozen protocol — recorded, not fixed. `gesture.js`'s `perPt()`
+  reads the same stale `visualViewport.scale` (1.333 after a Home round trip on iOS 27.0) and narrows its edge band until the next viewport
+  event — recorded (cv-world's guard covers the canvas pinch, the user-visible part).
+
 ## 12. Notes (the builders fill in)
 
 ### Lane M
 
+**Built (worktree from 6a45072; commits cfcf3dd, 59349be, fdba8ac, the notes)**: `app/ios/SYNTH/Midi.swift` (≈ 370 lines; CoreMIDI,
+Foundation, os only): the client created lazily at the page's first `{ t: 'midi', on: true }` (never disposed), `MIDIInputPortCreateWithProtocol`
+`._1_0` on every listed source (private and offline skipped — offline read endpoint → entity → device), `MIDIOutputPortCreate`, the virtual
+destination **"SYNTH"** (uid persisted in `UserDefaults` `midiDestUID`, re-set at creation, the assigned one kept on a failure), "From other
+apps" last in the list, never an output; the receive block (CoreMIDI's thread) parses the whole event list to `(uid, at, st, d1, d2)` **outside**
+the lock (every UMP type sized by a 16-entry table; F8 / FE dropped; CV2 counted `unexpected`), then **one lock per event list** for the gate at
+arrival (`gateOpen`, `openedAt`), the masks, the append and the thinner (a refinement of §2.2's "append under the lock" per message — the same
+rule, one lock instead of n; also what keeps the `@Sendable` closure free of mutable captures); the main-thread `flush` (a `DispatchSourceTimer`,
+leeway 0, for the 2 ms interval and for held future stamps) → `pump` → **one `callAsyncJavaScript` per queue item**, the flat `[h, dropped, uid,
+age, st, d1, d2 …]` array **built at the call** (so `h` is the host time of the call itself even when a port list sits ahead in the queue —
+§3.1's letter); one ordered queue for batches and lists, one in flight, every completion clears it, `pageGen` ignores a late completion from a
+reset page; the release triple built from the masks into `pending` (past the gate) on gate close / a gone port / a never-thinned overflow, then
+a forced flush — so the releases are the batch before the list; thinning as §3.2 (a key per (uid, ch, kind, data); walked from the end, the
+first-seen kept at its position; `nextThin` re-arms 256 past the current count so a stall is O(n), not O(n²)). `MidiBluetooth.swift`: a
+`UINavigationController` subclass that is its own `UIAdaptivePresentationControllerDelegate` (keeps the delegate alive), Done + `presentationControllerDidDismiss`
++ the smoke's auto-dismiss + `cancel` all run the one `settle`; `preferredContentSize` 360 × 480; a popover from the web view's top centre.
+`Bridge.swift`: the four messages (+ the Debug `-smoke`-only `smoke-midi` behind `case … where Smoke.on` — `__smoke.midiNote(n, v)` /
+`midiCC(cc, v)` for reviewer R1's by-hand runs); `ShellViewController`: `MidiHost.midiCall` (every completion reaches Midi), the shim user script
+right after the marker (both installs, through the one `installUserScripts`), `didCommit` → `midi.pageReset()`, termination → `midi.ready =
+false; midi.pageReset()`, `sceneBackground` → `midi.onScreen`, `bridgeBackgroundAudio` → `midi.backgroundAudio`. `Info.plist`:
+`NSBluetoothAlwaysUsageDescription`. `project.pbxproj`: the three Swift files + `MidiShim.js` as a Resource (ids `…1C–1F` / `…2C–2F`).
+`SmokeMidi.swift` + `Smoke.js` `__smoke.midi*` + `tools/app-smoke.sh`: §8's steps (below) and their gates; `-smokeMode midicold`;
+the script drives the background round trips on the log's `"step":"ready"` / `"bgdone"` lines (behind Safari, then `simctl launch` back).
+`tests/app-native.test.mjs`: B5 (one test, ≈ 60 assertions) + the two amended stage-A assertions (recorded in IMPL-A §12).
+**MidiShim.js**: lane S's shipped on `wt-B` mid-lane; the smoke below ran against **S's real shim** (copied into the tree, uncommitted here — S's file
+to merge), not the recorder stub (kept at `scratchpad/midi/m/MidiShim.stub.js`, never committed). The web side is 6a45072's: `probe().midi` and the
+⚙ row (lane W) are the smoke's two `pend` lines until integration.
+
+**Day 1 (in this order, §10)**. (1) **CoreMIDI runs in the simulator** — [R? → R]: the iOS 27.0 runtime has its own `MIDIServer`
+(`…/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/Frameworks/CoreMIDI.framework/MIDIServer`, a child of `launchd_sim`,
+launched on demand); in the app `MIDIClientCreateWithBlock` → 0 in **12 ms**, the input / output ports 0, `MIDIDestinationCreateWithProtocol`
+0, the smoke's `MIDISourceCreateWithProtocol` / destination 0 — **the smoke runs in server mode (the in-app loopback); the below-the-server
+fallback was not built**. A bare `simctl spawn` process (no app sandbox) also creates a client (0, but ≈ 700 ms) and sees 2 devices, 0 sources /
+0 destinations, yet gets **`kMIDINotPermitted` (−10844)** for virtual endpoints — the sandbox, not the server. **Not shared with the Mac**
+[R? → R]: with a Mac-side virtual source live ("SYNTH Mac probe", `swift` on the Mac) the simulator client saw 0 sources, and the Mac saw none
+of the simulator's — so `tools/midi-probe.swift` is **dropped** (§8's rule; the two probes stay in the scratchpad, not the repo) and the Mac's
+devices never appear in the smoke's lists; the loopback is the proof, the real server path with another app waits for the iPad pass.
+(2) **The per-call cost** of a tiny `callAsyncJavaScript` (1 000 sequential calls, a 12-number array, the same body as a batch): **mean 0.12 ms,
+p50 0.085, p90 0.21, p99 0.45, max 2.8 ms** (two runs, identical) — far under §3.2's 5 ms line: **no streaming fallback**. (3) Sharing: above.
+Also pinned: `MIDIReceivedEventList` takes **no "0 = now"** (MIDIServices.h:2517 — the smoke's source stamps `mach_absolute_time()`; a 0 stamp
+from a virtual source is a 1970 arrival, clamped to age 2 000 by the shim); `MIDIEventPacketNext` + the raw `words` offset walk the list fine
+from Swift (no overlay helpers used).
+
+**Smoke (`tools/app-smoke.sh`, three full runs m1 → m3 on cfcf3dd / 59349be / fdba8ac; S's shim; m3 = `0 failing, 2 pending` (W's);
+the stage-A gates all still green; 0 console errors; 135 requests all `synth://app/`; the `.app` 10.1 MB; WebContent at the engine step
+582–585 MB, the MIDI steps add nothing visible; the run 62–66 s)**. Every native MIDI gate green from the first run (the five m1 FAILs were the
+evaluator's: two log-kind collisions, a wait race, the re-created source's new uid, `Smoke.log`'s `at` key overwriting a JS field named `at`).
+Numbers (m2 / m3; m1 in brackets where different): step 1 the button "MIDI: SYNTH smoke in, From other apps" by itself at boot (`ready` 903 /
+896 ms, the page's `midi on` 915 / 909 ms, `createMs` 12.2 / 12.3 — m1: 1187 → 1877, the first launch of a CoreMIDI build in that simulator
+session; a one-off); step 2 the note sounds (held 1, peak 0.155) and the note-off → held 0; step 3 CC 1 / bend in order; step 4 the common
+clock: best rtt 0 ms at WebKit's **1 ms `performance.now()` quantum** (offset ± 0.5 ms — the floor of every transit figure below); **step 5,
+1 kHz × 1 000 CC 74**: 1 000 / 1 000 in order, **450 / 451 calls** (sizes 1–4, p50 2 — the 2 ms interval holds), **0 dropped**, one-way
+transit **p50 0.77–1.24 / p99 1.8–2.26 / max 2.8–4.2 ms** [1.36 / 2.42 / 5.36], timestamp error **p50 −0.55…−0.76, p95 |e| 0.55–0.76 ms**
+[0.30] (B6; the shim's minimum filter; the sign: the stamp a little before the clock step's estimate — the step's own ± 0.5); **step 5b** the
+page spun 150 ms: the 5 notes' transit 150 / 134 / 114 / 94 / 74 ms (delayed as Chrome would), their **timestamp error −0.75 ms each** (B6
+under load — the draft's scheme would have read ≈ 150 / 130 / …); **step 6 hot-plug**: dispose → the source's **CC 123 then its disconnect,
+in that order** (one queue), `held` 0, the button "MIDI: From other apps"; the notification reaches the app **≈ 300 ms** after the dispose
+(≈ 250 ms the server's + the 50 ms debounce), the same after the re-creation, which lists a **new uid** for the same name (the old entry
+stays `disconnected` in the Map, Chrome's way); **step 7** the page's `send` to "SYNTH smoke out" → `90 24 7F` in the destination's block
+**0.75 ms** after the page's `send`; **step 7b future stamps — [R?] → R, both ways**: a **virtual source's** note stamped 300 ms ahead
+reached our input port **0.28 ms after its stamp, no `midiHeld` line — the server holds a source's future stamps too** (§1.3's "delivered
+as sent" is not what this server does; the native hold in `flush` is a safety net that never ran, kept: ≈ 10 lines, correct if a server
+ever delivers early); a note sent **into "SYNTH"** 300 ms ahead arrived from "From other apps" **−0.04 ms** after its stamp (advance schedule
+0 — §2.4's [R] confirmed on this server), one stamped 0 at once (0.9 ms); the shim's stamps on both within 0.23 ms; **step 8 the gate**: Sound in background off, pedal + note down,
+behind Safari: `open: false` at `sceneDidEnterBackground` with **released 2** (CC 64 = 0, CC 123 on ch 1 — the pedal case of review #4),
+the 3 sends while hidden **dropped at arrival** (`dropped 0 → 3`, rode in the next batch; the shim warned once), back on screen the gate
+reopens and the next note plays; the page saw `B0 40 7F · 90 3E 64 · B0 40 00 · B0 7B 00` — the closing batch carries what was pending,
+then the releases; **the app kept running hidden** (native timers fired; the simulator does not suspend it); **step 9** the scene inactive
+with Sound in background off: nothing released, nothing dropped, the CC delivered (the gate follows `onScreen`, review #5); **step 10 lone
+notes** (50 × 200 ms): transit **p50 0.0–0.5, p90 0.5–0.9, p99 0.7–1.05, max 1.05 ms** [1.11 / 1.12 / 1.12] (the quantum is the
+floor), 50 batches of 1 — **no coalescing delay on a lone note** (B4); **the stall** (a `confirm()` held the page 1.04 s while native
+streamed 4 kHz × 4 000 with a note pair every 40): the in-flight call completed after 975 ms, then **one batch of 2 001–2 050** (1 945
+thinned, CC 74 at its latest value, **all 200 notes intact**), then 8–9 per 2 ms call — exactly §3.2 (no overflow, no CV2 word); **step 12** `{ t: 'midi-bt' }` replies in
+4–92 ms, the sheet shown ≈ 0.5 s later (the Presenter's animation), auto-dismissed at 2 s, **the Save sheet right after it presented** (the
+settle rule; no `scene inactive` while it was up — the simulator shows no Bluetooth permission alert). **`-smokeMode midicold`** (§8 step 11,
+recorded — [R?] pinned): no key played, Sound in background on, behind Safari, one note from the smoke source → the page's `powerOn()` ran
+in the hidden page (`{ t: 'engine', on: true }` 45 ms later; the first batch's rtt 89 ms — the engine's start) but **WebKit left the new
+AudioContext `suspended`** (`midiColdBg`: ctx "suspended", held 1, peak 0); back on screen: ctx running, **peak 0.155 — the held note
+sounds on return**. So the how-to's "play one key in SYNTH first (or Split View / Slide Over)" is necessary, not cautious: a never-started
+engine stays silent while SYNTH is hidden, and the note arrives when it comes forward.
+
+**Refinements of the contract's text (reasons)**: the UMP word for `send` is composed by shifts (`0x2 << 28 | st << 16 | d1 << 8 | d2`,
+system `0x1 << 28`) — the same bits as `MIDI1UPChannelVoiceMessage`, no inline C helper needed; the walk sizes types by its own table rather
+than `MIDIEventListForEachEvent` (the bytes out are §2.3's; B5 greps the table); the smoke's MIDI steps run **after the files steps** (the
+sheet totals are absolute, and the Bluetooth step's Save sheet needs a known count) with the engine still on — not right after the engine
+step; the transit gates are **2× the §9 targets** (the contract's own "recorded, gated loosely"; the measured values are 2–4× under the
+targets); a port's **relist at boot** (gen 2, one redundant `midiPorts`) follows from our own endpoint creations' notifications — the shim's
+`gen` rule makes it a no-op; `Smoke.log` owns the `at` key, so a JS step's time field is `sentAt`; the `midicold` round trip and the gate
+step are driven by the script from the log, not by a timer (the simulator's `simctl launch` brings the running app back). **Not done /
+pending**: lane W's `probe().midi` (two `pend` lines) and the ⚙ row, at integration (W is on `wt-B`); the one iPad pass (another app →
+"SYNTH", Bluetooth, a USB keyboard — §11); `tools/midi-probe.swift` dropped. Not touched: engine / DSP / model files, midi.js, main.js,
+index.html, cv-pads.js, sw.js, `MidiShim.js` (S's).
+
 ### Lane S
+
+(2026-10-23, Opus 5.5; worktree reset to 6a45072 — d461f7d's site, this contract. Commits: `8236b3d` the tests first, red (no
+`MidiShim.js`: ENOENT) + main-sim's line, `33fccc1` the shim, then these notes. Not pushed; `sw.js` untouched — nothing of S is in the site.)
+**As built — `app/ios/SYNTH/MidiShim.js`** (215 lines, a classic IIFE, `'use strict'`; no import / export, no fetch / XHR / WebSocket,
+no timers, nothing logged per message):
+- Runs only with the marker (`window.SYNTH_SHELL` an object) and only where `navigator.requestMIDIAccess` is absent — so lane M's
+  `installUserScripts` must add it **after** the marker (a shim injected first stands aside: nothing defined, no harm).
+- `navigator.requestMIDIAccess(opts)` (own, non-enumerable, like a method): `opts.sysex` → `SecurityError`, nothing posted; the
+  first call posts `{ t: 'midi', on: true }` — calls in flight share it — and resolves on `{ ok: true, ports, gen, h }` with the
+  one `MIDIAccess` (later calls: the same object, no post); `{ ok: false, error }` → `InvalidStateError` (the spec's "the underlying
+  system raised an error"), a `post` that throws / rejects → `NotSupportedError`; a rejection is never kept (the next call posts again).
+- `MIDIAccess` (EventTarget): `inputs` / `outputs` plain Maps keyed `String(uniqueID)`, first-seen order; `sysexEnabled` false;
+  `onstatechange`. `MIDIPort`: read-only `id name manufacturer version('') type state connection`, `open()` / `close()` → `Promise<port>`,
+  `onstatechange`; `MIDIInput`: `onmidimessage` + `addEventListener('midimessage')` (each set / add opens: 'open' on a connected port,
+  'pending' on a disconnected one); `MIDIOutput`: `send(data, timestamp?)`, `clear()` (no-op). Handler attributes are real listeners
+  (one per attribute, swappable, a non-function removes it). Every state / connection change: one `statechange` (`event.port`) on the
+  port, then the access, in **one microtask** (never in the setter, never a timer); none before the access reached the page.
+- `SYNTH_SHELL.midiPorts(list, gen)`: applied only if `gen` is newer than the last applied (a non-finite `gen`: applied); records with an
+  id and type `input` / `output` make or update their port (same object per id; `name` / `manufacturer` follow the list), absent ones
+  (or a record `state: 'disconnected'`) → `'disconnected'`, kept; open ↔ pending follows. `SYNTH_SHELL.midiIn(b)`: `recv` once, the
+  §1.3 sliding minimum (a monotonic deque of `[recv, recv − h]` over 2 000 ms, the reply's `h` the first sample), per message: input by
+  `String(uid)` (unknown → skipped), skipped if its connection is `'closed'`, `data` a `Uint8Array` sized by the status (2 for Cn / Dn,
+  F1, F3; 3 for 8n–Bn, En, F2; 1 for F6, F8, FA–FC, FE, FF; F0 / F7 / reserved F4 F5 F9 FD / a non-status → skipped), age clamped
+  0…2 000 page-side too, `timeStamp = min(recv, h − age + off)` (no finite `h`: `recv`), dispatched with `dispatchEvent` in order;
+  `dropped > 0` → one `console.warn` per page.
+- `send`: Chrome's checks in the spec's order before anything is posted — values as `unsigned long` (> 0xFF a `TypeError`), running
+  status / a reserved status / an incomplete message / a data byte ≥ 0x80 / nothing → `TypeError`, F0 / F7 → `InvalidAccessError`, a
+  disconnected port → `InvalidStateError`; the implicit open (one `statechange`: midi.js re-hooks once, as in Chrome); one
+  `{ t: 'midi-send', id, b: [st, d1?, d2?], delay }` per message, `b` a plain Array, `delay = max(0, timestamp − now)` (0 when absent,
+  0 or past); the reply and any throw swallowed.
+- `navigator.permissions.query`: `{ name: 'midi' }` → a `granted` status (`sysex: true` → `denied`) — an EventTarget with `name`, `state`,
+  `onchange: null`; every other name → WebKit's own `query` (its `this`); no `navigator.permissions` (the node sim) → one is made, other
+  names reject a `TypeError`.
+**[C] refinements (reasons)**: (1) main-sim's `o.beforeImport(G)` sits after `G.__synthTest` (the finished fake window — `performance` of
+an `o.clock` boot, the Fullscreen API), not straight after :337 — still before the import, one line, inert without the option; a
+document-start script sees the whole window too. (2) The stand-aside rule above (a future WebKit with Web MIDI keeps its own; native
+then never gets `midi on`). (3) The two refusal names; midi.js reads neither. (4) A rename updates silently (the spec fires
+`statechange` for state / connection only). (5) `permissions.query` with `sysex` answers `denied` — honest, SYNTH never asks.
+**Tests** (one file at a time, `--max-old-space-size=2048`): `tests/app-midi.test.mjs` **14 / 14** — B1 (11: the file's rules + the
+stand-aside; the access once / shared / SysEx; a refusal not kept, NotSupported on a missing bridge; the Maps and records; lists, gen,
+the silent early list, events port-then-access; connection incl. the hook shape = 4 runs for 3 inputs; midiIn sizes; the timestamps —
+the 150 ms late batch stamped at its arrival, the clamps, the window recovering upward at 2 001 ms; delivery incl. a throwing listener
+via node's `uncaughtException` with the harness's listeners set aside; send; permissions), B2 (3: midi.js sha-256 `3b1664ed…0919` =
+d461f7d's; `wire()` → auto-enable 'MIDI: KeyStep, From other apps', `ports()` 1 + 2 times, `noteOn(60, 100 / 127, 1, 1197)` with the shim's
+stamp, hot-plug, `send` to both outputs named 'Pad A'; the IMPL-8 rig cases incl. a refusal then the button's retry). `tests/app-midi-sim.test.mjs`
+**6 / 6** — B3: posts `bg`, `ready`, then `midi` during boot's settle (no tap); '#midi' 'MIDI: Pad Box, From other apps', enabled, no `unsup`;
+`inputs()` / `outputs()` ('From other apps' never an output); note on / off → `held` 1 / 0 and the node's `on` / `off` (also from 'From
+other apps'); CC 1 → `wheel` 0, 1; bend → ≈ 1, centre 0; B5's page half: `sus:true, on:62, bend, sus:false, bend:0, off:62`, `held` 0; Pads:
+the 'Hardware controller…' item enabled and the inspector's learn row (midiOk()), learn → `{"port":"Pad Box","ch":10,"n":100,"cc":0}` (one
+step 'Learn pad 3'), a hit plays the pad's note (not 100), the light-back `{ t: 'midi-send', id: '201', b: [153, 100, 127], delay: 0 }`; a
+hot-plug off / on through `midiPorts` (the same port object, re-opened); a Serum learn `a.wt` ← CC 74, then CC 74 writes it (> 0.99, < 0.01).
+**B1 proof** (at `33fccc1`): midi 34 / 34, main 47, canonical-stream 1, golden-classic 8, lint 165, canvas-8-sim 17, pads-core 23,
+app-shell 17, app-shell-web 4, app-native 10 — all green; `git diff --quiet d461f7d -- midi.js` true; `git diff 6a45072 --stat`: the shim,
+the two test files, main-sim's one line. No site file touched (so no BUILD change from S).
+**Noted**: app-midi-sim's Serum step logs `TypeError: doc.getElementById is not a function` — wk.js `injectStyles` on the DOM stub's
+`ownerDocument` while main.js mounts the Serum panel (caught there; any sim that mounts a Serum panel does it) — not MIDI.
+**Not pinned here** (lane S runs no simulator): WebKit's own answer to `permissions.query({ name: 'midi' })` [R?] — moot for the app (the
+wrap answers before WebKit sees it); R1 can confirm `'geolocation'` still reaches WebKit's. **For lane M** (the protocol as the shim
+reads it): a record's `id` and a batch's `uid` must agree as `String(uid)` (`String(Int32)` in Swift prints the same as JS's); the reply
+needs `ok: true` (exactly), an Array `ports`, a Number `gen`, a Number `h`; `midiIn`'s array is flat, 2 + 5 × n numbers; M's recorder stub is
+superseded by this file (same name, same Resource).
 
 ### Lane W
 
+Built on `6a45072` (worktree branch `worktree-agent-a1180e0297fd1e8b7`; code + tests `37f0a45`). Files touched, exactly §10 row W:
+`main.js` (+23 / −6), `index.html` (the one sentence), `cv-pads.js` (the one string), `tests/app-shell.test.mjs`,
+`tests/app-shell-web.test.mjs`. midi.js byte-identical (`git diff 6a45072 -- midi.js` empty); no DSP / engine / model file; sw.js untouched
+(the lead runs `node tools/precache.mjs --write`: main.js / index.html / cv-pads.js moved → pwa.test's precache case is red until then, as
+expected). The W diff is inside §9's ≤ 40 lines.
+
+**The strings as shipped** (the whole web-side visible diff — the three of §6 plus the lead's fourth):
+1. index.html:291, only this sentence on the line (a word-diff shows the single changed token, `Firefox)` → the longer parenthesis, so the
+   other builder's **Delete / Backspace** edit in the same paragraph merges by hand without overlap): "Or plug in a MIDI controller (Chrome, Edge, Firefox — and the SYNTH app on iPad: USB, Bluetooth, or another MIDI app sending to it) — each track listens on its MIDI channel."
+2. cv-pads.js `NO_MIDI`: "Hardware pad controllers need a browser with Web MIDI — Chrome or Edge on a Mac, or the SYNTH app on iPad. iPad browsers have none."
+   (no test pinned the old text — grep of tests/ and docs: only IMPL-8.md §8 quotes it as history).
+3. ⚙ → App, after "Sound in background" (inside the existing `if (SHELL)` block): a field row **Bluetooth MIDI** + button **"Pair a device…"**
+   (`#cvBt`, class `tt`, `aria-describedby` → the hint `#cvBtHint`), hint "Pair a Bluetooth keyboard or pad controller (USB and other apps
+   need no pairing)"; the click is `shellPost({ t: 'midi-bt' })` — fire-and-forget (shellPost never throws; a refused or missing handler is
+   swallowed by `quiet`, so an older app build on this site does nothing visible). Button title: "Opens Apple’s list of nearby Bluetooth MIDI
+   devices to pair one with this iPad. USB controllers and other music apps need no pairing". Exposed as `shell.bt` beside `shell.bg`.
+4. The fourth string (lead's decision #5 / #16): the ⚙ Sound in background hint — "Keep playing when you switch apps — so a MIDI app in
+   front can play SYNTH" (was "Keep playing when you switch apps"). The button's title (On / Off semantics) is unchanged and still true.
+
+**`probe().midi` = `{ n, wheel, bend }`** (`midiSeen`, three assignments in the `createMidi({…})` host lambdas, read only through
+`SHELL.probe`; the counters tick in browsers too, nobody reads them there). The contract's wording ("incremented in noteOn / noteOff / ctl for
+src 1–16 and in modCC") would count a CC 1 **twice** (midi.js calls `modCC` for every CC, then `ctl('wheel')`), which contradicts §7 B4's own
+expectation (CC 1 + bend + a note → `n: 3`); refined [C]: **`n` counts notes on / off (host noteOn / noteOff), every CC once (modCC — the
+wheel and the pedal ride their CC, so `ctl('wheel' | 'sus')` do not count), bend and channel pressure (`ctl('bend' | 'at')`)**; poly pressure and
+program change are not counted (their host callbacks are not in the contract's list); real-time / system bytes decode to nothing and are
+not counted. `wheel` = the last `ctl('wheel')` value (0…1), `bend` = the last `ctl('bend')` (−1…1; `E0 7F 7F` reads 0.99988, `E0 00 00` −1).
+The host lambdas still return what the underlying call returns. Only the host lambdas count (src 1–16 = MIDI channels): the on-screen
+wheels, keys and pads call `ctl` / `noteOn` directly and are not counted.
+
+**Tests (red first for the ⚙ rows and the probe; run one file at a time, `--max-old-space-size=2048`)**
+- `tests/app-shell.test.mjs`: the exact tail at :184 extended to `['H3:App', 'DIV:Sound in backgroundOn', 'P:Keep playing when you switch apps —
+  so a MIDI app in front can play SYNTH', 'DIV:Bluetooth MIDIPair a device…', 'P:Pair a Bluetooth keyboard or pad controller (USB and other apps
+  need no pairing)']`; new **B4 ⚙ Bluetooth MIDI** (id / type / class / text / describedby, one `{ t: 'midi-bt' }` per tap and nothing else,
+  a rejecting native is quiet); new **B4 probe().midi** (zero before any message; CC 1 127 → `{ n: 1, wheel: 1 }`; bend; note on holds the
+  key; note off; CC 64 on / off count once each; channel pressure; bend −1 and wheel 0 take over; JSON-clean; F8 / FE not counted) driven by
+  `api.midi.message` — no shim needed; the existing "probe() before power-on" test asserts `midi` is `{ n: 0, wheel: 0, bend: 0 }`.
+  Red before the code: 4 failures (the two edited, the two new); green after: 19 / 19.
+- `tests/app-shell-web.test.mjs` (browsers, no marker): **B4** no Bluetooth / Pair / "MIDI app in front" row, `shell.bt` undefined,
+  `navigator.requestMIDIAccess` undefined, no `SYNTH_SHELL` ever created (so nothing can be posted or probed) — passes before and after, as
+  a guard; **B1** the two visible strings read from index.html and cv-pads.js (the help sentence once, the old wording gone; `NO_MIDI` exact)
+  — verified red with both strings temporarily reverted, green restored: 6 / 6. (`sim.$()` returns a stub element for any selector, never
+  null, so the "no `#cvBt`" check goes through the rows and `shell.bt`, never an `assert` on a node.)
+- Gates, each file alone: main 47 / 47, lint 165 / 165, midi 34 / 34, pads-core 23 / 23, cv-pads 31 / 31, canvas-8-sim 17 / 17,
+  cv-shell-sim 17 / 17, canvas-P-sim 8 / 8 (both read ⚙'s rows), canonical-stream 1 / 1, app-shell-web 6 / 6, app-shell 19 / 19;
+  pwa 24 / 25 — the one red is the precache BUILD hash ("a site file changed since `node tools/precache.mjs --write`"), the lead's step.
+  Goldens not run here (no DSP file in the diff — `git diff --stat` shows main.js, index.html, cv-pads.js and two tests).
+
 ### Reviews and fixes
 
+**Fixer S — review 2's F1, N4 and F5's shim half** (2026-10-23, Opus 5.5; worktree reset to d705713. Commits: `d5f4736` the tests,
+red — app-midi 5 failing, app-midi-sim 2 —, `5ae350e` the shim + §1.3, then these notes. Not pushed; `sw.js` untouched — the shim is
+an app resource, not in the precache.)
+- **F1 (major) — the lead's decision, §1.3 amended in place**: the offset estimate keeps its minimum across silence (the 2 s window is
+  gone), is lowered at once by a faster sample, **reseeds only on a sample more than 2 000 ms above it** (that batch stamped against the
+  kept minimum), and **every stamp is clamped to `[recv − 2 000, recv]`**. `MidiShim.js`: `base(t, h)` replaces `sample` (`off` starts
+  `NaN`: the reply's sample seeds it). Review 2's repro (`r2/repro-shim.mjs`) after the fix: 1c 7150 → **7000**, 2 3500 → **3300**,
+  3 4100 → **2100** (the clamp's bound; 1 s late, not 3); 1a / 1b / 1d / 1e unchanged. **Tests** (`tests/app-midi.test.mjs`): the
+  timestamp case's `at(3401, 7391, [0])` **amended on purpose** `'3401'` → `'3391'` (it pinned F1: one sample 2 s after the minimum
+  lifted it — named in the test as the amendment, not a weakened gate) and `at(3500, 7480)` → `'3480'`; a new case "after silence, at the
+  access, under a stall, across a clock jump", each sub-case seen red / green with `fxS/f1-cases.mjs` against the old / new shim — red
+  before: silence + 150 ms (7150), the first note 2.3 s after the access (3500), the 3 s dialog (4100), a +10 s clock jump's first batch
+  (20000 → now 18000: the decision's trade, once, ≤ 2 s), the clamp (`'1200 200 -800'` → `'1200 700 700'`); guards (green before and
+  after): a slow reply (120 ms) with the first note held 50 → 1550 then exact, a 20 ms reply → 1520, the fast batch after the dialog
+  (4110: the reseed undone), the jump's later batches (20100, 20200 with a 150 ms wait), a −10 s jump (a new minimum at once: 5000).
+- **N4 (nit) — a new `MIDIAccess` per `requestMIDIAccess()`, Chrome's way**: checked in Chromium (`midi_access_initializer.cc`
+  `StartSession` → a new `MIDIDispatcher`; `DidStartSession` → `new MIDIAccess(…)`; `midi_access.cc`'s constructor makes its **own**
+  `MIDIInput` / `MIDIOutput` per access, and "open" status is managed per MIDIAccess instance) — so the shim now gives each call its own
+  access **and its own port objects** (not shared: Chrome shares none). The known ports are shared records (id, type, name, manufacturer,
+  state — native's truth); `connection`, the handlers and listeners belong to each port object; a hot-plug flips every access's port
+  (statechange on each port, then its access); a new id appears in every access; `midiIn` delivers each message to every access's port
+  of that id that is not `'closed'` (one stamp, a new `data` per event). One post per page: calls in flight share it, later calls post
+  nothing and resolve at once from the known ports (a gone one `'disconnected'`, all `'closed'`); a refusal is still never kept. Every
+  access is kept for the page's life (midi.js asks once, Smoke.js once). **Tests**: app-midi's "requestMIDIAccess" case now asserts
+  three distinct accesses for three calls (one post) — the contract's old "the same access twice" amended by N4; a new "several
+  accesses" case (own ports / connection / statechange; a second caller's `onmidimessage` never replaces the first's, both get every
+  message; hot-plug and a new port in each; a closed port in one, pending in the other; a later access); the IMPL-8 rig case reads
+  midi.js's own access through a recording navigator (a second `requestMIDIAccess()` there now shows none of midi.js's handlers —
+  asserted). app-midi-sim's hot-plug case: the test's own access has its ports `'closed'`, `onmidimessage` null; its handler and
+  midi.js's both get a note from the re-plugged port (held 1 → 0) — red before (the shared access handed it midi.js's open port).
+- **F5 (the shim half)** — `tests/app-midi-sim.test.mjs` **B6**: recording armed (count-in 0), 2 s of song rendered, a settable page
+  clock (the real one continued; main.js, the shim and the test read `performance.now()` at call time): a prompt note with age 30 →
+  recorded at `round(curTick(recv − 30))` (3657 — a guard, green before); then 5 s without MIDI and a note native dispatched 150 ms
+  before the busy page ran it → recorded at `round(curTick(dispatch))` = 3811, ≈ 288 ticks (150 ms at 120 BPM) before its delivery's
+  4099 — **red before** (recorded 4099: F1 through midi.js's real `noteOn(…, ts)` → `recStart` → `recTick(ts)` path).
+- **Gates** (one file at a time, `--max-old-space-size=2048`): app-midi 16 / 16, app-midi-sim 7 / 7, midi 34 / 34, main 47 / 47,
+  app-shell 19 / 19, app-shell-web 6 / 6, canonical-stream 1 / 1, lint 165 / 165, app-native 11 / 11. midi.js byte-identical (app-midi's
+  hash case). `MidiShim.js` 226 lines (≤ 300).
+- **Left for the lead (outside S's sections)**: §1.2's line "one shared MIDIAccess per page (a second call resolves the same object)"
+  → "a new MIDIAccess per call with its own port objects, as Chrome; one post per page (calls in flight share it; later calls post
+  nothing); only a fulfilled access is cached …" (N4); §7 B1's "resolves the **same** access twice" and "the offset recovers upward
+  after the 2 s window" → this section's cases; `Smoke.js:131`'s comment "listeners on every input of the shared MIDIAccess" — the smoke
+  now hooks its **own** access (it works unchanged: its listeners open its own ports, which logs a few `{ k: 'state', state: 'connected' }`
+  entries at `midiOpen`; the step-6 gate reads only `'disconnected'` entries, and a disconnect still reaches every access); §9's
+  timestamp budget stands (5b's 150 ms spin is inside the minimum either way).
+
+**Fixer M (native) — review 1's F1, F2, F3, F4, F5 (text), F6, F8, F9; review 2's F2, F3, F4, N1, N2, N3, N5** (2026-10-24, Fable 5.1;
+worktree reset to 223335e. Commits: `1b5bd38` the code, the tools, the tests; the notes commit. Not pushed; `sw.js` untouched on the
+branch — main.js, index.html and cv-world.js changed, so **the lead runs `node tools/precache.mjs --write`**; the smoke ran on a
+throwaway commit carrying only the rebuilt BUILD hash, dropped afterwards — the app bundle never contains sw.js.)
+- **Failing tests first** (all seen red at 223335e, outputs in `scratchpad/midi/fxM/red-*.out`): app-native 10 / 12 (the two MIDI
+  cases), cv-world 76 / 77, app-shell 18 / 19, app-shell-web 5 / 6; **the harness** — `tools/midi-harness/run.sh`, reviewer 2's macOS
+  harness made a repeatable gate: the REAL `Midi.swift` + `Smoke.swift` compiled with `main.swift`'s fake host and 21 cases, exit = the
+  failure count — against the old `Midi.swift` (a scratch variant for the old API) **10 of 21 red**: 2 / 2b (R2-F2: CC 64 = 0 / bend
+  centre "NONE" after the overflow), 3a / 3b (R2-F4: 3D and 3F dropped), 7b / 7d (R2-F3: "DEAF" at every gap ≤ 200 ms), 8 (R1-F2:
+  `3:B0 7B 00 | 3:E1 00 40 | 9:B0 40 00 | 9:B0 7B 00`), 9 (R1-F9: three stale CC 123s), 10b / 10d (R1-F1: no `backgroundExpired`,
+  no `gateChanged`). Green after: **21 / 21 in three consecutive runs** (`harness-green.out`); it writes nothing outside its build
+  directory (`Midi.defaults` is swapped for an in-memory `UserDefaults` subclass — review 2's `~/Library/Preferences/midiharness.plist`
+  cannot recur).
+- **R1-F1 (major) — the background task, the lead's decision (a) / (b) / (c)**: `ShellViewController.sceneBackground(true)` with
+  `midi.midiOpen && backgroundAudio` takes `UIApplication.shared.beginBackgroundTask(withName: "synth.midi", expirationHandler:)`; the
+  handler `midiBackgroundExpired()` sets the new gate input `midi.backgroundExpired = true` — the gate is now `ready && midiOpen &&
+  (onScreen || (backgroundAudio && !backgroundExpired))` (§3.4's frozen expression **amended**, the lead's) — so the close path runs in
+  the live process: the triple per sounding channel is flushed to the page (still alive at that moment), arrivals are dropped until the
+  foreground; the task ends in the handler, at the foreground (`backgroundExpired = false`, the gate reopens with `openedAt` = now) and
+  whenever the gate shuts for any other reason (`Midi.gateChanged`). No silent-audio keep-alive (app-native greps `AVAudioPlayer /
+  AVAudioEngine / AVAudioSourceNode` absent). The harness's case 10 (the native half: hidden + on → open; expired → `B0 40 00`, `B0 7B
+  00`, shut, drops; foreground → open, the drop reported) and the smoke's new **step 8b** (Sound in background on, pedal + note, hidden
+  → the task held; the Debug shell runs the expiration path itself as iPadOS would ≈ 30 s in → the triple reaches the hidden page, 3
+  sends dropped, the task ended; the foreground reopens, the next note plays, held 0) are the repeatable proofs; the sender's run is the
+  real one (below). The simulator measurement and the device question are in §11.
+- **R1-F2 (major) + R1-F9 — three passes, note-offs clear the masks, the per-kind evaluator**: `releases()` walks the selected ports
+  three times — every CC 64 = 0, then every bend centre, then every CC 123 — so the order holds across ports (the page's `held` /
+  sustain are per channel); the masks' note bit is now a **128-bit set per channel** (`held[32]`): a note-off or a velocity-0 note-on
+  clears its note, CC 120 / 123 the channel, a channel sounds while any note is set — "From other apps"' stale ch-1 bit (set by step
+  7b's notes, never cleared) is gone, so the smoke's closing batch no longer carries its CC 123 (released 2, as lane M measured). The
+  evaluator checks **per kind**: every `bn 40 00` before any `bn 7B 00` (`pedalFirst`), for step 8 and 8b. **The learn question** (the
+  brief's): checked in midi.js / main.js — a pending Serum learn *would* learn the triple's CC 64 (`cc < 120 && pending`, midi.js:326;
+  CC 123 is ≥ 120 and safe there), and a canvas CC module in learn mode learns CC 64 **and** CC 123 (`modCC` learns every controller,
+  main.js:7979–7990); nothing cancels a learn on `hidden` / `blur`, and an unplug or overflow has no visibility change at all. Not
+  fixable natively without a protocol change the shim and the page must read (both closed to this lane) — **recorded in §11 with the
+  proposed marker** for the lead; the native side sends nothing it does not have to (CC 64 = 0 only where the pedal was down).
+- **R1-F4 (major) — a form sheet**: `MidiBluetoothSheet` presents `.formSheet` (centred, the surround dimmed — the outside tap is
+  consumed by the dimming view, never by the page); the popover's anchor code is gone (`present(via:autoDismiss:shown:closed:)`);
+  `presentationControllerDidDismiss` still settles the Presenter on a swipe-down or a tap on the surround; Done and the smoke's
+  auto-dismiss unchanged. By hand below.
+- **R1-F3 (major) — the stale `visualViewport.scale`**: the A1-safe guard in `cv-world.js`'s one scale read (`vvScale`): a `scale > 1`
+  with `visualViewport.width >= innerWidth − 1` is read as 1 — a real pinch zoom shrinks the visual viewport to `innerWidth / scale`,
+  so this state never occurs in a correct browser (WebKit with the Visual Viewport API, iOS 13+, reports `innerWidth` as the layout
+  viewport's). cv-world.test: a new case (a fake vv at scale 1.333, width = innerWidth, after a `resize` → `native` false, no chip,
+  the hooks still the canvas's; width 1279.5 still the window's; then scale 1.5 at width 1280 / 1.5 → hands over; back to 1 → the
+  camera) — red before (the chip showed); and the existing hand-over case **amended on purpose** (its fake now shrinks the width on
+  the zoom, as a browser does — named in the test). `gesture.js`'s own `perPt()` scale read (an edge threshold) is outside this
+  lane's lines: the stale 1.333 would narrow the edge band by 25 % until the next real viewport event — noted for the lead. The
+  native bisect (the smoke's new `layout` / `vv` log lines) is below.
+- **R2-F2 (major)**: the overflow branch marks every (port, channel) in the buffer it drops as owing the whole triple (`Masks.dirty`)
+  before `removeAll` — harness 2 / 2b: `B0 40 00` at 0 and `E0 00 40` at 1, `B0 7B 00` at 2 after the stall.
+- **R2-F3 (major)**: `connected` is `[Int32: MIDIEndpointRef]`; a uid whose ref changed is disconnected, released and reconnected in
+  one relist — harness 7b (at once: reconnected, its held note released 1) and 7d (20 / 50 / 100 / 200 / 300 ms gaps: every one
+  plays; the old code was DEAF up to 200 ms). The page's list is unchanged (same id, `connected`).
+- **R2-F4 (minor)**: `closedAt` recorded at each close; dropped at arrival only `closedAt != 0 && closedAt ≤ at < openedAt` — harness
+  3a (stamp 0, −1 s, −5 ms, stamp 1: all delivered) and 3b (a stamp inside the shut window dropped, one older than it delivered).
+- **N1 / N5 — the client off the main thread, retried endpoints**: `Midi.prepare()` at launch (right after the page load starts) and
+  `Midi.open(done:)` (the bridge's reply handler waits; `bridgeMidiOpen(_:)` is now asynchronous) share `createClient()`; the ports and
+  the "SYNTH" destination are made when missing at every open (`createEndpoints()` — a failed input port is retried, never left 0
+  behind a live client; the smoke endpoints once). **Found on the way**: a client made on a **GCD utility worker** while the main
+  thread ran its run loop **missed every notification in two of three harness runs** (`notified` never called; the probe with main
+  blocked during the create always delivered — CoreMIDI appears to bind the block's delivery to the creating thread's run loop,
+  which a worker never runs), so the client is made on a **dedicated utility `Thread` whose run loop is kept alive** for the app's life
+  (`RunLoop.current.add(Foundation.Port(), …)`, `run(mode:before:)` forever; the notify block still only hops to main) — three
+  harness runs green after. `relist()` waits for `midiOpen` (the page's open rebuilds the tables itself).
+- **N2**: termination runs `midi.pageReset()` before `midi.ready = false` (harness 6: 0 calls to the dead page). **N3**: `oneList`
+  builds and uses the list inside one `withUnsafeMutablePointer` scope. **R1-F6**: the relaunch half runs on `-smokeMode relaunch`
+  (`launch_wait "${RUN}b" 40 -smokeMode relaunch`), never on the label's last letter. **R1-F8**: a `ports` call's `midiBatch` line
+  carries the drops waiting to ride; every `midiGate` line carries the counters and `backgroundExpired`. `Smoke.js:131`'s comment
+  names the smoke's own access. **R1-F5**: the ⚙ hint reads "Keep playing when you switch apps (iPadOS may pause it after a while —
+  for a MIDI app, use Split View)", the help sentence "… or another MIDI app sending to it; put that app beside SYNTH in Split View)
+  …" — pinned in app-shell / app-shell-web (red first).
+- **Tools**: `tools/midi-sender.swift` (reviewer 1's probe — the simulator's only "other app": build for the simulator SDK, `simctl
+  spawn` it; `list / send / hold / chord / stream`, `--wait` for the Home-press timing); `tools/midi-harness/{run.sh, main.swift}`
+  (above; `$SYNTH_HARNESS_DIR`, default `$TMPDIR/synth-midi-harness`). The smoke script counts the `"step":"ready"` / `"bgdone"`
+  lines (several round trips per run: 8, 8b, 11).
+- **Budgets**: `Midi.swift` is **456 lines (§9 said ≤ 400)** — the asynchronous client (+ 45), the masks' bitmap and three passes (+ 15),
+  the per-fix comments; recorded, not trimmed (a trim would re-run the smoke on a changed binary).
+- **Gates** (one file at a time, `--max-old-space-size=2048`): the harness 21 / 21 ×3, app-native 12 / 12, cv-world 77 / 77,
+  app-shell 19 / 19, app-shell-web 6 / 6, app-midi 16 / 16, app-midi-sim 7 / 7, main 47 / 47, lint 165 / 165. midi.js and
+  `MidiShim.js` untouched (byte-identical: app-midi's hash case; `git diff 223335e -- midi.js app/ios/SYNTH/MidiShim.js` empty).
+- **The smoke** (`tools/app-smoke.sh` on the committed bundle, two runs `fxm1` / `fxm2`, `scratchpad/midi/fxM/smoke-fxm*.out`): **PASS,
+  91 / 91 gates each**, 0 pending, 0 FAIL — step 8 now `released 2` (the stale "From other apps" CC 123 gone — F2's flake is gone with
+  it), its closing batch `b0407f 903e64 b04000 b07b00`; step 8b `bgTask true` at the background (the simulator's `backgroundTimeRemaining`
+  reads ∞ — it never expires a task by itself), the expiry path `released 2`, 3 hidden sends dropped, the task ended, the triple at the
+  hidden page `b0407f 903d64 b04000 b07b00`, the foreground reopened (`903b64 803b00`), held 0; the client made at t = 182–202 ms
+  (91–93 ms, off the main thread — the simulator's MIDIServer already up) before the page's `ready` (989–1086 ms), the access reply
+  in 0–1 ms; the 1 kHz burst 421 calls, transit p50 0.47 / p99 2.5 ms, stamp error p95 0.88 ms; 0 console errors, the one expected
+  warn; `.app` 10.2 MB. Each run had **two background round trips** (the counted `ready` / `bgdone` lines) and the relaunch half ran
+  on `-smokeMode relaunch`.
+- **By hand** (`-smokeMode log`, the Simulator tool, `scratchpad/midi/fxM/byhand-*`): **R1-F4** — ⚙ → App → Pair a device… → the form
+  sheet centred over the dimmed page ("Bluetooth MIDI", ✓, "No devices found"); a tap on the surround at key C5's spot: `btmidi closed`
+  logged (the settle path ran), **0 `engine` lines**, "Engine off" still, the ⚙ popover beneath untouched — before the fix that tap
+  played C5. **R1-F3** — three Home round trips (the HOME button, back by the icon): the toolbar read "82 %" with **no chip** after
+  every one; a two-finger pinch on the canvas then zoomed the camera 82 → 200 % (the top bar and tray unscaled — no page zoom).
+  **The native cause (the bisect, new `layout` / `vv` log lines)**: ≈ 150 ms after `sceneDidEnterBackground` UIKit rotates the scene to
+  **landscape (1376 × 1032) and 120 ms later back to portrait (1032 × 1376)** — `viewWillTransition(to:)` twice, both before the page's
+  `hidden` — the other-orientation snapshot for the app switcher; WebKit lays the page out at 1376 wide and back while going hidden and
+  leaves `visualViewport.scale` at **1.333 = 1376 / 1032** with the width still 1032 on every return (`scroll` / `window` / `resize`
+  events at the foreground, all with that scale; the page itself renders 1 : 1). Same for `simctl launch` of Safari (the smoke's round
+  trips) and for the HOME button; nothing in the shell's code is involved (stage A's `.all` deferral merely made the same WebKit state
+  more frequent). No native fix taken: a zoom reset at the foreground (`scrollView.setZoomScale`) would undo a user's real pinch, and
+  an orientation lock while hidden is the user's rotation lost; the page-side guard is exact (the stale state has the window's width;
+  a real pinch never does) and costs browsers nothing.
+- **R1-F1 by hand** (`tools/midi-sender.swift` spawned into the simulator — the only "other app" it has —, `byhand-f1*.sh / .out`; the
+  engine on by a key, Sound in background on, Home pressed as the sender starts): **run 1** — Home at 04:19:09, `bgTask true`; the
+  task's **expiration handler fired at +26.5 s** (`remaining 4.05 s` — the simulator does expire it, ≈ 30 s budget, although
+  `backgroundTimeRemaining` read ∞ at the background transition), the gate shut (`released 0`: nothing was held); the sender's note-on
+  at +28.3 s **still reached the process and was dropped at the shut gate** (`dropped 1`), its note-off at +33.3 s and the probes at
+  +45 / +46 / +60 / +61 s **never arrived** (the counter stayed 1 — CoreMIDI deliveries to the hidden process end between +28 and +33 s,
+  reviewer 1's ≈ 30 s edge); back at +87 s the gate reopened, 0 voices, nothing lit. **Run 2, the exact edge** — CC 64 127 + a note-on
+  at +19.3 s: **delivered to the hidden page** (two batches, rtt 7–9 ms; the note sounding under the pedal), the expiry at **+26.5 s** →
+  **`released 2`** (CC 64 = 0, then CC 123), the release batch completed by the hidden page in 48 ms; the note-off + pedal-up sent at
+  +32.3 s never reached the process; the foreground at +47 s: masks 0, 0 voices, no lit key — **the note that would have droned until
+  Panic (reviewer 1's shot 04) is released ≈ 3.5 s before the deliveries stop**. So in the simulator the order is: the expiry handler
+  (+26.5 s) → the last deliveries (≈ +28–30 s) → silence; messages sent past the edge are lost (the shim warns once about the drops
+  that arrived). **The device question stands** (§11): whether a sounding iPad app keeps its deliveries past the expiry — then the
+  expiry shuts MIDI while the sound goes on until the foreground; the Split View advice holds either way.
+
 ### Acceptance
+- Holding branch `wt-B` (M 30204ab, S 8edaa19, W 55f00e7; canvas's Delete / Tab keys merged in; fixers S 5ab14cd, M 84f67ea), from
+  6a45072. Two reviews: **1 (the simulator, Fable 5.1)** 4 major · 3 minor · 2 nits — a `simctl spawn` sender as "another app"
+  (kept as `tools/midi-sender.swift`), a 5-min 1 kHz stream with 0 dropped and flat memory, the WebContent kill mid-stream;
+  **2 (code, Opus 5.5)** 3 major · 2 minor · 5 nits — the real Midi.swift compiled for macOS against a fake host (kept as
+  `tools/midi-harness/`, 21 cases). Fixed: the release before the background expiry (`beginBackgroundTask`), the triple across ports,
+  the Bluetooth form sheet, the pinch guard (iOS 27.0 rotates the scene for the app-switcher snapshot and leaves
+  `visualViewport.scale` 1.333), the overflow's releases, a re-created source, stale stamps, the timestamps across silence + the clamp,
+  one access per call, the off-main client, the texts. The smoke PASS (91 gates incl. 8b), the harness PASS, the sweep green; squashed
+  onto `canvas` as "B", the web side deployed, the app installed on the user's iPad.
 
 ## 13. Review log
 

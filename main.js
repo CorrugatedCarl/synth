@@ -2939,11 +2939,18 @@ function programChange(trs, n) {
    its host and keeps the live input routing shared with the on-screen and computer keyboards (held notes, recording,
    power, the wheels). Learned controllers write their destinations (FX destinations through fxSet); MIDI Learn stores the
    next controller 0–119 in s.midi. */
+// (IMPL-B §6) what the host callbacks received, for SHELL.probe().midi: n messages (notes, every CC once — the wheel and the
+// pedal ride theirs —, bend, channel pressure), the last wheel (0…1) and bend (−1…1)
+const midiSeen = { n: 0, wheel: 0, bend: 0 };
 const midi = createMidi({
   targets: src => targets(src),
-  noteOn: (n, v, src, ts) => noteOn(n, v, src, ts),
-  noteOff: (n, src, ts, rv) => noteOff(n, src, ts, rv),
-  ctl: (kind, v, src, ts, trs) => ctl(kind, v, src, ts, trs || targets(src)),
+  noteOn: (n, v, src, ts) => (midiSeen.n++, noteOn(n, v, src, ts)),
+  noteOff: (n, src, ts, rv) => (midiSeen.n++, noteOff(n, src, ts, rv)),
+  ctl: (kind, v, src, ts, trs) => {
+    if (kind === 'wheel') midiSeen.wheel = v; else if (kind === 'bend') midiSeen.bend = v;
+    if (kind === 'bend' || kind === 'at') midiSeen.n++;
+    return ctl(kind, v, src, ts, trs || targets(src));
+  },
   post: (t, m) => postTo(t, m),
   // stage 1e: the Serum instruments of a track ([{id, s, fx, prim}], the primary first): each has its own learn map
   instsOf: t => (t.dev ? CMOD.instIds(t).filter(id => t.dev[id].model === 'serum').map(id => ({ id, s: t.dev[id].vals.s, fx: fxOfDev(t, id), prim: id === CMOD.primId(t) })) : []),
@@ -2957,7 +2964,7 @@ const midi = createMidi({
   changed: (t, patch, refresh, dev) => { for (const k of dev ? [dev] : serumIds(t)) sxDirty.add(vkey(t, k)); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
-  modCC: (ch, cc, v) => modCC(ch, cc, v), // (2b: the canvas CC modules, CC learn)
+  modCC: (ch, cc, v) => (midiSeen.n++, modCC(ch, cc, v)), // (2b: the canvas CC modules, CC learn)
   // (8, §8.2) a learned hardware pad plays its canvas pad and goes nowhere else (true); a port gone ends its pads' notes (review #9)
   padIn: (e, port, ts) => PADS.midiIn(e, port, ts),
   ports: names => { PADS.ports(names); for (const B of modBodies.values()) if (B.kind === 'pads') B.sync(); }, // (the footers' hardware dots)
@@ -4582,7 +4589,8 @@ if (SHELL) {
   // check — no caller in the page)
   SHELL.probe = () => ({ ctx: ctx ? ctx.state : null, sr: ctx ? ctx.sampleRate : null,
     baseLatency: ctx && Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : null, outputLatency: ctx && Number.isFinite(ctx.outputLatency) ? ctx.outputLatency : null,
-    nodes: nodes.size, master: !!mnode, peak: anPeak(), held: held.size, cpu: $('#cpu').textContent, store: store.mode, bootMs: shellBootMs });
+    nodes: nodes.size, master: !!mnode, peak: anPeak(), held: held.size, cpu: $('#cpu').textContent, store: store.mode, bootMs: shellBootMs,
+    midi: { ...midiSeen } });
   SHELL.save = (blob, name) => shellSave(blob, name);
 }
 function importMidiFile(bytes, fname) {
@@ -5641,7 +5649,7 @@ function initShell() {
     // when the app leaves the screen (its audio background mode, §5.2); off, the sound pauses until the app is back.
     // Native is told ({ t: 'bg', on }) at boot and on each change
     if (SHELL) {
-      const bf = h('div', 'field'), bb = h('button', 'tt'), bt = h('p', 'cv-ghint', 'Keep playing when you switch apps');
+      const bf = h('div', 'field'), bb = h('button', 'tt'), bt = h('p', 'cv-ghint', 'Keep playing when you switch apps (iPadOS may pause it after a while — for a MIDI app, use Split View)');
       bb.type = 'button'; bb.id = 'cvBg'; bt.id = 'cvBgHint'; bb.setAttribute('aria-describedby', bt.id);
       bb.title = 'On: a held note or a playing song keeps sounding when you switch to another app or lock the screen. Off: the sound pauses until you come back';
       const ui = () => { const on = bgOn(); bb.setAttribute('aria-pressed', on ? 'true' : 'false'); bb.textContent = on ? 'On' : 'Off'; };
@@ -5650,6 +5658,15 @@ function initShell() {
       bf.append(h('span', null, 'Sound in background'), bb);
       gp.append(h('h3', null, 'App'), bf, bt);
       shell.bg = bb;
+      // (IMPL-B §4.1) "Bluetooth MIDI — Pair a device…": native presents Apple's pairing sheet (the only way a Bluetooth MIDI
+      // keyboard reaches an iPad app); the reply is not waited for
+      const pf = h('div', 'field'), pb = h('button', 'tt', 'Pair a device…'), pt = h('p', 'cv-ghint', 'Pair a Bluetooth keyboard or pad controller (USB and other apps need no pairing)');
+      pb.type = 'button'; pb.id = 'cvBt'; pt.id = 'cvBtHint'; pb.setAttribute('aria-describedby', pt.id);
+      pb.title = 'Opens Apple’s list of nearby Bluetooth MIDI devices to pair one with this iPad. USB controllers and other music apps need no pairing';
+      pb.onclick = () => shellPost({ t: 'midi-bt' });
+      pf.append(h('span', null, 'Bluetooth MIDI'), pb);
+      gp.append(pf, pt);
+      shell.bt = pb;
     }
   }
   // the top tray animates its height from now on (not from the stylesheet's 48 px to the restored height at load)

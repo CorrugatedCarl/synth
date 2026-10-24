@@ -1133,6 +1133,17 @@ r1-just tuning from the by-hand check; the simulator rebooted once; the installe
   test file, one at a time. Squashed onto `canvas` as "A"; the web side deployed 2026-10-23; the app built from that commit and installed
   on the simulator; the user's cable session installs it on the iPad (§7.2).
 
+### Amended by stage B (IMPL-B, lane M — the lead's decision #11, 2026-10-23)
+Two of this stage's static assertions in `tests/app-native.test.mjs` are changed by the MIDI contract, deliberately (not a weakened
+test): (1) §1.3's absent-keys list **loses `NSBluetoothAlwaysUsageDescription`** — Info.plist now **requires** it ("SYNTH connects to
+Bluetooth MIDI keyboards and pads you pair here."): the Bluetooth MIDI pairing sheet (`CABTMIDICentralViewController`, IMPL-B §4.1) starts
+CoreBluetooth and iOS kills an app without the key; our code still never imports CoreBluetooth (A6 / B3 — grepped). (2) The **exact Swift
+file list gains `Midi.swift`, `MidiBluetooth.swift`, `SmokeMidi.swift`**; the A2 / A6 greps (no URLSession / Network / http / KVC / private
+WebKit API) run over them too, and `Midi.swift` is held to CoreMIDI + Foundation + os only. §11's "Not in stage A: CoreMIDI" is stage B
+(IMPL-B). The marker's one-shot `installUserScripts` now also installs `MidiShim.js` right after the marker (both installs; a Resource in
+Release — unlike Smoke.js); the bridge gains `midi` / `midi-send` / `midi-bt` / `midi-clock` (+ the Debug `-smoke`-only `smoke-midi`);
+`webView(_:didCommit:)` is new (the MIDI gate's reset on every main-frame commit); `sceneBackground` also feeds `Midi.onScreen`.
+
 ## 13. Review log
 
 ### The skeptic review (2026-10-23, against the draft)

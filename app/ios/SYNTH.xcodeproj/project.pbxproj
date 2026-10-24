@@ -18,6 +18,10 @@
 		A00000000000000000000028 /* SmokeSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000018 /* SmokeSteps.swift */; };
 		A0000000000000000000002A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001A /* Assets.xcassets */; };
 		A0000000000000000000002B /* Smoke.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001B /* Smoke.js */; };
+		A0000000000000000000002C /* Midi.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001C /* Midi.swift */; };
+		A0000000000000000000002D /* MidiBluetooth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001D /* MidiBluetooth.swift */; };
+		A0000000000000000000002E /* SmokeMidi.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001E /* SmokeMidi.swift */; };
+		A0000000000000000000002F /* MidiShim.js in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001F /* MidiShim.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -35,6 +39,10 @@
 		A00000000000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A0000000000000000000001A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A0000000000000000000001B /* Smoke.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = Smoke.js; sourceTree = "<group>"; };
+		A0000000000000000000001C /* Midi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Midi.swift; sourceTree = "<group>"; };
+		A0000000000000000000001D /* MidiBluetooth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MidiBluetooth.swift; sourceTree = "<group>"; };
+		A0000000000000000000001E /* SmokeMidi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeMidi.swift; sourceTree = "<group>"; };
+		A0000000000000000000001F /* MidiShim.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = MidiShim.js; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,6 +77,10 @@
 				A00000000000000000000016 /* AudioSession.swift */,
 				A00000000000000000000017 /* Smoke.swift */,
 				A00000000000000000000018 /* SmokeSteps.swift */,
+				A0000000000000000000001C /* Midi.swift */,
+				A0000000000000000000001D /* MidiBluetooth.swift */,
+				A0000000000000000000001E /* SmokeMidi.swift */,
+				A0000000000000000000001F /* MidiShim.js */,
 				A0000000000000000000001B /* Smoke.js */,
 				A00000000000000000000019 /* Info.plist */,
 				A0000000000000000000001A /* Assets.xcassets */,
@@ -144,6 +156,7 @@
 			files = (
 				A0000000000000000000002A /* Assets.xcassets in Resources */,
 				A0000000000000000000002B /* Smoke.js in Resources */,
+				A0000000000000000000002F /* MidiShim.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -186,6 +199,9 @@
 				A00000000000000000000026 /* AudioSession.swift in Sources */,
 				A00000000000000000000027 /* Smoke.swift in Sources */,
 				A00000000000000000000028 /* SmokeSteps.swift in Sources */,
+				A0000000000000000000002C /* Midi.swift in Sources */,
+				A0000000000000000000002D /* MidiBluetooth.swift in Sources */,
+				A0000000000000000000002E /* SmokeMidi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

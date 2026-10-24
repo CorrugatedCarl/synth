@@ -29,6 +29,8 @@ arrangement). Installable PWA, used heavily on the user's iPad Pro (iPadOS, Chro
   "SYNTH iPad Pro 13" (iOS 27.0 runtime; 27.1's has no iPads). Never commit `app/ios/Local.xcconfig` (the user's team / bundle-id suffix).
 - The fonts are local (`fonts/`, Inter + JetBrains Mono, OFL texts beside them); `node tools/precache.mjs --write` covers them.
 - The user installs with a free Apple ID over a cable (7-day re-sign); before any switch to the paid Program, every project is saved to Files.
+- MIDI in the app (IMPL-B): `app/ios/SYNTH/Midi.swift` + `MidiShim.js` (midi.js stays byte-identical); after any Midi.swift change run
+  `tools/midi-harness/run.sh` (the real Swift on the Mac, a fake host) and the smoke; `tools/midi-sender.swift` plays the simulator's app as another app.
 
 ## Release hygiene
 

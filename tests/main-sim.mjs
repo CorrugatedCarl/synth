@@ -354,6 +354,7 @@ export async function bootMain(o = {}) {
     D[pre ? 'webkitExitFullscreen' : 'exitFullscreen'] = function () { sim.fsCalls = (sim.fsCalls || []).concat([['exit']]); D[el] = null; fsChange(); return pre ? undefined : Promise.resolve(); };
   }
   G.__synthTest = Object.assign({}, o.synthTest || {}); // o.synthTest: hooks main.js reads while it boots (canvas-sim: cvWorld)
+  if (o.beforeImport) o.beforeImport(G); // (IMPL-B B3) the app's document-start scripts (the MIDI shim) on the finished fake window, before main.js
   const url = new URL('main.js?v=9&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;

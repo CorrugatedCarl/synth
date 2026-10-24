@@ -61,7 +61,7 @@ export const SLOP = Object.freeze({ touch: 10, mouse: 4 }), COPY_MS = 450;
 /** The module's fold-free extras: the pad well's margin around the grid (world px). */
 export const WELL_PAD = 8;
 /** §8.1: the hardware items' text where Web MIDI is absent (the iPad). */
-export const NO_MIDI = 'Hardware pad controllers need a browser with Web MIDI — Chrome or Edge on a Mac. iPad browsers have none.';
+export const NO_MIDI = 'Hardware pad controllers need a browser with Web MIDI — Chrome or Edge on a Mac, or the SYNTH app on iPad. iPad browsers have none.';
 /** §8.4: the generic light-back scheme in one line. */
 export const GEN_DOC = 'Lights the pad of each learned note by sending that note back at velocity 127 — works with controllers whose pads light from incoming notes.';
 

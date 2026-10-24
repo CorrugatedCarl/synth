@@ -17,6 +17,10 @@
   window.addEventListener('unhandledrejection', function (e) { log({ k: 'console', level: 'unhandledrejection', msg: str(e.reason && (e.reason.stack || e.reason.message) || e.reason).slice(0, 2000) }); });
   var vis = [], t0 = performance.now();
   document.addEventListener('visibilitychange', function () { vis.push({ t: Math.round(performance.now()), hidden: document.hidden }); log({ k: 'vis', hidden: document.hidden }); });
+  // the visual viewport per change (R1-F3's bisect: the "page zoomed" chip after a Home round trip — a scale > 1 with the width still the window's)
+  var vvLog = function (why) { var v = window.visualViewport; if (v) log({ k: 'vv', why: why, scale: v.scale, width: v.width, height: v.height, inner: [innerWidth, innerHeight], hidden: document.hidden }); };
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', function () { vvLog('resize'); }); window.visualViewport.addEventListener('scroll', function () { vvLog('scroll'); }); }
+  window.addEventListener('resize', function () { vvLog('window'); }); window.addEventListener('pageshow', function () { vvLog('pageshow'); });
   var ticks = 0; setInterval(function () { ticks++; }, 25);   // the metronome's scheduler shape (main.js setInterval 25 ms)
 
   var $ = function (id) { return document.getElementById(id); };
@@ -63,6 +67,7 @@
         fonts: Array.from(document.fonts).map(function (f) { return f.family + ':' + f.status; }), interW: textW("'Inter', sans-serif"), fallbackW: textW('sans-serif'), monoW: textW("'JetBrains Mono', monospace"), monoFallbackW: textW('monospace'),
         resources: performance.getEntriesByType('resource').map(function (e) { return e.name; }).filter(function (n) { return !/^(synth:|blob:|data:)/.test(n); }).slice(0, 40),
         build: build, inner: [innerWidth, innerHeight], dpr: devicePixelRatio, insets: insets(), hidden: document.hidden, vis: vis, ticks: ticks, sinceStart: Math.round(performance.now() - t0),
+        vv: window.visualViewport ? [window.visualViewport.scale, window.visualViewport.width, window.visualViewport.height] : null, chip: !!document.querySelector('[data-cv-tb="native"]:not([hidden])'),
         standalone: navigator.standalone, sw: 'serviceWorker' in navigator, ua: navigator.userAgent };
     },
     // §2.4 item 4 (c): every attempt to reach the network must fail (with the Mac online, a pass proves the block)
@@ -126,6 +131,68 @@
     bgState: function () {
       var S = window.SYNTH_SHELL, probe = null; try { if (S && typeof S.probe === 'function') probe = S.probe(); } catch (e) {}
       return { hidden: document.hidden, visState: document.visibilityState, ctxState: bgCtx ? bgCtx.state : null, ctxTime: bgCtx ? Math.round(bgCtx.currentTime * 1000) : null, now: Math.round(performance.now()), ticks: ticks, vis: vis.slice(-6), cpu: ($('cpu') || {}).textContent, probe: probe };
-    }
+    },
+
+    // ---- MIDI (IMPL-B §8): a recorder on the page side of the shim — listeners on every input of the smoke's OWN MIDIAccess (one per
+    // requestMIDIAccess() since fixer S's N4, as Chrome: its listeners open its own port objects, never midi.js's — the real shim's, or
+    // lane M's recorder stub whose access has the same shape — `stub` says which); entries { k: 'msg', uid, st, d1, d2, ts, recv } and
+    // { k: 'state', uid, name, state, type, recv }; midiTake() hands them over in order (the hot-plug step reads the release before the
+    // disconnect). `probe().midi` (lane W) rides along when present.
+    midiOpen: async function () {
+      var t0 = performance.now();
+      if (typeof navigator.requestMIDIAccess !== 'function') return { ok: false, error: 'no requestMIDIAccess' };
+      midiAcc = await navigator.requestMIDIAccess();
+      midiHook(midiAcc);
+      midiAcc.addEventListener('statechange', function (e) { var p = e.port; if (p) midiLog.push({ k: 'state', uid: +p.id, name: p.name, state: p.state, type: p.type, recv: performance.now() }); midiHook(midiAcc); });
+      return { ok: true, ms: Math.round(performance.now() - t0), inputs: midiNames(midiAcc.inputs), outputs: midiNames(midiAcc.outputs), stub: midiStub() };
+    },
+    midiStatus: function () {
+      var b = $('midi'), p = probeOf();
+      return { button: b ? b.textContent : null, disabled: b ? b.disabled : null, unsup: b ? b.classList.contains('unsup') : null, ok: typeof navigator.requestMIDIAccess,
+        inputs: midiAcc ? midiNames(midiAcc.inputs) : null, outputs: midiAcc ? midiNames(midiAcc.outputs) : null, stub: midiStub(), held: p && p.held, peak: p && p.peak, ctx: p && p.ctx, midi: p && p.midi || null, hidden: document.hidden };
+    },
+    midiTake: function () { var p = probeOf(); return { n: midiLog.length, log: midiLog.splice(0), held: p && p.held, peak: p && p.peak, ctx: p && p.ctx, midi: p && p.midi || null }; },
+    // step 2: wait for a note-on to be in the recorder (it may land before this call reaches the page) — and, on the real shim, to
+    // sound (held ≥ 1, peak > 0.01)
+    midiWait: async function (ms) {
+      var t0 = Date.now(), p = null, got = function () { return midiLog.filter(function (e) { return e.k === 'msg' && (e.st & 0xf0) === 0x90; }).length; };
+      while (Date.now() - t0 < ms) { p = probeOf(); if (got() > 0 && (midiStub() || !p || (p.held >= 1 && p.peak > 0.01))) break; await new Promise(function (r) { setTimeout(r, 20); }); }
+      return { waited: Date.now() - t0, got: got(), held: p && p.held, peak: p && p.peak, ctx: p && p.ctx, midi: p && p.midi || null };
+    },
+    // step 4: the common clock — 20 round trips, the smallest gives offset = host − page (ms) ± rtt / 2
+    midiClock: async function () {
+      var best = null, samples = [];
+      for (var i = 0; i < 20; i++) {
+        var a = performance.now(), r = await post({ t: 'midi-clock' }), b = performance.now();
+        if (!r || !r.ok) return { error: r && r.error };
+        var rtt = b - a, off = r.host - (a + b) / 2; samples.push([Math.round(rtt * 1000) / 1000, Math.round(off * 1000) / 1000]);
+        if (!best || rtt < best.rtt) best = { rtt: rtt, offset: off };
+      }
+      return { offset: best.offset, rtt: best.rtt, samples: samples, nowRes: performance.now() % 1 === 0 ? 1 : 'sub-ms' };
+    },
+    busy: function (ms) { var t0 = performance.now(); while (performance.now() - t0 < ms) { /* spin */ } return { spun: Math.round(performance.now() - t0) }; },
+    midiSend: function (name, bytes) {
+      if (!midiAcc) return { error: 'no access' };
+      var out = Array.from(midiAcc.outputs.values()).find(function (p) { return p.name === name; });
+      if (!out) return { error: 'no output ' + name, outputs: midiNames(midiAcc.outputs) };
+      var t0 = performance.now(); try { out.send(new Uint8Array(bytes)); } catch (e) { return { error: String(e) }; }
+      return { sent: bytes, id: out.id, sentAt: t0 };   // (not `at`: Smoke.log's ISO stamp takes that key)
+    },
+    midiBt: async function () { var t0 = performance.now(), r = await post({ t: 'midi-bt' }); return { reply: r, ms: Math.round(performance.now() - t0) }; },
+    // a by-hand run (-smokeMode log, Safari's Web Inspector): __smoke.midiNote(60, 100) plays a note from "SYNTH smoke in" through the
+    // whole path (v 0: the note-off); __smoke.midiCC(74, 64) a controller; the reviewer's stand-in for a controller (IMPL-B §10 R1)
+    midiNote: function (n, v, ch) { return post({ t: 'smoke-midi', b: [(v > 0 ? 0x90 : 0x80) | ((ch || 1) - 1 & 15), n & 127, (v || 0) & 127] }); },
+    midiCC: function (cc, v, ch) { return post({ t: 'smoke-midi', b: [0xb0 | ((ch || 1) - 1 & 15), cc & 127, v & 127] }); },
+    midiStall: function () { var t0 = performance.now(), r = confirm('smoke: MIDI stall'); return { confirmed: r, ms: Math.round(performance.now() - t0) }; }
+  };
+  var midiAcc = null, midiLog = [], midiHooked = {};
+  var probeOf = function () { var S = window.SYNTH_SHELL; try { return S && typeof S.probe === 'function' ? S.probe() : null; } catch (e) { return null; } };
+  var midiStub = function () { return !!(window.__midiRec && window.__midiRec.stub); };
+  var midiNames = function (m) { return Array.from(m.values()).map(function (p) { return { id: p.id, name: p.name, state: p.state }; }); };
+  var midiHook = function (acc) {
+    acc.inputs.forEach(function (inp) {
+      if (midiHooked[inp.id]) return; midiHooked[inp.id] = true;
+      inp.addEventListener('midimessage', function (e) { midiLog.push({ k: 'msg', uid: +inp.id, st: e.data[0], d1: e.data.length > 1 ? e.data[1] : 0, d2: e.data.length > 2 ? e.data[2] : 0, ts: e.timeStamp, recv: performance.now() }); });
+    });
   };
 })();

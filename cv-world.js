@@ -1099,7 +1099,9 @@ export function createWorld(viewport, o) {
   /* ---- the world's own pointer gestures */
   const take = e => { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); if (e.cancelable !== false && typeof e.preventDefault === 'function') e.preventDefault(); };
   const capture = (id, on) => { try { if (on) viewport.setPointerCapture(id); else viewport.releasePointerCapture(id); } catch (err) { /* pointer gone */ } };
-  const vvScale = () => { const v = win.visualViewport; return v && +v.scale > 0 ? +v.scale : 1; };
+  // (fix B R1-F3) a pinch zoom shrinks the visual viewport to innerWidth / scale; a scale > 1 with the width still the window's is a
+  // stale reading WebKit leaves behind after a Home round trip in the iPad app — no correct browser reports it — and is read as 1
+  const vvScale = () => { const v = win.visualViewport, s = v ? +v.scale : 0; return !(s > 0) ? 1 : s > 1 && +v.width >= win.innerWidth - 1 ? 1 : s; };
   function startPan(e, mid, guard) { // guard: a press the momentum guard took (its tap is no tap, its click no click)
     glide = null;
     if (anim) { anim = null; settle(); } // a press stops an animation where it is

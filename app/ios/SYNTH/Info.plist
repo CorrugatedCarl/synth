@@ -68,5 +68,8 @@
 	<!-- (fix R1-F2) an audio/* accept (the IR, drum-sample and wavetable-sample pickers) makes WebKit's upload menu offer Take Video,
 	     which records sound: without this key the system kills the app on that tap (device-only, as the camera's) -->
 	<key>NSMicrophoneUsageDescription</key><string>SYNTH does not record audio; iPadOS asks only if you choose Take Video in a file picker.</string>
+	<!-- IMPL-B §4.1: the Bluetooth MIDI pairing sheet (CABTMIDICentralViewController) starts CoreBluetooth — without this key the system
+	     kills the app when it opens (iOS 13+; device-only — the simulator has no Bluetooth). Our code never imports CoreBluetooth (B3). -->
+	<key>NSBluetoothAlwaysUsageDescription</key><string>SYNTH connects to Bluetooth MIDI keyboards and pads you pair here.</string>
 </dict>
 </plist>
