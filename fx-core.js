@@ -566,15 +566,18 @@ export const REV_LABELS2 = deepFreeze([
 ]);
 export const CONV_IR_DEFAULT = 'fir:Medium/Chamber';
 
-// §3.16.1: index = S2 type id (FXP iType); variants (new instances get the highest); mix kind; splitter branch count
+// §3.16.1: index = S2 type id (FXP iType); variants; mix kind; splitter branch count; nv = the variant a new instance gets
+// (IMPL-SC §5.1: the highest unless said — the Compressor's v3 is its sidechain key, reached by keying a v2 (upgradeInstance)
+// or by a preset of that fv; every factory payload stays v2, so no compiled form moves). 'duck' (IMPL-SC §4) is index 16
 export const FXTYPES = deepFreeze([
   ['dist', 'Distortion', [1, 2], 'sin2', 0], ['flg', 'Flanger', [1], 'sin2', 0], ['phs', 'Phaser', [1, 2], 'sin2', 0],
-  ['cho', 'Chorus', [1, 2], 'sin2', 0], ['dly', 'Delay', [1, 2], 'sin2', 0], ['cmp', 'Compressor', [1, 2], 'sin2', 0],
+  ['cho', 'Chorus', [1, 2], 'sin2', 0], ['dly', 'Delay', [1, 2], 'sin2', 0], ['cmp', 'Compressor', [1, 2, 3], 'sin2', 0, 2],
   ['rev', 'Reverb', [1, 2], 'sin2', 0], ['eq', 'Equalizer', [1, 2], 'none', 0], ['fil', 'Filter', [1, 2], 'linear', 0],
   ['hyper', 'Hyper/Dimension', [1], 'additive', 0], ['bode', 'Bode', [2], 'sin2', 0], ['conv', 'Convolve', [2], 'sin2', 0],
   ['util', 'Utility', [2], 'linear', 0], ['split2', 'Splitter L/H', [2], 'branches', 2],
   ['split3', 'Splitter L/M/H', [2], 'branches', 3], ['splitms', 'Splitter M/S', [2], 'branches', 2],
-].map(([id, label, variants, mix, split]) => ({ id, label, variants, mix, split })));
+  ['duck', 'Ducker', [2], 'none', 0],
+].map(([id, label, variants, mix, split, nv]) => ({ id, label, variants, mix, split, nv: nv || variants[variants.length - 1] })));
 const TYPE_IDX = FXTYPES.reduce((o, t, i) => { o[t.id] = i; return o; }, {});
 const typeOf = id => (typeof id === 'string' && own(TYPE_IDX, id) ? FXTYPES[TYPE_IDX[id]] : null);
 const ADD_RACK = deepFreeze(FXTYPES.map(t => t.id)), ADD_BRANCH = deepFreeze(FXTYPES.filter(t => !t.split).map(t => t.id));
@@ -618,6 +621,27 @@ function s2Of(type, swap, extra) {
   return S1_ROWS[type].map(rowOf1).map(r => (r.pid === 'on' ? Object.assign(r, { def: 1 }) : own(swap, r.pid) ? swap[r.pid] : r)).concat(extra);
 }
 const s1Of = type => S1_ROWS[type].map(rowOf1);
+// the Compressor's S2 rows after the S1 ones (v2), then its key rows (v3, IMPL-SC §3: KEY INT / EXT, the key's HPF — n 0 = 20 Hz
+// = off —, LISTEN; a v3 at the defaults renders as the same v2)
+const cmp2X = () => [R2('xlo', 'X-Low', 'exp', 20, 1000, 0.4751, 'hz'), R2('xhi', 'X-High', 'exp', 500, 16000, 0.4644, 'hz'),
+  R2('below', 'Below', 'ratio', 1, 32, 0, 'ratio'), R2('gL', 'Low Gain', 'lin', -24, 24, 0.5, 'dbv'), R2('gM', 'Mid Gain', 'lin', -24, 24, 0.5, 'dbv'),
+  R2('gH', 'High Gain', 'lin', -24, 24, 0.5, 'dbv')];
+const cmp3X = () => cmp2X().concat([R2('ext', 'Key External', 'bool', 0, 1, 0, 'bool', 0, true), R2('schp', 'Key HPF', 'exp', 20, 2000, 0, 'hz'),
+  R2('listen', 'Key Listen', 'bool', 0, 1, 0, 'bool', 0, true)]);
+// IMPL-SC §4.1 the Ducker: a shaped gain dip on another track's notes — DEPTH is its mix (no MIX row), LENGTH in ms or synced
+// (1/8 by default), ATTACK, SMOOTH, the NOTE filter (0 Any, k = MIDI note k − 1; a switch: nomod), LEVEL
+export const DUCK_NOTES = deepFreeze(['Any'].concat(Array.from({ length: 128 }, (_, n) =>
+  ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][n % 12] + (Math.floor(n / 12) - 1) + ' (' + n + ')')));
+// the Ducker's curve presets (sub.cv: x = time over LENGTH, y = gain before DEPTH, c = curvature of the segment STARTING at the
+// point — laws evalPts, the CurveEditor; bend: c > 0 a fast start); Classic is the default
+export const DUCK_SHAPES = deepFreeze([
+  { id: 'classic', name: 'Classic', pts: [[0, 0, 0], [0.08, 0.04, 0.55], [1, 1, 0]] },
+  { id: 'linear', name: 'Linear', pts: [[0, 0, 0], [1, 1, 0]] },
+  { id: 'hold', name: 'Hold', pts: [[0, 0, 0], [0.6, 0, 0.3], [1, 1, 0]] },
+  { id: 'smooth', name: 'Smooth', pts: [[0, 0, -0.4], [0.5, 0.5, 0.4], [1, 1, 0]] },
+  { id: 'pump', name: 'Pump', pts: [[0, 0, 0.7], [0.3, 0.9, 0], [1, 1, 0]] },
+]);
+export const DUCK_DEFAULT = DUCK_SHAPES[0].pts;
 export const FXP_TAB = deepFreeze({
   dist: { 1: s1Of('dist'), 2: s2Of('dist', { mode: R2('mode', 'Mode', 'enum', 0, 17, 0, 'enum:DIST_MODES2') },
     [BOOL2('kt', 'Key Track', 0), R2('stages', 'Stages', 'int', 1, 16, 3 / 15, 'int')]) },
@@ -625,9 +649,7 @@ export const FXP_TAB = deepFreeze({
   phs: { 1: s1Of('phs'), 2: s2Of('phs', {}, [R2('poles', 'Poles', 'int', 1, 18, 3 / 17, 'int'), PCT2('depth2', 'Depth 2', 0)]) },
   cho: { 1: s1Of('cho'), 2: s2Of('cho', {}, [BOOL2('hp', 'HPF', 0)]) },
   dly: { 1: s1Of('dly'), 2: s2Of('dly', {}, [BOOL2('hq', 'High Quality', 1)]) },
-  cmp: { 1: s1Of('cmp'), 2: s2Of('cmp', {}, [R2('xlo', 'X-Low', 'exp', 20, 1000, 0.4751, 'hz'), R2('xhi', 'X-High', 'exp', 500, 16000, 0.4644, 'hz'),
-    R2('below', 'Below', 'ratio', 1, 32, 0, 'ratio'), R2('gL', 'Low Gain', 'lin', -24, 24, 0.5, 'dbv'), R2('gM', 'Mid Gain', 'lin', -24, 24, 0.5, 'dbv'),
-    R2('gH', 'High Gain', 'lin', -24, 24, 0.5, 'dbv')]) },
+  cmp: { 1: s1Of('cmp'), 2: s2Of('cmp', {}, cmp2X()), 3: s2Of('cmp', {}, cmp3X()) },
   rev: { 1: s1Of('rev'), 2: [ON2(), R2('type', 'Type', 'enum', 0, 4, 0, 'enum:REV_TYPES2'), PCT2('size', 'Size', 0.5),
     R2('pre', 'Pre-Delay', 'pow3', 0, 2500, 0, 'ms'), BOOL2('prebpm', 'Pre-Delay BPM', 0), LAD2('prelad', 'Pre-Delay Sync'),
     PCT2('locut', 'Low Cut', 0), PCT2('hicut', 'High Cut', 0.3), PCT2('damp', 'Damp', 0.5), PCT2('width', 'Width', 1),
@@ -654,8 +676,13 @@ export const FXP_TAB = deepFreeze({
   split2: { 2: [ON2(), R2('freq', 'Crossover', 'exp', 30, 5800, 0.4374, 'hz'), LVL2()] },
   split3: { 2: [ON2(), R2('freq1', 'Crossover 1', 'exp', 30, 5800, 0.3604, 'hz'), R2('freq2', 'Crossover 2', 'exp', 30, 5800, 0.7978, 'hz'), LVL2()] },
   splitms: { 2: [ON2(), LVL2()] },
+  duck: { 2: [ON2(), PCT2('depth', 'Depth', 1), R2('len', 'Length', 'pow2', 10, 4000, 0.2453, 'ms'), BOOL2('bpm', 'Length BPM', 1),
+    R2('lad', 'Sync', 'enum', 0, 11, 6 / 11, 'enum:DLY_LADDER'), R2('att', 'Attack', 'lin', 0, 50, 0.02, 'ms'), R2('smooth', 'Smooth', 'lin', 0, 20, 0.1, 'ms'),
+    R2('note', 'Note', 'enum', 0, 128, 0, 'enum:DUCK_NOTES', 0, true), LVL2()] },
 });
 const tabOf = (type, v) => FXP_TAB[type][v];
+// a sidechain source: a track id (song.js 'trk_<n>') or '' (none)
+const idOrEmpty = s => (typeof s === 'string' && /^trk_\d{1,9}$/.test(s) ? s : '');
 
 /* ================================================================ §2.5 FX state v2 */
 
@@ -675,6 +702,8 @@ function normSub(type, v, raw) {
     case 'cho': return { mono: bit(S.mono, 0) };
     case 'rev': return v === 1 ? { type: intIn(S.type, 1, 0, 1) } : {};
     case 'conv': return { ir: typeof S.ir === 'string' && (S.ir === '' || /^(fir|ir):/.test(S.ir)) && S.ir.length <= 256 ? S.ir : CONV_IR_DEFAULT };
+    case 'cmp': return v === 3 ? { src: idOrEmpty(S.src) } : {};                       // v3: the key's source track (IMPL-SC §3.3)
+    case 'duck': return { src: idOrEmpty(S.src), cv: normPts(S.cv, DUCK_DEFAULT, false) };   // the trigger track, the dip curve (§4.1)
     default: return {};
   }
 }
@@ -736,7 +765,7 @@ export function normalizeFx2(fx, refs) {
     const I = objOf(raw), T = typeOf(I.type);
     if (!T || (inBr && T.split) || n >= MAX_INST) return null;
     n++;
-    const v = T.variants.indexOf(I.v) >= 0 ? I.v : T.variants[T.variants.length - 1];
+    const v = T.variants.indexOf(I.v) >= 0 ? I.v : T.nv;
     const id = take(I, T.id), tab = tabOf(T.id, v), P = objOf(I.p), p = {};
     for (const r of tab) p[r.pid] = fin(P[r.pid]) ? snapL(r.law, r.lo, r.hi, clamp(P[r.pid], 0, 1)) + 0 : r.def;
     const o = { id, type: T.id, v, byp: bit(I.byp, 0), p, sub: normSub(T.id, v, I.sub), ph: fin(I.ph) ? frac(I.ph) + 0 : 0 };
@@ -912,14 +941,20 @@ function moddedCtx(md, NFX, L) {
   }
   return out;
 }
-// FXT key over the Distortion instances (id and both curves), or null when a curve is malformed
+// FXT key over the Distortion instances (id and both curves) and the Ducker instances (id and curve, IMPL-SC §5.2 — their
+// count folded in only when there is one: a rack without Duckers keeps today's key), or null when a curve is malformed
 function fxtKeyOf(F) {
   hashBad = false;
-  let h = FNV0, nd = 0;
-  walk(F, I => { if (I.type === 'dist') { const S = objOf(I.sub); h = fnvPts(fnvPts(fnvStr(h, I.id), S.xa), S.xb); nd++; } });
-  return hashBad ? null : hex(fnv(h, nd));
+  let h = FNV0, nd = 0, nk = 0;
+  walk(F, I => {
+    if (I.type === 'dist') { const S = objOf(I.sub); h = fnvPts(fnvPts(fnvStr(h, I.id), S.xa), S.xb); nd++; }
+    else if (I.type === 'duck') { const S = objOf(I.sub); h = fnvPts(fnvStr(h, I.id), S.cv); nk++; }
+  });
+  return hashBad ? null : hex(nk ? fnv(fnv(h, nd), nk) : fnv(h, nd));
 }
 const CONV_SHAPE = ['size', 'tone', 'minph', 'att', 'dec', 'damp'];
+// IMPL-SC §5.2: a sidechain unit (its FXP `iSrc`, the Track's key input)
+const scUnit = (type, v) => type === 'duck' || (type === 'cmp' && v === 3);
 
 function compile2(F, ctx) {
   const xsKey = fxtKeyOf(F);
@@ -943,7 +978,8 @@ function compile2(F, ctx) {
   const iType = new Uint8Array(nI), iVar = new Uint8Array(nI), iRack = new Uint8Array(nI), iBr = new Uint8Array(nI), iN = new Uint8Array(nI);
   const iByp = new Uint8Array(nI), iAlloc = new Uint8Array(nI), iPar = new Int16Array(nI), iOff = new Int32Array(nI), iBB = new Uint8Array(3 * nI);
   const iPh = new Float64Array(nI), iRev = new Uint8Array(nI), iCho = new Uint8Array(nI), filTypeAll = new Uint8Array(nI), iId = [], iIr = [], needs = [];
-  let any = 0;
+  const iSrc = [];
+  let any = 0, sc = 0;
   for (let i = 0; i < nI; i++) {
     const I = objs[i], e = L.inst[i], T = typeOf(e.type), tab = tabOf(e.type, e.v), P = objOf(I.p), o = 8 + e.off, S = objOf(I.sub);
     for (let p = 0; p < tab.length; p++) { const x = P[tab[p].pid]; base[o + p] = fin(x) ? clamp01(x) : tab[p].def; }
@@ -969,6 +1005,9 @@ function compile2(F, ctx) {
       if (needs.indexOf(ir) < 0) needs.push(ir);
     }
     iIr.push(ir);
+    // IMPL-SC §5.2: the sidechain source (a track id, '' none) of a Ducker / a v3 Compressor; the side array exists only when
+    // a rack holds such a unit (S1: every other rack's FXP is today's object, key for key)
+    if (scUnit(e.type, e.v)) { sc = 1; iSrc.push(typeof S.src === 'string' ? S.src : ''); } else iSrc.push('');
   }
   const rByp = new Uint8Array(3), rRoute = new Uint8Array(3);
   for (let k = 0; k < 3; k++) {
@@ -977,7 +1016,7 @@ function compile2(F, ctx) {
     rRoute[k] = k === 0 ? 0 : intIn(Rk.route, 0, 0, 2);
   }
   if (rRoute[1] === 2 && rRoute[2] === 2) rRoute[2] = 0;
-  return {
+  const P = {
     ver: FXP_VER, NFX, NP: L.NP, key: L.key,
     base, nI, iType, iVar, iRack, iBr, iN, iByp, iAlloc, iPar, iOff, iBB, iPh, iId, iRev, iCho, iIr,
     rByp, rRoute, needs, filTypeAll,
@@ -985,6 +1024,8 @@ function compile2(F, ctx) {
     convMax: clamp(cm, 0.1, 10),
     xsKey,
   };
+  if (sc) P.iSrc = iSrc;
+  return P;
 }
 
 // §4.3: FX state (v2, or v1 read as its S1 instances) → FXP v2 (patch.fxr, every model). ctx = {bpm, rate, master, bypass,
@@ -1011,14 +1052,20 @@ const FXT2_CACHE = new Map();
 const LIN_XS = renderPts(DIAG, XS_N);
 // §4.3 FXT v2 = {key, xs: [{id, xsA, xsB}] (every Distortion instance, processing order), xsA, xsB} (memoised by content).
 // xsA / xsB = the first Distortion instance's tables (linear without one): the Phase-1 FXT fields, kept for the
-// X-Shaper displays that read them.
+// X-Shaper displays that read them. IMPL-SC §5.2: `cv: [{id, tab}]` (every Ducker's curve, Float32Array(1025)) only when
+// the state holds a Ducker — the key covers their points, so a curve edit resends the FXT.
 export function compileFxT(fx) {
   let F = stateOf(fx), key = fxtKeyOf(F);
   if (key === null) { F = isV2(fx) ? normalizeFx2(fx) : viewV1(normalizeFxV1(fx)); key = fxtKeyOf(F); }
   return lruGet(FXT2_CACHE, key, () => {
-    const xs = [];
-    walk(F, I => { if (I.type === 'dist') xs.push({ id: I.id, xsA: renderPts(I.sub.xa, XS_N), xsB: renderPts(I.sub.xb, XS_N) }); });
-    return { key, xs, xsA: xs.length ? xs[0].xsA : LIN_XS, xsB: xs.length ? xs[0].xsB : LIN_XS };
+    const xs = [], cv = [];
+    walk(F, I => {
+      if (I.type === 'dist') xs.push({ id: I.id, xsA: renderPts(I.sub.xa, XS_N), xsB: renderPts(I.sub.xb, XS_N) });
+      else if (I.type === 'duck') cv.push({ id: I.id, tab: renderPts(I.sub.cv, XS_N) });
+    });
+    const T = { key, xs, xsA: xs.length ? xs[0].xsA : LIN_XS, xsB: xs.length ? xs[0].xsB : LIN_XS };
+    if (cv.length) T.cv = cv;
+    return T;
   });
 }
 
@@ -1088,21 +1135,22 @@ function makeInst(id, T, v) {
   return I;
 }
 // {v, p, sub} of a module preset payload for an instance of `type` (null when it is not for that type): the payload's
-// variant (an S1 payload for a type with an S2 variant is upgraded when `want` = 2)
+// variant (an unknown fv reads as T.nv), upgraded one step at a time while it is below `want` (an S1 payload for a v2
+// instance, an fv 1 / 2 one for a v3 — IMPL-SC §5.1); a payload above `want` keeps its own (the factory 'Keyed Pump')
 function payloadPS(type, payload, want) {
   const P = objOf(payload), T = typeOf(type);
   if (!T || P.ftype !== type) return null;
-  const fv = T.variants.indexOf(P.fv) >= 0 ? P.fv : T.variants[T.variants.length - 1];
+  const fv = T.variants.indexOf(P.fv) >= 0 ? P.fv : T.nv;
   let x = { id: type, type, v: fv, byp: 0, p: normP(type, fv, P.p), sub: normSub(type, fv, P.sub), ph: 0 };
-  if (want === 2 && fv === 1 && T.variants.indexOf(2) >= 0) x = upgradeInstance(x);
+  while (x.v < want) { const u = upgradeInstance(x); if (!u) break; x = u; }
   return { v: x.v, p: x.p, sub: x.sub };
 }
 
 // §11.2 newInstance: a new instance of `type` at {rack, splitter, branch, at} (at = index in the destination list, default
-// the end) with the highest variant and its table defaults, or the default module preset payload `preset` (its p and
-// sub, variant 2 where the type has one; the new instance is enabled, §3.16.2 "on default 1 for instances created in
-// v2", also for the S1-only types Hyper and Flanger). In place; → the new id, or null (unknown type, v1 state, caps: 16
-// per rack,
+// the end) with the type's `nv` variant (IMPL-SC §5.1: the highest but the Compressor's, which stays v2 until keyed) and its
+// table defaults, or the default module preset payload `preset` (its p and sub; a payload of a known variant above `nv`
+// makes that variant; the new instance is enabled, §3.16.2 "on default 1 for instances created in v2", also for the
+// S1-only types Hyper and Flanger). In place; → the new id, or null (unknown type, v1 state, caps: 16 per rack,
 // 8 per branch, 48 per track; a splitter inside a branch; unknown splitter / branch)
 export function newInstance(fx, type, opts) {
   const F = live(fx), T = typeOf(type);
@@ -1111,8 +1159,8 @@ export function newInstance(fx, type, opts) {
   if (w.splitter && T.split) return null;
   const list = listAt(F, w);
   if (!list || list.length >= (w.splitter ? MAX_BR : MAX_TOP) || countInst(F) >= MAX_INST) return null;
-  const v = T.variants[T.variants.length - 1], I = makeInst(freshId(F, T.id), T, v), pre = o.preset ? payloadPS(T.id, o.preset, v) : null;
-  if (pre && pre.v === v) { I.p = pre.p; I.sub = pre.sub; }
+  const pre = o.preset ? payloadPS(T.id, o.preset, T.nv) : null, I = makeInst(freshId(F, T.id), T, pre ? pre.v : T.nv);
+  if (pre) { I.p = pre.p; I.sub = pre.sub; }
   I.p.on = 1;                                          // created in v2: enabled (also Hyper / Flanger; a preset never sets it)
   list.splice(atIn(o.at, list.length), 0, I);
   return I.id;
@@ -1288,11 +1336,14 @@ export function pasteRack(fx, k, clip, s) { return applyRackPreset(fx, k, clip, 
 // Phase-1-equivalent values for the new pids where S2 can reproduce S1 (Phaser poles 6 and DEPTH 2 0, Delay HQ off,
 // Compressor BELOW = RATIO and band gains 0 dB with the Phase-1 crossovers, Chorus HPF off, EQ / level 0 dB, Key Track /
 // Clean off); Reverb (approximate: the S2 laws differ): Plate t → PRE-DELAY 200·t ms, c → DAMP, w → WIDTH; Hall t →
-// DECAY, c → SPIN RATE, w → SPIN DEPTH; type Plate / Hall from sub.type
+// DECAY, c → SPIN RATE, w → SPIN DEPTH; type Plate / Hall from sub.type.
+// IMPL-SC §5.1: one step a call — a v2 of a type with a variant 3 (the Compressor) → v3 as well: the shared rows as they are
+// (the same laws), the new rows their defaults (KEY INT, the HPF off, LISTEN off), sub = normSub(type, 3, sub) (the key's
+// `src` kept when the caller set it); a v3 at the defaults renders as the v2 it was
 export function upgradeInstance(inst) {
-  const I = objOf(inst), T = typeOf(I.type);
-  if (!T || I.v !== 1 || T.variants.indexOf(2) < 0) return null;
-  const t1 = tabOf(T.id, 1), t2 = tabOf(T.id, 2), P = objOf(I.p), p = {};
+  const I = objOf(inst), T = typeOf(I.type), v0 = I.v, v1 = v0 === 1 ? 2 : v0 === 2 ? 3 : 0;
+  if (!T || v1 === 0 || T.variants.indexOf(v0) < 0 || T.variants.indexOf(v1) < 0) return null;
+  const t1 = tabOf(T.id, v0), t2 = tabOf(T.id, v1), P = objOf(I.p), p = {};
   const row1 = pid => t1.find(r => r.pid === pid) || null;
   const old = pid => { const r = row1(pid), x = P[pid]; return fin(x) ? clamp01(x) : r ? r.def : 0; };
   for (const r of t2) {
@@ -1302,8 +1353,9 @@ export function upgradeInstance(inst) {
     if (r.law === 'enum' && r1.law === 'enum' && r.hi - r.lo !== r1.hi - r1.lo) n = clamp(Math.round(n * (r1.hi - r1.lo)) + r1.lo - r.lo, 0, r.hi - r.lo) / (r.hi - r.lo);
     p[r.pid] = snapL(r.law, r.lo, r.hi, n) + 0;
   }
-  const S = objOf(I.sub);
-  let sub = normSub(T.id, 2, S);
+  const S = objOf(I.sub), U = objOf(I.ui);
+  let sub = normSub(T.id, v1, S);
+  if (v0 === 2) return { id: I.id, type: T.id, v: 3, byp: bit(I.byp, 0), p, sub, ph: fin(I.ph) ? frac(I.ph) + 0 : 0, ui: { lvl: bit(U.lvl, 0), lvl2: bit(U.lvl2, 0) } };
   switch (T.id) {
     case 'phs': p.poles = 5 / 17; p.depth2 = 0; break;
     case 'dly': p.hq = 0; break;
@@ -1318,33 +1370,50 @@ export function upgradeInstance(inst) {
     }
     default: break;
   }
-  const U = objOf(I.ui);
   return { id: I.id, type: T.id, v: 2, byp: bit(I.byp, 0), p, sub, ph: fin(I.ph) ? frac(I.ph) + 0 : 0, ui: { lvl: bit(U.lvl, 0), lvl2: bit(U.lvl2, 0) } };
 }
 
+// IMPL-SC §1.3 blankSrc: a copy of x (an FX state, a rack / module / chain payload, a Serum state holding one) with every
+// sidechain source (`sub.src`: a cmp v3's key, a Ducker's trigger) = '' — a track id names a different track in another
+// project, so every payload that leaves the project goes through it (the rack clipboard keeps it within one)
+export function blankSrc(x) {
+  if (x === undefined) return x;
+  const o = cloneJ(x), go = n => {
+    if (Array.isArray(n)) { for (const e of n) go(e); return; }
+    if (!isObj(n)) return;
+    if (isObj(n.sub) && typeof n.sub.src === 'string') n.sub.src = '';
+    for (const k of Object.keys(n)) go(n[k]);
+  };
+  go(o);
+  return o;
+}
+
 // ---- module presets ({type: 'synth.fxmod', v: 2, name, ftype, fv, p, sub}, §2.5). A module preset never carries or sets
-// the enable (`on`): loading one changes the sound of the module, not whether it runs (the rack UI's rule, fx-ui)
+// the enable (`on`): loading one changes the sound of the module, not whether it runs (the rack UI's rule, fx-ui); nor a
+// sidechain source (IMPL-SC §3.3: `sub.src` blank on the way out, the instance's own kept by applyModulePreset)
 const noOn = p => { const o = Object.assign({}, p); delete o.on; return o; };
 // §11.2 modulePresetPayload: instance `id` of an FX state (v2, or v1 read as its S1 instances) as a module preset, or null
 export function modulePresetPayload(fx, id, name) {
   const F = stateOf(fx), L = locate(F, id);
   if (!L) return null;
   const I = L.inst;
-  return { type: 'synth.fxmod', v: 2, name: typeof name === 'string' ? name : '', ftype: I.type, fv: I.v, p: noOn(normP(I.type, I.v, I.p)),
-    sub: cloneJ(normSub(I.type, I.v, I.sub)) };
+  return blankSrc({ type: 'synth.fxmod', v: 2, name: typeof name === 'string' ? name : '', ftype: I.type, fv: I.v, p: noOn(normP(I.type, I.v, I.p)),
+    sub: normSub(I.type, I.v, I.sub) });
 }
-// §11.2 applyModulePreset: the payload's parameters and sub-state onto instance `id` (same type only; an S1 instance
-// receiving an S2 payload is upgraded first, an S1 payload for an S2 instance is upgraded); parameters whose
-// destination id is in `lockedIds` (fx.<id>.<pid>) and the enable keep their values. In place → true when applied
+// §11.2 applyModulePreset: the payload's parameters and sub-state onto instance `id` (same type only; an instance below the
+// payload's variant is upgraded first — S1 → S2, a v2 Compressor → v3 —, a payload below the instance's is upgraded);
+// parameters whose destination id is in `lockedIds` (fx.<id>.<pid>) and the enable keep their values; the instance's own
+// sidechain source (`sub.src`) stays — a preset holds none (IMPL-SC §5.1). In place → true when applied
 export function applyModulePreset(fx, id, payload, lockedIds) {
   const F = live(fx), L = F ? locate(F, id) : null;
   if (!L) return false;
   let I = L.inst;
   const P = objOf(payload), T = typeOf(I.type);
   if (P.ftype !== I.type) return false;
-  const fv = T.variants.indexOf(P.fv) >= 0 ? P.fv : T.variants[T.variants.length - 1];
-  if (I.v === 1 && fv === 2) {
+  const fv = T.variants.indexOf(P.fv) >= 0 ? P.fv : T.nv;
+  while (I.v < fv) {
     const U = upgradeInstance(I);
+    if (!U) break;
     for (const k of Object.keys(I)) delete I[k];
     I = Object.assign(I, U);
   }
@@ -1353,7 +1422,9 @@ export function applyModulePreset(fx, id, payload, lockedIds) {
   const keep = new Set();
   for (const x of arrOf(lockedIds)) if (refInst(x) === I.id) { const r = renamed(x); keep.add(r.slice(r.lastIndexOf('.') + 1)); }
   for (const r of tabOf(I.type, I.v)) if (r.pid !== 'on' && !keep.has(r.pid)) I.p[r.pid] = src.p[r.pid];
+  const s0 = isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : null;
   I.sub = cloneJ(src.sub);
+  if (s0 !== null && typeof I.sub.src === 'string') I.sub.src = s0;
   return true;
 }
 
@@ -1467,10 +1538,10 @@ function lockedN(a, b, n) {
 
 /* ================================================================ factory content (original) */
 
-// an instance of `type` (variant v, default the highest) from engine values {pid: value} (laws.js lawNorm per row; {n}
+// an instance of `type` (variant v, default the type's nv) from engine values {pid: value} (laws.js lawNorm per row; {n}
 // sets n directly, e.g. a BPM-ladder position)
 function fxI(type, vals, o) {
-  const T = typeOf(type), opt = objOf(o), v = opt.v || T.variants[T.variants.length - 1], tab = tabOf(type, v), p = normP(type, v, null);
+  const T = typeOf(type), opt = objOf(o), v = opt.v || T.nv, tab = tabOf(type, v), p = normP(type, v, null);
   for (const pid of Object.keys(vals || {})) {
     const r = tab.find(x => x.pid === pid);
     if (!r) throw new Error('fx-core factory: ' + type + ' has no ' + pid);
@@ -1511,6 +1582,8 @@ export const FACTORY_FX_PRESETS = deepFreeze(((L) => {
   ['Glue', fxI('cmp', { thr: Math.pow(10, -18 / 20), ratio: 2, att: 10, rel: 150, gain: Math.pow(10, 3 / 20), mix: 1 })],
   ['Three Band Lift', fxI('cmp', { mb: 1, thr: Math.pow(10, -20 / 20), ratio: 4, below: 2, att: 3, rel: 80, gL: 2, gM: 0, gH: 1.5, mix: 0.7 })],
   ['Punch', fxI('cmp', { thr: Math.pow(10, -15 / 20), ratio: 4, att: 20, rel: 80, gain: Math.pow(10, 4 / 20), mix: 0.8 })],
+  // (IMPL-SC §5.1) a keyed Compressor: the only factory v3 (its source blank — a preset names no track)
+  ['Keyed Pump', fxI('cmp', { ext: 1, schp: 80, thr: Math.pow(10, -20 / 20), ratio: 6, att: 1, rel: 90 }, { v: 3 })],
   ['Bright Plate', fxI('rev', { type: 0, size: 0.45, pre: 15, damp: 0.25, width: 1, hicut: 0.15, mix: 0.25 })],
   ['Big Hall', fxI('rev', { type: 1, size: 0.8, decay: 0.45, spinr: 0.3, spind: 0.3, locut: 0.2, mix: 0.3 })],
   ['Vintage Room', fxI('rev', { type: 2, size: 0.35, ersize: 0.6, decay: 0.25, damp: 0.5, mix: 0.25 })],
@@ -1544,6 +1617,10 @@ export const FACTORY_FX_PRESETS = deepFreeze(((L) => {
   ['Mid / Side', fxI('splitms', {})],
   ['Mid / Side −6 dB', fxI('splitms', { level: 0.5 })],
   ['Mid / Side +3 dB', fxI('splitms', { level: Math.pow(10, 3 / 20) })],
+  // (IMPL-SC §5.1) the Ducker: synced eighths at full depth, a gentle quarter-note S, a 120 ms gate
+  ['Kick Pump', fxI('duck', { bpm: 1, lad: { n: 6 / 11 }, depth: 1 }, { sub: { cv: DUCK_SHAPES[0].pts } })],
+  ['Gentle Side', fxI('duck', { bpm: 1, lad: { n: 7 / 11 }, depth: 0.6 }, { sub: { cv: DUCK_SHAPES[3].pts } })],
+  ['Gate Stab', fxI('duck', { len: 120, bpm: 0, depth: 1 }, { sub: { cv: DUCK_SHAPES[2].pts } })],
 ]));
 
 // §11.2 FACTORY_RACKS: rack presets (original), [{type: 'synth.fxrack', v: 1, name, rack}]

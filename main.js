@@ -536,11 +536,12 @@ function graphParts(tr, sr, offline = false, c = CG.compileTrack(tr)) {
 }
 // (9, IMPL-9 §3.6 P-1, the lead's decision) a muted or soloed-out track's 900 Series is off on the live node — the graph's `on`
 // false (and its key marked: the change is posted with {t: 'power'}) —, so a silent patch costs nothing; heard again it starts
-// fresh, its held keys restruck (the engine's power). Offline (a bounce: audible tracks only) never
+// fresh, its held keys restruck (the engine's power). Offline (a bounce: audible tracks only) never. (SC §1.3) A sidechain source
+// stays on — keyed by a heard track or the master, transitively (scKeyed): the ghost kick sounds at gain 0 live as in the bounce
 function ptPower(tr, graph, offline) {
   if (offline || audible(tr)) return graph;
   const off = graph.insts.filter(x => x.on && isPatchDev(tr, x.id)).map(x => x.id);
-  if (!off.length) return graph;
+  if (!off.length || scKeyed(tr)) return graph;
   return Object.assign(graph, { insts: graph.insts.map(x => (off.includes(x.id) ? Object.assign({}, x, { on: false }) : x)), key: graph.key + '|p1:' + off.join() });
 }
 // the states a track's devices hold (the asset manager reads `~opsKey` / Convolve shapes from them; tracks() is the primary)
@@ -672,6 +673,7 @@ const SKIP_CP = new Set(['ctKey']), SKIP_SQ = new Set(['key']);
 function sendPatch(tr = trk()) {
   const N = nodes.get(tr.id);
   if (!N) return;
+  scSync(tr); // ((SC §1.1) every FX state reaches the node here: its key edges first — an edge exists before the FXP naming its source lands
   const c = CG.compileTrack(tr);
   if (!legacyOk(tr, c) || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: not one instrument, or a node that is graphed)
   const p = buildPatch(tr);
@@ -1072,15 +1074,16 @@ function makeNode(tr) {
   if (G) Object.assign(po, { graph: G.graph, patches: G.patches, chains: G.chains, seqs: G.seqs });
   const mods = G ? modsFor(tr) : null; // (2b: the ModCore payload with the parts, IMPL-2b §2.2; a legacy node has none)
   if (mods) po.mods = mods;
-  const node = new AudioWorkletNode(ctx, 'synth-engine', {
-    numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+  const node = new AudioWorkletNode(ctx, 'synth-engine', { // ((SC §1.1) one stereo input on every Track node — the sidechain KEY, MASTER's options: fixed at construction, so a first key never rebuilds a node; unconnected it reads [] / [[]])
+    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
     processorOptions: po,
   });
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser(), sc = ctx.createAnalyser();
   a.fftSize = 512; // (the meter: the last 512 samples — a bigger window would hand it the oldest ones)
   sc.fftSize = 8192; sc.smoothingTimeConstant = 0.75; // (the OUT scope's own, the master's old size: scopeSource; the rack is in the node, so this is the chain after its FX, fader and pan)
   node.connect(gain); gain.connect(pan); pan.connect(mnode.node); pan.connect(a); pan.connect(sc); // ((M) the sum: MASTER's input
-  const N0 = { node, gain, pan, an: a, sc, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined };
+  const N0 = { node, gain, pan, an: a, sc, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined,
+    scIn: new Map() }; // ((SC §1.1) the key edges into this node: source id → { s: its node, kg: the edge's GainNode } — never `sc`, the OUT scope's analyser)
   const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
   if (G) { // (every part starts with its options: the caches hold them)
     N.gkey = G.graph.key; N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
@@ -1170,9 +1173,11 @@ function syncNodes() {
   for (const [id, N] of nodes) {
     if (ids.has(id)) continue;
     N.node.port.postMessage({ t: 'panic' }); N.node.port.postMessage({ t: 'bye' }); // bye: leave the MIDI OUT registry (§7.9)
+    scCut(N); // ((SC §1.1) the key edges INTO it first: node.disconnect() cuts its outputs only, and a fed processor is never let go)
     N.pan.disconnect(); N.node.disconnect(); nodes.delete(id); tables.release(id);
   }
   for (const t of project.tracks) if (!nodes.has(t.id)) nodes.set(t.id, makeNode(t));
+  scAll(); // ((SC §1.1) the key edges: a dropped source's go, a rebuilt one's re-bind, a new node's are made)
   mix();
 }
 function audible(t) {
@@ -1186,8 +1191,169 @@ function mix() {
     const N = nodes.get(t.id); if (!N) continue;
     N.gain.gain.setTargetAtTime(audible(t) ? t.vol : 0, ctx.currentTime, 0.015);
     N.pan.pan.setTargetAtTime(t.pan, ctx.currentTime, 0.015);
-    if (patchDevs(t).length && N.ptHeard !== audible(t)) { N.ptHeard = audible(t); queuePatch(t); } // ((9) P-1: its 900 Series off / on with it (ptPower), next frame
   }
+  ptHeardSync();
+}
+// ((9) P-1: a track's 900 Series off / on with its mute / solo (ptPower), next frame — (SC §1.3) a sidechain source stays on: heard =
+// audible or keyed (the ghost kick: a muted 900 Series keying a heard track, or the master, keeps sounding at gain 0). ptPower reads
+// the project (scKeyed), so a 900 track sent earlier in the same frame's queue already had its power right
+function ptHeardSync() {
+  let K = null;
+  for (const t of project.tracks) {
+    const N = nodes.get(t.id); if (!N || !patchDevs(t).length) continue;
+    const h = audible(t) || (K || (K = scKeySet())).has(t.id);
+    if (N.ptHeard !== h) { N.ptHeard = h; queuePatch(t); }
+  }
+}
+/* ---------------------------------------------------------- the sidechain (IMPL-SC §1, §6.1, §7) */
+// Every Track node has one stereo input (§1.1): the KEY, the sum of the sources its v3 compressors name. Each edge is src.node →
+// kg (its own GainNode) → node (input 0): kg 1 when a v3 compressor of the track names the source, 0 when only Duckers do — the
+// edge then only orders the processing (Web Audio renders a node's sources first: the source writes its note frames to the
+// registry before the keyed track reads them, S2). The source's own output is tapped: before its fader, pan and mute (the ghost kick).
+// The sources a rack's sidechain units name (a Ducker; a v3 compressor — §5.1 `nv`: only a keyed compressor is a v3), splitter
+// branches included, in walk order: [[source id, is a compressor]] appended to out
+function scUnitsOf(fx, out) {
+  if (!isV2Fx(fx)) return out;
+  const one = I => {
+    if (!I || typeof I !== 'object') return;
+    const s = I.sub && typeof I.sub.src === 'string' ? I.sub.src : '';
+    if (s && (I.type === 'duck' || (I.type === 'cmp' && I.v === 3))) out.push([s, I.type === 'cmp']);
+    if (Array.isArray(I.br)) for (const B of I.br) if (Array.isArray(B)) for (const c of B) one(c);
+  };
+  for (const R of Array.isArray(fx.racks) ? fx.racks : []) if (R && Array.isArray(R.mods)) for (const I of R.mods) one(I);
+  return out;
+}
+// a track's: every rack it holds (each panel's, each Serum's own — racks 0–2), device order; the master's
+const scUnits = t => { const out = []; if (t && t.dev) for (const id of Object.keys(t.dev)) { const d = t.dev[id]; if (d && (d.kind === 'panel' || isSerumDev(t, id))) scUnitsOf(d.fx, out); } return out; };
+const scMasterUnits = () => (hasMasterFx() ? scUnitsOf(project.master.fx, []) : []);
+// b is upstream of a over the edges E (a's sources, theirs …)
+function scReach(E, a, b) {
+  const seen = new Set(), st = [a];
+  while (st.length) {
+    const x = st.pop();
+    if (x === b) return true;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    const m = E.get(x); if (m) for (const y of m.keys()) st.push(y);
+  }
+  return false;
+}
+// (§1.1, §1.4) the project's key edges — E: keyed track id → Map(source id → kg's gain) — built in a fixed order (project order, then
+// each track's units in walk order): an edge is refused when it names the track itself or would close a loop with the edges accepted
+// before it (a cycle without a DelayNode is muted by Web Audio, S5), and dropped when it names no track of the project (a deleted
+// source: the unit idles, its id kept for undo). A function of the project alone — never of the nodes (the bounce reads it with the
+// power off, §7.2). bad: the refused [track id, source id] pairs
+function scGraph(p = project) {
+  const ids = new Set(p.tracks.map(t => t.id)), E = new Map(), bad = [];
+  for (const t of p.tracks) {
+    for (const [s, cmp] of scUnits(t)) {
+      if (!ids.has(s)) continue;
+      const m = E.get(t.id);
+      if (m && m.has(s)) { if (cmp) m.set(s, 1); continue; }
+      if (s === t.id || scReach(E, s, t.id)) { bad.push([t.id, s]); continue; }
+      (m || E.set(t.id, new Map()).get(t.id)).set(s, cmp ? 1 : 0);
+    }
+  }
+  return { E, bad };
+}
+const scWant = (t, G = scGraph()) => (t && G.E.get(t.id)) || new Map(); // (source id → gain)
+const scSrcs = (t, G) => new Map([...scWant(t, G)].filter(([id]) => nodes.has(id))); // (those with a node)
+const scCycle = (t, src) => !!t && (src === t.id || scReach(scGraph().E, src, t.id));
+// the track ids a heard track or the master keys from, transitively (§1.3; the bounce's closure without its MIDI OUT half)
+function scKeySet(G = scGraph()) {
+  const K = new Set(), st = [], add = id => { if (!K.has(id)) { K.add(id); st.push(id); } };
+  for (const [s] of scMasterUnits()) add(s);
+  for (const t of project.tracks) if (audible(t)) { const m = G.E.get(t.id); if (m) for (const s of m.keys()) add(s); }
+  while (st.length) { const m = G.E.get(st.pop()); if (m) for (const s of m.keys()) add(s); }
+  return K;
+}
+const scKeyed = t => !!t && scKeySet().has(t.id);
+// (§7.1) any sidechain unit with a source, in any track's rack or the master's (asked at an anchor: a walk of the racks)
+const scAny = () => project.tracks.some(t => scUnits(t).length > 0) || scMasterUnits().length > 0;
+// a node's key edges cut (its drop: the source's tap and the GainNode both; either may be gone already)
+function scCut(N) {
+  if (!N || !N.scIn) return;
+  for (const e of N.scIn.values()) { try { e.s.disconnect(e.kg); } catch { /* cut with its node */ } try { e.kg.disconnect(); } catch { /* gone */ } }
+  N.scIn.clear();
+}
+const scSaid = new Set(); // ('track>source': a refused edge's notice, once a session)
+// track t's node gets the edges its units name (G's): an edge whose source left them — or whose node was rebuilt under its id —
+// is cut, a missing one made, every gain set (0 ↔ 1 moves only a compressor's key). → whether an edge came or went
+function scSync1(t, G) {
+  const N = t && nodes.get(t.id);
+  if (!N || !ctx) return false;
+  const want = G.E.get(t.id), E = N.scIn;
+  let ch = false;
+  for (const [id, e] of E) {
+    const S = nodes.get(id);
+    if (want && want.has(id) && S && S.node === e.s) continue;
+    try { e.s.disconnect(e.kg); } catch { /* the source's node went: its outputs are cut */ }
+    try { e.kg.disconnect(); } catch { /* gone */ }
+    E.delete(id); ch = true;
+  }
+  if (want) for (const [id, g] of want) {
+    const S = nodes.get(id);
+    if (!S) continue;
+    const e = E.get(id);
+    if (e) { if (e.kg.gain.value !== g) e.kg.gain.value = g; continue; }
+    const kg = ctx.createGain();
+    kg.gain.value = g; S.node.connect(kg); kg.connect(N.node, 0, 0);
+    E.set(id, { s: S.node, kg }); ch = true;
+  }
+  for (const [k, s] of G.bad) {
+    if (k !== t.id || scSaid.has(k + '>' + s)) continue;
+    scSaid.add(k + '>' + s);
+    const nm = id => { const x = project.tracks.find(y => y.id === id); return x ? '“' + x.name + '”' : id; };
+    notice(s === k ? `Not connected: ${nm(k)} can't duck with itself` : `Not connected: ${nm(s)} already ducks with ${nm(k)} — a loop would need a delay`, 6000);
+  }
+  return ch;
+}
+// (sendPatch, before it posts: every FX state passes there) a track's edges; when they change, every other track's too (a loop
+// refused before may be allowed now) and the 900 Series' power (a keyed one stays on). A track without units or edges: nothing
+function scSync(t) {
+  const N = t && nodes.get(t.id);
+  if (!N || !ctx || (!N.scIn.size && !scUnits(t).length)) return false;
+  const G = scGraph();
+  if (!scSync1(t, G)) return false;
+  for (const u of project.tracks) if (u !== t) scSync1(u, G);
+  ptHeardSync();
+  return true;
+}
+// (syncNodes, after its creation loop) every track's
+function scAll() {
+  if (!ctx) return;
+  const G = scGraph();
+  for (const t of project.tracks) scSync1(t, G);
+}
+// (§6.1) the source menus' host member: self (the keyed track's id; the master: null), uid (the project's — a rack clipboard pasted
+// into another project blanks its sources, §1.3), list (project order; a shared name told apart by the track's number in the list:
+// "Kick · 3"; drum: a drum machine source), notes(id) (a drum machine source: its lanes' primaries and names, drumRowsOf — the notes
+// the registry stores —, else null: the 128 notes), ok(id) ('' or why the source is refused: the track itself, a loop)
+function scSources(self) {
+  const L = project.tracks, cnt = new Map();
+  for (const t of L) cnt.set(t.name, (cnt.get(t.name) || 0) + 1);
+  const list = L.map((t, i) => ({ id: t.id, name: cnt.get(t.name) > 1 ? t.name + ' · ' + (i + 1) : t.name, drum: drumDevs(t).length > 0 }));
+  const nameOf = id => { const e = list.find(x => x.id === id); return e ? e.name : id; };
+  let E = null;
+  return {
+    self: self == null ? null : self, uid: project.uid || '', list,
+    notes: id => { const t = L.find(x => x.id === id), k = t ? drumDevs(t)[0] : null; return k ? drumRowsOf(t.dev[k]) : null; },
+    ok: id => {
+      if (self == null || typeof id !== 'string') return '';
+      if (id === self) return 'A track can\'t duck with itself. Pick another source.';
+      if (!E) E = scGraph().E;
+      return scReach(E, id, self) ? `${nameOf(id)} already ducks with ${nameOf(self)} — a loop would need a delay. Pick another source.` : '';
+    },
+  };
+}
+// (§1.3) track ids are reused (song.js: the highest + 1): a new track's id passes every source a unit names — the master's too — so
+// a deleted source kept for undo never re-binds to a newcomer; undefined when song.js's own pick is past them already
+function scFreshId() {
+  const k = id => { const x = /^trk_(\d{1,9})$/.exec(id); return x ? +x[1] : 0; };
+  let n = 0, m = 0;
+  for (const t of project.tracks) { n = Math.max(n, k(t.id)); for (const [s] of scUnits(t)) m = Math.max(m, k(s)); }
+  for (const [s] of scMasterUnits()) m = Math.max(m, k(s));
+  return m > n ? 'trk_' + (m + 1) : undefined;
 }
 // dev (stage 1e): the device the message is for — on a graphed node it gains `i` (an instrument; a Serum's own FX 'iN/fx':
 // its Serum) or `c` (a panel), and with aud an audition note `aud` (that Inst alone); legacy nodes never get them
@@ -1307,6 +1473,7 @@ function masterEdit(fn, o) {
   if (o && o.seed) seedPend.add(MASTER);
   masterSend(); persist();
   masterRelabel();
+  ptHeardSync(); // ((SC §1.3) a muted 900 Series the master's Ducker names stays on)
 }
 // keepMaster (§2.3): an undo / redo within the project keeps the current master rack — the snapshot's lay comes back with its step
 function keepMaster(p, cur) {
@@ -1701,8 +1868,9 @@ function recTick(perfTs) {
 // re-sends to a node created mid-song (makeNode) or after a panic, or a tempo / loop change
 function postTransport(seek) { postAll(Object.assign({ t: 'transport', play: true, seek }, seek ? { fresh: true } : null, T.a)); }
 // (IMPL-M P-1 (b), the lead's decision) while the master holds an effect every anchor is on a quantum boundary (≤ 2.7 ms later):
-// a start is then on the bounce's partition — bit-exact with it from a silent history; an empty master moves nothing
-const mAlign = F => (masterN() > 0 ? Math.ceil(F / 128) * 128 : F);
+// a start is then on the bounce's partition — bit-exact with it from a silent history; an empty master moves nothing. (SC §7.1)
+// So too while any rack holds a sidechain unit with a source (scAny, asked here: undo / load / a removal never leave a count stale)
+const mAlign = F => (masterN() > 0 || scAny() ? Math.ceil(F / 128) * 128 : F);
 async function play(from = T.pos, countBars = 0) {
   try { await powerOn(); } catch { return; }
   if (!ctx || T.playing) return;
@@ -2824,7 +2992,7 @@ function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; 
   const t = trOf(iv), dev = dvOf(iv), N = nodes.get(t.id), fx = fxOfDev(t, dev);
   if (N && N.fxph.get(dev)) setPhases(fx, N.fxph.get(dev)); // the rack's current LFO phases (phase memory)
   const up = sxUser(), i = up.findIndex(p => p.name === name);
-  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(iv.vals.s) }, fx: clone(fx) };
+  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(iv.vals.s) }, fx: core.blankSrc(fx) }; // ((SC §1.3) no track id leaves the project: its sidechain sources blank
   if (i >= 0 && up[i].meta) entry.meta = up[i].meta; // overwriting keeps its rating / tags / comments
   if (i >= 0) up[i] = entry; else up.push(entry);
   sxSaveUser(up);
@@ -2835,7 +3003,7 @@ function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; 
       if (!v) return;
       setPhases(fx, v);
       const l = sxUser(), e = l.find(p => p.name === name);
-      if (e) { e.fx = clone(fx); sxSaveUser(l); }
+      if (e) { e.fx = core.blankSrc(fx); sxSaveUser(l); }
       persist();
     });
   }
@@ -3013,19 +3181,30 @@ async function renderOffline(sr, frames, items, at, o = null) {
   if (mo && Array.isArray(mo.needs) && mo.needs.length) { for (const id of mo.needs) ids.add(id); tables.learn({ fx: masterFx() }); } // ((M, §4) the master rack's IRs join the union)
   const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
   const wts = ents.filter(e => idKind(e.id) === 'wt'), smps = ents.filter(e => idKind(e.id) !== 'wt');
-  const bus = oc.createGain();
+  const bus = oc.createGain(), made = [], byId = new Map();
   items.forEach((it, n) => {
     const po = { os: it.os, hostOS: it.hostOS || it.os, offline: true, patch: it.patch, wts: n === 0 && wts.length ? wts : null,
       smps: n === 0 && smps.length ? smps : null, song: it.song, transport: it.transport, seq: it.seq || null, trackId: it.tr ? it.tr.id : '' };
     if (it.graph) Object.assign(po, { graph: it.graph, patches: it.patches, chains: it.chains, seqs: it.seqs });
     if (it.mods) po.mods = it.mods; // (2b: the ModCore payload, handled after the parts)
-    const node = new AudioWorkletNode(oc, 'synth-engine', {
-      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+    const node = new AudioWorkletNode(oc, 'synth-engine', { // ((SC §1.1) the live node's options: one stereo input, the key)
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
       processorOptions: po,
     });
     const g = oc.createGain(), pn = oc.createStereoPanner();
     g.gain.value = it.gain === undefined ? 1 : it.gain; pn.pan.value = it.pan || 0;
     node.connect(g); g.connect(pn); pn.connect(bus);
+    made.push(node); if (it.tr) byId.set(it.tr.id, node);
+  });
+  // ((SC §7.2) the key edges as live: src.node → kg → node, kg the item's gain for that source (1 a compressor's key, 0 order only))
+  items.forEach((it, n) => {
+    if (!Array.isArray(it.sc)) return;
+    for (const [id, gv] of it.sc) {
+      const s = byId.get(id);
+      if (!s || s === made[n]) continue;
+      const kg = oc.createGain();
+      kg.gain.value = gv; s.connect(kg); kg.connect(made[n], 0, 0);
+    }
   });
   if (!mo) { bus.connect(oc.destination); return oc.startRendering(); }
   const rep = { lat: null, fin: null, wake: null };
@@ -3134,7 +3313,7 @@ async function renderLast(t, o) {
   const s = d.vals.s, fx = fxOfDev(t, dev), pn = d.preset; // (the primary's FX device is its own: fxOf's rack — R2)
   const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
   if (o && o.shift) {
-    const pre = Object.assign({ type: 'synth.serum.preset', name, v: { s: clone(s) }, fx: clone(fx) }, await presetAssets([{ v: { s }, fx }]));
+    const pre = Object.assign({ type: 'synth.serum.preset', name, v: { s: clone(s) }, fx: core.blankSrc(fx) }, await presetAssets([{ v: { s }, fx }])); // ((SC §1.3) sources blank)
     download(new Blob([JSON.stringify(pre)], { type: 'application/json' }), slug(name) + '.serum.json');
     return null;
   }
@@ -3388,6 +3567,7 @@ function sxHost(t0, dv) {
     notify: txt => notice(txt, 3500),
     editorOpen: o => { wtEdit = o === 0 || o === 1 || o === 2 ? { id, dev, osc: o } : wtEdit && (wtEdit.id !== id || wtEdit.dev !== dev) ? wtEdit : null; }, // (another one's open editor stays)
     prefsChanged,
+    scSources: () => scSources(id), // ((SC §6.1, the lead's (d)) the Serum panel's FX page: serum-ui's adapter forwards it to its rack's source menus
   };
 }
 // the FX rack host: any track's FX (Serum's parameter locks hold, §9.6); a Serum's own FX show the three racks. Stage 1e:
@@ -3413,6 +3593,7 @@ function fxHost(t0, rec = fxRecOf(t0.id, fxKeyOf(t0)) || fxPanelRec()) { // (R6:
     storage: hostStore,
     notify: txt => notice(txt, 3500),
     extraRows: destId => { const k = sx(); return k ? sxExtra(T(), k, destId) : []; }, // ((2b U5) a Serum's own FX: the canvas cables on its knobs — the rack's control menu names them; modHalos paints them)
+    scSources: () => scSources(id), // ((SC §6.1) the Ducker's TRIGGER / the compressor's key menus: this track is self
   };
 }
 
@@ -4044,7 +4225,7 @@ function renderHeads() {
 }
 function addTrack(m = curModel(), vals0 = null, o = null) {
   hist.record(project);
-  const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
+  const t = S.newTrack(project, { id: scFreshId(), model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` }); // ((SC §1.3) id: past every sidechain source named)
   seedPend.add(t.id);
   if (o && o.ui === 'flow' && isClassicModel(m)) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
@@ -4061,7 +4242,7 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
 }
 function duplicateTrack(t) {
   hist.record(project);
-  const d0 = instOf(t), c = S.newTrack(project, { model: d0.model, vals: JSON.parse(JSON.stringify(d0.vals)), name: t.name + ' copy', preset: d0.preset });
+  const d0 = instOf(t), c = S.newTrack(project, { id: scFreshId(), model: d0.model, vals: JSON.parse(JSON.stringify(d0.vals)), name: t.name + ' copy', preset: d0.preset }); // ((SC §1.3) a fresh id)
   c.notes = S.cloneNotes(t.notes); c.cc = t.cc.map(x => ({ t: x.t, k: x.k, v: x.v }));
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
   seedPend.add(c.id);
@@ -4604,7 +4785,7 @@ function importMidiFile(bytes, fname) {
     // ((7a §4.5) a channel-10 track comes in as a TR-808 track: it.model, its notes as they are; it.unmapped counts the
     // notes on keys the machine's map leaves silent)
     const m = typeof it.model === 'string' && S.isDrum(it.model) ? modelById(it.model) : m0;
-    const t = S.newTrack(project, { model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` });
+    const t = S.newTrack(project, { id: scFreshId(), model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` }); // ((SC §1.3) a fresh id)
     seedPend.add(t.id);
     t.notes = it.notes.map(n => ({ id: S.newId(), t: n.t, d: n.d, n: n.n, v: n.v }));
     t.cc = it.cc.slice(); t.ch = 0;
@@ -4663,24 +4844,46 @@ function midiOutIds(p) {
 // (stage 1e: a graph-shaped track's item carries its graph form, offParts; a synced 303 is any powered one of the track)
 // ((9, IMPL-9 §6, review #7) a powered 900 Series whose MAIN OUT is patched sounds with no notes — a Drone, an LFO: bounced too)
 const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => (tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync) || (isDrumDev(tr, id) && drumAudible(tr, id)) || (isPatchDev(tr, id) && PT.live(patchOf(tr, id), null, tr.dev[id].vals))); // ((7a) a synced drum machine with a step; (9b) a patch's routing rows count)
+// ((SC §7.2) then the keying closure: every source of a rendered track's — and the master's — Duckers and keyed compressors renders
+// too (scWant: the project's edges, never the nodes' — a bounce needs no power), a muted / soloed-out one at gain 0 (the ghost kick),
+// transitively; a source so added brings the tracks whose MIDI OUT plays it and that have notes (its live input: at gain 0 unless
+// heard), and one with no notes of its own, not synced, comes only with them. Each item carries sc: [[source id, kg gain]] of its
+// edges whose source renders, built as live by renderOffline)
 function bounceSet(sr) {
   const P = new Map(), partsOf = tr => { if (!P.has(tr)) P.set(tr, offParts(tr, sr)); return P.get(tr); };
-  const want = new Map();
+  const want = new Map(), syn = new Map(), can = tr => !!(tr.notes.length || syn.get(tr));
   for (const tr of project.tracks) {
     const d = instOf(tr), synced = (d.model === 'tb303' && d.seq && d.seq.sync) || syncedOf(tr);
+    syn.set(tr, !!synced);
     if (audible(tr) && (tr.notes.length || synced)) want.set(tr, tr.vol);
   }
+  const outs = new Map(); // (a track with notes → the ids its MIDI OUT plays)
   for (const tr of project.tracks) {
     if (!hasSx(tr) || !tr.notes.length) continue;
-    const x = partsOf(tr);
-    for (const id of (x.patch ? [x.patch] : Object.values(x.patches)).flatMap(midiOutIds)) {
+    const x = partsOf(tr), ids = (x.patch ? [x.patch] : Object.values(x.patches)).flatMap(midiOutIds);
+    outs.set(tr, ids);
+    for (const id of ids) {
       const tg = project.tracks.find(x => x.id === id);
       if (!tg || tg === tr || !audible(tg)) continue;
       if (!want.has(tg)) want.set(tg, tg.vol);
       if (!want.has(tr)) want.set(tr, 0);
     }
   }
-  return project.tracks.filter(tr => want.has(tr)).map(tr => Object.assign({ tr, gain: want.get(tr) }, partsOf(tr)));
+  const G = scGraph(), byId = new Map(project.tracks.map(t => [t.id, t])), todo = [...want.keys()];
+  const put = x => { if (want.has(x)) return; want.set(x, audible(x) ? x.vol : 0); todo.push(x); };
+  const src = x => {
+    if (!x || want.has(x)) return;
+    const drv = project.tracks.filter(d => d !== x && (outs.get(d) || []).includes(x.id));
+    if (!can(x) && !drv.length) return;
+    put(x);
+    for (const d of drv) put(d);
+  };
+  for (const [s] of scMasterUnits()) src(byId.get(s));
+  while (todo.length) { const m = G.E.get(todo.pop().id); if (m) for (const s of m.keys()) src(byId.get(s)); }
+  return project.tracks.filter(tr => want.has(tr)).map(tr => {
+    const m = G.E.get(tr.id), sc = m ? [...m].filter(([id]) => want.has(byId.get(id))) : [];
+    return Object.assign({ tr, gain: want.get(tr) }, sc.length ? { sc } : null, partsOf(tr));
+  });
 }
 // (F3) the main thread's copy of the meters (master-dsp.js: wk.loadDSP injects it once, as the panels' DSP; null when it is not there)
 async function meterDSP() {
@@ -4720,7 +4923,8 @@ async function bounce() {
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
       items.push(Object.assign({ tr, patch, os: isSerum(d) ? sxOSFor(d, sr, true) : os, hostOS: os, song: songData(tr, start, end),
         transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : dr ? drumPayload(tr, pd, true) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
-      x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null));
+      x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null,
+      x.sc ? { sc: x.sc } : null)); // ((SC §7.2) its key edges: renderOffline builds them as live)
     }
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
     // (IMPL-M §4) always through the master — empty or not, one path (an empty one copies: the same bytes as before)
@@ -6352,6 +6556,7 @@ function mfxHost() {
     gr: () => mfxRec.gr, tap: () => mfxRec.ftap || null,
     setTap: inst => postTo({ id: MASTER }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
     storage: hostStore, notify: txt => notice(txt, 3500),
+    scSources: () => scSources(null), // ((SC §6.1) self null: its Ducker keys from any track; its compressor has no key input
   };
 }
 function renderMasterFx() {
@@ -8801,6 +9006,13 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     off: () => { if (cvMaster) { masterOff(); renderViews(); tabTrackUI(); ptShow(); } }, fx: masterFx, edit: masterEdit, host: mfxHost, ui: mfxRec,
     state: () => Object.assign({}, mstate), ab: abSet, mono: monoSet, row: () => mrow, out: () => mout, chain: masterChain, n: masterN,
     latBound, addEffect: mAddEffect, menu: mMenu, view: masterRec, read: mRead, normMode, playRate,
+  };
+  // (SC: tests/canvas-SC-sim) the sidechain's host (IMPL-SC §9.1): a track's wanted edges (the project's) and those with a node, a
+  // sync, every track's, the loop test, keyed (ptPower's), any (mAlign's), the node's edges [[source id, kg gain]]; and its parts
+  globalThis.__synthTest.sc = {
+    want: t => [...scWant(t)], srcs: t => [...scSrcs(t)], sync: t => scSync(t), all: () => scAll(), cycle: (t, id) => scCycle(t, id),
+    keyed: t => scKeyed(t), any: () => scAny(), edges: t => { const N = t && nodes.get(t.id); return N ? [...N.scIn].map(([id, e]) => [id, e.kg.gain.value]) : []; },
+    graph: () => scGraph(), keySet: () => [...scKeySet()], sources: self => scSources(self), freshId: () => scFreshId(), mAlign: F => mAlign(F),
   };
   // (milestone 3, lane D: tests/canvas-3-sim, ui-bench ?m3=1&real=1) the parts hook on cv.parts — cvParts' own fields (home,
   // root, scope, about) stay as they are

@@ -31,15 +31,17 @@ function defFx() {
 }
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, (msg || '') + ` ${a} != ${b}`);
 const TAB = (type, v) => core.FXP_TAB[type][v];
-// a v2 instance of the type's newest (or given) variant with table defaults
+// a v2 instance of the variant a new instance gets (FXTYPES nv: the newest but the Compressor's v2, IMPL-SC §5.1), or the given one, with table defaults
 function inst(id, type, v) {
-  const T = core.FXTYPES.find(t => t.id === type), vv = v || T.variants[T.variants.length - 1], p = {};
+  const T = core.FXTYPES.find(t => t.id === type), vv = v || T.nv, p = {};
   for (const r of TAB(type, vv)) p[r.pid] = r.def;
   const I = { id, type, v: vv, byp: 0, p, sub: {}, ph: 0, ui: { lvl: 0, lvl2: 0 } };
   if (type === 'dist') I.sub = { xa: [[0, 0, 0], [1, 1, 0]], xb: [[0, 0, 0], [1, 1, 0]] };
   if (type === 'cho') I.sub = { mono: 0 };
   if (type === 'rev' && vv === 1) I.sub = { type: 1 };
   if (type === 'conv') I.sub = { ir: 'fir:Medium/Chamber' };
+  if (type === 'cmp' && vv === 3) I.sub = { src: '' };                                  // IMPL-SC §3.3 the key's source
+  if (type === 'duck') I.sub = { src: '', cv: core.DUCK_DEFAULT.map(q => q.slice()) };  // §4.1 the trigger, the dip curve
   if (T.split) { I.br = Array.from({ length: T.split }, () => []); I.bb = new Array(T.split).fill(0); }
   return I;
 }
@@ -178,15 +180,15 @@ test('listRows: processing order with branch headers and end slots, labels, layo
   assert.deepEqual(listRows(v1, 0).map(r => [r.id, r.s1]), [['dly', true], ['rev', true]]);
 });
 
-test('addMenuItems: 13 effects + 3 splitters at the top level, effects only in a branch, disabled when full', () => {
+test('addMenuItems: 14 effects + 3 splitters at the top level, effects only in a branch, disabled when full', () => {
   const fx = tree();
   const top = addMenuItems(fx, 0, null);
-  assert.deepEqual(top.map(x => x.label), ['Bode', 'Chorus', 'Compressor', 'Convolve', 'Delay', 'Distortion', 'Equalizer', 'Filter', 'Flanger',
+  assert.deepEqual(top.map(x => x.label), ['Bode', 'Chorus', 'Compressor', 'Convolve', 'Delay', 'Distortion', 'Ducker', 'Equalizer', 'Filter', 'Flanger',
     'Hyper/Dimension', 'Phaser', 'Reverb', 'Utility', 'Splitter L/H', 'Splitter L/M/H', 'Splitter M/S']);
   assert.deepEqual([...new Set(top.map(x => x.group))], ['Effects', 'Splitters']);
   assert.ok(top.every(x => !x.disabled));
   const br = addMenuItems(fx, 0, { splitter: 'split2', branch: 1 });
-  assert.equal(br.length, 13);
+  assert.equal(br.length, 14);
   assert.ok(br.every(x => x.group === 'Effects' && !x.disabled));
   // a full branch (8) and a full rack (16)
   for (let i = 0; i < 8; i++) fx.racks[0].mods[1].br[1].push(inst('u' + i, 'util'));
@@ -254,6 +256,7 @@ function mkRack(o = {}) {
   if (o.tip) host.tip = o.tip;
   if (o.irs) host.irs = o.irs;
   if (o.v2Fx !== undefined) host.v2Fx = o.v2Fx;
+  if (o.sc !== undefined) host.scSources = typeof o.sc === 'function' ? o.sc : () => o.sc;   // IMPL-SC §6.1 (a stub)
   if (st.s) { host.state = () => st.s; host.edit = (fn, opts) => { fn(st.s); st.sEdits.push(opts); }; }
   const parent = d.createElement('div');
   d.body.appendChild(parent);
@@ -484,7 +487,7 @@ test('FXRackUI (2026-10-22, the Effects tray\'s estimates moved here): opts.cost
   const items = () => byCls(byCls(d.body, 'wk-ctx').at(-1), 'wk-ci');
   const hint = label => { const it = items().find(n => one(n, 'wk-cl').textContent === label), h = byCls(it, 'wk-ch')[0]; return h ? h.textContent + ' | ' + it.title : null; };
   fire(one(root, 'fxr2-add'), 'click');
-  assert.deepEqual(menuLabels(d), ['Bode', 'Chorus', 'Compressor', 'Convolve', 'Delay', 'Distortion', 'Equalizer', 'Filter', 'Flanger', 'Hyper/Dimension', 'Phaser', 'Reverb', 'Utility',
+  assert.deepEqual(menuLabels(d), ['Bode', 'Chorus', 'Compressor', 'Convolve', 'Delay', 'Distortion', 'Ducker', 'Equalizer', 'Filter', 'Flanger', 'Hyper/Dimension', 'Phaser', 'Reverb', 'Utility',
     'Splitter L/H', 'Splitter L/M/H', 'Splitter M/S'], 'the labels, in the menu\'s order');
   assert.deepEqual([hint('Reverb'), hint('Hyper/Dimension'), hint('Splitter M/S')], ['~3 % | Estimated DSP load on this device: ~3 %', '~5 % | Estimated DSP load on this device: ~5 %', '~7 % | Estimated DSP load on this device: ~7 %']);
   assert.deepEqual([hint('Utility'), hint('Bode')], [null, null], 'no estimate, a throwing cost: no hint');
@@ -1721,5 +1724,359 @@ test('(2b halos) FXRackUI.setLive(liveOf): the live dot on the modded knobs only
   rack.paintMods(id => rows[id] || []);
   rack.setLive(() => 0.9);
   assert.deepEqual([last('fx.rev.mix'), last('fx.rv2.mix')], [null, null]);
+  rack.destroy();
+});
+
+/* ------------------------------------------------------------------ IMPL-SC lane U: the Ducker, the keyed Compressor */
+// a stub of the host's scSources() (IMPL-SC §6.1): Kick (an 808: its lanes), Bass (the track itself), Pad (keyed from Bass:
+// picking it would close a loop) — the host's own reasons (§1.4)
+function scStub(over) {
+  return Object.assign({
+    self: 'trk_2',
+    list: [{ id: 'trk_1', name: 'Kick', drum: true }, { id: 'trk_2', name: 'Bass', drum: false }, { id: 'trk_3', name: 'Pad', drum: false }],
+    notes: id => (id === 'trk_1' ? [{ n: 36, name: 'Kick (36)' }, { n: 38, name: 'Snare (38)' }, { n: 42, name: 'Closed Hat (42)' }] : null),
+    ok: id => (id === 'trk_2' ? 'A track cannot key itself' : id === 'trk_3' ? 'Pad already ducks with Bass — a loop would need a delay. Pick another source.' : ''),
+  }, over || {});
+}
+const mtxt = b => one(b, 'wk-mtxt').textContent;
+const ctxItems = d => byCls(byCls(d.body, 'wk-ctx').at(-1), 'wk-ci');
+const isHidden = el => { for (let n = el; n; n = n.parentNode) if (n.classList && n.classList.contains('fxr2-hide')) return true; return false; };
+const findI = (fx, id) => { let out = null; for (const R of fx.racks) for (const I of R.mods) if (I.id === id) out = I; return out; };
+
+test('IMPL-SC §6.2 Ducker panel: every row bound to fx.<id>.<pid> (NOTE a nomod switch), LENGTH in ms or the synced ladder with BPM, the defaults (1/8, 100 %), accessible names', () => {
+  const { rack, st, root } = mkRack({ fx: fx2([inst('duck', 'duck')]), sc: scStub() });
+  const I = () => st.fx.racks[0].mods[0], P = rack.panels.get('duck');
+  assert.equal(!!P, true);
+  for (const r of TAB('duck', 2)) {
+    const id = 'fx.duck.' + r.pid, w = rack.knobs.get(id);
+    assert.equal(!!w, true, 'widget ' + id);
+    assert.equal(typeof w.setMod, 'function', id);
+    assert.equal(w.el.getAttribute('data-dest'), id, 'data-dest ' + id);
+  }
+  assert.deepEqual(byAttr(root, 'data-nomod', '1').map(n => n.getAttribute('data-dest')), ['fx.duck.note']);
+  // defaults: synced 1/8 (Q2), 100 % (Q3), Any note (Q1)
+  assert.equal(txt(rack, 'fx.duck.lad'), '1/8');
+  assert.equal(txt(rack, 'fx.duck.depth'), '100%');
+  assert.equal(txt(rack, 'fx.duck.att'), '1.00 ms');
+  assert.equal(txt(rack, 'fx.duck.smooth'), '2.00 ms');
+  assert.deepEqual([isHidden(rack.knobs.get('fx.duck.len').el), isHidden(rack.knobs.get('fx.duck.lad').el)], [true, false]);
+  fire(rack.knobs.get('fx.duck.bpm').el, 'click');
+  assert.equal(I().p.bpm, 0);
+  assert.deepEqual(st.edits.at(-1), { label: 'Ducker Length BPM', phase: 'set' });
+  rack.refresh();
+  assert.deepEqual([isHidden(rack.knobs.get('fx.duck.len').el), isHidden(rack.knobs.get('fx.duck.lad').el)], [false, true]);
+  assert.equal(txt(rack, 'fx.duck.len'), '250 ms');
+  // accessible names: the curve, the menus, the GR bar
+  assert.equal(one(P.el, 'gx-curve').getAttribute('aria-label'), 'Ducker curve');
+  assert.equal(one(P.el, 'fxr2-srcb').getAttribute('aria-label'), 'Trigger track: None');
+  assert.equal(one(rack.knobs.get('fx.duck.note').el, 'wk-mbtn').getAttribute('aria-label'), 'Note filter: Any');
+  assert.equal(P.grCv.getAttribute('aria-label'), 'Ducking (gain reduction)');
+  rack.destroy();
+});
+
+test('IMPL-SC §6.2 Ducker TRIGGER: host.scSources() in project order, None first, two of one name told apart; the track itself and a loop listed disabled with the host\'s reason; a pick writes sub.src in one edit with a notice; a deleted source reads "— (deleted)" until changed; no host member → disabled with the hint; the master\'s Ducker (self null) picks freely', () => {
+  let S = scStub();
+  const { rack, st, d } = mkRack({ fx: fx2([inst('duck', 'duck')]), sc: () => S });
+  const I = () => st.fx.racks[0].mods[0], P = rack.panels.get('duck'), b = one(P.el, 'fxr2-srcb'), pk = b.parentNode.parentNode;
+  assert.equal(mtxt(b), 'None');
+  assert.equal(one(pk, 'wk-lab').textContent, 'TRIGGER');
+  fire(b, 'click');
+  assert.deepEqual(menuLabels(d), ['None', 'Kick', 'Bass', 'Pad']);
+  const it = ctxItems(d);
+  assert.deepEqual(it.map(n => n.getAttribute('aria-disabled') === 'true'), [false, false, true, true]);
+  assert.deepEqual(it.map(n => n.title), ['', '', 'A track cannot key itself', 'Pad already ducks with Bass — a loop would need a delay. Pick another source.']);
+  assert.deepEqual(it.map(n => (one(n, 'wk-ch') || { textContent: '' }).textContent), ['', '', 'this track', 'loop']);   // (touch: no hover title)
+  const n0 = st.edits.length;
+  pick(d, 'Pad');                                                                      // refused: nothing changes
+  assert.equal(st.edits.length, n0);
+  pick(d, 'Kick');
+  assert.equal(I().sub.src, 'trk_1');
+  assert.equal(st.edits.length, n0 + 1);
+  assert.deepEqual(st.edits.at(-1), { label: 'Ducker Trigger', phase: 'set' });
+  assert.equal(st.notes.at(-1), 'Bass now ducks with Kick');
+  assert.equal(mtxt(b), 'Kick');
+  assert.equal(b.getAttribute('aria-label'), 'Trigger track: Kick');
+  // two tracks of one name: told apart by their place in the list
+  S = scStub({ list: S.list.concat([{ id: 'trk_4', name: 'Kick', drum: true }]) });
+  rack.refresh();
+  assert.equal(mtxt(b), 'Kick · 1');
+  fire(b, 'click');
+  assert.deepEqual(menuLabels(d), ['None', 'Kick · 1', 'Bass', 'Pad', 'Kick · 4']);
+  key(byCls(d.body, 'wk-ctx').at(-1), 'Escape');
+  // the source deleted: the unit keeps sub.src (undo, §1.3) and the menu says so until changed
+  S = scStub({ list: S.list.filter(t => t.id !== 'trk_1' && t.id !== 'trk_4') });
+  rack.refresh();
+  assert.equal(mtxt(b), '— (deleted)');
+  assert.equal(pk.classList.contains('fxr2-gone'), true);
+  assert.equal(I().sub.src, 'trk_1');
+  fire(b, 'click');
+  assert.deepEqual(menuLabels(d), ['None', '— (deleted)', 'Bass', 'Pad']);
+  pick(d, 'None');
+  assert.deepEqual([I().sub.src, mtxt(b), pk.classList.contains('fxr2-gone')], ['', 'None', false]);
+  rack.destroy();
+  // no host member (a Serum's embedded page without it, a test host): disabled, says where to set it
+  const n = mkRack({ fx: fx2([inst('duck', 'duck')]) });
+  const nb = one(n.rack.panels.get('duck').el, 'fxr2-srcb');
+  assert.deepEqual([nb.disabled, mtxt(nb)], [true, 'Set it in the track’s FX module']);
+  n.rack.destroy();
+  // the master's Ducker: any track's notes (no key input needed, §4.4)
+  const m = mkRack({ fx: fx2([inst('duck', 'duck')]), sc: scStub({ self: null, ok: () => '' }) });
+  const mb = one(m.rack.panels.get('duck').el, 'fxr2-srcb');
+  assert.equal(mb.disabled, false);
+  fire(mb, 'click');
+  pick(m.d, 'Bass');
+  assert.equal(m.st.fx.racks[0].mods[0].sub.src, 'trk_2');
+  assert.equal(m.st.notes.at(-1), 'The master now ducks with Bass');
+  m.rack.destroy();
+});
+
+test('IMPL-SC §6.2 Ducker NOTE: Any first; a drum machine source names its lanes (the host\'s notes(id)), the rest one tap deeper; any other source the 128 notes in octaves; p.note = (note + 1) / 128', () => {
+  const D = inst('duck', 'duck');
+  D.sub.src = 'trk_1';
+  const { rack, st, d } = mkRack({ fx: fx2([D]), sc: scStub() });
+  const I = () => st.fx.racks[0].mods[0], nb = one(rack.knobs.get('fx.duck.note').el, 'wk-mbtn');
+  assert.equal(mtxt(nb), 'Any');
+  fire(nb, 'click');
+  assert.deepEqual(menuLabels(d), ['Any', 'Kick (36)', 'Snare (38)', 'Closed Hat (42)', 'All notes']);
+  pick(d, 'Snare (38)');
+  near(I().p.note, 39 / 128, 1e-12);
+  assert.deepEqual(st.edits.at(-1), { label: 'Ducker Note', phase: 'set' });
+  assert.equal(mtxt(nb), 'Snare (38)');
+  assert.equal(nb.getAttribute('aria-label'), 'Note filter: Snare (38)');
+  // a melodic source: the note's own name, the octaves of DUCK_NOTES
+  I().sub.src = 'trk_3';
+  rack.refresh();
+  assert.equal(mtxt(nb), 'D2 (38)');
+  fire(nb, 'click');
+  const oct = ['C-1 … B-1', 'C0 … B0', 'C1 … B1', 'C2 … B2', 'C3 … B3', 'C4 … B4', 'C5 … B5', 'C6 … B6', 'C7 … B7', 'C8 … B8', 'C9 … G9'];
+  assert.deepEqual(menuLabels(d), ['Any'].concat(oct));
+  pick(d, 'C2 … B2');
+  assert.deepEqual(menuLabels(d), core.DUCK_NOTES.slice(37, 49));
+  pick(d, 'C2 (36)');
+  near(I().p.note, 37 / 128, 1e-12);
+  fire(nb, 'click');
+  pick(d, 'Any');
+  assert.equal(I().p.note, 0);
+  rack.destroy();
+});
+
+test('IMPL-SC §6.2 Ducker curve: the inline CurveEditor on sub.cv (no zoom: native pinch only) — a touch double-tap adds a point, a touch drag 15 px off it moves it (44 px handles; start / move / end), a double-tap removes it; SHAPE presets one tap away (Custom when none matches)', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('duck', 'duck')]), sc: scStub() });
+  const I = () => st.fx.racks[0].mods[0], P = rack.panels.get('duck'), ed = one(P.el, 'gx-curve');
+  assert.equal(ed.style.height, '96px');
+  assert.equal('zp' in P.ed, false);                                                     // no editor zoom
+  place(ed, 0, 0, 214, 96);                                                              // plot 200 × 82 (PAD 7)
+  const at = (x, y) => [7 + x * 200, 7 + (1 - y) * 82];
+  const tap = (x, y) => { ptr(ed, 'pointerdown', x, y, { pointerType: 'touch' }); ptr(ed, 'pointerup', x, y, { pointerType: 'touch' }); };
+  const seg = one(P.el, 'wk-iseg'), shapes = byCls(seg, 'wk-sb');
+  assert.deepEqual(shapes.map(x => x.getAttribute('aria-label')), ['Classic', 'Linear', 'Hold', 'Smooth', 'Pump']);
+  assert.deepEqual(shapes.map(x => x.classList.contains('wk-on')), [true, false, false, false, false]);
+  assert.equal(one(seg, 'wk-lab').textContent, 'SHAPE');
+  // touch: a double-tap adds a point (below Classic's bend handle at the segment's middle, ≈ (0.54, 0.94))
+  const n0 = st.edits.length;
+  tap(...at(0.5, 0.4)); tap(...at(0.5, 0.4));
+  assert.deepEqual(I().sub.cv.map(q => q.slice(0, 2)), [[0, 0], [0.08, 0.04], [0.5, 0.4], [1, 1]]);
+  assert.deepEqual(st.edits.slice(n0).map(e => [e.label, e.phase]), [['Ducker Curve', 'set']]);
+  rack.refresh();
+  assert.deepEqual(shapes.map(x => x.classList.contains('wk-on')), [false, false, false, false, false]);
+  assert.equal(one(seg, 'wk-lab').textContent, 'SHAPE · CUSTOM');
+  // a drag that starts 15 px from the point still takes it (touch radius 22 px = a 44 px handle)
+  const [px, py] = at(0.5, 0.4), n1 = st.edits.length;
+  ptr(ed, 'pointerdown', px, py + 15, { pointerType: 'touch' });
+  ptr(ed, 'pointermove', px, py + 25, { pointerType: 'touch' });
+  ptr(ed, 'pointermove', px, py + 33, { pointerType: 'touch' });
+  ptr(ed, 'pointerup', px, py + 33, { pointerType: 'touch' });
+  near(I().sub.cv[2][1], 0.4 - 18 / 82, 1e-4);
+  assert.deepEqual(st.edits.slice(n1).map(e => e.phase), ['start', 'move', 'move', 'end']);
+  // a double-tap on it removes it
+  advance(1000);
+  const [qx, qy] = at(0.5, I().sub.cv[2][1]);
+  tap(qx, qy); tap(qx, qy);
+  assert.deepEqual(I().sub.cv.map(q => q.slice(0, 2)), [[0, 0], [0.08, 0.04], [1, 1]]);
+  // SHAPE: one tap applies a preset
+  fire(shapes[2], 'click');
+  assert.deepEqual(I().sub.cv, core.DUCK_SHAPES[2].pts.map(q => q.slice()));
+  assert.deepEqual(st.edits.at(-1), { label: 'Ducker Shape', phase: 'set' });
+  rack.refresh();
+  assert.deepEqual(shapes.map(x => x.classList.contains('wk-on')), [false, false, true, false, false]);
+  assert.equal(one(seg, 'wk-lab').textContent, 'SHAPE');
+  // an outside change (undo, a preset) redraws the editor from the state
+  I().sub.cv = core.DUCK_SHAPES[4].pts.map(q => q.slice());
+  rack.refresh();
+  assert.deepEqual(P.ed.pts.map(q => q.slice(0, 2)), [[0, 0], [0.3, 0.9], [1, 1]]);
+  assert.deepEqual(shapes.map(x => x.classList.contains('wk-on')), [false, false, false, false, true]);
+  rack.destroy();
+});
+
+test('IMPL-SC §6.2 Ducker GR bar and playhead: host.gr() slots [4i] (dB) / [4i + 1] (position, −1 idle) drawn by the rack\'s ≤ 30 fps grLoop; the editor runs no animator of its own; an unchanged position draws nothing', () => {
+  raf.install();
+  try {
+    const { rack, st } = mkRack({ fx: fx2([inst('eq', 'eq'), inst('duck', 'duck')]), sc: scStub() });
+    const P = rack.panels.get('duck'), ed = one(P.el, 'gx-curve');
+    place(ed, 0, 0, 214, 96);
+    assert.equal(P.ed.anim.running(), false);
+    st.gr = new Float32Array(4 * 48);
+    st.gr[4] = 12; st.gr[5] = 0.25;                                                      // FXP instance 1 = the Ducker
+    const g = P.grCv.getContext('2d'), ov = one(ed, 'gx-ov').getContext('2d');
+    g.calls.length = 0; ov.calls.length = 0;
+    raf.flush(1, 100);
+    assert.equal(g.calls.some(c => c[0] === 'fillText' && c[1] === '-12.0'), true);
+    const arcs = ov.calls.filter(c => c[0] === 'arc');
+    assert.equal(arcs.length, 1);
+    near(arcs[0][1], 7 + 0.25 * 200, 1e-9);                                              // the marker at X(0.25)
+    ov.calls.length = 0;
+    raf.flush(5, 200);
+    assert.equal(ov.calls.length, 0);                                                    // unchanged: nothing drawn
+    st.gr[5] = 0.5;
+    raf.flush(1, 500);
+    near(ov.calls.filter(c => c[0] === 'arc')[0][1], 107, 1e-9);
+    st.gr[5] = -1; st.gr[4] = 0;                                                         // idle: the marker goes
+    ov.calls.length = 0;
+    raf.flush(1, 600);
+    assert.deepEqual([ov.calls.some(c => c[0] === 'clearRect'), ov.calls.some(c => c[0] === 'arc')], [true, false]);
+    st.gr[4] = 120;                                                                      // a full dip (g floored at 1e-6)
+    raf.flush(1, 700);
+    assert.equal(g.calls.some(c => c[0] === 'fillText' && c[1] === '-∞'), true);
+    assert.equal(P.ed.anim.running(), false);
+    rack.destroy();
+    assert.equal(raf.pending, 0);
+  } finally { raf.uninstall(); }
+});
+
+test('IMPL-SC §6.3 Compressor: a v2 shows "KEY: None ▾" after MODE; picking a source keys it in the same edit (v3, sub.src, KEY EXT); the v3 panel keeps every v2 control and adds KEY INT | EXT, FROM ▾, KEY HPF (Off at its minimum), LISTEN; None → INT; the group dims in MULTIBAND; the master has no key input; a v1 has no key', () => {
+  const { rack, st, d } = mkRack({ fx: fx2([inst('cmp', 'cmp')]), sc: scStub() });
+  const I = () => st.fx.racks[0].mods[0], kb = () => one(rack.panels.get('cmp').el, 'fxr2-srcb');
+  assert.equal(I().v, 2);
+  assert.equal(mtxt(kb()), 'None');
+  assert.equal(one(kb().parentNode.parentNode, 'wk-lab').textContent, 'KEY');
+  assert.equal(rack.knobs.has('fx.cmp.ext'), false);
+  const n0 = st.edits.length;
+  fire(kb(), 'click');
+  assert.deepEqual(menuLabels(d), ['None', 'Kick', 'Bass', 'Pad']);
+  pick(d, 'Kick');
+  assert.equal(st.edits.length, n0 + 1);
+  assert.deepEqual(st.edits.at(-1), { label: 'Compressor Key', phase: 'set' });
+  assert.deepEqual([I().v, I().sub.src, I().p.ext], [3, 'trk_1', 1]);
+  assert.equal(st.notes.at(-1), 'Kick now keys Bass’s Compressor');
+  // rebuilt as v3: the v2 controls (c.v >= 2) and the key group
+  for (const pid of ['mb', 'thr', 'ratio', 'xlo', 'xhi', 'below', 'gH', 'gM', 'gL', 'mbH', 'ext', 'schp', 'listen']) assert.equal(rack.knobs.has('fx.cmp.' + pid), true, pid);
+  assert.equal(rack.knobs.get('fx.cmp.ext').el.className.split(' ')[0], 'wk-seg');
+  assert.equal(one(kb().parentNode.parentNode, 'wk-lab').textContent, 'FROM');
+  assert.equal(mtxt(kb()), 'Kick');
+  assert.equal(txt(rack, 'fx.cmp.schp'), 'Off');
+  assert.deepEqual(['ext', 'listen'].map(p => rack.knobs.get('fx.cmp.' + p).el.getAttribute('data-nomod')), ['1', '1']);
+  assert.equal(rack.knobs.get('fx.cmp.schp').el.getAttribute('data-nomod'), null);
+  fire(byCls(rack.knobs.get('fx.cmp.ext').el, 'wk-sb')[0], 'click');
+  assert.equal(I().p.ext, 0);
+  fire(byCls(rack.knobs.get('fx.cmp.ext').el, 'wk-sb')[1], 'click');
+  assert.equal(I().p.ext, 1);
+  // EXT with no source (a preset, a deleted track): the menu warns
+  I().sub.src = '';
+  rack.refresh();
+  assert.equal(kb().parentNode.parentNode.classList.contains('fxr2-gone'), true);
+  assert.match(kb().title, /pick a track/);
+  fire(kb(), 'click');
+  pick(d, 'Kick');
+  fire(kb(), 'click');
+  pick(d, 'None');                                                                       // None → INT (the v3 stays)
+  assert.deepEqual([I().v, I().sub.src, I().p.ext], [3, '', 0]);
+  assert.equal(kb().parentNode.parentNode.classList.contains('fxr2-gone'), false);
+  // MULTIBAND: the key applies to the single band only — the group dims
+  const grp = one(rack.panels.get('cmp').el, 'fxr2-key');
+  assert.equal(grp.classList.contains('fxr2-dim'), false);
+  fire(byCls(rack.knobs.get('fx.cmp.mb').el, 'wk-sb')[1], 'click');
+  rack.refresh();
+  assert.equal(grp.classList.contains('fxr2-dim'), true);
+  rack.destroy();
+  // the master: no key input (its from ▾ disabled with the reason; KEY INT not offered EXT)
+  const m = mkRack({ fx: fx2([inst('cmp', 'cmp', 3)]), sc: scStub({ self: null, ok: () => '' }) });
+  const mb = one(m.rack.panels.get('cmp').el, 'fxr2-srcb');
+  assert.deepEqual([mb.disabled, mb.title], [true, 'The master hears the whole mix']);
+  assert.equal(m.rack.knobs.get('fx.cmp.ext').el.classList.contains('wk-dis'), true);
+  m.rack.destroy();
+  const v2m = mkRack({ fx: fx2([inst('cmp', 'cmp')]), sc: scStub({ self: null, ok: () => '' }) });
+  assert.equal(one(v2m.rack.panels.get('cmp').el, 'fxr2-srcb').disabled, true);
+  v2m.rack.destroy();
+  // a v1 (S1) compressor: no key
+  const v1 = mkRack({ fx: fx2([inst('cmp', 'cmp', 1)]), sc: scStub() });
+  assert.equal(one(v1.rack.panels.get('cmp').el, 'fxr2-srcb') === null, true);
+  v1.rack.destroy();
+});
+
+test('IMPL-SC §6.3 / §1.3: "Add a sidechain key" (v2 compressors) → v3, no source, KEY INT; a module preset keeps fv 3 (factory Keyed Pump); presets never set a source and never carry one out (module, default, FX Bus, effect chain, their files); the rack clipboard keeps a source within the project only; Init keeps the source', () => {
+  const K = inst('cmp', 'cmp', 3), D = inst('duck', 'duck');
+  K.sub.src = 'trk_1'; K.p.ext = 1; D.sub.src = 'trk_1';
+  let S = scStub();
+  const { rack, st, d, root } = mkRack({ fx: fx2([K, D, inst('cmp2', 'cmp')]), sc: () => S });
+  const I = id => findI(st.fx, id), open = id => fire(one(panelOf(rack, id), 'fxr-pre'), 'click');
+  open('cmp2');
+  assert.equal(menuLabels(d).includes('Add a sidechain key'), true);
+  pick(d, 'Add a sidechain key');
+  assert.deepEqual([I('cmp2').v, I('cmp2').sub.src, I('cmp2').p.ext], [3, '', 0]);
+  assert.deepEqual(st.edits.at(-1), { label: 'Add a sidechain key to Compressor 2', phase: 'set' });
+  assert.equal(rack.knobs.has('fx.cmp2.ext'), true);
+  open('cmp2');
+  assert.equal(menuLabels(d).includes('Add a sidechain key'), false);
+  key(byCls(d.body, 'wk-ctx').at(-1), 'Escape');
+  // module presets: fv 3 kept (fx-ui.js:304), never a source
+  assert.equal(rack.factoryPresets('cmp').find(p => p.name === 'Keyed Pump').fv, 3);
+  open('cmp');
+  withPrompt('Keyed', () => pick(d, 'Save FX Preset…'));
+  const saved = JSON.parse(st.store.get('synth.fxmod.cmp'));
+  assert.deepEqual([saved[0].fv, saved[0].sub.src], [3, '']);
+  assert.equal(rack.modPresets('cmp')[0].fv, 3);
+  const c3 = rack.addInst('cmp');
+  assert.equal(I(c3).v, 2);
+  open(c3);
+  pick(d, 'Keyed');
+  assert.deepEqual([I(c3).v, I(c3).sub.src], [3, '']);
+  open('duck');
+  pick(d, 'Factory');
+  pick(d, 'Gate Stab');
+  assert.equal(I('duck').sub.src, 'trk_1');                                              // the instance's own source stays
+  open('duck');
+  pick(d, 'Save as Default Preset');
+  assert.equal(JSON.parse(st.store.get('synth.fxmod.default.duck')).sub.src, '');
+  // FX Bus presets, effect chains and their files: blank sources
+  const more = byCls(root, 'fxr-more').find(b => b.textContent === '⋯');
+  const srcs = x => JSON.stringify(x).match(/"src":"[^"]*"/g) || [];
+  withPrompt('Pump', () => { fire(more, 'click'); pick(d, 'Save FX Bus…'); });
+  assert.deepEqual([...new Set(srcs(JSON.parse(st.store.get('synth.fxracks'))))], ['"src":""']);
+  withPrompt('Pumping', () => { fire(more, 'click'); pick(d, 'Save Effect Chain…'); });
+  assert.deepEqual([...new Set(srcs(JSON.parse(st.store.get('synth.fxchains'))))], ['"src":""']);
+  const files = [], prevURL = globalThis.URL, prevBlob = globalThis.Blob;
+  globalThis.Blob = class { constructor(parts) { this.text = parts.join(''); } };
+  globalThis.URL = { createObjectURL: b => { files.push(b.text); return 'blob:x'; }, revokeObjectURL: () => {} };
+  try {
+    withPrompt('Bus', () => { fire(more, 'click'); pick(d, 'Export FX Bus…'); });
+    withPrompt('Chain', () => { fire(more, 'click'); pick(d, 'Export Effect Chain…'); });
+  } finally { globalThis.URL = prevURL; globalThis.Blob = prevBlob; }
+  assert.equal(files.length, 2);
+  for (const f of files) assert.deepEqual([...new Set(srcs(JSON.parse(f)))], ['"src":""']);
+  // an imported / library entry carrying a source loads without it
+  st.store.set('synth.fxchains', JSON.stringify([{ name: 'Foreign', fx: JSON.parse(JSON.stringify(st.fx)) }]));
+  st.store.set('synth.fxracks', JSON.stringify([{ type: 'synth.fxrack', v: 1, name: 'Foreign', rack: JSON.parse(JSON.stringify(st.fx.racks[0])) }]));
+  rack.setRack(2);
+  fire(more, 'click'); pick(d, 'Load FX Bus…'); pick(d, 'Foreign');
+  assert.deepEqual([...new Set(srcs(st.fx.racks[2]))], ['"src":""']);
+  // the clipboard: within the project the sources stay; a track of that id under another name (another project): blanked
+  rack.setRack(0);
+  fire(more, 'click'); pick(d, 'Copy FX Bus');
+  rack.setRack(1);
+  fire(more, 'click'); pick(d, 'Paste FX Bus');
+  assert.deepEqual(st.fx.racks[1].mods.filter(x => x.sub && 'src' in x.sub).map(x => x.sub.src), ['trk_1', 'trk_1', '', '']);
+  S = scStub({ list: [{ id: 'trk_1', name: 'Lead', drum: false }, { id: 'trk_2', name: 'Bass', drum: false }] });
+  rack.setRack(2);
+  fire(more, 'click'); pick(d, 'Paste FX Bus');
+  assert.deepEqual([...new Set(srcs(st.fx.racks[2]))], ['"src":""']);
+  // Init Module: the table defaults, the source kept
+  rack.setRack(0);
+  I('duck').sub.cv = core.DUCK_SHAPES[1].pts.map(q => q.slice());
+  open('duck');
+  pick(d, 'Init Module');
+  assert.deepEqual([I('duck').sub.src, I('duck').sub.cv], ['trk_1', core.DUCK_DEFAULT.map(q => q.slice())]);
+  // a library effect chain holding sources loads without them
+  fire(more, 'click'); pick(d, 'Load Effect Chain…'); pick(d, 'Foreign');
+  assert.deepEqual([st.fx.racks[0].mods.length, [...new Set(srcs(st.fx.racks))]], [4, ['"src":""']]);
   rack.destroy();
 });

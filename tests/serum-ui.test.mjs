@@ -2005,6 +2005,22 @@ test('SerumUI: header wave icon (§13.2.5) — render, Shift = preset JSON, Alt 
   m4.u.destroy();
 });
 
+test('IMPL-SC §6.4 (the lead\'s decision d): the FX page\'s rack adapter forwards the host\'s scSources() — the Ducker\'s TRIGGER and the keyed Compressor\'s source menus on a Serum\'s own FX page; a host without it reads null (the menus then say where to set it)', async () => {
+  const S = { self: 'trk_1', list: [{ id: 'trk_1', name: 'Lead', drum: false }, { id: 'trk_2', name: 'Kick', drum: true }], notes: () => null, ok: id => (id === 'trk_1' ? 'A track cannot key itself' : '') };
+  let calls = 0;
+  const a = await mount({ scSources: () => { calls++; return S; } });
+  a.u.setPage('fx');
+  await flush(a.doc);
+  const rack = fxStub.made.at(-1);
+  assert.equal(typeof rack.host.scSources, 'function');
+  assert.equal(rack.host.scSources() === S, true);
+  assert.equal(calls, 1);
+  const b = await mount();
+  b.u.setPage('fx');
+  await flush(b.doc);
+  assert.equal(fxStub.made.at(-1).host.scSources(), null);
+});
+
 test('SerumUI: MIX (sx-ui-mix on demand), FX (FXRackUI v2: 3 racks, IRs), ARP / CLIP (sx-ui-seq) pages through the kit; LFO PHASE snap', async () => {
   const { doc, host, u, s } = await mount();
   u.setPage('mix');

@@ -26,6 +26,8 @@
  *   RevVintage, RevNitrous, RevBasin           S2 reverb tanks (module protocol; see "Reverb tanks")
  *   XoverLH, XoverLMH, MS                      splitter band builders (see "Splitters")
  *   Overdrive                                  Distortion S2 mode 16 staging around SxBase.shape(16, …) (see below)
+ *   Duck                                       the Ducker (IMPL-SC §4.2; FXRack kind 22, type 'duck'): a shaped gain dip
+ *                                              triggered by another track's note-ons through the rack's `R.sc` context
  *
  * Module protocol (the Phase-1 module protocol of fx-dsp: FXRack drives a module through its instance's Unit `R`, whose
  * fields are n (table length), ev / en (Float64Array(n): eff values / eff n in TAB order, re-evaluated per 16-sample
@@ -149,7 +151,7 @@
 
     /* ------------------------------------------------------------ §3.16 catalogue (embedded copy of fx-core) */
     const TYPES = Object.freeze(['dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'eq', 'fil', 'hyper', 'bode', 'conv', 'util',
-      'split2', 'split3', 'splitms']);
+      'split2', 'split3', 'splitms', 'duck']);
     // rows [pid, law, lo, hi, def, nomod] → frozen {pid, law, lo, hi, def[, nomod: true]}
     const tab = (rows) => Object.freeze(rows.map(([pid, law, lo, hi, def, nm]) => Object.freeze(nm
       ? { pid, law, lo, hi, def, nomod: true } : { pid, law, lo, hi, def })));
@@ -173,6 +175,9 @@
       split2: tab([ON, ['freq', 'exp', 30, 5800, 0.4374], LVL]),
       split3: tab([ON, ['freq1', 'exp', 30, 5800, 0.3604], ['freq2', 'exp', 30, 5800, 0.7978], LVL]),
       splitms: tab([ON, LVL]),
+      // (IMPL-SC §4.1) the Ducker (kind 22, lane D's Duck): the NOTE filter is a switch (nomod)
+      duck: tab([ON, pct('depth', 1), ['len', 'pow2', 10, 4000, 0.2453], bool('bpm', 1), ['lad', 'enum', 0, 11, 6 / 11], ['att', 'lin', 0, 50, 0.02],
+        ['smooth', 'lin', 0, 20, 0.1], ['note', 'enum', 0, 128, 0, 1], LVL]),
     });
     const PIDX = Object.freeze(Object.keys(TAB).reduce((o, t) => {
       const m = {};
@@ -1339,9 +1344,104 @@
       bytes() { return tb(this.s); }
     }
 
+    /* ------------------------------------------------------------ the Ducker (IMPL-SC §4.2; FXRack kind 22, type 'duck') */
+    // A shaped gain dip triggered by another track's note-ons: the unit reads the rack's sidechain context `R.sc` (IMPL-SC
+    // §1.2: `reg` the scope's trigger registry — track id → ring {q, n, f, note, vel} — or null, `q` the quantum's first frame,
+    // `F` the call's first frame, `b` the block's offset in the call) and the trigger track `R.src`; a ring is trusted only once
+    // its writer stamped it for this quantum (ring.q === sc.q, §2.0) — a hit at absolute frame f lands on block sample
+    // j = f − (F + b), exactly (no span split; §2.3). Per sample: a trigger restarts the dip from the current gain (ATTACK: a
+    // linear ramp to the curve's start), then the curve `tab` (the FXT cv table: 1025 points over LENGTH, linear
+    // interpolation; all 1 until one arrives) at 1 − DEPTH·(1 − tab(pos)), a one-pole SMOOTH on that target, × LEVEL (ramped
+    // per block). No velocity, no level, no history once recovered (S4: every hit the same); the recovery's end is snapped per
+    // sample (1 − g < 1e-9 while idle → 1), never at a call's end (two shifted hits stay shifted-identical, skeptic #17). LENGTH
+    // is captured at the trigger (a tempo change applies to the next hit); the NOTE filter (0 any, k → MIDI note k − 1) is
+    // read on the ring's entries. Idle, or without a registry / source / stamped ring: the input × LEVEL (× 1 = itself).
+    const N_DUCK = TAB.duck.length, DK = PIDX.duck, DUCK_N = 1024;
+    class Duck {
+      constructor(fs) {
+        this.fs = fs > 0 ? +fs : 48000;
+        this.has = 0; this.ir = 1; this.ph = NaN; this.latency = 0;
+        this.tab = new Float32Array(DUCK_N + 1).fill(1);      // the curve (FXT cv; all 1 = no dip until one arrives)
+        // the dip: k samples into the curve (−1 idle) of len, the gain g, the attack ramp (a of aN samples from g0)
+        this.k = -1; this.len = 1; this.g = 1; this.g0 = 1; this.a = 0; this.aN = 0;
+        this.depth = 1; this.lenT = 1; this.attN = 0; this.as = 1; this.noteF = 0;
+        this.l0 = 1; this.l1 = 1;                              // LEVEL, ramped per block
+      }
+      set(R) { return okUnit(R, N_DUCK); }
+      alloc() { this.has = 1; }
+      reset() { this.k = -1; this.g = 1; this.g0 = 1; this.a = 0; this.aN = 0; this.l0 = this.l1; }
+      upd(R) {
+        const ev = R.ev, en = R.en, fs = this.fs, bpm = R.bpm > 0 ? R.bpm : 120;
+        this.depth = ev[DK.depth];
+        const lad = ev[DK.lad], s = en[DK.bpm] >= 0.5 ? DLY_BEATS[lad > 0 ? (lad < 11 ? round(lad) : 11) : 0] * 60 / bpm : 0.001 * ev[DK.len];
+        const n = round(s * fs);
+        this.lenT = n > 1 ? n : 1;
+        this.attN = round(0.001 * ev[DK.att] * fs);
+        const sm = ev[DK.smooth];
+        this.as = sm > 0 ? 1 - exp(-1000 / (sm * fs)) : 1;
+        this.noteF = round(ev[DK.note]);
+        this.l1 = ev[DK.level];
+      }
+      snap() { this.l0 = this.l1; }
+      seed(p) {}
+      // the next trigger of this block at or after sample `from`: the smallest d = f − F0 in [from, m) among the ring's entries
+      // that pass the NOTE filter (−1: none)
+      next(ring, F0, from, m) {
+        const f = ring.f, nt = ring.note, nf = this.noteF, n = ring.n;
+        let best = -1;
+        for (let i = 0; i < n; i++) {
+          const d = f[i] - F0;
+          if (d >= from && d < m && (nf === 0 || nt[i] === nf - 1) && (best < 0 || d < best)) best = d;
+        }
+        return best;
+      }
+      run(R, L, Rc, o, m) {
+        const sc = R.sc, tab = this.tab, depth = this.depth, as = this.as, l0 = this.l0, l1 = this.l1, dl = (l1 - l0) / m;
+        this.l0 = l1;
+        let ring = null, F0 = 0, nx = -1;
+        if (sc !== undefined && sc !== null && sc.reg !== null && R.src !== '') {
+          const r = sc.reg.get(R.src);
+          if (r !== undefined && r.q === sc.q && r.n > 0) { ring = r; F0 = sc.F + sc.b; nx = this.next(r, F0, 0, m); }
+        }
+        let k = this.k, g = this.g;
+        if (nx < 0 && k < 0 && g === 1 && l0 === 1 && l1 === 1) return;   // idle at unity: the input passes untouched
+        let len = this.len, g0 = this.g0, a = this.a, aN = this.aN;
+        const c0 = 1 - depth * (1 - tab[0]);
+        for (let j = 0; j < m; j++) {
+          if (j === nx) { g0 = g; a = 0; aN = this.attN; k = 0; len = this.lenT; nx = this.next(ring, F0, j + 1, m); }
+          let T = 1;
+          if (k >= 0) {
+            if (a < aN) { T = g0 + (c0 - g0) * a / aN; a++; }
+            else {
+              const x = DUCK_N * k / len, i = x | 0;
+              T = 1 - depth * (1 - (tab[i] + (tab[i + 1] - tab[i]) * (x - i)));
+              if (++k >= len) k = -1;
+            }
+          }
+          g += (T - g) * as;
+          if (k < 0 && 1 - g < 1e-9) g = 1;
+          const lv = g * (l0 + dl * (j + 1)), i = o + j;
+          L[i] *= lv; Rc[i] *= lv;
+        }
+        this.k = k; this.len = len; this.g = g; this.g0 = g0; this.a = a; this.aN = aN;
+      }
+      flush() {}
+      tail() { return 0; }
+      bytes() { return tb(this.tab); }
+      // the rack's gr slots: reduction (dB), the dip's position 0 … 1 (−1 idle), 0, 0
+      meter(gr, o) {
+        const g = this.g;
+        gr[o] = g < 1 ? -20 * Math.log10(g > 1e-6 ? g : 1e-6) : 0;
+        gr[o + 1] = this.k >= 0 ? this.k / this.len : -1;
+        gr[o + 2] = 0; gr[o + 3] = 0;
+      }
+      // the FXT cv table of this instance (FXRack.setCV): copied, a non-number reads 1
+      setTab(t) { const T = this.tab; for (let i = 0; i <= DUCK_N; i++) { const x = +t[i]; T[i] = x === x ? x : 1; } }
+    }
+
     globalThis.FXMods2 = Object.freeze({
       VER, TYPES, TAB, PIDX,
-      Bode, Convolve, Utility, RevVintage, RevNitrous, RevBasin, XoverLH, XoverLMH, MS, Overdrive,
+      Bode, Convolve, Utility, RevVintage, RevNitrous, RevBasin, XoverLH, XoverLMH, MS, Overdrive, Duck,
     });
   } catch (err) {
     globalThis.FXMods2 = null;                                 // a load failure never throws out of the script

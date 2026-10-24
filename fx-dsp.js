@@ -1000,6 +1000,10 @@
         this.mode = 0; this.pm = 0; this.cx = 1; this.cst = 1 / (0.005 * fs);   // 0 single band, 1 Limit, 2 Multiband
         this.ent = 0;                                          // a mode entered: its gain smoother starts at its target
         this.slopeB = 0.75; this.bgL = 1; this.bgM = 1; this.bgH = 1;   // S2: BELOW slope, band gains (S1: RATIO's slope, 1)
+        // IMPL-SC §3.2 (v3, Comp2 only): KEY EXT (the detector reads the track's key, R.sc), its HPF (states ks, coefficients kc;
+        // off at the minimum), LISTEN (the key out), the block's key scratch (ka / kx / ky, Comp2.keyIn). Never set by a v1 / v2 unit:
+        // the key branch is skipped, the arithmetic as before
+        this.ext = 0; this.hpOn = 0; this.lsn = 0; this.ks = null; this.kc = null; this.ka = null; this.kx = null; this.ky = null;
       }
       alloc() {
         const n = ceil(0.01 * this.fs) + 4;
@@ -1066,6 +1070,12 @@
         const M = this.mode, P = this.pm, cst = this.cst, fade = this.cx < 1 ? 1 : 0;
         const uS = M === 0 || (fade === 1 && P === 0), uL = M === 1 || (fade === 1 && P === 1), uM = M === 2 || (fade === 1 && P === 2);
         if (this.pre === 1 && m > 0) { la.fill(L[o], 0, cap); la.fill(Rc[o], cap, 2 * cap); this.pre = 0; }
+        // IMPL-SC §3.2: KEY EXT (v3) — the single-band detector and the Limit deque read the track's key (Comp2.keyIn: the block's
+        // filtered key kx / ky and its detector input ka, a pass of its own); hoisted per block, so a v1 / v2 unit's loop pays one
+        // test. LISTEN replaces the output with the (filtered) key × makeup, the dry unchanged — not in MULTIBAND, whose bands ignore
+        // the key (§11; review 1 F3: the output stays the bands)
+        const K = this.ext === 1 ? R.sc : null, lsn = K !== null && this.lsn === 1 && M !== 2 ? 1 : 0, ka = this.ka, kx = this.kx, ky = this.ky;
+        if (K !== null) this.keyIn(K, m);
         // the single-band and band gain smoothers (log / curve per sample) run only while their mode is heard; the
         // smoother of a mode just entered starts at its target (its state is stale)
         let eS = this.ent === 1 && M === 0 ? 1 : 0, eM = this.ent === 1 && M === 2 ? 1 : 0;
@@ -1080,7 +1090,9 @@
           if (ri < 0) ri += cap;
           const yl = la[ri], yr = la[cap + ri];
           w = w + 1 === cap ? 0 : w + 1;
-          const al = xl < 0 ? -xl : xl, ar = xr < 0 ? -xr : xr, a = al > ar ? al : ar, r = a > thr ? thr / a : 1;
+          let a;
+          if (K === null) { const al = xl < 0 ? -xl : xl, ar = xr < 0 ? -xr : xr; a = al > ar ? al : ar; } else a = ka[j];
+          const r = a > thr ? thr / a : 1;
           while (cnt > 0) {
             let bk = front + cnt - 1;
             if (bk >= dqC) bk -= dqC;
@@ -1136,6 +1148,7 @@
             const el = P === 0 ? xl : P === 1 ? yl : apL, er = P === 0 ? xr : P === 1 ? yr : apR;
             oL = qL + cx * (oL - qL); oR = qR + cx * (oR - qR); dl = el + cx * (dl - el); dr = er + cx * (dr - er);
           }
+          if (lsn === 1) { oL = kx[j]; oR = ky[j]; }
           L[i] = oL * mk; Rc[i] = oR * mk; DL[j] = dl; DR[j] = dr;
         }
         this.w = w; this.front = front; this.cnt = cnt; this.tc = tc; this.lg = lg; this.pk = pk; this.gs = gs; this.cx = cx;
@@ -1150,6 +1163,7 @@
         flushArr(this.xs);
         if (this.pk < 1e-30) this.pk = 0;
         for (let b = 0; b < 3; b++) if (this.bp[b] < 1e-30) this.bp[b] = 0;
+        if (this.hpOn === 1) flushArr(this.ks);
       }
     }
     // multiband static curve: GR in dB (> 0 reduction, < 0 boost ≤ 24 dB) for peak level p (linear); slopeB = the slope
@@ -1644,11 +1658,48 @@
 
     // Compressor S2: crossovers at X-LOW / X-HIGH (X-HIGH ≥ 1.2·X-LOW at runtime; coefficients per block), the upward
     // ratio below threshold from BELOW, band output gains (dB) after each band's gain computer; the rest is Phase 1
+    // IMPL-SC §3.2: its v3 (the same kind-14 unit over the v3 rows: KEY EXT, the key HPF, LISTEN appended at 18–20) reads the
+    // extra rows only when the unit has them (R.n > N_CMP2); a v3 at KEY INT renders as the v2 it was (the key branch never
+    // entered). The HPF's minimum (n 0 = 20 Hz) is off; its states are cleared when it turns on (no stale state resumes)
     class Comp2 extends Comp {
-      constructor(fs) { super(fs); this.xlo = XO1; this.xhi = XO2; }
+      constructor(fs) {
+        super(fs); this.xlo = XO1; this.xhi = XO2; this.ks = new Float64Array(4); this.kc = new Float64Array(3); this.khz = 0;
+        this.ka = new Float64Array(BLK); this.kx = new Float64Array(BLK); this.ky = new Float64Array(BLK);
+      }
+      // IMPL-SC §3.2: the block's key — sc.kL / kR at the block's call offset sc.b (null = silence: no key, nothing to key) — through
+      // the key HPF when on (a TPT SVF high-pass per channel, hp = x − √2·v1 − v2) → kx / ky (LISTEN's output) and the detector's input
+      // ka = max(|kl|, |kr|). A pass of its own before Comp.run's loop (review 1 F2: that loop keeps its registers); per sample the
+      // arithmetic the loop did inline, bit for bit
+      keyIn(K, m) {
+        const kL = K.kL, kR = K.kR, kb = K.b, ka = this.ka, kx = this.kx, ky = this.ky;
+        if (this.hpOn === 1) {
+          const kc = this.kc, ks = this.ks, h1 = kc[0], h2 = kc[1], h3 = kc[2];
+          let s0 = ks[0], s1 = ks[1], s2 = ks[2], s3 = ks[3];
+          for (let j = 0; j < m; j++) {
+            let kl = 0, kr = 0;
+            if (kL !== null) { kl = kL[kb + j]; kr = kR[kb + j]; }
+            let v3 = kl - s1, v1 = h1 * s0 + h2 * v3, v2 = s1 + h2 * s0 + h3 * v3;
+            s0 = 2 * v1 - s0; s1 = 2 * v2 - s1; kl = kl - SQRT2 * v1 - v2;
+            v3 = kr - s3; v1 = h1 * s2 + h2 * v3; v2 = s3 + h2 * s2 + h3 * v3;
+            s2 = 2 * v1 - s2; s3 = 2 * v2 - s3; kr = kr - SQRT2 * v1 - v2;
+            kx[j] = kl; ky[j] = kr;
+            const al = kl < 0 ? -kl : kl, ar = kr < 0 ? -kr : kr;
+            ka[j] = al > ar ? al : ar;
+          }
+          ks[0] = s0; ks[1] = s1; ks[2] = s2; ks[3] = s3;
+          return;
+        }
+        if (kL === null) { for (let j = 0; j < m; j++) { kx[j] = 0; ky[j] = 0; ka[j] = 0; } return; }
+        for (let j = 0; j < m; j++) {
+          const kl = kL[kb + j], kr = kR[kb + j];
+          kx[j] = kl; ky[j] = kr;
+          const al = kl < 0 ? -kl : kl, ar = kr < 0 ? -kr : kr;
+          ka[j] = al > ar ? al : ar;
+        }
+      }
       upd(R) {
         super.upd(R);
-        const ev = R.ev, fs = this.fs;
+        const ev = R.ev, en = R.en, fs = this.fs;
         let lo = ev[12], hi = ev[13];
         if (hi < 1.2 * lo) hi = 1.2 * lo;
         if (lo !== this.xlo) { this.xlo = lo; svfC(lo, SQRT2, fs, this.xc, 0); }
@@ -1656,6 +1707,15 @@
         const rb = ev[14];
         this.slopeB = 1 - 1 / rb;
         this.bgL = exp(IDB * ev[15]); this.bgM = exp(IDB * ev[16]); this.bgH = exp(IDB * ev[17]);
+        if (R.n > N_CMP2) {
+          const ext = en[I_EXT] >= 0.5 ? 1 : 0, hp = ext === 1 && en[I_SCHP] > 0 ? 1 : 0;
+          if (hp === 1) {
+            if (this.hpOn === 0) this.ks.fill(0);
+            const f = ev[I_SCHP];
+            if (f !== this.khz) { this.khz = f; svfC(f, SQRT2, fs, this.kc, 0); }
+          }
+          this.ext = ext; this.hpOn = hp; this.lsn = ext === 1 && en[I_LSN] >= 0.5 ? 1 : 0;
+        } else if (this.ext === 1) { this.ext = 0; this.hpOn = 0; this.lsn = 0; }   // (a v3 → v2 downgrade in place)
       }
     }
 
@@ -1911,7 +1971,7 @@
     // FXTYPES of fx-core (§3.16.1) in S2 type-id order (FXP iType) and the v1 module (MOD_IDS index) of each type that has
     // an S1 variant (−1: none)
     const TYPES = Object.freeze(['dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'eq', 'fil', 'hyper', 'bode', 'conv', 'util',
-      'split2', 'split3', 'splitms']);
+      'split2', 'split3', 'splitms', 'duck']);
     const NTYPES = TYPES.length;
     const T_ = TYPES.reduce((o, t, i) => { o[t] = i; return o; }, {});
     const MOD_OF_TYPE = Int8Array.from(TYPES, (t) => MOD_IDS.indexOf(t));
@@ -1939,7 +1999,7 @@
     function s2Of(m, swap, extra) {
       return s1Rows(m).map((r) => (r[0] === 'on' ? [r[0], r[1], r[2], r[3], 1] : swap[r[0]] !== undefined ? swap[r[0]] : r)).concat(extra);
     }
-    const ROWS = TYPES.map(() => [null, null, null]);
+    const ROWS = TYPES.map(() => [null, null, null, null]);
     for (let t = 0; t < NTYPES; t++) if (MOD_OF_TYPE[t] >= 0) ROWS[t][1] = s1Rows(MOD_OF_TYPE[t]);
     ROWS[T_.dist][2] = s2Of(1, { mode: R2('mode', ENUM, 0, 17, 0) }, [BOOL2('kt', 0), R2('stages', INT, 1, 16, 3 / 15)]);
     ROWS[T_.phs][2] = s2Of(3, {}, [R2('poles', INT, 1, 18, 3 / 17), PCT2('depth2', 0)]);
@@ -1947,6 +2007,9 @@
     ROWS[T_.dly][2] = s2Of(5, {}, [BOOL2('hq', 1)]);
     ROWS[T_.cmp][2] = s2Of(6, {}, [R2('xlo', EXP, 20, 1000, 0.4751), R2('xhi', EXP, 500, 16000, 0.4644), R2('below', RATIO, 1, 32, 0),
       R2('gL', LIN, -24, 24, 0.5), R2('gM', LIN, -24, 24, 0.5), R2('gH', LIN, -24, 24, 0.5)]);
+    // (IMPL-SC §3) the Compressor's v3 = v2 + its sidechain key rows (KEY INT / EXT, the key's HPF — n 0 = off —, LISTEN)
+    ROWS[T_.cmp][3] = ROWS[T_.cmp][2].concat([BOOL2('ext', 0), R2('schp', EXP, 20, 2000, 0), BOOL2('listen', 0)]);
+    const N_CMP2 = ROWS[T_.cmp][2].length, I_EXT = N_CMP2, I_SCHP = N_CMP2 + 1, I_LSN = N_CMP2 + 2;   // (Comp2.upd: the v3 rows' positions)
     ROWS[T_.rev][2] = [ON2(), R2('type', ENUM, 0, 4, 0), PCT2('size', 0.5), R2('pre', POW3, 0, 2500, 0), BOOL2('prebpm', 0),
       LAD2('prelad'), PCT2('locut', 0), PCT2('hicut', 0.3), PCT2('damp', 0.5), PCT2('width', 1), PCT2('decay', 0.3),
       PCT2('spinr', 0.25), PCT2('spind', 0.2), PCT2('ersize', 0.5), PCT2('diffa', 0.7), PCT2('diffb', 0.5), PCT2('chr', 0.2),
@@ -1963,18 +2026,21 @@
     ROWS[T_.split2][2] = [ON2(), R2('freq', EXP, 30, 5800, 0.4374), LVL2()];
     ROWS[T_.split3][2] = [ON2(), R2('freq1', EXP, 30, 5800, 0.3604), R2('freq2', EXP, 30, 5800, 0.7978), LVL2()];
     ROWS[T_.splitms][2] = [ON2(), LVL2()];
+    // (IMPL-SC §4.1) the Ducker: DEPTH (its mix), LENGTH ms / synced (1/8), ATTACK, SMOOTH, the NOTE filter (0 Any), LEVEL
+    ROWS[T_.duck][2] = [ON2(), PCT2('depth', 1), R2('len', POW2, 10, 4000, 0.2453), BOOL2('bpm', 1), R2('lad', ENUM, 0, 11, 6 / 11),
+      R2('att', LIN, 0, 50, 0.02), R2('smooth', LIN, 0, 20, 0.1), R2('note', ENUM, 0, 128, 0), LVL2()];
     const LAW_NAMES = ['lin', 'int', 'enum', 'bool', 'exp', 'pow2', 'pow3', 'pow4', 'pow5', 'rpow3', 'ratio'];
     // exported view: TAB[type id][v] = frozen [{pid, law (laws.js name), lo, hi, def}]
     const TAB = Object.freeze(TYPES.reduce((o, t, i) => {
       const e = {};
-      for (const v of [1, 2]) {
+      for (const v of [1, 2, 3]) {
         if (ROWS[i][v]) e[v] = Object.freeze(ROWS[i][v].map((r) => Object.freeze({ pid: r[0], law: LAW_NAMES[r[1]], lo: r[2], hi: r[3], def: r[4] })));
       }
       o[t] = Object.freeze(e);
       return o;
     }, {}));
-    // mix kind by type: 0 the module produces its final output (EQ, Hyper additive, splitters), 1 sin² law, 2 linear
-    const MIXK_T = Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 1, 1, 2, 0, 0, 0]);
+    // mix kind by type: 0 the module produces its final output (EQ, Hyper additive, splitters, the Ducker), 1 sin² law, 2 linear
+    const MIXK_T = Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 1, 1, 2, 0, 0, 0, 0]);
     // FX-context globals (§4.2): [0] g.master (pow3, the v1 row 0) · [1] g.bypass (bool, v1 row 86) · [2] g.direct ·
     // [3] g.bus1v · [4] g.bus2v (pow2 0–4, n 0.5 = 0 dB); [5…7] unused
     const NG = 5, G_CONT = Uint8Array.from([1, 0, 1, 1, 1]), G_DEF = Float64Array.from([1, 0, 0.5, 0.5, 0.5]);
@@ -1983,9 +2049,10 @@
     const TAP_N = 1024;                                        // monitor tap length (setTap / tapOut; a power of two)
     const CAP_BYTES = 32 * 1024 * 1024;                        // §8.5 per-track FX memory cap (Convolve spectra excluded)
     // module kinds (Unit.k): 0–9 the S1 variants (= the v1 module index), 10 Distortion S2, 11 Phaser S2, 12 Chorus S2,
-    // 13 Delay S2, 14 Compressor S2, 15 Reverb S2, 16 EQ S2, 17 Filter S2, 18 Bode, 19 Convolve, 20 Utility, 21 splitters
+    // 13 Delay S2, 14 Compressor S2 (and its v3, the sidechain key: IMPL-SC §3), 15 Reverb S2, 16 EQ S2, 17 Filter S2, 18 Bode,
+    // 19 Convolve, 20 Utility, 21 splitters, 22 the Ducker (FXMods2.Duck, IMPL-SC §4)
     const K_S2 = { dist: 10, phs: 11, cho: 12, dly: 13, cmp: 14, rev: 15, eq: 16, fil: 17, bode: 18, conv: 19, util: 20, split2: 21,
-      split3: 21, splitms: 21 };
+      split3: 21, splitms: 21, duck: 22 };
     const K2 = Int8Array.from(TYPES, (t) => (K_S2[t] === undefined ? -1 : K_S2[t]));
     const POS_RETRIG_BODE = ROWS[T_.bode][2].findIndex((r) => r[0] === 'retrig');
 
@@ -2019,7 +2086,22 @@
         this.xsA = null; this.xsB = null;
         if (k === 1 || k === 10) { this.xsA = new Float32Array(NXS); this.xsB = new Float32Array(NXS); this.xsA.set(LINXS); this.xsB.set(LINXS); }
         this.cf = R.cf; this.dyL = R.dyL; this.dyR = R.dyR; this.dvL = R.dvL; this.dvR = R.dvR; this.wL = R.wL; this.wR = R.wR;
+        this.sc = R.sc; this.src = '';                         // IMPL-SC §1.2 / §5.2: the rack's sidechain context (by reference), the source track id (FXP iSrc)
       }
+    }
+    // IMPL-SC §3.1: a unit whose variant changed while its kind and type did not (the Compressor's v2 → v3: its key rows appended)
+    // grows in place — the per-row arrays re-made at the new length, the shared rows' state copied (the same pids, the same laws),
+    // the new rows at their defaults; the module and the enable state (st, xf, the mix gains) are kept: no reset, no fade
+    function growUnit(u, v, rows) {
+      const n = rows.length, m = u.n < n ? u.n : n;
+      const cp = (a, b) => { for (let p = 0; p < m; p++) b[p] = a[p]; return b; };
+      u.law = Uint8Array.from(rows, (r) => r[1]); u.lo = Float64Array.from(rows, (r) => r[2]);
+      u.hi = Float64Array.from(rows, (r) => r[3]); u.cont = Uint8Array.from(rows, (r) => isCont(r[1]));
+      u.tgt = cp(u.tgt, new Float64Array(n)); u.bs = cp(u.bs, new Float64Array(n)); u.md = cp(u.md, new Float64Array(n)); u.mdT = cp(u.mdT, new Float64Array(n));
+      u.eS = cp(u.eS, new Float64Array(n)); u.eD = cp(u.eD, new Float64Array(n)); u.en = cp(u.en, new Float64Array(n)); u.ev = cp(u.ev, new Float64Array(n));
+      for (let p = m; p < n; p++) { const d = rows[p][4]; u.tgt[p] = d; u.bs[p] = d; u.en[p] = d; u.ev[p] = lawU(u.law[p], u.lo[p], u.hi[p], d); }
+      u.v = v; u.n = n; u.mi = rows.findIndex((r) => r[0] === 'mix'); u.li = rows.findIndex((r) => r[0] === 'level'); u.dirty = 1;
+      return m;
     }
     // bytes of the typed arrays reachable from a module (set() only): modules with bytes() report themselves
     function modBytes(x, seen, depth) {
@@ -2081,6 +2163,28 @@
       };
     }
 
+    // FXP v2 of a Ducker and a v3 Compressor, both keyed from one source (IMPL-SC G7: the warm-up of the sidechain paths)
+    function scFxp() {
+      const W = [['duck', 2], ['cmp', 3]], nI = W.length, off = new Int32Array(nI), rowsOf = (w) => ROWS[T_[w[0]]][w[1]];
+      let NP = 0;
+      for (let i = 0; i < nI; i++) { off[i] = NP; NP += rowsOf(W[i]).length; }
+      const base = new Float64Array(8 + NP);
+      base[0] = 1; base[2] = 0.5; base[3] = 0.5; base[4] = 0.5;
+      for (let i = 0; i < nI; i++) { const rows = rowsOf(W[i]); for (let p = 0; p < rows.length; p++) base[8 + off[i] + p] = rows[p][4]; }
+      return {
+        fxp: {
+          ver: VER, NFX: 8 + NP, NP, key: 'wsc', base, nI,
+          iType: Uint8Array.from(W, (w) => T_[w[0]]), iVar: Uint8Array.from(W, (w) => w[1]), iRack: new Uint8Array(nI),
+          iBr: new Uint8Array(nI), iN: Uint8Array.from(W, (w) => rowsOf(w).length), iByp: new Uint8Array(nI),
+          iAlloc: new Uint8Array(nI).fill(1), iPar: new Int16Array(nI).fill(-1), iOff: off, iBB: new Uint8Array(3 * nI),
+          iPh: new Float64Array(nI), iId: ['wd', 'wc'], iRev: new Uint8Array(nI), iCho: new Uint8Array(nI), iIr: ['', ''],
+          rByp: new Uint8Array(3), rRoute: new Uint8Array(3), needs: [], filTypeAll: new Uint8Array(nI),
+          seed: 0, any: 1, bpm: 120, smooth: 1, silence: 1, convMax: 10, xsKey: '', iSrc: ['wsrc', 'wsrc'],
+        },
+        off,
+      };
+    }
+
     /* ------------------------------------------------------------ FXRack (§8.1; Phase-1 machinery per instance) */
     let warnedVer = false, warnedFxp = false;
     // A re-seed (fxp.seed, transport()) or a topology change (Plate ↔ Hall, S2 reverb type, S2 Delay HQ above 96 kHz)
@@ -2128,7 +2232,13 @@
         this.latency = 0;
         this.B = null; this.M2 = null;                         // SxBase / FXMods2, resolved in set() (§0.3 lazy references)
         this.nConv = 0;                                        // Convolve instances (polled once per process call)
+        this.nSC = 0;                                          // Duckers and v3 Compressors (IMPL-SC review 1 F1: scLive's early out)
         this.over = [];                                        // ids left unallocated (bypassed) by the 32 MB cap (§8.5)
+        // IMPL-SC §1.2: the sidechain context this rack owns (never replaced: every Unit copies the reference) — the host writes
+        // q (the quantum's first frame), F (the frame of the call's sample 0), reg (the scope's trigger registry, or null) and
+        // kL / kR (the track's key input, call-aligned Float64Array(128), or null) before each process call; the rack writes b
+        // (the block's offset in the call) per block. A unit's block sample j is frame F + b + j, its key sample kL[b + j]
+        this.sc = { q: 0, F: 0, b: 0, reg: null, kL: null, kR: null };
         this.snap();
       }
 
@@ -2158,7 +2268,10 @@
           this.M2 = globalThis.FXMods2 || null;
           this.graph(fxp);
         }
-        if (fxt && typeof fxt === 'object' && Array.isArray(fxt.xs)) this.setXS(fxt.xs);
+        if (fxt && typeof fxt === 'object') {
+          if (Array.isArray(fxt.xs)) this.setXS(fxt.xs);
+          if (Array.isArray(fxt.cv)) this.setCV(fxt.cv);
+        }
         const V = this.U;
         for (let i = 0; i < V.length; i++) V[i].dirty = 1;
         this.gdirty = 1;
@@ -2170,6 +2283,7 @@
       kindOf(t, v) {
         if (!(t >= 0 && t < NTYPES)) return -1;
         if (v === 1) return MOD_OF_TYPE[t];
+        if (v === 3) return t === T_.cmp && this.B !== null ? 14 : -1;   // (IMPL-SC §3.2) the Compressor's v3: the kind-14 unit over the v3 rows
         if (v !== 2 || this.B === null) return -1;
         const k = K2[t], M2 = this.M2;
         if (k < 18) return k;
@@ -2177,6 +2291,7 @@
         if (k === 18) return typeof M2.Bode === 'function' ? 18 : -1;
         if (k === 19) return typeof M2.Convolve === 'function' && typeof this.B.FFT === 'function' ? 19 : -1;
         if (k === 20) return typeof M2.Utility === 'function' ? 20 : -1;
+        if (k === 22) return typeof M2.Duck === 'function' ? 22 : -1;   // (IMPL-SC §4.2) the Ducker
         return typeof M2.XoverLH === 'function' && typeof M2.XoverLMH === 'function' && typeof M2.MS === 'function' ? 21 : -1;
       }
       newMod(u) {
@@ -2190,6 +2305,7 @@
           case 17: return new Filt2(fs);
           case 18: return new M2.Bode(fs); case 19: return new M2.Convolve(fs); case 20: return new M2.Utility(fs);
           case 21: return new SplitMod(fs, u.t, M2);
+          case 22: return new M2.Duck(fs);
           default: return null;
         }
       }
@@ -2219,16 +2335,18 @@
             pu = par < i ? at[par] : null;
             if (pu === null || pu.k !== 21 || k === 21) continue;
           }
-          let u = prev.get(id), fresh = false;
+          let u = prev.get(id), fresh = false, g0 = -1;
           if (u === undefined || u.k !== k || u.t !== t || u.keep === 1) {
             u = new Unit(this, id, t, v, k, rows);
             u.mod = this.newMod(u);
             fresh = true;
-          }
+          } else if (u.v !== v) g0 = growUnit(u, v, rows);   // (IMPL-SC §3.1) the same kind at another variant: grown in place, state kept
           u.keep = 1; u.gone = 0; u.idx = i; u.off = off;
           const r = P.iRack[i];
           u.rack = r === 1 || r === 2 ? r : 0;
           for (let p = 0; p < n; p++) { const x = +b[8 + off + p]; if (x === x) u.tgt[p] = clamp01(x); }
+          if (g0 >= 0) for (let p = g0; p < n; p++) u.bs[p] = u.tgt[p];   // (the grown rows start at their values: no glide from the defaults)
+          u.src = P.iSrc ? String(P.iSrc[i]) : '';           // IMPL-SC §5.2: the sidechain source (a track id; '' none — the side array exists only with a unit)
           u.byp = P.iByp[i] ? 1 : 0;
           const ph = +P.iPh[i];
           if (isNum(ph)) u.seedPh = frac(ph);
@@ -2236,7 +2354,7 @@
           u.choMono = P.iCho[i] ? 1 : 0;
           u.bpm = this.bpm; u.keyF = this.keyF;
           if (k === 19) { const s = P.iIr[i]; u.irId = typeof s === 'string' ? s : ''; u.convMax = P.convMax > 0 ? +P.convMax : 10; }
-          if (k >= 18 && k <= 20 && !u.mod.set(u)) { u.keep = 0; continue; }
+          if (((k >= 18 && k <= 20) || k === 22) && !u.mod.set(u)) { u.keep = 0; continue; }
           if (k === 21) {
             u.br = [[], [], []];
             if (u.bb === null) u.bb = new Uint8Array(3);
@@ -2284,7 +2402,7 @@
                 if (mem + u.mem > CAP_BYTES) {                 // over the cap: unallocated and bypassed (host notice)
                   u.need = u.mem;
                   u.mod = this.newMod(u);
-                  if (k >= 18 && k <= 20) u.mod.set(u);
+                  if ((k >= 18 && k <= 20) || k === 22) u.mod.set(u);
                   if (k === 21) for (let q = 0; q < 3; q++) u.mod.bx[q] = u.bb[q];
                   u.has = 0; u.mem = 0; u.over = 1;
                   this.over.push(u.id);
@@ -2316,9 +2434,9 @@
           if (u.fresh === 1 && this.fresh === 0) this.unitInit(u);
           u.fresh = 0;
         }
-        let nc = 0;
-        for (let i = 0; i < U.length; i++) if (U[i].k === 19) nc++;
-        this.nConv = nc;
+        let nc = 0, ns = 0;
+        for (let i = 0; i < U.length; i++) { const k = U[i].k; if (k === 19) nc++; else if (k === 22 || (k === 14 && U[i].v === 3)) ns++; }
+        this.nConv = nc; this.nSC = ns;
         const key = typeof P.key === 'string' ? P.key : '';
         if (key !== this.key || nI !== this.nI) this.grOut.fill(0);   // instance indices moved
         this.U = U; this.C0 = C[0]; this.C1 = C[1]; this.C2 = C[2]; this.byId = byId; this.gc = 0;
@@ -2398,6 +2516,15 @@
           for (let i = 0; i < NXS; i++) { const x = +a[i], y = +c[i]; A[i] = x === x ? x : i / 1024; B[i] = y === y ? y : i / 1024; }
         }
       }
+      setCV(cv) {                                              // FXT v2 (IMPL-SC §5.2): the Ducker curve tables per instance id (kind 22 only)
+        for (let j = 0; j < cv.length; j++) {
+          const e = cv[j];
+          if (!e || typeof e !== 'object') continue;
+          const u = this.byId.get(String(e.id));
+          if (u === undefined || u.k !== 22 || !okXS(e.tab)) continue;
+          u.mod.setTab(e.tab);
+        }
+      }
       allocMod(u) {
         if (u.has === 1) return;
         switch (u.k) {
@@ -2413,7 +2540,7 @@
           case 14: u.mod.alloc(); break;
           case 15: u.mod.alloc(this.revT(u)); break;
           case 17: u.mod.alloc(); if (!u.mod.sf) return; break;
-          case 18: case 19: case 20: u.mod.alloc(); if (u.mod.has !== 1) return; break;
+          case 18: case 19: case 20: case 22: u.mod.alloc(); if (u.mod.has !== 1) return; break;
           default: break;                                        // Distortion, Phaser, EQ, splitters own no lines
         }
         u.has = 1;
@@ -2573,6 +2700,19 @@
           if (t > tail) tail = t;
         }
         return this.quietT >= this.fs + tail;
+      }
+      // IMPL-SC review 1 F1: a live sidechain unit — a Ducker with a source, a v3 Compressor at KEY EXT — running or switched on. Its
+      // state follows the key, not this rack's input, so a host's idle skip still drives the rack on zeros (engine.js Track.scIdle);
+      // false at once without one (nSC, counted by graph())
+      scLive() {
+        if (this.nSC === 0) return false;
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], k = u.k;
+          if (k === 22 ? u.src === '' : k !== 14 || u.v !== 3 || (u.mod.ext === 0 && u.tgt[I_EXT] < 0.5)) continue;
+          if (u.st !== 0 || (u.tgt[0] >= 0.5 && u.byp === 0 && u.gone === 0 && u.has === 1)) return true;
+        }
+        return false;
       }
       // soft: audible tails fade out over 5 ms, then everything is cleared and the output fades back in; with nothing
       // audible the states are cleared at once and the parameters keep gliding. Hard (panic, restore): cleared and
@@ -2747,7 +2887,7 @@
           case 7: u.mod.snap(); break; case 11: u.mod.snap(); break; case 12: u.mod.snap(); break;
           case 13: u.mod.snap(); break; case 14: u.mod.snap(); break; case 15: u.mod.snap(); break;
           case 16: u.mod.snap(); break; case 18: u.mod.snap(); break; case 19: u.mod.snap(); break;
-          case 20: u.mod.snap(); break; case 21: u.mod.snap(); break;
+          case 20: u.mod.snap(); break; case 21: u.mod.snap(); break; case 22: u.mod.snap(); break;
           default: break;
         }
       }
@@ -2780,7 +2920,7 @@
           case 12: u.mod.flush(); break; case 13: u.mod.flush(); break; case 14: u.mod.flush(); break;
           case 15: u.mod.flush(); break; case 16: u.mod.flush(); break; case 18: u.mod.flush(); break;
           case 19: u.mod.flush(); break; case 20: u.mod.flush(); break; case 21: u.mod.flush(); break;
-          default: break;                                        // Hyper / Flanger / Filter: feed-forward or line-only state
+          default: break;                                        // Hyper / Flanger / Filter / Ducker: feed-forward or line-only state
         }
       }
       mixUpd(u) {
@@ -2858,8 +2998,10 @@
         if (z === 1 && b2L) for (let i = o, end = o + n; i < end; i++) if (b2L[i] !== 0 || (b2R && b2R[i] !== 0)) { z = 0; break; }
         this.inZero = z; this.qmax = 0;
         const bus = b1L || b2L || this.C1.length > 0 || this.C2.length > 0;
+        const sc = this.sc;
         for (let b = 0; b < n; b += BLK) {
           const m = n - b < BLK ? n - b : BLK, oo = o + b, t = (b + m) / n;
+          sc.b = oo;                                             // (IMPL-SC §1.2) this block's offset in the call: the sidechain units' frame / key index
           if (b === 0 || mvG === 1) this.paramsG(t);
           for (let i = 0; i < nu; i++) { const u = U[i]; if (b === 0 || u.mv === 1) this.params(u, t); }
           this.states();
@@ -3003,6 +3145,7 @@
           case 17: u.mod.run(u, L, R, o, m); break;
           case 18: u.mod.run(u, L, R, o, m); break;
           case 19: u.mod.run(u, L, R, o, m); break;
+          case 22: u.mod.run(u, L, R, o, m); break;
           default: u.mod.run(u, L, R, o, m); break;
         }
         if (u.mk !== 0) this.mix(u, L, R, o, m, dd === 1 ? this.dyL : inL, dd === 1 ? this.dyR : inR);
@@ -3186,7 +3329,7 @@
             if (u.gone === 1) this.gc = 1;
             if (u.k === 19 && u.has === 1 && u.mod.ready === 0) u.mod.release();   // a dropped IR: let go of its buffers
           }
-          if ((u.k === 6 || u.k === 14) && u.idx >= 0 && u.idx < MAXI) {
+          if ((u.k === 6 || u.k === 14 || u.k === 22) && u.idx >= 0 && u.idx < MAXI) {   // (22: the Ducker's reduction and playhead, IMPL-SC §4.2)
             const o = 4 * u.idx;
             if (u.st !== 0) u.mod.meter(gr, o); else if (gr[o] !== 0 || gr[o + 1] !== 0 || gr[o + 2] !== 0 || gr[o + 3] !== 0) { gr[o] = 0; gr[o + 1] = 0; gr[o + 2] = 0; gr[o + 3] = 0; }
           }
@@ -3262,6 +3405,31 @@
             t.trigger();
             t.process(L, R, 64);
           }
+          // IMPL-SC G7 (skeptic #28): the sidechain paths — a Ducker fed from a hand-filled ring (synced / ms, attack, smooth, the NOTE
+          // filter) and a v3 compressor keyed from a key buffer (KEY EXT, the HPF off / on, LISTEN, single band / multiband), on the
+          // temporary rack's own sc context
+          if (typeof globalThis.FXMods2.Duck === 'function') {
+            const W = scFxp(), P = W.fxp, B3 = P.base, o = W.off, at = (i, pid) => 8 + o[i] + ROWS[P.iType[i]][P.iVar[i]].findIndex((x) => x[0] === pid);
+            const ring = { q: -1, n: 2, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) }, s = t.sc;
+            const kL = new Float64Array(N), kR = new Float64Array(N), tab = new Float32Array(NXS);
+            for (let i = 0; i < NXS; i++) tab[i] = i / (NXS - 1);
+            s.reg = new Map([['wsrc', ring]]); s.kL = kL; s.kR = kR;
+            for (let c = 0; c < 4; c++) {
+              B3[at(0, 'bpm')] = c & 1; B3[at(0, 'att')] = 0.02 * (c & 1); B3[at(0, 'smooth')] = c < 2 ? 0 : 0.1; B3[at(0, 'note')] = c === 3 ? 37 / 128 : 0;
+              B3[at(1, 'ext')] = 1; B3[at(1, 'schp')] = c & 2 ? 0.4 : 0; B3[at(1, 'listen')] = c === 3 ? 1 : 0; B3[at(1, 'thr')] = 0.3; B3[at(1, 'mb')] = c === 2 ? 1 : 0;
+              P.key = 'wsc' + c;
+              t.set(P, c === 0 ? { xs: [], cv: [{ id: 'wd', tab }] } : null);
+              for (let q = 0; q < 6; q++) {
+                const F0 = 128 * q;
+                for (let i = 0; i < N; i++) { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; L[i] = ((r >>> 0) / 4294967296 - 0.5) * 0.8; R[i] = -0.5 * L[i]; kL[i] = 1.5 * L[(i + 37) & 127]; kR[i] = kL[i]; }
+                ring.f[0] = F0 + 5; ring.note[0] = 36; ring.vel[0] = 1; ring.f[1] = F0 + 70; ring.note[1] = 38; ring.vel[1] = 0.5; ring.q = F0;
+                s.q = F0; s.F = F0;
+                t.process(L, R, N);
+              }
+              t.gr();
+            }
+            s.reg = null; s.kL = null; s.kR = null;
+          }
         }
         t.transport(); t.reset();
         this.reset();
@@ -3293,6 +3461,7 @@
       for (const k of ['iType', 'iVar', 'iRack', 'iBr', 'iN', 'iByp', 'iAlloc', 'iPar', 'iOff', 'iPh', 'iId', 'iRev', 'iCho', 'iIr', 'filTypeAll']) {
         if (!isList(P[k], nI)) return false;
       }
+      if (P.iSrc !== undefined && !isList(P.iSrc, nI)) return false;   // (IMPL-SC §5.2: present only when a sidechain unit exists)
       return isList(P.iBB, 3 * nI) && isList(P.rByp, 3) && isList(P.rRoute, 3);
     }
 

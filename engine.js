@@ -1686,6 +1686,14 @@ const SXV = 32;                                                              // 
 // {t: 'bye'}; a sequencer delivers a tapped event to another track with PROCS.get(id).extNote(F + 128, on, n, vel).
 const PROCS = new Map();
 const EXT_N = 256;                                                           // MIDI OUT ring entries per target processor
+// IMPL-SC §2.1: the sidechain trigger registry of this scope — track id → ring { q, n, f, note, vel } of the track's note-ons this
+// quantum (f absolute frames, note & 127, the velocity; q the quantum's first frame its writer last stamped, −1 at birth; SC_N
+// entries kept, beyond dropped). A Track with a trackId owns one (scR) from its constructor (after the warm-up) to its {t: 'bye'}
+// (end(): only while the entry is still its own — a node rebuilt under the same id keeps its new ring). A reader (the Ducker, through
+// its rack's sc.reg) trusts a ring only once stamped for its own quantum (ring.q === sc.q): without the stamp every hit of that quantum
+// is dropped, never played a quantum late (§2.0). One registry per AudioWorkletGlobalScope: a bounce never sees the live rings
+const SCREG = new Map();
+const SC_N = 64;
 // every processor of this scope (until its {t: 'bye'}): an asset stored or dropped through any node is announced to every
 // rack (FXRack.assets(): Convolve adopts an IR that arrived after its patch and sizes its delay lines, §9.5)
 const ALL = new Set();
@@ -2459,7 +2467,12 @@ class Inst {
     const map = q !== null ? q.map : DS ? DS.DEF_MAP : null, s = map !== null ? map[n] : -1;
     if (!(s >= 0) || ((q !== null ? q.mute : 0) & (1 << s)) !== 0) return;
     dm.hit(s, Math.round(v * 127));
+    const pn = q !== null ? q.prim[s] : DS.DEF_PRIM[s]; // (IMPL-SC §2.1) the sidechain registry: the sound's primary note (a note 35 and a step both read the BD's 36), the played one when none
+    this.T.scOn(pn >= 0 ? pn : n, v);
   }
+  // IMPL-SC §2.1: DrSeq's per-lane hook (fire / hook, once per sounding lane with that lane's primary q) — a pattern step's sounds
+  // into the sidechain registry one by one (drStep's single lowest note keeps its RETRIG / ModCore meaning)
+  drNote(q, v) { this.T.scOn(q, v); }
   // §3.5: a drum {t: 'seq'} payload — the DrSeq's (kept in drPend until the kind is 'drums'), its sample slots the machine's.
   // 7b §1.5 (review #2): a payload names its machine (m; absent = the 808's) and may overtake its patch on a machine
   // switch: one for another machine than the patch's waits in drPend too (a payload for another machine than the waiting
@@ -2876,6 +2889,7 @@ class Inst {
     }
     if (this.rack) this.rack.trigger(); // Hyper RETRIG
     if (this.kind === 'drums') { this.drHit(n, v); return; } // (IMPL-7a §1.4: sus, bend, MPE stored and ignored)
+    this.T.scOn(n, v); // (IMPL-SC §2.1) the sidechain registry: every other kind's note-on (a drum's: drHit, by its sound's primary; a Serum's: sxNote)
     if (this.kind === 'patch') { if (this.pm !== null) this.pm.note(n, v, 1); return; } // (IMPL-9 §3.5: the controller's keys; a preview too; sus, bend, wheel, at read per chunk)
     if (!this.anyActive()) { this.smTargets(); this.smSnap(); } // nothing sounding: start at the panel values
     if (this.kind === 'divide') { if (a) this.audK[n] = 1; this.div.noteOn(n); return; } // (a key: up when both let go)
@@ -2930,6 +2944,7 @@ class Inst {
     const vs = this.voices, MC = gen ? this.T.mc : null;
     if (!on) { this.sxOff(n, vel, ch, a); if (MC !== null) MC.noteOff(n, this.genOn(null)); return; } // (a generated note's off: review E5)
     if (this.rack) this.rack.trigger();
+    this.T.scOn(n, vel); // (IMPL-SC §2.1) the sidechain registry: every note reaching the allocator (the keys, the arp / clips' generated notes), transposed
     if (!vs || !vs.length) return; // SerumDSP missing: a silent track
     if (this.sxW) { const SD = globalThis.SerumDSP; if (SD) SD.warmEnd(this); this.sxW = 0; } // real notes now
     const c = ch > 0 && ch <= 16 ? ch | 0 : 0;
@@ -3273,7 +3288,11 @@ class Inst {
     if (any) this.quietF = 0;
     else if (((this.quietF += n) > this.base * 2 || this.on === 0) && (!this.rack || this.rack.idle())) {
       this.act = 0;
-      if (this.kind === 'serum') { const SD = globalThis.SerumDSP; if (SD && this.sx) SD.idle(this, n); } // LFOs, clocks, smoothers keep time
+      if (this.kind === 'serum') { // LFOs, clocks, smoothers keep time; its own rack's sidechain units follow the key (IMPL-SC review 1 F1)
+        const SD = globalThis.SerumDSP, r = this.rack;
+        if (SD && this.sx) SD.idle(this, n);
+        if (r && r.nSC > 0 && r.scLive()) this.T.scIdle(r, n, null);
+      }
       else if (this.kind === 'drums' && this.dm !== null) this.dm.poll(this.T.spanF); // (7c review 1 F3: a 909's chip swaps convert while it waits)
       return 0;
     }
@@ -3431,6 +3450,7 @@ class Inst {
     }
     if (this.rack) {
       const tf = Date.now(); // (its share of the load: the FX module's CPU, §6.8 stats.per)
+      this.T.scRack(this.rack); // (IMPL-SC §1.2) a Serum's own FX: its sidechain context for this span
       if (b1 || b2) this.rack.process(Lb, Rb, n, dir ? dLb : undefined, dir ? dRb : undefined, b1 ? b1Lb : undefined, b1 ? b1Rb : undefined,
         b2 ? b2Lb : undefined, b2 ? b2Rb : undefined);
       else this.rack.process(Lb, Rb, n, dir ? dLb : undefined, dir ? dRb : undefined);
@@ -3544,6 +3564,11 @@ class Track extends Facade {
     this.lim = new Limiter(this.base);
     this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
     this.trackId = ''; this.procs = null;
+    // IMPL-SC §1.2 / §2.1: the sidechain — scR this track's ring in SCREG (null: no trackId, or ended), qF this quantum's first frame,
+    // inK this quantum's key input (inputs[0] when fed: the sources' summed audio over the key edges, else null), kL / kR the span's
+    // call-aligned copies of it (what the racks' sc.kL / kR point at); zL / zR the zeros a skipped span drives a sidechain rack on (scIdle)
+    this.scR = null; this.qF = 0; this.inK = null; this.kL = new Float64Array(128); this.kR = new Float64Array(128);
+    this.zL = new Float64Array(128); this.zR = new Float64Array(128);
     // the graph (§6.2, IMPL-1e §2.1). graphed: a {t: 'graph'} arrived (part ids are device ids from then on); simple: the
     // structure is the alias shape — one Inst into its panel, or one Serum into OUT — and renderSpan runs 1d's statements
     // (§6.3 in-place aliasing: today's operations in today's order); outSrc / outG / outN: the parts cabled into OUT; dyI /
@@ -3569,6 +3594,8 @@ class Track extends Facade {
     // farm) has no registry either: its sequencer's MIDI OUT events are dropped (§7.9 "has no target")
     this.trackId = typeof po.trackId === 'string' && po.trackId ? po.trackId : '';
     if (this.trackId) { PROCS.set(this.trackId, this); this.procs = PROCS; this.i0.procs = PROCS; }
+    // IMPL-SC §2.1: its sidechain ring (track nodes only, after the warm-up — the warm-up writes nothing)
+    if (this.trackId) { this.scR = { q: -1, n: 0, f: new Float64Array(SC_N), note: new Uint8Array(SC_N), vel: new Float32Array(SC_N) }; SCREG.set(this.trackId, this.scR); }
     ALL.add(this);
     // wavetables / sample assets of an offline render (bounce, resample): given to the first node of the context only,
     // the stores are shared by every processor of the global scope (§7.5; SPEC-serum2 §9.6)
@@ -3946,7 +3973,7 @@ class Track extends Facade {
     if (this.wI !== null) { this.legacy(this.wI, this.wC); this.wI = null; this.wC = null; }
     this.loadT = 0; this.statN = 0; this.c0.t = 0; this.c0.mon = false;
     this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
-    this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0;
+    this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0; this.qF = 0; this.inK = null;
     this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0);
     this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null; this.mcMon = false; this.c0.mcOn = 0;
     this.i0.restore(os);
@@ -4399,6 +4426,7 @@ class Track extends Facade {
   end() {
     if (this.ending === 1) return;
     if (this.trackId && PROCS.get(this.trackId) === this) PROCS.delete(this.trackId);
+    if (this.scR !== null) { if (SCREG.get(this.trackId) === this.scR) SCREG.delete(this.trackId); this.scR = null; } // (IMPL-SC §2.1: only while still its own)
     const I = this.insts;
     this.trackId = ''; this.procs = null;
     for (const x of I) x.procs = null;
@@ -4633,6 +4661,13 @@ class Track extends Facade {
     }
     const F0 = typeof currentFrame === 'number' ? currentFrame : this.frames;
     this.frames = F0 + n;
+    // IMPL-SC §1.2 / §2.1: the key input (the sources' summed audio over the key edges; [] / [[]] / none: unfed) and this quantum's
+    // registry stamp — the ring compacted to this quantum's entries (message-time note-ons for F0 stay), q = F0 before any event fires
+    const In = inputs ? inputs[0] : undefined;
+    this.inK = In !== undefined && In.length > 0 ? In : null;
+    this.qF = F0;
+    const ring = this.scR;
+    if (ring !== null) { this.scCompact(ring, F0); ring.q = F0; }
     const I = this.insts;
     let off = 0;
     this.inSpan = 1;
@@ -4667,15 +4702,72 @@ class Track extends Facade {
   // one span (§6.3). The alias shape (simple: the legacy structure, or one Inst into its panel / one Serum into OUT): the
   // Inst renders (a Serum through its own FX), the panel processes a classic Inst's output in place, then panicFade →
   // outStage — 1d's statements. The track skips the span — zero output, no panicFade, no output stage — when the Inst skips
-  // (§6.4: only once quiet for 2 s with its FX idle, so the DC block and limiter state freeze during silence)
+  // (§6.4: only once quiet for 2 s with its FX idle, so the DC block and limiter state freeze during silence; a panel holding a
+  // live sidechain unit still runs on zeros, scIdle — a Serum's own rack from its Inst's skip)
   renderSpan(Lo, Ro, off, n) {
+    if (this.inK !== null) this.scKey(off, n);
     if (this.simple !== 1) { this.spanG(Lo, Ro, off, n); return; }
     const I = this.i0;
     if (this.mc !== null) this.modPre(n);
-    if (I.renderSpan(n) === 0) { for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; } return; }
-    if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r); const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
+    if (I.renderSpan(n) === 0) {
+      for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; }
+      if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null && r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); }
+      return;
+    }
+    if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r); this.scRack(r); const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
     if (this.pnN) this.panicFade(n);
     this.outStage(Lo, Ro, off, n);
+  }
+  // IMPL-SC §1.2: this span's key — the node's input copied into kL / kR, call-aligned (index 0 = the span's first frame; a loop, no
+  // subarray: nothing allocated on the audio thread); In[1] falls back to In[0] (a mono input)
+  scKey(off, n) {
+    const In = this.inK, A = In[0], B = In.length > 1 ? In[1] : A, kL = this.kL, kR = this.kR;
+    for (let i = 0; i < n; i++) { kL[i] = A[off + i]; kR[i] = B[off + i]; }
+  }
+  // IMPL-SC §1.2: a rack's sidechain context before each of its process calls — this quantum's first frame, the call's first frame
+  // (the span's), the registry (a track node only: a preview / resample / render-farm node's units idle) and this span's key copies
+  // (null while unfed: a keyed compressor hears silence, a Ducker reads the registry alone)
+  scRack(r) {
+    const s = r.sc;
+    if (s === undefined) return;
+    s.q = this.qF; s.F = this.spanF; s.reg = this.scR !== null ? SCREG : null;
+    const k = this.inK !== null;
+    s.kL = k ? this.kL : null; s.kR = k ? this.kR : null;
+  }
+  // IMPL-SC review 1 F1: a skipped span (§6.4) of a rack holding a live sidechain unit (FXRack.scLive: a Ducker with a source, a
+  // keyed compressor) — the rack still runs, on zeros, so its dips and gain reduction follow every hit through the rest (a dip
+  // frozen at the skip would resume stale on the next note); its output is discarded, the span stays skipped (zero out, no output
+  // stage). The rack was idle: zeros keep every other unit idle. c: the panel (its ModCore context, as a rendered span's), null for
+  // a Serum's own rack (its FX mods stay as last set). Deterministic: live and the bounce skip and drive alike
+  scIdle(r, n, c) {
+    const zL = this.zL, zR = this.zR;
+    for (let i = 0; i < n; i++) { zL[i] = 0; zR[i] = 0; }
+    if (c !== null && (this.mc !== null || c.mcOn !== 0)) this.chainMods(c, r);
+    this.scRack(r);
+    r.process(zL, zR, n);
+  }
+  // IMPL-SC §2.1: the registry's writer — a note-on of this track (n, velocity v > 0) at frame F: a span event at the span's start,
+  // a message-time note (live keys, MIDI) at the next quantum's first frame (this.frames); appended to its ring (a full ring compacts
+  // to the entries still due first; beyond SC_N dropped)
+  scOn(n, v) {
+    const r = this.scR;
+    if (r === null || !(v > 0)) return;
+    const F = this.inSpan === 1 ? this.spanF : this.frames;
+    let k = r.n;
+    if (k >= SC_N) { k = this.scCompact(r, this.inSpan === 1 ? this.qF : this.frames); if (k >= SC_N) return; }
+    r.f[k] = F; r.note[k] = n & 127; r.vel[k] = v; r.n = k + 1;
+  }
+  // the ring's entries at frames ≥ F0 kept, in order (in place); → the count
+  scCompact(r, F0) {
+    const f = r.f, nt = r.note, vl = r.vel, n = r.n;
+    let w = 0;
+    for (let i = 0; i < n; i++) {
+      if (f[i] < F0) continue;
+      if (w !== i) { f[w] = f[i]; nt[w] = nt[i]; vl[w] = vl[i]; }
+      w++;
+    }
+    r.n = w;
+    return w;
   }
   // any other graph (IMPL-1e §2.2): every Inst (then the dying ones), every panel in render order (then the dying ones),
   // OUT = the single live source's own buffers at gain 1, else a copy-first sum; skipped when nothing feeding OUT is live
@@ -4723,7 +4815,7 @@ class Track extends Facade {
     for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } } // (removed sources: their fade / tail)
     for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } }
     if (nl === 0) {
-      if (r === null || r.idle()) { c.live = 0; return; }
+      if (r === null || r.idle()) { if (r !== null && r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); c.live = 0; return; } // (review 1 F1)
       c.Lb = c.oL; c.Rb = c.oR; c.oL.fill(0, 0, n); c.oR.fill(0, 0, n);
     } else if (nl === 1 && g1 === 1 && one.nOut === 1) { c.Lb = one.Lb; c.Rb = one.Rb; }
     else {
@@ -4741,6 +4833,7 @@ class Track extends Facade {
         if (b !== null) r.setNote(b.lastNote);
       }
       if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r);
+      this.scRack(r);
       const tf = Date.now(); r.process(c.Lb, c.Rb, n); c.t += Date.now() - tf;
     }
     c.live = 1;
@@ -5146,6 +5239,8 @@ class Master extends AudioWorkletProcessor {
       const L = c.oL, R = c.oR;
       if (Li === null) for (let j = 0; j < m; j++) { L[j] = 0; R[j] = 0; }
       else for (let j = 0; j < m; j++) { L[j] = Li[o + j]; R[j] = Ri[o + j]; }
+      const s = r.sc;                                                       // (IMPL-SC §4.4) the master's Ducker: every track's ring (MASTER runs after them all), no key input
+      if (s !== undefined) { s.q = F0; s.F = F0 + o; s.reg = SCREG; s.kL = null; s.kR = null; }
       const tf = Date.now();
       r.process(L, R, m);
       c.t += Date.now() - tf;

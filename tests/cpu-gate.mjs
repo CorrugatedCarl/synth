@@ -10,6 +10,7 @@
 // Without bench.json (or t_ref(calib) = 0) the row's raw time per second of audio is the load (uncalibrated).
 //   const g = await gateLoad(fn, 0.3);          // fn renders 1 s of audio → { load, raw, k, calib, attempt }
 //   const t = await stepTimes(run, { tries: 5 }) // per-step minimum over repeated deterministic runs, calibrated (ms)
+//   const r = gateRatio(fa, fb, 1.1);           // one row against another (IMPL-SC G7: sc-key ≤ 1.1 × cmp) → { ratio, ta, tb, attempt }
 import { readFileSync, existsSync } from 'node:fs';
 
 const BENCH_URL = new URL('./bench.json', import.meta.url);
@@ -66,6 +67,27 @@ export async function gateLoad(fn, target, { limit = 1.5, runs = 7, tries = 5 } 
       : { load: tb / 1000, raw: tb / 1000, k: 1, calib: 0, attempt };
     if (!best || r.load < best.load) best = r;
     if (best.load <= limit * target) break;
+  }
+  return best;
+}
+
+// A row's cost relative to another's (IMPL-SC G7, review 1 F2: sc-key ≤ 1.1 × cmp): `runs` back-to-back PAIRS (fa, fb) in alternating
+// order, the MEDIAN OF THE PER-PAIR RATIOS t(fb) / t(fa) — no calibration needed (both members share the machine's state); over
+// `limit` it is measured again, up to `tries` attempts, the best counting (as gateLoad). Each fn should take tens of ms (a ratio of
+// two 4 ms renders is mostly timer and GC noise). → { ratio, ta, tb (median ms), attempt }
+export function gateRatio(fa, fb, limit, { runs = 9, tries = 5 } = {}) {
+  fa(); fb();                                                // warm
+  let best = null;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const a = [], b = [], q = [];
+    for (let k = 0; k < runs; k++) {
+      let x, y;
+      if (k & 1) { y = time(fb); x = time(fa); } else { x = time(fa); y = time(fb); }
+      a.push(x); b.push(y); q.push(y / x);
+    }
+    const r = { ratio: median(q), ta: median(a), tb: median(b), attempt };
+    if (!best || r.ratio < best.ratio) best = r;
+    if (best.ratio <= limit) break;
   }
   return best;
 }

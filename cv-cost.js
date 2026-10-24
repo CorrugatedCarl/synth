@@ -111,6 +111,7 @@ export const COST = Object.freeze({
   fx: Object.freeze({
     dist: 0.0039, flg: 0.0018, phs: 0.0018, cho: 0.0024, dly: 0.0017, cmp: 0.0043, rev: 0.0075, eq: 0.0009, fil: 0.0021,
     hyper: 0.0015, bode: 0.003, conv: 0.026, util: 0.0003, split2: 0.0011, split3: 0.002, splitms: 0.0004,
+    duck: 0.0006, // (IMPL-SC §5.1: a gain multiply and a table read per sample ≈ 2 × Utility; G7 calibrates)
   }),
   rev: Object.freeze([0.008, 0.005, 0.006, 0.009, 0.007]),   // bench.json node k0–k4 (REV_TYPES2 order)
   // IMPL-9 §3.8: a patch family's modules by type — lane V9b's node column (§12: OS 4, a module's ctl + run alone; the 921

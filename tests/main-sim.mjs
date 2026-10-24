@@ -8,7 +8,9 @@
 //    default: the master 'synth-master') is a mixing point: the routes stop there, it is processed after every worklet
 //    feeding it in the quantum (creation order is not topological — the live master is made first) and gets
 //    [[Float32(Σ Float64 route contributions)]] — the one rounding the destination's sum makes — or [[]] when nothing
-//    feeds it; a route with no panner on it passes its signal as it is (× its gains),
+//    feeds it; a route with no panner on it passes its signal as it is (× its gains). (IMPL-SC §1.1) Every Track node has
+//    one input too — the sidechain key: src → kg (a GainNode, 0 or 1) → the keyed Track, processed after its source;
+//    disconnect(n) cuts one edge; sim.offOut records each worklet's own output in an offline render (sim.lastOffline.out),
 //  - storage: a fake localStorage and, optionally, the fake IndexedDB of tests/fakes.mjs (appstore `synth-app`);
 //    no Workers (the asset manager builds on the main thread), no BroadcastChannel,
 //  - controllable requestAnimationFrame (sim.raf() runs the queued callbacks) and unref'd timers (the test process exits),
@@ -132,10 +134,17 @@ class Param {
   linearRampToValueAtTime(v) { this.value = v; return this; } exponentialRampToValueAtTime(v) { this.value = v; return this; }
   cancelScheduledValues() { return this; }
 }
+// connect(n, output, input): one edge to n (a node has one output; a worklet one input — Web Audio's indices accepted, not modelled);
+// disconnect(): every edge; disconnect(n[, output, input]) (IMPL-SC §9.1): the edge to n alone — none there throws, as a browser's
+// InvalidAccessError (a caller cutting an edge its source's own disconnect() already cut must catch)
 class Node {
   constructor(ctx, kind) { this.context = ctx; this.kind = kind; this.outs = new Set(); }
   connect(n) { this.outs.add(n); return n; }
-  disconnect() { this.outs.clear(); }
+  disconnect(n) {
+    if (n === undefined) { this.outs.clear(); return; }
+    if (!this.outs.has(n)) { const e = new Error('disconnect: not connected to that node'); e.name = 'InvalidAccessError'; throw e; }
+    this.outs.delete(n);
+  }
 }
 class BaseContext {
   constructor(sr) {
@@ -194,17 +203,20 @@ function procOrder(list, routes) {
 }
 // one quantum of a context's worklets (creation-order list, its routes, processing order): each processed with its input
 // (none: []; a worklet with inputs: [[Float32 of its Float64 sum]] or [[]] unfed), its output mixed into the sums its
-// routes reach (acc: target → {L, R} Float64); out(n, L, R) sees every output (the live run's per-node record)
+// routes reach (acc: target → {L, R} Float64); out(n, L, R) sees every output (the live run's per-node record). A node whose
+// process() returned false is no longer an active source (it feeds nothing) and is not called again — unless a source still
+// feeds its input: Web Audio keeps processing it then (IMPL-SC §1.1, the drop loop's reason); n.runs counts its calls
 function quantum(order, routes, acc, bL, bR, out) {
   for (const a of acc.values()) { a.L.fill(0); a.R.fill(0); a.fed = false; }
   for (const n of order) for (const r of routes.get(n)) if (!n.ended && acc.has(r.to)) acc.get(r.to).fed = true;
   for (const n of order) {
-    if (n.ended) continue; // process() returned false: no longer an active source (Web Audio)
+    const a = n.nIn > 0 ? acc.get(n) : null;
+    if (n.ended && !(a && a.fed)) continue;
     let inp = [];
     if (n.nIn > 0) {
-      const a = acc.get(n);
       if (a && a.fed) { for (let i = 0; i < 128; i++) { a.iL[i] = a.L[i]; a.iR[i] = a.R[i]; } inp = [[a.iL, a.iR]]; } else inp = [[]];
     }
+    n.runs = (n.runs || 0) + 1;
     if (n.proc.process(inp, [[bL, bR]]) === false) n.ended = true;
     if (out) out(n, bL, bR);
     for (const r of routes.get(n)) { const a = acc.get(r.to); if (a) { if (r.pan === null) plainMix(bL, bR, r.g, a.L, a.R, 128); else panMix(bL, bR, r.pan, r.g, a.L, a.R, 128); } }
@@ -303,13 +315,19 @@ export async function bootMain(o = {}) {
       // (IMPL-M §4) the sums in Float64, each rounded once to Float32 where it is used: a mixing worklet's input, the
       // destination (an empty master copies its input: the destination's sum is today's, bit for bit)
       const routes = new Map(list.map(n => [n, paths(n)])), order = procOrder(list, routes), acc = sums(order, this.destination), D = acc.get(this.destination);
+      // (IMPL-SC G5) sim.offOut set: every worklet's own output recorded (the live run's per-node record, sim.run) → sim.lastOffline.out
+      const per = sim.offOut ? new Map(list.map(n => [n, { L: new Float32Array(N), R: new Float32Array(N) }])) : null;
+      let at = 0;
+      const rec = per ? (n, oL, oR) => { const o = per.get(n); o.L.set(oL, at); o.R.set(oR, at); } : null;
       for (let off = 0; off < N; off += 128) {
-        quantum(order, routes, acc, bL, bR, null);
+        at = off;
+        quantum(order, routes, acc, bL, bR, rec);
         for (let i = 0; i < 128; i++) { L[off + i] = D.L[i]; R[off + i] = D.R[i]; }
         S.ctx.currentFrame += 128; this.frames += 128;
       }
       const chs = [L.slice(0, this.length), R.slice(0, this.length)];
       sim.lastOffline = { ctx: this, scope: S, nodes: list, L: chs[0].slice(), R: chs[1].slice() };
+      if (per) sim.lastOffline.out = per;
       return { length: this.length, sampleRate: this.sampleRate, numberOfChannels: 2, getChannelData: c => chs[c], duration: this.length / this.sampleRate };
     }
   }

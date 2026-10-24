@@ -2431,3 +2431,245 @@ test('stage M review R1-1: a Bode with BLUR after a silent history renders bit-i
   }
   assert.deepEqual(bad, []);
 });
+
+/* ------------------------------------------------------------------ IMPL-SC (lane D): the sidechain at rack level — G2 the key, G3 the Ducker in the rack */
+// a rack driven as the Track drives it (IMPL-SC §1.2): per call of `span` frames at frame o, sc.q (the quantum's first frame) / sc.F
+// (the call's) written, the key copies as call-aligned views (kL / kR; null unfed), the ring of source SRC filled with this quantum's
+// hits [frame, note, vel] and stamped; b1L / b1R feed BUS 1. The rack's own sc object is used (what a Unit copied at construction)
+const SRC = 'trk_1';
+function runSC(r, L, R, { kL = null, kR = null, hits = [], span = 128, b1L, b1R } = {}) {
+  const ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) }, sc = r.sc;
+  sc.reg = new Map([[SRC, ring]]);
+  for (let o = 0; o < L.length; o += span) {
+    const m = Math.min(span, L.length - o), F0 = o - (o % 128);
+    let n = 0;
+    for (const h of hits) if (h[0] >= F0 && h[0] < F0 + 128) { ring.f[n] = h[0]; ring.note[n] = h[1] === undefined ? 36 : h[1]; ring.vel[n] = h[2] === undefined ? 1 : h[2]; n++; }
+    ring.n = n; ring.q = F0; sc.q = F0; sc.F = o;
+    sc.kL = kL ? kL.subarray(o, o + m) : null; sc.kR = kR ? kR.subarray(o, o + m) : kL ? sc.kL : null;
+    r.process(L.subarray(o, o + m), R.subarray(o, o + m), m, undefined, undefined, b1L && b1L.subarray(o, o + m), b1R && b1R.subarray(o, o + m));
+  }
+  sc.reg = null; sc.kL = null; sc.kR = null;
+}
+// a v3 compressor instance (values by pid, engine units), keyed from SRC; a Ducker instance (sub.cv the Classic shape)
+const cmp3 = (id, vals, v = 3) => { const p = { on: 1 }; for (const [k, x] of Object.entries(vals)) p[k] = nOf('cmp', k, x, v); return { id, type: 'cmp', v, p, sub: v === 3 ? { src: SRC } : {} }; };
+const duck2 = (id, vals) => { const p = { on: 1 }; for (const [k, x] of Object.entries(vals)) p[k] = nOf('duck', k, x); return { id, type: 'duck', v: 2, p, sub: { src: SRC, cv: C.DUCK_DEFAULT } }; };
+const DB20 = (x) => Math.pow(10, x / 20);
+const firstDiff = (a, b) => { for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return i; return -1; };
+// a "kick" key: a 60 Hz burst decaying over 30 ms every `every` frames, amplitude a
+function kicks(n, every, a = 0.9) { const k = new Float64Array(n); for (let i = 0; i < n; i++) { const t = (i % every) / FS; k[i] = a * Math.exp(-t / 0.03) * Math.sin(2 * Math.PI * 60 * t); } return k; }
+
+test('IMPL-SC G2 Compressor v3 KEY EXT: GR from the key (−6 dBFS key, thr −20 dB, ratio 4 → 10.48 dB), kick dips ≥ 6 dB and < 0.1 dB between, LISTEN = the key, kL null → no GR, MULTIBAND ignores the key', () => {
+  const N = FS / 2, x = noise(N, 31, 0.25), y = noise(N, 32, 0.25);
+  // the stated case: a steady −6.02 dBFS key (0.5), thr −20 dB, ratio 4 → (20 − 6.02) · (1 − 1/4) = 10.48 dB
+  {
+    const st = s2([[cmp3('c', { thr: DB20(-20), ratio: 4, att: 1, rel: 100, ext: 1 })], [], []]), r = rack2(st), L = x.slice(), R = y.slice();
+    runSC(r, L, R, { kL: new Float64Array(N).fill(0.5) });
+    assert.ok(Math.abs(r.gr()[0] - 10.4845) < 0.05, 'GR ' + r.gr()[0]);
+    assert.ok(Math.abs(dB(rms(L, N / 2) / rms(x, N / 2)) + 10.48) < 0.3, 'the audio is reduced by it: ' + dB(rms(L, N / 2) / rms(x, N / 2)));
+  }
+  // a kick every 0.25 s keys a steady −12 dBFS tone: the GR dips at the hits and is back at 0 before the next
+  {
+    const every = 94 * 128, n = 8 * every, key = kicks(n, every), tone = sine(n, 440, 0.25);   // (a hit every 0.2507 s: whole quanta)
+    const st = s2([[cmp3('c', { thr: DB20(-20), ratio: 8, att: 1, rel: 30, ext: 1 })], [], []]), r = rack2(st), L = tone.slice(), R = tone.slice();
+    const at = [], ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) };
+    r.sc.reg = new Map([[SRC, ring]]);
+    for (let o = 0; o < n; o += 128) {
+      r.sc.q = o; r.sc.F = o; r.sc.kL = key.subarray(o, o + 128); r.sc.kR = r.sc.kL; ring.q = o;
+      r.process(L.subarray(o, o + 128), R.subarray(o, o + 128), 128);
+      at.push(r.gr()[0]);
+    }
+    for (let k = 1; k < 8; k++) {
+      const q = (k * every) / 128;
+      assert.ok(at[q] >= 6, `hit ${k}: GR ${at[q]} dB`);
+      assert.ok(at[q - 1] < 0.1, `before hit ${k}: GR ${at[q - 1]} dB`);
+    }
+  }
+  // LISTEN: the output is the (unfiltered) key × makeup (0 dB): bit for bit the key; the dry (MIX) unchanged
+  {
+    const key = noise(N, 33, 0.7), st = s2([[cmp3('c', { thr: DB20(-30), ratio: 10, ext: 1, listen: 1 })], [], []]), r = rack2(st), L = x.slice(), R = y.slice();
+    runSC(r, L, R, { kL: key, kR: key });
+    assert.ok(sameBits(L, key) && sameBits(R, key), 'LISTEN: the key out');
+    const u = r.byId.get('c');
+    assert.deepEqual([u.v, u.n, u.k, u.src, u.mod.ext, u.mod.lsn, u.mod.hpOn], [3, 21, 14, SRC, 1, 1, 0]);
+  }
+  // no key connected (kL null) with KEY EXT: silence is keyed — no GR, the audio passes (× makeup 1) bit for bit
+  {
+    const st = s2([[cmp3('c', { thr: DB20(-40), ratio: 20, ext: 1 })], [], []]), r = rack2(st), L = x.slice(), R = y.slice();
+    runSC(r, L, R, {});
+    assert.ok(sameBits(L, x) && sameBits(R, y) && r.gr()[0] === 0, 'kL null → no key → no GR');
+  }
+  // MULTIBAND: the bands read the audio; a keyed v3 ≡ the v2 bit for bit even with a loud key
+  {
+    const p = { thr: DB20(-24), ratio: 6, att: 2, rel: 80, mb: 1 }, key = noise(N, 34, 0.9);
+    const a = rack2(s2([[cmp3('c', p, 2)], [], []])), b = rack2(s2([[cmp3('c', Object.assign({ ext: 1, schp: 300 }, p))], [], []]));
+    const L1 = x.slice(), R1 = y.slice(), L2 = x.slice(), R2 = y.slice();
+    runSC(a, L1, R1, { kL: key }); runSC(b, L2, R2, { kL: key });
+    assert.ok(sameBits(L1, L2) && sameBits(R1, R2), 'MULTIBAND ignores the key');
+    assert.ok(a.gr()[1] !== 0 || a.gr()[2] !== 0 || a.gr()[3] !== 0, 'the bands worked');
+  }
+});
+
+test('IMPL-SC review 1 F3: LISTEN follows the key\'s reach — in MULTIBAND (the key ignored) a keyed v3 with LISTEN on ≡ the v2 bit for bit (the bands, not the key); back in single band the same unit outputs the key', () => {
+  const N = FS / 2, x = noise(N, 31, 0.25), y = noise(N, 32, 0.25), key = noise(N, 34, 0.9);
+  const p = { thr: DB20(-24), ratio: 6, att: 2, rel: 80, mb: 1 };
+  const a = rack2(s2([[cmp3('c', p, 2)], [], []])), b = rack2(s2([[cmp3('c', Object.assign({ ext: 1, listen: 1 }, p))], [], []]));
+  const L1 = x.slice(), R1 = y.slice(), L2 = x.slice(), R2 = y.slice();
+  runSC(a, L1, R1, { kL: key }); runSC(b, L2, R2, { kL: key });
+  const u = b.byId.get('c');
+  assert.deepEqual([u.mod.ext, u.mod.lsn, u.mod.mode], [1, 1, 2], 'a keyed v3 with LISTEN on, in MULTIBAND');
+  assert.ok(sameBits(L1, L2) && sameBits(R1, R2), 'MULTIBAND with LISTEN on: the bands (≡ the v2), not the key');
+  // the same instance in single band: LISTEN outputs the key
+  const st = s2([[cmp3('c', Object.assign({ ext: 1, listen: 1 }, p, { mb: 0 }))], [], []]);
+  b.set(C.compileFx(st, { rate: FS }), C.compileFxT(st));
+  const L3 = x.slice(), R3 = y.slice();
+  runSC(b, L3, R3, { kL: key, kR: key });
+  assert.ok(sameBits(L3.subarray(N / 2), key.subarray(N / 2)) && sameBits(R3.subarray(N / 2), key.subarray(N / 2)), 'single band: LISTEN = the key (after the mode crossfade)');
+});
+
+// IMPL-SC G7 (review 1 F2): the sidechain bench rows gated as §14.1 node rows (tests/cpu-gate.mjs) — the rows themselves are
+// tests/bench-scenarios.mjs's (the FXRack alone on the bench noise, the sc context written per quantum as the Track does)
+test('IMPL-SC G7 (node gates): the bench rows cmp / sc-duck / sc-key ≤ 1.5 × their tests/bench.json node targets (calibrated pairs, retries); sc-key ≤ 1.1 × cmp (alternating pairs of 10 s renders, the median per-pair ratio, retries)', async (t) => {
+  const { scenarios, stepper } = await import('./bench-scenarios.mjs');
+  const S = dspScope({ fast: true }), env = { FXDSP: S.global('FXDSP'), SxBase: S.global('SxBase') }, sec = {};
+  for (const id of ['cmp', 'sc-duck', 'sc-key']) {
+    const scn = scenarios().find((s) => s.id === id), X = stepper(scn, env), target = CPU.BENCH.targets[id].node;
+    assert.ok(target === scn.node && target > 0, id + ': bench.json\'s target is the row\'s');
+    X.step(FS / 4);
+    assert.ok(X.peak() > 1e-4, id + ': audible');
+    sec[id] = () => X.step(FS);
+    const best = await CPU.gateLoad(sec[id], target);
+    t.diagnostic(`${id}: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt}; target ${target})`);
+    assert.ok(best.load <= 1.5 * target, `${id}: ${best.load.toFixed(5)} (raw ${best.raw.toFixed(5)}) > 1.5 × ${target}`);
+  }
+  const ten = (f) => () => { for (let k = 0; k < 10; k++) f(); };
+  const r = CPU.gateRatio(ten(sec.cmp), ten(sec['sc-key']), 1.1);
+  t.diagnostic(`sc-key / cmp ${r.ratio.toFixed(3)} (10 s: cmp ${r.ta.toFixed(1)} ms, sc-key ${r.tb.toFixed(1)} ms; attempt ${r.attempt})`);
+  assert.ok(r.ratio <= 1.1, `sc-key / cmp ${r.ratio.toFixed(3)} > 1.1`);
+});
+
+test('IMPL-SC G2 Compressor v3 at KEY INT ≡ the same v2 bit for bit (100 random programs, with and without a key present); KEY HPF at its minimum = no filter (the GR of the v2 fed the key); 200 Hz: a 50 Hz key compresses > 12 dB less than 1 kHz', () => {
+  const N = FS / 4, x = noise(N, 41, 0.6), y = noise(N, 42, 0.6), key = noise(N, 43, 0.8), g = rng(77);
+  const V2 = C.FXP_TAB.cmp[2].filter((r) => r.pid !== 'on').map((r) => r.pid);
+  for (let s = 0; s < 100; s++) {
+    const p = { on: 1 };
+    for (const pid of V2) p[pid] = pid === 'mb' ? (g() < 0.3 ? 1 : 0) : g();
+    const a = { id: 'c', type: 'cmp', v: 2, p: Object.assign({}, p), sub: {} };
+    const b = { id: 'c', type: 'cmp', v: 3, p: Object.assign({}, p, { ext: 0, schp: g(), listen: g() < 0.5 ? 1 : 0 }), sub: { src: SRC } };
+    const A = rack2(s2([[a], [], []])), B = rack2(s2([[b], [], []])), L1 = x.slice(), R1 = y.slice(), L2 = x.slice(), R2 = y.slice();
+    const o = s & 1 ? { kL: key, kR: key } : {};
+    runSC(A, L1, R1, o); runSC(B, L2, R2, o);
+    assert.ok(sameBits(L1, L2) && sameBits(R1, R2), 'program ' + s + ': v3 at KEY INT ≡ v2');
+    assert.ok(B.byId.get('c').mod.ext === 0 && B.byId.get('c').mod.lsn === 0, 'INT: the key path off');
+  }
+  // the key HPF at its minimum is off: the keyed v3's GR per call equals, bit for bit, the GR of a v2 fed the key as its audio
+  {
+    const p = { thr: DB20(-24), ratio: 6, att: 2, rel: 80 }, grA = [], grB = [];
+    const A = rack2(s2([[cmp3('c', p, 2)], [], []])), B = rack2(s2([[cmp3('c', Object.assign({ ext: 1, schp: 20 }, p))], [], []]));
+    const kl = key.slice(), kr = key.slice(), L = x.slice(), R = y.slice();
+    const ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) };
+    B.sc.reg = new Map([[SRC, ring]]);
+    for (let o = 0; o < N; o += 128) {
+      A.process(kl.subarray(o, o + 128), kr.subarray(o, o + 128), 128); grA.push(A.gr()[0]);
+      B.sc.q = o; B.sc.F = o; B.sc.kL = key.subarray(o, o + 128); B.sc.kR = B.sc.kL; ring.q = o;
+      B.process(L.subarray(o, o + 128), R.subarray(o, o + 128), 128); grB.push(B.gr()[0]);
+    }
+    assert.ok(grA.some((v) => v > 3), 'it compresses');
+    assert.deepEqual(grB, grA, 'the detector reads the key: the same GR, call by call');
+    assert.equal(B.byId.get('c').mod.hpOn, 0, 'HPF at 20 Hz = off');
+  }
+  // the key HPF at 200 Hz: a 50 Hz key (2 octaves below, 2 poles: ≈ −24 dB) compresses far less than a 1 kHz key of the same level
+  {
+    const GR = (f) => {
+      const st = s2([[cmp3('c', { thr: DB20(-30), ratio: 20, att: 1, rel: 300, ext: 1, schp: 200 })], [], []]), r = rack2(st), L = x.slice(), R = y.slice(), k = sine(N, f, 0.9);
+      runSC(r, L, R, { kL: k, kR: k });
+      assert.equal(r.byId.get('c').mod.hpOn, 1);
+      return r.gr()[0];
+    };
+    const lo = GR(50), hi = GR(1000);
+    assert.ok(hi - lo > 12, `GR at 1 kHz ${hi} dB, at 50 Hz ${lo} dB`);
+  }
+});
+
+test('IMPL-SC G2 (skeptic #3): a running v2 compressor upgraded in place to v3 keeps its Unit, module and state (no reset, no fade) and keys from the next call; a bounce (fresh units) keys identically', () => {
+  const N = 40 * 128, x = noise(N, 51, 0.1), y = noise(N, 52, 0.1), key = noise(N, 53, 0.9);
+  const p = { thr: DB20(-12), ratio: 8, att: 1, rel: 60 };                            // (the −20 dBFS audio stays under the threshold: INT never compresses it)
+  const v2 = s2([[cmp3('c', p, 2)], [], []]), v3 = s2([[cmp3('c', Object.assign({ ext: 1 }, p))], [], []]);
+  const r = rack2(v2), ref = rack2(v2), L = x.slice(), R = y.slice(), L0 = x.slice(), R0 = y.slice(), h = N / 2;
+  runSC(r, L.subarray(0, h), R.subarray(0, h), { kL: key.subarray(0, h) }); runSC(ref, L0.subarray(0, h), R0.subarray(0, h), {});
+  const u = r.byId.get('c'), mod = u.mod, w = mod.w, tc = mod.tc;
+  assert.deepEqual([u.v, u.n, u.st, u.xf, r.gr()[0] < 0.01], [2, 18, 1, 1, true], 'a v2 at rest on quiet audio');
+  r.set(C.compileFx(v3, { rate: FS, buses: 1 }), C.compileFxT(v3));                    // the from ▾ edit: {t: 'chain'} on the same node
+  const u2 = r.byId.get('c');
+  assert.ok(u2 === u && u2.mod === mod, 'the same Unit and module (grown in place)');
+  assert.deepEqual([u.v, u.n, u.k, u.src, u.st, u.xf, u.tgt.length, u.ev.length, mod.w, mod.tc], [3, 21, 14, SRC, 1, 1, 21, 21, w, tc], 'v3, 21 rows, enabled without a fade, the module\'s state carried over');
+  runSC(r, L.subarray(h), R.subarray(h), { kL: key.subarray(h) }); runSC(ref, L0.subarray(h), R0.subarray(h), {});
+  assert.ok(sameBits(L.subarray(0, h), L0.subarray(0, h)) && sameBits(R.subarray(0, h), R0.subarray(0, h)), 'before the upgrade ≡ the v2 reference');
+  assert.ok(r.gr()[0] > 6 && ref.gr()[0] < 0.01, `after it the GR follows the key (${r.gr()[0]} dB; the v2 ${ref.gr()[0]})`);
+  assert.ok(!sameBits(L.subarray(h), L0.subarray(h)), 'the audio is keyed');
+  // the bounce: a fresh rack set to the v3 state keys the same audio identically from the upgrade's call on (a fresh v3 unit vs the
+  // grown one: the compressor's state before the key was that of quiet audio at rest — the same as fresh)
+  const fresh = rack2(v3), L2 = x.slice(), R2 = y.slice();
+  runSC(fresh, L2.subarray(0, h), R2.subarray(0, h), {}); runSC(fresh, L2.subarray(h), R2.subarray(h), { kL: key.subarray(h) });
+  assert.ok(Math.abs(fresh.gr()[0] - r.gr()[0]) < 1e-6, 'the fresh v3 and the grown one agree on the GR');
+  // and a v3 downgraded to v2 in place (the key switched off by a preset) returns to the v2 arithmetic
+  r.set(C.compileFx(v2, { rate: FS, buses: 1 }), C.compileFxT(v2));
+  runSC(r, L.subarray(0, 128), R.subarray(0, 128), { kL: key.subarray(0, 128) });                // (upd runs at the next block)
+  assert.deepEqual([r.byId.get('c') === u, u.mod === mod, u.v, u.n, mod.ext, mod.lsn, mod.hpOn], [true, true, 2, 18, 0, 0, 0]);
+});
+
+test('IMPL-SC G2 / G3 (skeptic #5): a keyed compressor and a Ducker in a splitter branch and on BUS 1 read the key / the frame at the block\'s call offset — a key impulse at call sample 40 moves the output at 40, at 56 at 56', () => {
+  const N = 8 * 128, x = noise(N, 61, 0.3), y = noise(N, 62, 0.3), at = 3 * 128;
+  const cmpP = { thr: DB20(-40), ratio: 20, att: 0.1, rel: 50, ext: 1 }, duckP = { depth: 1, att: 0, smooth: 0, bpm: 0, len: 50 };
+  const branch = (I) => s2([[{ id: 's', type: 'split2', v: 2, p: { on: 1 }, br: [[I], []], bb: [0, 0] }], [], []]);
+  const bus = (I) => s2([[], [I], []]);
+  for (const [where, mk] of [['branch', branch], ['BUS 1', bus]]) {
+    for (const off of [40, 56]) {
+      // the compressor: the key silent but for a burst from call sample `off` of call 3
+      const keyA = new Float64Array(N);
+      for (let i = at + off; i < at + 128; i++) keyA[i] = 0.9;
+      const A = rack2(mk(cmp3('c', cmpP))), B = rack2(mk(cmp3('c', cmpP)));
+      const main = where === 'BUS 1' ? new Float64Array(N) : x, mainR = where === 'BUS 1' ? new Float64Array(N) : y;
+      const LA = main.slice(), RA = mainR.slice(), LB = main.slice(), RB = mainR.slice();
+      const bo = where === 'BUS 1' ? { b1L: x, b1R: y } : {};
+      runSC(A, LA, RA, Object.assign({ kL: keyA }, bo)); runSC(B, LB, RB, Object.assign({ kL: new Float64Array(N) }, bo));
+      assert.equal(firstDiff(LA, LB), at + off, `${where}: the compressor's GR moves at the key's sample ${off}`);
+      assert.ok(peak(LB) > 0.05 && A.gr()[where === 'branch' ? 4 : 0] > 10, where + ': audio through, keyed');
+      // the Ducker: a hit at frame `at + off`
+      const D1 = rack2(mk(duck2('d', duckP))), D2 = rack2(mk(duck2('d', duckP)));
+      const L1 = main.slice(), R1 = mainR.slice(), L2 = main.slice(), R2 = mainR.slice();
+      runSC(D1, L1, R1, Object.assign({ hits: [[at + off]] }, bo)); runSC(D2, L2, R2, bo);
+      assert.equal(firstDiff(L1, L2), at + off, `${where}: the Ducker dips at its frame ${off}`);
+      assert.ok(peak(L2) > 0.05, where + ': audio through');
+    }
+  }
+});
+
+test('IMPL-SC G3 the Ducker in a rack: the curve from the FXT (cv) — identity until it arrives, then the dip; its gr slots [reduction, position] and the rack\'s post() clearing; kind 22 of the rack', () => {
+  const N = 16 * 128, x = noise(N, 71, 0.5), y = noise(N, 72, 0.5), hit = 5 * 128 + 17;
+  const st = s2([[duck2('d', { depth: 1, att: 0, smooth: 0, bpm: 0, len: 20 })], [], []]), P = C.compileFx(st, { rate: FS, buses: 1 }), T = C.compileFxT(st);
+  assert.deepEqual([P.iSrc, T.cv.length, T.cv[0].id, T.cv[0].tab.length], [[SRC], 1, 'd', 1025]);
+  const r = rack2(st, { fxt: null }), u = r.byId.get('d');
+  assert.deepEqual([u.k, u.v, u.n, u.src, u.mk, typeof u.mod.setTab], [22, 2, 9, SRC, 0, 'function']);
+  const L = x.slice(), R = y.slice();
+  runSC(r, L, R, { hits: [[hit]] });
+  assert.ok(sameBits(L, x) && sameBits(R, y), 'no table yet: the input passes');
+  r.set(P, T);
+  const L2 = x.slice(), R2 = y.slice(), seen = [];
+  const ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) };
+  r.sc.reg = new Map([[SRC, ring]]);
+  for (let o = 0; o < N; o += 128) {
+    ring.n = hit >= o && hit < o + 128 ? 1 : 0; ring.f[0] = hit; ring.note[0] = 36; ring.vel[0] = 1; ring.q = o; r.sc.q = o; r.sc.F = o;
+    r.process(L2.subarray(o, o + 128), R2.subarray(o, o + 128), 128);
+    seen.push([r.gr()[0], r.gr()[1]]);
+  }
+  assert.equal(firstDiff(L2, x), hit, 'the dip starts at the hit');
+  assert.ok(L2[hit] === 0 && R2[hit] === 0, 'depth 1: silence at the hit (the Classic curve starts at 0)');
+  assert.ok(seen[5][0] > 0 && seen[5][1] > 0 && seen[5][1] < 1, 'gr: reduction and position mid-dip ' + seen[5]);
+  assert.deepEqual(seen[4], [0, -1], 'idle before the hit: 0 dB, playhead −1');
+  assert.ok(seen[15][0] === 0 && seen[15][1] === -1 && L2[N - 1] === x[N - 1], 'recovered: idle slots, the input again');
+  // a disabled Ducker: its slots cleared by post()
+  const off = s2([[duck2('d', { depth: 1, on: 0 })], [], []]);
+  r.set(C.compileFx(off, { rate: FS, buses: 1 }), C.compileFxT(off));
+  for (let q = 0; q < 4; q++) r.process(L2.subarray(0, 128), R2.subarray(0, 128), 128);   // (its 5 ms fade-out, then st 0: the slots cleared)
+  assert.deepEqual([r.gr()[0], r.gr()[1]], [0, 0]);
+});

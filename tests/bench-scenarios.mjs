@@ -202,6 +202,20 @@ function fxScn(make) {
   const fxp = core.compileFx(fx, { bpm: 120, rate: SR }), fxt = core.compileFxT(fx);
   return Object.assign({ fx, fxp, fxt }, extra);
 }
+// IMPL-SC G7: the rack's sidechain context per quantum q as the Track writes it (IMPL-SC §1.2) — a registry with one ring for `src`
+// holding a hit at sample 5 of every `every`-th quantum (0: no hits), stamped for the quantum; `key`: a noise key buffer (kL / kR)
+function scCtx(src, every, key) {
+  const ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) }, reg = new Map([[src, ring]]);
+  const r = W.mulberry32(W.fnv1a32('bench-key')), kn = Float64Array.from({ length: 4096 }, () => 0.9 * (2 * r() - 1));
+  const kL = new Float64Array(128), kR = new Float64Array(128);
+  return (rack, q) => {
+    const s = rack.sc, F0 = 128 * q;
+    if (!s) return;
+    s.q = F0; s.F = F0; s.reg = reg; ring.q = F0;
+    if (every > 0 && q % every === 0) { ring.n = 1; ring.f[0] = F0 + 5; ring.note[0] = 36; ring.vel[0] = 1; } else ring.n = 0;
+    if (key) { const o = (q * 128) & 4095; for (let i = 0; i < 128; i++) { kL[i] = kn[(o + i) & 4095]; kR[i] = kn[(o + 1024 + i) & 4095]; } s.kL = kL; s.kR = kR; }
+  };
+}
 // rows mk / ms (IMPL-2b §8, lane A2: the classic adapter): an 8-voice Juno-60 (its default patch at poly 8) with the cable
 // installed by `prep` on the live processor — the Track's call site of Inst.modSpan is stubbed on the Inst (ModCore is
 // lane A1's) — minus the same row without (`base`). mk: one cutoff cable, a ±2-octave LFO at 2 Hz (smMv on every span:
@@ -521,6 +535,20 @@ export function scenarios() {
         const sp = fxInst(fx, 'split3', {});
         for (let b = 0; b < 3; b++) fxInst(fx, 'eq', {}, { splitter: sp.id, branch: b });
       }) },
+    // IMPL-SC G7 (lane D): the sidechain rows — cmp a v2 compressor on noise (the reference), sc-duck one Ducker triggered every
+    // 0.25 s from a hand-filled ring (the registry read per block + the dip), sc-key a v3 compressor at KEY EXT on noise with a key
+    // buffer (the key path + its HPF); each writes the rack's sc context per quantum as the Track does (`sc`)
+    { id: 'cmp', label: 'FX: Compressor (single band, thr −20 dB, ratio 4) on noise', node: 0.012, ipad: 0.01, kind: 'fx',
+      build: () => fxScn(fx => { fxInst(fx, 'cmp', { thr: Math.pow(10, -20 / 20), ratio: 4, att: 2, rel: 80 }); }) },
+    { id: 'sc-duck', label: 'FX: Ducker (depth 100 %, 1/8 synced, att 1 ms, smooth 2 ms), a trigger every 0.25 s from a hand-filled ring', node: 0.002, ipad: 0.002, kind: 'fx',
+      build: () => fxScn(fx => { const I = fxInst(fx, 'duck', { depth: 1, bpm: 1, att: 1, smooth: 2 }); I.sub.src = 'trk_1'; return { sc: scCtx('trk_1', 94, null) }; }) },
+    { id: 'sc-key', label: 'FX: Compressor v3 at KEY EXT (HPF 80 Hz) on noise, keyed by a noise buffer', node: 0.013, ipad: 0.011, kind: 'fx',
+      build: () => fxScn(fx => {
+        const id = core.newInstance(fx, 'cmp', { rack: 0 }), R = fx.racks[0].mods, J = R.find(x => x.id === id), I = core.upgradeInstance(J);
+        R[R.indexOf(J)] = I; I.sub.src = 'trk_1';
+        for (const [k, v] of Object.entries({ thr: Math.pow(10, -20 / 20), ratio: 4, att: 2, rel: 80, ext: 1, schp: 80 })) { const r = core.FXP_TAB.cmp[3].find(x => x.pid === k); I.p[k] = lawN(r.law, r.lo, r.hi, v); }
+        return { sc: scCtx('trk_1', 0, 'key') };
+      }) },
     // live preset switch (§11.10): row d's WT patch, then the preset changes to h' / g" while the track is silent; the
     // load is the slowest quantum of the first chord on the new preset (≤ 1 = within the deadline)
     { id: 'r', label: 'Track: Prophet-5 Poly Strings + Juno-60 + default Serum → one EQ / chorus / delay panel, a 4-note chord on all three',
@@ -666,11 +694,12 @@ function prepare(B, kind, env, now) {
   rack.set(B.fxp, B.fxt);
   if (typeof rack.assets === 'function') rack.assets(); // (the engine's hook after stored assets, §9.5)
   const r = W.mulberry32(W.fnv1a32('bench-noise')), noise = Float64Array.from({ length: 4096 }, () => 0.25 * (2 * r() - 1));
-  const L = new Float64Array(128), R = new Float64Array(128);
-  let pos = 0;
+  const L = new Float64Array(128), R = new Float64Array(128), sc = typeof B.sc === 'function' ? B.sc : null;
+  let pos = 0, q = 0;
   return api(() => {
     for (let i = 0; i < 128; i++) { L[i] = noise[(pos + i) & 4095]; R[i] = noise[(pos + 2048 + i) & 4095]; }
     pos = (pos + 128) & 4095;
+    if (sc !== null) sc(rack, q++);                 // (IMPL-SC G7: the sidechain rows' registry / key per quantum)
     rack.process(L, R, 128);
     track(L, 128);
   }, () => -1);
@@ -720,5 +749,8 @@ export function measure(scn, env, o = {}) {
   for (let k = 0; k < runs; k++) loads.push(Z ? (k & 1 ? -time(Z, 'base') + time(A, 'row') : time(A, 'row') - time(Z, 'base')) : time(A, 'row'));
   return { load: Math.max(0, med(loads)), loads, peak: A.peak(), worst: A.worst() / Q_MS };
 }
+/** Row `scn` prepared in env as measure() prepares it → { step(frames), peak() } (whole quanta; IMPL-SC G7's node gates in
+ *  tests/fx-dsp.test.mjs time it through tests/cpu-gate.mjs). */
+export function stepper(scn, env) { return prepare(scn.build(), scn.kind, env, env.now || (() => performance.now())); }
 
 export { MODELS };

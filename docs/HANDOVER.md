@@ -146,6 +146,14 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    play one key (or press Power) first; put the keyboard app **beside SYNTH in Split View / Slide Over** (full-screen in front, iPadOS
    suspends SYNTH after ≈ 30 s in the simulator — the device may differ); in the keyboard app pick the output **"SYNTH"** (or its own
    virtual output — not both: doubled notes); SYNTH's MIDI button reads "MIDI: From other apps"; a stuck note → Panic. No Mac version.
+16. **(2026-10-24.)** **Stage SC (sidechain ducking, ROADMAP 17) deployed** as one squashed commit "SC" on `canvas` (holding branch
+   `wt-SC`; contract IMPL-SC): a **Ducker** effect (type `duck`; TRIGGER = another track's notes, NOTE filter, 1/8 synced, 100 %, SHAPE
+   presets + an inline curve) and the **Compressor's sidechain key** (v3 only once keyed: KEY INT | EXT, FROM, KEY HPF, LISTEN); every
+   Track node has one input; key edges are GainNodes (`N.scIn`); a muted / soloed-out / fader-0 source still ducks (the bounce renders it
+   at gain 0); cycles refused; schema 15. Browser only (the browser-first rule). **Open P3s** (IMPL-SC §12 review 2): a source pasted via
+   the rack clipboard is not re-checked (a refused one looks normal; a paste can take over a working edge — `clipIn` → `S.ok()`, `srcState`
+   warns); the master's Ducker dips ≈ 1 ms (the tracks' 47-sample look-ahead) before the kick arrives. Not yet frozen: a golden of a
+   Ducker / keyed-compressor render (G2 / G3 are exact formula tests). Live Safari on the Mac is unchecked (needs the user's click).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

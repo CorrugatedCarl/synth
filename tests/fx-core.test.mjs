@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as C from '../fx-core.js?v=9';
+import * as L from '../laws.js?v=9';
 import * as P1 from './ref-p1/serum-core.js';
 
 const DESTS = JSON.parse(readFileSync(new URL('./fixtures/dests.json', import.meta.url), 'utf8')).DESTS;
@@ -25,7 +26,24 @@ const st = (racks, o = {}) => C.normalizeFx2({ v: 2, racks: racks.map((mods, k) 
 test('catalogue: FXTYPES, FXP_TAB, enumerations (§3.16)', () => {
   assert.equal(C.FXP_VER, 2);
   assert.equal(C.MAX_INST, 48);
-  assert.deepEqual(C.FXTYPES.map((t) => t.id), ['dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'eq', 'fil', 'hyper', 'bode', 'conv', 'util', 'split2', 'split3', 'splitms']);
+  assert.deepEqual(C.FXTYPES.map((t) => t.id), ['dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'eq', 'fil', 'hyper', 'bode', 'conv', 'util', 'split2', 'split3', 'splitms', 'duck']);
+  // (IMPL-SC §5.1) nv = the variant a new instance gets: the highest but the Compressor's (v3 is its sidechain key: reached by keying)
+  assert.deepEqual(C.FXTYPES.map((t) => [t.id, t.nv]), C.FXTYPES.map((t) => [t.id, t.id === 'cmp' ? 2 : t.variants[t.variants.length - 1]]));
+  assert.deepEqual(C.FXTYPES.find((t) => t.id === 'cmp').variants, [1, 2, 3]);
+  assert.deepEqual([C.FXP_TAB.cmp[3].length, C.FXP_TAB.cmp[3].slice(18).map((r) => r.pid), C.FXP_TAB.duck[2].map((r) => r.pid)],
+    [21, ['ext', 'schp', 'listen'], ['on', 'depth', 'len', 'bpm', 'lad', 'att', 'smooth', 'note', 'level']]);
+  assert.deepEqual(C.FXP_TAB.cmp[3].slice(0, 18), C.FXP_TAB.cmp[2], 'v3 = v2 then the key rows');
+  assert.deepEqual([C.DUCK_NOTES.length, C.DUCK_NOTES[0], C.DUCK_NOTES[1], C.DUCK_NOTES[37], C.DUCK_NOTES[128]], [129, 'Any', 'C-1 (0)', 'C2 (36)', 'G9 (127)']);
+  assert.deepEqual(C.DUCK_SHAPES.map((s) => s.name), ['Classic', 'Linear', 'Hold', 'Smooth', 'Pump']);
+  assert.deepEqual(C.DUCK_DEFAULT, [[0, 0, 0], [0.08, 0.04, 0.55], [1, 1, 0]]);
+  // a segment's curvature sits on its START point (laws evalPts, the CurveEditor): the last point's c bends nothing
+  for (const s of C.DUCK_SHAPES) assert.equal(s.pts[s.pts.length - 1][2], 0, s.id);
+  { const sh = (id) => C.DUCK_SHAPES.find((s) => s.id === id).pts, line = (x, a, b) => a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]);
+    const [c, h, m, p] = ['classic', 'hold', 'smooth', 'pump'].map(sh);
+    assert.ok(L.evalPts(c, 0.5) > line(0.5, c[1], c[2]) + 0.1, 'Classic recovers fast after the dip');
+    assert.ok(L.evalPts(h, 0.8) > line(0.8, h[1], h[2]) + 0.05, 'Hold rises fast after the hold');
+    assert.ok(L.evalPts(m, 0.25) < 0.2 && L.evalPts(m, 0.75) > 0.8, 'Smooth: slow out, fast in (an S)');
+    assert.ok(L.evalPts(p, 0.15) > line(0.15, p[0], p[1]) + 0.1, 'Pump: the fast rise'); }
   assert.deepEqual(C.FXTYPES.filter((t) => t.split).map((t) => [t.id, t.split]), [['split2', 2], ['split3', 3], ['splitms', 2]]);
   assert.deepEqual(C.FXTYPES.filter((t) => t.variants.length === 1 && t.variants[0] === 1).map((t) => t.id), ['flg', 'hyper']);
   for (const t of C.FXTYPES) assert.deepEqual(Object.keys(C.FXP_TAB[t.id]).map(Number), t.variants, t.id);
@@ -695,11 +713,11 @@ test('§11.2 applyPresetFx v2: locked racks kept, collisions renamed, rows of s 
   stable(o6); stable(o7); stable(o8); stable(o9);
 });
 
-test('§3.16.1 addable(where[, type]): every type in a rack, the 13 effects (no splitters) inside a branch', () => {
-  const all = C.FXTYPES.map((t) => t.id), fx13 = all.filter((t) => !t.startsWith('split'));
+test('§3.16.1 addable(where[, type]): every type in a rack, the 14 effects (no splitters; IMPL-SC: the Ducker too) inside a branch', () => {
+  const all = C.FXTYPES.map((t) => t.id), fx14 = all.filter((t) => !t.startsWith('split'));
   assert.deepEqual([C.addable({ rack: 1 }), C.addable(), C.addable(false)].map((a) => a.slice()), [all, all, all]);
-  assert.deepEqual([C.addable({ rack: 0, splitter: 'sp', branch: 1 }).slice(), C.addable(true).slice(), C.addable('branch').slice()], [fx13, fx13, fx13]);
-  assert.equal(fx13.length, 13);
+  assert.deepEqual([C.addable({ rack: 0, splitter: 'sp', branch: 1 }).slice(), C.addable(true).slice(), C.addable('branch').slice()], [fx14, fx14, fx14]);
+  assert.equal(fx14.length, 14);
   assert.deepEqual([C.addable({ splitter: 'x' }, 'split2'), C.addable({ splitter: 'x' }, 'conv'), C.addable({ rack: 2 }, 'splitms'), C.addable({}, 'zz')], [false, true, true, false]);
   assert.ok(Object.isFrozen(C.addable()));
   // newInstance follows the same rule

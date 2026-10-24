@@ -330,10 +330,12 @@ like EQ: `MIXK_T` gains a 0). No `idle()` — it is not in the module protocol (
 No `src` / a gone or cyclic source / no registry (`sc.reg` null: resample, render-last, the preview) / a ring its writer has not stamped
 this quantum: the unit passes its input (× level). A hit while a dip runs: restart from the current gain (no jump). `len` shorter than
 `att`: the ramp still completes, then the curve. Depth 0: identity. A trigger exactly on a span boundary lands on offset 0 of the next
-block — the same frame either way (the frame is absolute). **A skipped span hears nothing**: a track quiet for ≥ 2 s with its rack idle
-skips the Inst and its rack (engine.js:3265–3279 [R]) — a hit inside a skipped span is not seen, so a note entering ≥ 3 s after the
-track's last sound and *after* the hit, inside its dip, plays undipped (the same live and bounced; a note on the hit's frame starts the
-span the hit is read in) — §11.
+block — the same frame either way (the frame is absolute). **A skipped span still hears** (review 1 F1, the fixer): a track quiet for
+≥ 2 s with its rack idle skips the Inst and its output stage (engine.js §6.4), but a rack holding a live sidechain unit
+(`FXRack.scLive()`: a Ducker with a source, a v3 compressor at KEY EXT — running or switched on) still runs on zeros, its output
+discarded (`Track.scIdle`: a classic's panel, a graph panel's idle skip, a Serum's own rack beside `SerumDSP.idle`) — every hit inside
+the rest is seen, a note entering after it plays in the last hit's dip (the same live and bounced). (The draft's "a skipped span hears
+nothing" froze a running dip at the skip and resumed it stale on the next note.)
 
 ### 4.4 Where it lives
 Every FX rack: a classic's panel, **a Serum's own FX (Q4, recommended yes: the same `FXRackUI`, the same compile, `rack.sc` set for the
@@ -605,7 +607,8 @@ base; the Ducker's and the keyed compressor's outputs for fixed programs, the mo
 - **One key input per track**: a compressor's external key is the **sum** of every source the track's **compressors** name (a Ducker's
   source enters through a gain-0 edge: order only, §1.1); two keyed compressors in one track that name different tracks both hear the sum
   (a cap-free alternative to input slots, §1.1). The Ducker is per-unit exact (the registry is per source).
-- **MULTIBAND ignores the external key** (its bands read the audio); the UI dims KEY in that mode.
+- **MULTIBAND ignores the external key** (its bands read the audio); the UI dims KEY in that mode, and LISTEN is off there too (the
+  output stays the bands; review 1 F3).
 - **No key input on the master rack**: its compressor is INT only; its Ducker works (the registry).
 - **A 900 Series' own 960 sequencer steps** are not note-ons (the controller's keys and the piano roll are); a TB-303 tied step (legato)
   is not a new hit; a Serum step that re-holds a held key is not a new hit (sx-seq's rule).
@@ -625,8 +628,6 @@ base; the Ducker's and the keyed compressor's outputs for fixed programs, the mo
 - **The Ducker follows the source's notes, not its delayed audio**: a source whose own rack has latency (a Limit look-ahead ≤ 10 ms, a
   Distortion's 15 samples) sounds that much after its dip starts (SYNTH has no per-track delay compensation); the keyed compressor hears the
   source's audio as it leaves its node, latency included.
-- **A skipped span hears nothing** (§4.3): a note entering ≥ 3 s after its track's last sound, after a hit and inside its dip, plays
-  undipped — live and bounced alike.
 - **A source change** (a pick in the menu) takes effect when the new FXP lands (the next frame); for those few quanta the old source's hits
   are dropped, never misplaced (`ring.q`, §2.0).
 - **Which note-ons are hits**: every note a sound starts — a mono / legato Serum note included (its allocator restarts the note); a TB-303
@@ -635,6 +636,316 @@ base; the Ducker's and the keyed compressor's outputs for fixed programs, the mo
   key bus; velocity-scaled depth.
 
 ## 12. Notes (the builders fill in)
+
+### Phase 0 — the model commit (the lead, 2026-10-24; base a87b915: every `.js` as 91a859a)
+- **As §5.1 / §9.0, data only.** fx-core: `FXTYPES[i].nv` (`nv || variants[last]`; cmp **2**) read at every former "highest" site
+  (`normalizeFx2`, `payloadPS`, `newInstance`, `applyModulePreset`, `fxI`); `FXP_TAB.cmp[3]` = cmp[2] + ext / schp / listen (`cmp2X` /
+  `cmp3X`), `FXP_TAB.duck[2]` verbatim; `DUCK_NOTES` (129); **`DUCK_SHAPES` = `[{id, name, pts}]` in menu order** (Classic / Linear /
+  Hold / Smooth / Pump — Smooth's S is c −0.4 on the point at 0.5 and 0.4 on the end point: laws.js `evalPts` reads c as the curvature of
+  the segment *ending* at a point [R: laws.js:140–149]); `DUCK_DEFAULT` = Classic's pts; `normSub` cmp v3 `{src}`, duck `{src, cv}`
+  (`idOrEmpty`: `/^trk_\d{1,9}$/` or ''); `upgradeInstance` one step — 1 → 2 as today, **2 → 3** (shared rows as they are, new rows
+  their defaults, `normSub(type, 3, sub)`), plus a guard that `I.v` itself is a known variant (a `{type: 'bode', v: 1}` threw before);
+  `payloadPS(type, payload, want)` upgrades a payload one step at a time while below `want` (fv 1 → 2 → 3) and keeps one above it —
+  `newInstance` then makes that variant ('Keyed Pump' → a v3; tests/fx-core.test.mjs's factory loop holds); `applyModulePreset` upgrades
+  the instance while below the payload's fv (v2 + fv 3 → v3) and **keeps the instance's own `sub.src`** (restored after `I.sub =
+  cloneJ(src.sub)`); **`blankSrc(x)`** (a JSON copy, every object's `sub.src` string → ''; `modulePresetPayload` returns through it —
+  `rackPresetPayload` / the clipboard / `chainFx` untouched here: lanes U / H blank at the store paths, §1.3); `compile2` adds **`iSrc`
+  only when an instance is a Ducker or a cmp v3** (`scUnit`); `fxtKeyOf` folds Ducker points in walk order and their count only when
+  nk > 0; `compileFxT` adds **`cv` only when a Ducker exists**; factory 'Keyed Pump' (cmp fv 3: ext 1, schp 80 Hz, thr −20 dB, ratio 6,
+  att 1 ms, rel 90 ms), 'Kick Pump' / 'Gentle Side' / 'Gate Stab' (duck). fx-dsp: TYPES + 'duck', `ROWS` `[null × 4]`, cmp[3],
+  duck[2], TAB `[1, 2, 3]`, MIXK_T + 0 — **K_S2 / kindOf untouched**: a 'duck' or a cmp v3 instance gets `kindOf` −1 and passes its
+  input. fx-mods2: TYPES, `TAB.duck` (note nomod), PIDX follows. cv-cost `COST.fx.duck` 0.0006. cv-migrate: SCHEMA **15**, STEPS[14]
+  the identity; `toV1`: a post-pass over the v1 tracks' `fx` (a copy) — Duckers removed, cmp v3 → v2 (`ext` / `schp` / `listen` and
+  `sub` dropped), `ui.sel` cleared when it named a removed Ducker, one `lost` line per track **"“<track>”: its sidechain (n Ducker(s), m
+  keyed compressor(s)) — the live site has no sidechain"** with only the non-zero parts ("1 Ducker", "2 keyed compressors"). fx-ui
+  `ADD_EFFECTS` + 'duck' after 'dist'.
+- **Pins moved** (never weakened): fx-core.test (:28 the 17 ids, + nv / cmp[3] / duck[2] / DUCK_* asserts; the `addable` test 13 → 14 —
+  §9.0 missed it), fx-ui.test (**:36 the `inst()` helper → `T.nv`**: with `variants[last]` every `inst('cmp', 'cmp')` of the file would
+  be a v3 and `mod_cmp`'s `c.v === 2` branches (fx-ui.js:1168–1180, 1265) would build no v2 controls — **lane U: a v3 panel must take
+  the v2 branches (`c.v >= 2`), those sites are its own**; :181–190 and the opts.cost menu test :480–487 → 14 effects, 'Ducker' after
+  'Distortion'), fx-mods2.test `RUN_HERE` + 'duck', cv-migrate.test (every 14 / 15 pin of the six blocks, :32, the two test names "and a
+  14 in this one" → 16), canvas-8-sim:**405** / 418, canvas-9-sim:**436** / 447, **canvas-9b-sim:438** (§9.3 said it has none),
+  canvas-M-sim:334–348, **canvas-7c-sim:643 / 655** (`[14, 14]` and `[true, 14]` are literal — §9.3 said 7c derives; only :657
+  does), **cv-shell-sim:277** and **canvas-1e-sim:172** (`cv.fx.items.length` 16 → 17: main.js's `FX_ITEMS` derives from FXTYPES).
+  cv-cost / fx-dsp derived, green. The pins in bold were not in §9.0 / §9.3.
+- **G1 pieces.** `tests/canvas-SC-live.test.mjs` (new) + **`tests/ref-SC/live-p1.sha`** recorded from a87b915 (`REC=<dir>`, the
+  canvas-M-bounce pattern): project-p1 opened, powered, a 4096-frame warm-up render, ▶, 192 000 frames through `sim.run` (clock 'std'),
+  SHA-256 of every worklet node's L and R in creation order (the 7 Tracks and the master); this tree reproduces it. The factory content
+  checked against a87b915 by script (scratchpad): `FACTORY_FX_PRESETS` minus the four new entries, `FACTORY_RACKS`, `FACTORY_CHAINS2`
+  and the 86 factory Serum presets' FX states deep-equal (15 hold a compressor, every one v1 / v2); 159 factory states compile to the
+  same FXP and FXT (no `iSrc` / `cv`, the same `xsKey` / key).
+- **Gates (one file at a time, 2 GB heap), all green:** lint, fx-core, fx-dsp, fx-mods2, fx-ui, cv-cost, cv-migrate; canonical-stream
+  (both parts), canvas-M-bounce (ref-M's three), engine-track (the warm-up hash), master-dsp, master-proc, serum-core, presets, presets2,
+  main, serum-ui, accessors, cv-model, app, app-ios; canvas-M / 8 / 9 / 9b / 9c / 7a / 7b / 7c / P-sim, cv-shell-sim; the 12 goldens
+  (classic, fx, presets, random, graph, drums, 606, 909, sdsv, moog, moog-b, moog-c) bit-identical; canvas-SC-live (the record
+  reproduced); the rest of tests/*.test.mjs swept, every file green (130 of the 132 files; canvas-1e-sim after its pin). **tests/pwa.test.mjs
+  and tests/fonts.test.mjs are red by design** (both check sw.js's BUILD against the crawl: the lead's `node tools/precache.mjs --write`
+  after the merge; the new test file needs no precache entry — tests are not site files).
+- **Not here, by design:** `sw.js` (the lead's `node tools/precache.mjs --write` — tests/pwa.test.mjs's BUILD check is red until then);
+  `K_S2.duck` / `kindOf` cases (lane D); `rackPresetPayload` / `chainFx` keep `src` (lanes H / U blank at the store paths); fx-ui.js:304
+  still forces fv 1 | 2 on a module preset read back (lane U).
+
+### Lane U — the UI (2026-10-24; base 95ff988; commits 5819234 tests first — 7 fx-ui + 1 serum-ui red —, e7e7a27 the code)
+- **As §6.2–§6.4.** fx-ui.js: `mod_duck` (TRIGGER · NOTE / DEPTH · LENGTH · ATTACK · SMOOTH · LEVEL / the curve / SHAPE + GR bar),
+  `keyGroup` (mod_cmp after MODE), the source menu `srcPick` / `srcState` / `srcItems` / `setSrc`, the NOTE menu `notePick` /
+  `noteItems` / `noteLanes`, `setShape`, `scs()` (the optional host member, null when absent / throwing / malformed); `mod_cmp`
+  takes the v2 branches at `c.v >= 2` (eq's LEVEL too); `upgrade(id)` one variant up (S1 → S2 a seed as before; cmp v2 → v3
+  "Add a sidechain key" in the ▾ menu, no seed, disabled on the master); `payloadV2` keeps a known `fv` (3) and reads no
+  `sub.src`; `drawGr` / `drawGrs` the Ducker's slots. **Host members used: `scSources()` only** (`self`, `list[].id / name / drum`,
+  `notes(id)`, `ok(id)` — `ok` asked as a menu opens and at a pick, never per refresh), plus `gr()` / `notify()` as before.
+  serum-ui.js: the adapter line `scSources: () => (typeof this.host.scSources === 'function' ? this.host.scSources() : null)` —
+  **lane H: `sxHost` (main.js:3326) needs a `scSources` member too** (the same object fxHost gives for that track), else a
+  Serum's own FX page shows the menus disabled with "Set it in the track’s FX module" (the fallback).
+- **Refinements of [C] (reasons).** LENGTH = two knobs (`len`, `lad`) shown in turn by BPM — the pre-delay pattern: each row keeps its
+  widget, data-dest and modulation (the Delay's `rate` pattern is one row). SHAPE = an icon row (wk `iconSeg`: each dip drawn from
+  `evalPts`, the curve the DSP renders; label "SHAPE · CUSTOM" when the points match none) — one tap, not a ▾ menu's two. A gone
+  source reads **"— (deleted)"** and the first item is **"None"** (the brief over §1.3 / §6.2's "— (track gone)" / "— none —"). A
+  refused entry carries the host's reason as its title **and a short hint** ("this track" / "loop": touch has no hover). Labels:
+  TRIGGER (Ducker), KEY (a v2 compressor's menu), FROM (v3, inside a SIDECHAIN group: KEY INT | EXT, FROM, KEY HPF — "Off" at its
+  minimum, typed "off" — LISTEN). MULTIBAND **dims** the group (opacity), not hides it. The master: FROM and "Add a sidechain key"
+  disabled ("The master hears the whole mix"); KEY / LISTEN disabled **unless on** — a preset can switch them on there (below) and
+  the user must be able to switch back; the master's Ducker TRIGGER is enabled (§4.4). **KEY EXT with no source** (a deleted track,
+  or the factory 'Keyed Pump', which has none) puts FROM in the warning colour ("KEY EXT needs a source: pick a track, or set KEY to
+  INT"). Picking a source sets EXT, None sets INT (a v3 stays v3; a v2 + None does nothing). Notices: "Kick now keys Bass’s
+  Compressor", "Bass now ducks with Kick", "The master now ducks with Kick"; a refused pick (a race with the menu) notifies the
+  host's reason. Init Module keeps `sub.src` (routing, as a preset keeps it). The curve editor has no grid option (exact
+  double-tap inserts; the 4 × 4 reference grid), height 96, label "Ducker curve"; GR text "-∞" at ≥ 60 dB (g floored at 1e-6).
+- **Playhead / cost.** The CurveEditor's `anim` is replaced by a no-op and `o.playhead` set after construction (no graph.js change):
+  the rack's `grLoop` ticker (≤ 30 fps, the GR bars' loop, which now also runs while a Ducker is shown) calls `ed.drawOverlay()` only
+  when the `[4i + 1]` position changed — nothing drawn while idle or unchanged. The editor redraws from the state only when the
+  `sub.cv` reference changes and its JSON differs (undo, a preset, a shape), never per refresh.
+- **Store paths (§1.3).** Blank `sub.src` (fx-core `blankSrc`): Save / Export FX Bus, Import FX Bus (stored and applied), Load FX
+  Bus from the library, Save / Export Effect Chain, Export All, Import chains, **Load Effect Chain** (library entries other writers
+  stored — sx-host's chain menu — or files); module presets and the default through `modulePresetPayload` (phase 0) and `payloadV2`
+  on read. **The rack clipboard** (fx-ui's module-level `RACK_CLIP`: no project uid in the host contract) remembers the host's
+  id → name map at the copy; a paste keeps a source only while the host lists that id under that name (the same track), else
+  blanks it (another project; a deleted or renamed track) — without the host member every source is blanked.
+- **The CSS** is in fx-ui.js's injected rules (as every `.fxr2` rule: Serum's embedded page and any host get it without the app's
+  stylesheet); **style.css untouched**.
+- **Findings for the lead (not lane U's files).** (1) **`DUCK_SHAPES` curvatures sit on the wrong points** (fx-core, phase 0):
+  laws.js `evalPts` (hence `renderPts`, the FXT `cv` table) and the CurveEditor (`handle()`, `draw()`: `a[2]`) read a segment's c
+  from its **start** point (laws.js:145 `CURVE_K * (p[2] || 0)` with p = pts[lo]) — the opposite of the phase-0 note. Measured:
+  Classic and Hold are straight lines everywhere (their end-point c 0.55 / 0.3 are dead: Classic at x 0.5 = 0.4783 = the straight
+  line), Smooth is straight to 0.5 then bends the wrong way (x 0.8 → 0.5935 vs 0.8), Pump's 0.7 bends 0.3 → 1 instead of the rise.
+  Suggested (c on the start point): Classic `[[0, 0, 0], [0.08, 0.04, 0.55], [1, 1, 0]]`, Hold `[[0, 0, 0], [0.6, 0, 0.3], [1, 1, 0]]`,
+  Smooth `[[0, 0, -0.4], [0.5, 0.5, 0.4], [1, 1, 0]]`, Pump `[[0, 0, 0.7], [0.3, 0.9, 0], [1, 1, 0]]` (DUCK_DEFAULT and the factory
+  Ducker presets follow; lane U's tests read the shapes by reference and survive the fix). (2) **'Keyed Pump' (fv 3, ext 1, no
+  source)** applied to any compressor gives EXT with a silent key = no gain reduction until a source is picked — on the master, where
+  no source exists, until KEY is set back to INT (the UI keeps that reachable and warns); consider ext 0 in the preset (the user's
+  pick sets EXT) or leave as recorded. (3) **sxHost needs `scSources`** (above).
+  **Lead (2026-10-24):** (1) fixed as suggested (fx-core.test asserts the start-point convention and each shape's bend; the fx-ui
+  curve test's add-point tap moved off Classic's now-live bend handle). (2) kept: ext 1 + the FROM warning is the prompt to pick the
+  kick; an INT pump would pump on the track itself, not what the name promises. (3) sent to lane H.
+- **Tests** (tests/fx-ui.test.mjs, a stub `scSources`; no fake-DOM node in an `assert`): the Ducker panel's rows / data-dest / nomod
+  NOTE / LENGTH by BPM / defaults / accessible names; TRIGGER (order, None, duplicate names "Kick · 1", disabled self / loop with
+  title + hint, one edit + notice, "— (deleted)", no member → disabled hint, the master's Ducker); NOTE (drum lanes, "All notes",
+  octaves, p.note = (n + 1) / 128); the curve (touch double-tap add / remove, a touch drag 15 px off a point: start / move / move /
+  end, no zoom, SHAPE one tap, Custom, an outside change redraws); GR + playhead through `raf` (the marker at X(pos), nothing drawn
+  unchanged, cleared at −1, "-∞", the editor's animator never runs, no pending frame after destroy); the compressor (v2 KEY → v3 in
+  one edit with EXT and the notice, the v2 controls on v3, schp "Off", ext / listen nomod, INT / EXT, the EXT-without-source warning,
+  None → INT, dim in MULTIBAND, the master's v3 / v2, a v1 without a key); "Add a sidechain key", fv 3 kept (factory Keyed Pump, a
+  saved keyed preset), a preset keeps the instance's source, every store / export / library-load path blank, the clipboard within /
+  across projects, Init keeps the source, a library chain loads blank. tests/serum-ui.test.mjs: the adapter forwards `scSources`
+  (null without it). **Gates, one file at a time (2 GB heap): fx-ui 63 / 63, serum-ui 62 / 62, fx-core 16 / 16, canvas-sim 24 / 24,
+  lint 165 / 165.** No sw.js, no main.js / engine / DSP file touched.
+- **Rendered** once in headless Chrome (a harness page mounting FXRackUI with the stub host on a copy of the tree, port 8835, own
+  profile; both killed after): scratchpad `sc/u/shots/desktop-1440.png` (v2 KEY, the v3 SIDECHAIN group, a Ducker mid-dip with its
+  playhead and GR, a deleted source in the warning colour), `ipad-touch-menu.png` / `ipad-ducker-menu.png` (`.wk-touch`, dpr 2; the
+  scripted menu-open did not show in the headless capture — not chased: the menus' items are covered by the node tests; reviewer 2's
+  G8 opens them in a real page).
+
+### Lane H — the host (2026-10-24; base 95ff988)
+- **As built** (§1.1, §1.3, §1.4, §6.1, §7): every Track node — `makeNode` and `renderOffline` — `numberOfInputs: 1 … channelInterpretation:
+  'speakers'` (MASTER's options), `processorOptions` untouched; `N.scIn` (Map source id → `{ s, kg }`; `N.sc` stays the OUT scope's).
+  `scUnitsOf(fx)` / `scUnits(t)` (every panel's and Serum's rack, racks 0–2, splitter branches: `[[src, isCmp]]` in walk order) /
+  `scMasterUnits()`; **`scGraph()`** = the project's accepted edges `E: keyed id → Map(src → gain)` plus `bad` (refused pairs), built in the
+  fixed order (project order, then walk order): a self-key or a loop with the edges accepted before it refused (`scReach`), an id that
+  names no track dropped; `scWant(t)` / `scSrcs(t)` (∩ nodes) / `scCycle(t, src)` / `scKeySet()` (heard tracks' and the master's sources,
+  transitively) / `scKeyed(t)` / `scAny()` (a unit with a source in any track rack or the master's). **`scSync1(t, G)`** cuts an edge
+  whose source left E or whose node was rebuilt under its id (`s.disconnect(kg)` and `kg.disconnect()`, each in its own try — the first
+  throws when the source's own `disconnect()` cut it), makes a missing one (`kg` gain set before it connects: a gain-0 edge never passes
+  a sample), sets every gain, posts a refused pair's notice once a session (`scSaid`); **`scSync(t)`** (top of `sendPatch`, before the
+  compile and any post) — a fast path: no unit and no edge on t → nothing (no graph walk: S1 costs nothing per knob frame); when t's edges
+  changed, every other track re-synced (a loop refused before may be allowed now) and `ptHeardSync()`; **`scAll()`** after `syncNodes`'
+  creation loop; `scCut(N)` in its drop loop before `N.node.disconnect()`. `ptPower` reads `scKeyed` (only when a 900 Series would be
+  switched off); `mix()`'s 900 check moved into **`ptHeardSync()`** (`audible || scKeySet().has`; the same first-time and per-track order
+  of `queuePatch`), also called by `masterEdit` (the master's Ducker keeps a muted 900 on). `mAlign` = `masterN() > 0 || scAny()`.
+  `scFreshId()` at `addTrack`, `duplicateTrack`, `importMidiFile` (undefined — song.js's own pick — unless a named source is past the
+  tracks). `bounceSet`: the closure after the MIDI-OUT pass (§7.2, refined below), items `sc: [[src, gain]]` only when non-empty;
+  `bounce()`'s builder forwards it; `renderOffline` makes `src.node → kg → node` after its item loop. `scSources(self)` on `fxHost`
+  (self = the track), **`sxHost`** (the track: serum-ui's FX-page adapter forwards it — lane U's note) and `mfxHost` (null):
+  `{ self, uid, list, notes, ok }`. `core.blankSrc` in `sxSave` (both writes) and the
+  `.serum.json` export (`renderLast` shift). Notices: "Not connected: “A” already ducks with “B” — a loop would need a delay", "Not
+  connected: “A” can't duck with itself". Hooks `__synthTest.sc = { want, srcs, sync, all, cycle, keyed, any, edges, graph, keySet,
+  sources, freshId, mAlign }`. main-sim: `disconnect(n[, o, i])` cuts that edge alone (none there: an `InvalidAccessError`, as a browser),
+  `disconnect()` all as before; a node whose `process()` returned false is still called **while a source feeds its input** (Web Audio's
+  lifetime — what makes skeptic #8 testable), `n.runs` counts calls; `sim.offOut = true` records each worklet's own output of an offline
+  render in `sim.lastOffline.out` (opt-in: no memory for the existing callers).
+- **Refined (reasons)**:
+  - **G5's scene** — "an 808 with its demo pattern keying a Juno bass" cannot be bit-exact live vs bounce **in the base build** (measured
+    with no unit acting: lane D was not merged): the Juno-60's hiss, the 808's noisy lanes (SD / hats: the noise state runs from the node's
+    birth), the analog drift / tolerance terms (any classic at `settings.drift` > 0) and the 900 Series (≈ 1e-23 at the first sample,
+    0.025 within 3 ms) differ between a live node and a fresh offline one; and a classic voice keeps its oscillator phases from note to
+    note, so only a node that has played nothing renders as a fresh one. The test therefore uses drift 0, the 808's demo pattern with its
+    BD lane alone (AC + BD: the step path through DrSeq), Minimoogs for the bass and lead, and **fresh live nodes per take (a power
+    cycle)** — then every node is bit-identical live ≡ bounce, muted / soloed-out / fader 0 included. Live ≡ bounce for the keyed
+    compressor's key needs a source that is itself exact (a 900 Series kick keys a Ducker exactly — the registry's frames — but a keyed
+    compressor only as closely as the 900's own live render matches its offline one); for the reviewers with the real engine.
+  - **§7.2 (b) applies to every source the closure adds**, not only a note-less one: a muted source with notes of its own that another
+    track's MIDI OUT also plays sounds those notes live; without its driver the bounce's key (and the source's hits) would differ. A note-less,
+    unsynced source still comes only with a driver. The first pass evaluates `syncedOf` for every track as before (its side effects:
+    `patchOf` / `drumOf` normalising in place).
+  - `scAny()` counts a unit **with a source** (a Ducker without one passes its input × level: no frame depends on the anchor).
+  - The fixed acceptance order means a pasted unit on an *earlier* track can take over a loop's surviving edge from a later one (K first:
+    K ducking with B refuses B's existing edge from K — said in the notice; the test pins it). The menus never offer it (`ok`).
+  - `ptHeardSync()` posts a 900 Series' new power next frame (`queuePatch`) from all three callers. From `scSync` it runs inside the
+    frame's patch queue, where a 900 track already sent this frame is not queued again — harmless: `ptPower` reads the project
+    (`scKeyed`), so that earlier post already had the new power (the test holds that frame).
+  - `scSources()` also carries `uid` (the project's) for a cross-project clipboard rule; lane U chose its own (the rack clipboard keeps a
+    source only for the same track, id + name) — `uid` is unused there and harmless. `notes(id)` returns `drumRowsOf(dev)` of the track's
+    first drum machine as is (`{ n, name }`, the lanes' primaries, kick first); the UI formats "Kick (36)".
+  - Classic user presets hold no FX (`presetSave` stores `{ name, v: vals }`): nothing to blank there. Rack / chain / module presets and the
+    rack clipboard are fx-ui's paths (lane U).
+- **Tests**: `tests/canvas-SC-sim.test.mjs` (15: the options; the edges, gains, order and the key on `inputs[0]`; G5 — live ≡ bounce per
+  node, the ghost kick muted / soloed out / fader 0, the muted mix = unmuted − the kick within a rounding; **one todo while engine.js has no
+  `SCREG`** — the bass dips at the hits, muted, live and bounced — it runs for real once lane D is merged; G6 — a loop and a self-key
+  refused with their notice once, `ok`, K → B → C ordered, `disconnect(n, 0, 0)`, a Ducker-only edge at 0 under a compressor's key, a deleted
+  keyed track (no edge into it, its processor let go, undo), a deleted source (dangling, undo re-binds), reused ids (fresh id, a duplicate,
+  undo ×3); the edge made before the FXP naming it is posted; a power cycle re-wires; a Serum's own rack, a Serum preset load, a model
+  change (the FX unfolds into a panel: the edge stays); the 900 Series' power (muted off, keyed on, its keyed bass muted → off, the master's
+  Ducker → on, the bounce renders it at 0; one frame's patch queue); the closure with the power off, the MIDI-OUT-driven ghost and its
+  driver; `scSources` (fxHost, mfxHost, sxHost); the preset blanking). No existing pin moved: none reads a Track node's `numberOfInputs`.
+- **Gates** (this tree, one file at a time, 2 GB heap), all green: canvas-SC-live (G1's live-p1, every node), canonical-stream (both parts),
+  canvas-M-bounce (G0), canvas-SC-sim 14 + 1 todo, lint 165, main 47, canvas-sim 24, canvas-M 20, canvas-8 17, canvas-9 22, canvas-9b 14,
+  canvas-9c 3, cv-model 14, integration 44, app-shell 19, app-midi-sim 7, app-shell-web 6, app-ios 6, app 11, accessors 30, canvas-1i 20,
+  2b 23, 2a 26, 7a 23, 7b 15, 7c 13, 1e 24, 3 27, del 11, P 8, tab 8, cv-gl 10, cv-migrate 69, cv-fixes 5, cv-shell 17, graph-host 22,
+  keyboard 14, roll 52, engine-track 107; the goldens bit-identical — classic 8, fx 3, presets 8, random 1, graph 6, drums 5, 606 11, 909 9,
+  sdsv 5, moog 6, moog-b 6, moog-c 4 (no engine / DSP file of mine; run because main-sim and main.js changed under every sim).
+- **Integration trial** (a throwaway branch: this tree + `wt-SC` at 8315048 (lane U) + lane D at 378aab2; IMPL-SC.md's conflict taken
+  as ours; the branch deleted): **canvas-SC-sim 15 / 15 — the todo runs and passes** (the Ducker and the keyed compressor acting: live ≡
+  bounce per node, the ghost kick muted / soloed out / fader 0 identical, the bass ducked 5–20 ms after the first hit < 25 % of its
+  undipped level — the window was 2–10 ms in my first draft: the 1 ms attack and 2 ms SMOOTH are still settling there, 0.29), canvas-SC-live,
+  canonical-stream, canvas-M-bounce, canvas-M-sim 20, canvas-9-sim 22, canvas-sim 24, serum-ui 62 — all green.
+- **Waits for integration**: nothing of mine needs D or U to be correct; the todo flips by itself when engine.js has `SCREG`. Lane U's
+  `scSources` consumer matches §6.1 (its own "· n" disambiguation is a no-op on the host's already-unique names). `sw.js` untouched.
+- **For the lead / the reviewers**: (1) G5 as worded (a Juno, the full demo pattern) is not reachable bit for bit by any host — measured,
+  §12 above; a reviewer comparing a real Chrome bounce with a live capture should use deterministic engines or compare dips, not samples.
+  (2) Live ≡ bounce needs fresh nodes: a voice that has played keeps its oscillator phases — so a live take after the user has played
+  notes is not the bounce's render, even from silence (IMPL-M §11's "silent history" class is narrower than it reads for classic voices).
+  (3) The 900 Series' live / offline difference (≈ 1e-23 → 0.025) exists without any sidechain — worth one look by the stage-9 owner.
+
+### Lane D — DSP + engine (Fable 5.1, 2026-10-24; base 95ff988, the phase-0 merge; worktree branch of it)
+- **Built as §1.2 / §2 / §3.2 / §4.2 / §9.1.** fx-mods2 `Duck` (kind 22): state `k` (samples into the curve, −1 idle) / `len` / `g` / the
+  attack ramp (`g0, a, aN`), the FXT table `tab` (all 1 until `setTab`), `upd` (LENGTH = `DLY_BEATS[lad] · 60 / R.bpm` when BPM, else
+  ms; `lenT` captured into `len` at the trigger), `run` reads `R.sc` / `R.src` once per block (`sc.reg.get(src)`, trusted only when
+  `ring.q === sc.q`), scans the ring for `d = f − (sc.F + sc.b)` in `[j, m)` (`next()`, no allocation), per sample the ramp /
+  curve / one-pole / the snap `k < 0 && 1 − g < 1e-9 → 1`, × LEVEL ramped per block; an idle unit at unity returns before the loop (the
+  input untouched — the same samples as × 1). `meter`: `[−20·log10(g), k / len | −1, 0, 0]`. fx-dsp: `K_S2.duck = 22`; `kindOf(t, 3)`
+  → 14 for cmp (SxBase required as for v2), `kindOf` k 22 → 22 when `M2.Duck` is a function; `newMod` 22; `graph()` grows a kept unit
+  in place when `u.v !== v` (`growUnit`: the per-row arrays re-made, shared rows copied, new rows at their defaults, then `bs` of the
+  new rows snapped to their targets — no glide from the defaults; the module, `st`, `xf`, the mix gains kept), `u.src` from `iSrc`;
+  `set()` → `setCV(fxt.cv)` (kind 22, `okXS` on the table); `okGraph` rejects a present `iSrc` shorter than nI; `post()` meters kind 22;
+  `modSnap` / `runMod` / `allocMod` cases; the rack's `sc = {q, F, b, reg, kL, kR}` from construction (`Unit` copies it), `sc.b = oo` per
+  block. `Comp`: `ext / hpOn / lsn / ks / kc` fields (Comp2 allocates the HPF arrays; a v1 unit never sets them); `Comp.run` hoists
+  `K = ext ? R.sc : null` per block and reads `kL[kb + j]` (null → 0) through a TPT SVF HP when on, `a = max(|kl|, |kr|)` for the detector
+  and the deque, LISTEN replaces `oL / oR` with the (filtered) key before × makeup; `Comp2.upd` reads rows 18–20 only when `R.n > 18`
+  (`N_CMP2`), clears the HP states when the HPF turns on, drops `ext` on a v3 → v2 downgrade. `FXRack.warmUp` adds a Ducker (synced / ms,
+  attack, smooth, NOTE) and a v3 at KEY EXT (HPF off / on, LISTEN, multiband) on the temporary rack's own `sc` (a hand-filled ring, key
+  buffers). engine: `SCREG`, `SC_N 64`; `Track.scR` (born with the trackId after the warm-up; `end()` deletes only its own entry),
+  `qF` / `inK` / `kL` / `kR`; `process()` reads `inputs ? inputs[0] : undefined` (**the warm-up calls `process(null, io)`** — the guard
+  matters), compacts + stamps the ring before any event; `renderSpan` → `scKey(off, n)` when fed; `scRack(r)` before c0's, every chain's
+  (`chainSpan`), a Serum's own (`renderSerum`) and so the dying parts' rack calls; `scOn` (span: `spanF`; message time: `this.frames`; a
+  full ring compacts to `≥ qF` in a span / `≥ frames` at message time); `drHit` → the sound's primary (`q.prim[s]` / `DEF_PRIM[s]`, the
+  played note when a primary is −1); `Inst.drNote(q, v)`; `sxNote` after `rack.trigger()`; MASTER's `part()` writes its rack's `sc` (`q F0`,
+  `F F0 + o`, `reg SCREG`, `kL / kR null`). dr-seq: `fire` and `hook` call `I.drNote` per sounding lane inside their existing loops (the
+  909's with the lane's own state velocity); the header documents the hook.
+- **Refinements ([C] → reasons).** (1) `dr-seq.js`'s loops run when either hook exists (`drStep` or `drNote`), `gate = 1` / `drStep` only
+  with `drStep` — the goldens' Insts have both; a host with only `drNote` still gets its entries. (2) `drHit` with an unmapped primary
+  (`prim[s] === −1`) stores the played note rather than `−1 & 127 = 127`. (3) The Ducker's ATTACK ramp follows §4.2's formula
+  literally (`T = g0 + (c0 − g0) · a++ / aN`): with att > 0 the first target is the current gain, so the gain leaves 1 at the sample
+  **after** the hit (att 0: at the hit) — G3's "leaves 1 at sample f exactly" is stated for att 0 and holds; the shift-invariance tests
+  cover both. (4) A Ducker's `R.sc === undefined` (a host that is not FXRack) is treated as no registry. (5) The engine-level G1 input
+  cases, G2's two-Track key and G4 live in **`tests/sidechain-dsp.test.mjs`** (one file for the sidechain's engine side) rather than
+  in engine-track.test.mjs, which is unchanged (its 107 tests, the warm-up equivalence, hold). (6) G1's "30 s random notes" is run at
+  30 s for the classic, the Serum and the 808 with inputs `[]` / `[[]]` / `[[L, R]]` → bit-identical outputs (≈ 25 s of wall time).
+  (7) A dip's exact frame at engine level is read at the keyed track's **rack output** (a tap on `c0.rack.process`): the Track's
+  output stage behind it has a 1 ms look-ahead limiter (47 samples of delay at 48 kHz) and a DC blocker whose state keeps a dip's
+  trace at the 1e-7 level for hundreds of ms — a node-output comparison sees the dip 47 frames late and never re-equal; MASTER has
+  neither (its test compares node outputs). (8) The bench gained a `cmp` reference row (there was none) so `sc-key ≤ 1.1 × cmp` has a
+  row to read; `prepare()`'s fx kind takes an optional per-quantum `B.sc(rack, q)` hook (the sidechain rows write the rack's context
+  as the Track does). (9) `nv` / the factory content: untouched (phase 0's).
+- **Gates.** G1: golden-classic / -fx / -presets / -random / -graph / -drums / -606 / -909 / -sdsv / -moog / -moog-b / -moog-c,
+  canonical-stream (both parts), canvas-M-bounce (ref-M's three), canvas-SC-live (live-p1.sha reproduced), master-proc (25),
+  engine-track (107: the warm-up hash, the warm-up equivalence) — every one green on the lane's engine / DSP code (commit 3109eaf; no
+  engine / DSP file changed after it), one file at a time at 2 GB; fx-dsp 76 / 76, fx-mods2 28 / 28, lint 165 / 165; the node G1 input
+  cases (sidechain-dsp.test). G2 (fx-dsp.test + sidechain-dsp.test): the stated case 10.48 dB (−6 dBFS key, thr −20 dB, ratio 4; the
+  audio reduced by it), kick dips ≥ 6 dB / < 0.1 dB between (the rack and two Tracks through `inputs[0]` — a classic's panel, a Serum's own
+  rack, a graph node's shared panel), `ext 0` ≡ v2 bit for bit over 100 random programs (with and without a key present), the HPF's
+  minimum = no filter (the keyed v3's GR per call ≡ a v2 fed the key as audio, bit for bit), 200 Hz: a 50 Hz key compresses 21.7 dB less
+  than 1 kHz (> 12), LISTEN ≡ the key bit for bit, `kL null` → no GR and the audio untouched, MULTIBAND ignores the key bit for bit; the
+  in-place upgrade of a running v2 (the same Unit and module, 21 rows, `st 1 xf 1`, the look-ahead index and clock carried over; the
+  output before it ≡ the v2, after it keyed; a fresh v3 agrees on the GR; the downgrade back to 18 rows); a keyed compressor and a
+  Ducker in a splitter branch and on BUS 1 move at the key's / the hit's sample (40 and 56 of call 3). G3 (fx-mods2.test): the trigger's
+  sample exactness (att 0 / smooth 0: `g = 1 − depth·(1 − tab(pos))` per sample, exact; identity until the FXT table), shift invariance
+  (0 samples differ at 1037 vs 2037 for att / smooth 0, the defaults and att 5 / smooth 20), 16 hits at 8000 frames identical, velocity
+  ignored, depth 0 the identity, a retrigger restarts at `c0`, '1/8' at 90 / 124 / 174 bpm = 16000 / 11613 / 8276 samples (± 0, the
+  linear table), LENGTH captured at the trigger, NOTE 37 / 39 / Any, the gr slots, `reg` null / `src ''` / an unstamped ring → identity
+  × LEVEL, no allocation (constructors banned), the Ducker in a rack (FXT cv, gr, post's clearing). G4 (sidechain-dsp.test): song notes
+  at frames 200 / 3000 / 6028 dip the keyed Ducker at those frames (source first; built keyed-first too), a message-time note at the
+  next quantum's offset 0 (quanta 7 / 31), the reader processed before its writer: no dip at all (song and message-time hits alike),
+  velocity 10 dips as 100; no trackId → no ring (the warm-up wrote none), 65 message-time note-ons → 64, compacted + stamped per
+  quantum, bye removes the ring, a node rebuilt under the same id keeps its own, a node without trackId idles with the source's ring
+  present; the leaves: a Serum arp's generated notes, the 303's steps less the tied one (hits = steps − ties, 4-frame-aligned), an 808
+  BD + SD step → 36 and 38 (NOTE 39 / 37 fire, 43 not), note 35 → 36, a muted BD lane → nothing while the snare writes, a 909 flam's
+  snare twice within 30 ms; MASTER's Ducker dips the mix at 200 / 3000. G7: see tests/bench.json "sc" — node cmp 0.0041–0.0051,
+  sc-duck 0.0006–0.0007 (≤ 0.002), sc-key 0.0044–0.0058 (interleaved with cmp in one process 1.03–1.10 ×; separate processes 1.15–1.25 ×
+  from run-order jitter), jsc cmp 0.0051–0.0053 / sc-duck 0.0007 / sc-key 0.0063–0.0065; the registry read 0.012 / 0.02 / 0.063 µs per
+  block for 0 / 8 / 64 entries (gate 1 / 2 / 8 µs), the key copy 0.13 µs per span (gate 0.2), `scRack` 0.007 µs; targets cmp 0.012,
+  sc-duck 0.002, sc-key 0.013 (= 1.08 × cmp's); the warm-up covers both paths (engine-track's warmed-first-Track equivalence holds).
+- **For lane H (the interfaces as built).** `rack.sc` exactly §9.1; `Track.kL / kR` are the Track's own Float64Array(128) (the rack's
+  `sc.kL` points at them while fed); `Track.inK` = `inputs[0]` while fed (`[]`, `[[]]`, null → unfed; `In[1] || In[0]`); `Track.qF` the
+  quantum's F0; `Track.scR` / `scOn(n, v)` / `scCompact(r, F0)` / `scKey(off, n)` / `scRack(r)`; `Inst.drNote(q, v)`; the Ducker idles
+  without a trackId (`sc.reg` null) and on MASTER reads every ring; `FXRack.setCV(cv)`; a `{t: 'chain'}` with a v3 FXP on a running v2
+  keys from the next call without a reset (no node rebuild needed, skeptic #3 closed). Not touched: fx-core (phase 0's tables), fx-ui /
+  serum-ui / style.css (lane U), main.js / main-sim (lane H), sw.js.
+
+### Fixer (review 1) — F1–F3 (2026-10-24; base a6a9d8a; tests first baacc95)
+- **F1 (P2) fixed — 36bdd27.** `FXRack.scLive()`: a live sidechain unit — a Ducker with a source, a v3 compressor at KEY EXT (`mod.ext`
+  or its target) — running, or switched on by its targets (an FXP arriving mid-rest still starts it); `nSC` (Duckers + v3 compressors,
+  counted in `graph()`) is its early out, so a rack without one costs one field compare. `Track.scIdle(r, n, c)`: `zL / zR` (the
+  Track's own Float64Array(128)) zeroed, the panel's ModCore context as a rendered span's (`chainMods`; a Serum's own rack keeps its FX
+  mods as last set), `scRack`, `r.process`, the output discarded. Called at the three skip sites: `Track.renderSpan`'s (a classic's
+  c0), `chainSpan`'s idle branch (graph panels, dying panels), `Inst.renderSpan`'s Serum branch beside `SerumDSP.idle` (its own rack,
+  simple or graph). The span stays skipped (zero out, no panicFade, no output stage); the rack was idle and stays idle (zero in, zero
+  out), so the Inst keeps skipping. Refinements: a source-less Ducker and a v3 at KEY INT are not live (no rack call while skipping);
+  the call sites test `r.nSC > 0` (a rack built by an older fx-dsp has no field: untouched); other units of a driven rack run on zeros
+  through the rest (their LFOs keep time, sub-1e-6 residues decay further) — only on tracks holding a live unit, never in a golden.
+  Tests (sidechain-dsp, the reviewer's scene: two Minimoogs at drift 0 / hiss 0, a kick note every beat, B re-entering 100 ms after
+  the kick at 6.0 s) with a Ducker and a keyed compressor on a classic's panel (first note 100 / 900 ticks), a graph node's shared
+  panel (OUT at 0.5: spanG) and a Serum's own rack: B skips ≥ 500 quanta (the 6.0 s kick inside), its output exactly zero there,
+  and both units' state (the Ducker's k / g, the compressor's GR and peak) ≡ the same track never quiet (one note held through)
+  every quantum, bit for bit; the re-entry quantum's dip 4864 samples in (the 6.0 s kick's). Before the fix they differed from
+  quantum 783 (k 4224 vs 4352: the reviewer's frozen dip), 939 (graph) and 932 (Serum: the compressor's peak). A plain rack, a
+  source-less Ducker and a v3 at KEY INT make no rack call while skipping (S1). §4.3 rewritten; §11's "a skipped span hears
+  nothing" removed. Cost: one rack call per span on a keyed track during its rests (sc-duck ≈ 0.0005 of a quantum, a keyed
+  compressor ≈ 0.005, plus whatever else that rack holds).
+- **F3 (P3) fixed — 704f4ea.** `Comp.run`'s `lsn` is gated on `M !== 2` (the mode heard now): in MULTIBAND a keyed v3 with LISTEN on
+  ≡ the v2 bit for bit; out of MULTIBAND, LISTEN outputs the key at once (LISTEN's own switch is a hard cut too). §11 records it.
+- **F2 (P3) — 13edc57 (gates), 749a883 (the saving).** Sound-neutral saving: `Comp2.keyIn(K, m)` filters the block's key (and its
+  HPF) into `kx / ky` and the detector input `ka = max(|kl|, |kr|)` before the compressor's loop, which reads `ka[j]` (LISTEN `kx /
+  ky`) — per sample the arithmetic the loop did inline, bit for bit (every IMPL-SC fx-dsp case green: KEY INT ≡ v2 × 100, the HPF
+  minimum ≡ a v2 fed the key, LISTEN ≡ the key, the block offsets). jsc (the iPad's engine; cmp / sc-key alternating pairs, 15 × 5 s,
+  3 processes): sc-key / cmp 1.17–1.20 → 1.03–1.05 with the 80 Hz HPF (sc-key 0.0046 → 0.0037), 1.04–1.07 → 0.96–1.00 without; node
+  unchanged (1.04–1.06 in pairs of 10 s — the reviewer's 1.12 was `measure()`'s 5 × 1 s medians in sequence: 4 ms renders, mostly
+  noise). Gates (fx-dsp.test "IMPL-SC G7 (node gates)"): the bench rows themselves (bench-scenarios `stepper`: a row prepared as
+  `measure()` prepares it) through cpu-gate — `gateLoad` ≤ 1.5 × each row's bench.json node target (calibrated: cmp 0.0048–0.0049,
+  sc-duck 0.0005, sc-key 0.0049–0.0051) and a new `gateRatio` (alternating pairs of 10 s renders, the median per-pair ratio, ≤ 5
+  attempts, the best counting) for sc-key ≤ 1.1 × cmp: 1.04–1.06 at the first attempt in three runs. No target changed; bench.json's
+  "sc" note records the numbers.
+- **Gates** (on 749a883's code, one file at a time at 2 GB): golden-classic / -fx / -presets / -random / -graph / -drums / -606 / -909 /
+  -sdsv / -moog / -moog-b / -moog-c, canonical-stream, canvas-M-bounce, canvas-SC-live (live-p1.sha), engine-track (107), master-proc
+  (25), sidechain-dsp (9), fx-dsp (78), fx-mods2 (28), canvas-SC-sim (15), bench (6: row p's skip-path gate included), lint (165),
+  pwa (25) — every one rc 0; sw.js rebuilt (`tools/precache.mjs --write`).
 
 ## 13. Review log
 

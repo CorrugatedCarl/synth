@@ -330,22 +330,22 @@ test('§2.2 assets: the master rack is a state (users name "Master"); an IR on i
   M.edit(fx => { fx.racks[0].mods.length = 0; }); await settle(2);
 });
 
-test('schema 14 (§2.3): a save says 14 and carries project.master; an untouched master writes no key; a load reads it back; Save as classic names the master effects it loses', async () => {
-  assert.equal(CM.SCHEMA, 14);
+test('schema 15 (§2.3; 14 at stage M, 15 since SC): a save says 15 and carries project.master; an untouched master writes no key; a load reads it back; Save as classic names the master effects it loses', async () => {
+  assert.equal(CM.SCHEMA, 15);
   delete P().master;
   const t0 = JSON.parse(await cv.projectFile());
-  assert.deepEqual([t0.schema, 'master' in t0], [14, false], 'no master key');
+  assert.deepEqual([t0.schema, 'master' in t0], [15, false], 'no master key');
   M.edit(fx => { FC.newInstance(fx, 'eq', { rack: 0 }); FC.newInstance(fx, 'cmp', { rack: 0 }); }); await settle(1);
   const o = JSON.parse(await cv.projectFile());
-  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [14, 2]);
+  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [15, 2]);
   const p = cv.loadProject(JSON.stringify(o), { file: true });
   assert.equal(JSON.stringify(p.master.fx.racks[0].mods.map(I => I.type)), JSON.stringify(['eq', 'cmp']));
   const r = CM.toV1(o);
   assert.equal(r.lost.includes('the master effects (2)'), true, JSON.stringify(r.lost));
   assert.equal('master' in r.p, false);
   assert.equal(S.normMaster({ fx: 3, lay: { mfx: { x: 'a' } } }), undefined, 'nothing valid: no key');
-  const n = JSON.parse(JSON.stringify(o)); n.schema = 15;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 15, 'a schema-15 file: read-only');
+  const n = JSON.parse(JSON.stringify(o)); n.schema = 16;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 16, 'a schema-16 file: read-only');
   M.edit(fx => { fx.racks[0].mods.length = 0; }); await settle(1);
 });
 

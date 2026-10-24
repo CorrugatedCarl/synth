@@ -169,7 +169,7 @@ test('power and key zones (hooks cv.power / cv.zone: host and engine protocol): 
 
 test('(2026-10-22) no Effects tray — an effect goes in through its FX module\'s "+" (cvAddEffect, the instance at the end of the Main rack): the track\'s panel, a Serum\'s own FX — never a new panel, no History step, one notice each; an instrument module is no FX module (nothing added); each effect type\'s load estimate on this device is the "+" menu\'s (cv.fx.cost)', () => {
   const t = T();
-  assert.deepEqual([cv.fx.items.length, typeof cv.fx.pick, typeof cv.fx.drag, typeof cv.fx.tiles], [16, 'undefined', 'undefined', 'undefined'], 'the rack\'s list stays; the tray\'s tiles, tap and drag went');
+  assert.deepEqual([cv.fx.items.length, typeof cv.fx.pick, typeof cv.fx.drag, typeof cv.fx.tiles], [17, 'undefined', 'undefined', 'undefined'], 'the rack\'s list stays (17 since SC: the Ducker); the tray\'s tiles, tap and drag went');
   assert.match(cv.fx.cost('rev'), /%$/, 'a load estimate');
   const n = hsteps(), p0 = panels(), k = posted(t);
   assert.equal(typeof cv.fx.addEffect('fx1', 'dly'), 'string'); sim.raf();

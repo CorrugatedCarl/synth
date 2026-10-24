@@ -19,7 +19,9 @@
  * T.graphed / id (the post's i), port.postMessage, dm.trig(mask) (the machine, §1.2: latched), p.drum.lts / mts / hts / rss
  * / cps (the switches: a step's lastNote) and the optional hook drStep(n, v) (§15 #34: a step with sounds behaves as a note
  * — the Inst calls rack.trigger(), sets lastNote = n and gates ModCore with velocity v (1 accented, 100 / 127 else); n = the
- * lowest primary note of the step's sounds, −1 when none is mapped; drStep(−1, 0) = the gate off at a stop / release).
+ * lowest primary note of the step's sounds, −1 when none is mapped; drStep(−1, 0) = the gate off at a stop / release), and the
+ * optional hook drNote(q, v) (IMPL-SC §2.1: once per sounding lane of a step with that lane's primary q — the sidechain registry's
+ * per-lane entries, so a NOTE filter can name a kit's lane; a 909 lane's own state velocity; a flam's second hit fires it again).
  *
  * Timing (D5): a step is due when tickAt(F) ≥ its tick and the distance is (tick − tickAt(F)) · fpt — songEvents'
  * expressions for a note —, so a step and the same note (drum-core toNotes) fire at the same span start. Synced, the plan
@@ -331,16 +333,17 @@
         else if (mask & 0xFFE) {
           const dm = I.dm;
           if (dm) dm.trig(mask);
-          if (typeof I.drStep === 'function') { // §15 #34: lastNote = the lowest primary of the step's sounds
-            const D = I.p && I.p.drum;
+          const ds = typeof I.drStep === 'function', dn = typeof I.drNote === 'function';
+          if (ds || dn) { // §15 #34: lastNote = the lowest primary of the step's sounds; IMPL-SC §2.1: drNote once per sounding lane (its primary)
+            const D = I.p && I.p.drum, v = mask & 1 ? 1 : V_LO;
             let n = 128;
             for (let l = 1; l < 12; l++) {
               if (!(mask & (1 << l))) continue;
               const q = this.prim[LANE_SOUND[l][D && LANE_SW[l] && D[LANE_SW[l]] ? 1 : 0]];
               if (q >= 0 && q < n) n = q;
+              if (dn && q >= 0) I.drNote(q, v);
             }
-            this.gate = 1;
-            I.drStep(n < 128 ? n : -1, mask & 1 ? 1 : V_LO);
+            if (ds) { this.gate = 1; I.drStep(n < 128 ? n : -1, v); }
           }
         }
         const T = I.T, o = this.ct - this.c0, p = s < this.cl1 ? 0 : 1, m = f !== null ? -1 : this.cm, fl = f !== null ? 1 : 0;
@@ -373,16 +376,19 @@
       }
       // (7c) the #34 hook of a 909 hit: lastNote the lowest primary of its sounds (no switches), v the highest of their state
       // velocities (VEL9: normal 100, per-voice 110, total 119, both 127; a voice without per-voice accent 100 / 127) / 127
+      // IMPL-SC §2.1: drNote once per sounding lane (its primary, its own state velocity) — a flam's second hit fires again
       hook(mask, a9) {
-        const I = this.inst;
-        if (typeof I.drStep !== 'function') return;
+        const I = this.inst, ds = typeof I.drStep === 'function', dn = typeof I.drNote === 'function';
+        if (!ds && !dn) return;
         let n = 128, w = 0;
         for (let l = 1; l < 12; l++) {
           if (!(mask & (1 << l))) continue;
           const q = this.prim[LANE_SOUND[l][0]], z = (AC9 >> l) & 1 ? (mask & 1) * 2 + ((a9 >> l) & 1) : (mask & 1) * 3, u = VEL9[z];
           if (q >= 0 && q < n) n = q;
           if (u > w) w = u;
+          if (dn && q >= 0) I.drNote(q, u / 127);
         }
+        if (!ds) return;
         this.gate = 1;
         I.drStep(n < 128 ? n : -1, w / 127);
       }

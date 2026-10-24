@@ -274,7 +274,7 @@ test('the side tray (2026-10-22, the user: "remove it and move the estimates"; t
   const ls = fakeStorage({ 'synthc.cv.trays': JSON.stringify({ fx: { open: true, w: 300 } }) });
   const s = await bootMain({ ls }), sh = shellOf(), cv = globalThis.__synthTest.cv;
   assert.deepEqual(['fx' in sh.shell, 'fxTiles' in sh.shell, typeof cv.fx.pick, typeof cv.fx.drag, typeof cv.fx.over, typeof cv.fx.tiles], [false, false, 'undefined', 'undefined', 'undefined', 'undefined'], 'no Effects tray');
-  assert.deepEqual([typeof cv.fx.addEffect, typeof cv.fx.cost, cv.fx.items.length], ['function', 'function', 16], 'the effects (the "+" menu\'s list) and their estimates stay');
+  assert.deepEqual([typeof cv.fx.addEffect, typeof cv.fx.cost, cv.fx.items.length], ['function', 'function', 17], 'the effects (14 since SC: the Ducker) (the "+" menu\'s list) and their estimates stay');
   assert.equal(s.$('#fxTray').listeners && Object.keys(s.$('#fxTray').listeners).length, 0, 'nothing bound to a #fxTray');
   assert.equal(sh.shell.src.isOpen(), false, 'an old Effects record opens nothing');
   const tab = s.$('#srcTab');

@@ -410,6 +410,7 @@ export class SerumUI extends SerumHost {
         irs: this.host.smp || null,          // Convolve impulse responses
         s: () => this.s(),                   // rows / locks of the Serum state (instance removal, §11.2)
         edit: (fn, o) => this.edit(fn, o),
+        scSources: () => (typeof this.host.scSources === 'function' ? this.host.scSources() : null), // (IMPL-SC §6.4 d: the sidechain source menus)
       };
       const ro = { embedded: true, dsp: globalThis.FXDSP || null, racks: 3, mod: true };
       if (typeof this.host.fxCost === 'function') ro.cost = t => this.host.fxCost(t); // (the "+" menu's load estimates: the host's)

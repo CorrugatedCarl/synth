@@ -10,7 +10,7 @@
 //     MID/SIDE) with their own "+" and bypass. Drag to reorder (yellow insertion line; dropping into a branch moves the
 //     instance there; splitters never enter branches), Alt-drag duplicates without mods, Shift-Alt-drag with mods;
 //     touch: long-press menu (Duplicate, Move to ▸ …); Alt+↑/↓ moves the focused row; "+" opens the add menu
-//     (13 effects + 3 splitters; inside a branch the effects only; each with its load estimate when the host gives opts.cost);
+//     (14 effects + 3 splitters; inside a branch the effects only; each with its load estimate when the host gives opts.cost);
 //   · the rack view (right): one panel per instance of the rack, a splitter followed by the panels of its selected
 //     branch. Panel header: title, S1 badge, "bypassed" chip (v1 temporary bypass `inst.byp`; a click clears it),
 //     ▾ module menu (Factory ▸, user presets, Save FX Preset…, Save as / Clear Default Preset, Duplicate, Remove,
@@ -33,7 +33,10 @@
 // FX state the rack writes into its v1 object, see below; a host whose fx() already is v2 needs no flag). Optional (the
 // Serum side of instance operations): s() (serum-ui's adapter) or state() → the Serum state, and edit(fn, opts)
 // (Serum-state edit) — without them Duplicate (w/mods) and Shift-Alt-drag are unavailable and a removed instance's
-// modulation rows stay (inactive, red in the matrix, §2.3).
+// modulation rows stay (inactive, red in the matrix, §2.3). Optional (IMPL-SC §6.1, the sidechain): scSources() →
+// { self: track id | null (the master), list: [{ id, name, drum }] (project order), notes(id) → [{ n, name }] | null (a drum
+// machine's lanes), ok(id) → '' | the reason a source is refused (the track itself, a loop) } | null — the Ducker's
+// TRIGGER and the keyed Compressor's source menus; without it they are disabled and say where to set them.
 // Options: { embedded, dsp, racks: 1 | 3, mod, v2Fx, cost } (mod: the controls are modulation destinations of the host's mod
 // layer, which then owns their context menus and drops — default = embedded; without it the rack's own control menu
 // (Reset Control, Enter Value…, the control's own items: ctlExtras) answers a right-click / long-press on a control;
@@ -54,7 +57,7 @@
 // Pure helpers (node-testable): listRows(fx, rack?), addMenuItems(fx, rack, branch), moveTarget(fx, dragId, dropRow,
 // rack?) and the Phase-1 helpers moveModule, ladderLabel, moduleTitle, modulePresetPayload / applyModulePreset (v1 module
 // presets), svfDb, impulseDb. Nothing touches the DOM at module top level.
-import { knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
+import { knob, numBox, menu, toggle, seg, iconSeg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
   saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker, localPoint, localScale, onRescale } from './wk.js?v=9';
 import { CurveEditor, shapeLib } from './graph.js?v=9';
 import * as core from './serum-core.js?v=9';
@@ -230,8 +233,8 @@ const hasS2 = type => { const t = typeOf(type); return !!(t && Array.isArray(t.v
 const s1Tip = type => (hasS2(type) ? 'Serum 1 variant (Convert to Serum 2 Module in its menu)' : 'Serum 1 module (it has no Serum 2 variant)');
 // splitter branch labels (§13.5)
 const BRANCH_LABELS = { split2: ['LOWS', 'HIGHS'], split3: ['LOWS', 'MIDS', 'HIGHS'], splitms: ['MID', 'SIDE'] };
-// add menu order (inv B14.1 list): the 13 effects alphabetically, then the 3 splitters
-const ADD_EFFECTS = ['bode', 'cho', 'cmp', 'conv', 'dly', 'dist', 'eq', 'fil', 'flg', 'hyper', 'phs', 'rev', 'util'];
+// add menu order (inv B14.1 list): the 14 effects alphabetically (IMPL-SC: the Ducker after Distortion), then the 3 splitters
+const ADD_EFFECTS = ['bode', 'cho', 'cmp', 'conv', 'dly', 'dist', 'duck', 'eq', 'fil', 'flg', 'hyper', 'phs', 'rev', 'util'];
 const ADD_SPLITTERS = ['split2', 'split3', 'splitms'];
 const MAX_TOP = 16, MAX_BR = 8, MAX_ALL = fin(core.MAX_INST) ? core.MAX_INST : 48;
 const RACK_NAMES = ['MAIN', 'BUS 1', 'BUS 2'];
@@ -277,8 +280,43 @@ function subDefault(type, v) {
   if (type === 'cho') return { mono: 0 };
   if (type === 'rev') return v === 1 ? { type: 1 } : {};
   if (type === 'conv') return { ir: core.CONV_IR_DEFAULT || 'fir:Medium/Chamber' };
+  if (type === 'cmp') return v === 3 ? { src: '' } : {};                                   // IMPL-SC §3.3 the key's source
+  if (type === 'duck') return { src: '', cv: deep(core.DUCK_DEFAULT || DIAG()) };          // §4.1 the trigger, the dip
   return {};
 }
+// IMPL-SC §1.3: a payload leaving the project (a stored / exported preset, rack, chain) carries no sidechain source — a
+// track id names another track elsewhere (fx-core blankSrc: every sub.src → '')
+const blank = x => (typeof core.blankSrc === 'function' ? core.blankSrc(x) : x);
+// a payload's sub-state without its source (a module preset read from the library: never a source, §3.3)
+const noSrc = S => (isObj(S) && typeof S.src === 'string' && S.src ? Object.assign({}, S, { src: '' }) : S);
+// IMPL-SC §6.1 the host's tracks (scSources().list, project order) as source-menu entries: two of one name told apart by
+// their place in the list ("Kick · 3"); withWhy: the host's reason a source is refused (ok(id): the track itself, a loop —
+// asked only as a menu opens, never per refresh)
+function srcList(S, withWhy) {
+  const L = arr(S && S.list).filter(t => isObj(t) && typeof t.id === 'string' && t.id), seen = new Map();
+  const nm = t => String(t.name == null ? '' : t.name) || t.id;
+  for (const t of L) seen.set(nm(t), (seen.get(nm(t)) || 0) + 1);
+  return L.map((t, i) => {
+    let why = '';
+    if (withWhy) {
+      try { why = typeof S.ok === 'function' ? String(S.ok(t.id) || '') : ''; } catch (err) { why = ''; }
+      if (!why && t.id === S.self) why = 'A track cannot key itself';
+    }
+    return { id: t.id, name: seen.get(nm(t)) > 1 ? nm(t) + ' · ' + (i + 1) : nm(t), drum: !!t.drum, why };
+  });
+}
+// the Ducker's SHAPE presets (fx-core DUCK_SHAPES): a 16 × 16 icon path of each dip (laws evalPts: the curve the DSP
+// renders), and the preset the points equal (−1: Custom)
+function shapeIcon(p) {
+  let d = '';
+  for (let j = 0; j <= 12; j++) { const t = j / 12, y = clamp01(core.evalPts(p, t)); d += (j ? ' L ' : 'M ') + (1 + 14 * t).toFixed(1) + ' ' + (1 + 14 * (1 - y)).toFixed(1); }
+  return d;
+}
+const samePts = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length
+  && a.every((q, i) => Array.isArray(q) && Math.abs(q[0] - b[i][0]) < 1e-6 && Math.abs(q[1] - b[i][1]) < 1e-6 && Math.abs((q[2] || 0) - (b[i][2] || 0)) < 1e-6);
+function shapeOf(p) { const S = arr(core.DUCK_SHAPES); for (let k = 0; k < S.length; k++) if (samePts(p, S[k].pts)) return k; return -1; }
+// the Ducker's curve editor runs no animator of its own: the rack's grLoop draws its playhead (one loop per rack)
+const NO_ANIM = Object.freeze({ start() {}, stop() {}, running: () => false });
 function makeInst(id, type, v) {
   const p = {};
   for (const r of tabOf(type, v)) p[r.pid] = r.def;
@@ -296,12 +334,15 @@ function listAt(fx, to) {
 }
 // v2 module preset payload ({type: 'synth.fxmod', v: 2, name, ftype, fv, p, sub}); a v1 payload ({name, m, p: {fx.<m>.*},
 // sub}) is read as its v2 form (S1 variant, Dimension rows renamed). fx-core applies either (an S1 payload on an S2
-// instance through upgradeInstance, §11.2)
+// instance through upgradeInstance, §11.2). fv: 1, a known variant of the type (IMPL-SC: a keyed Compressor's 3), else 2;
+// the sub-state never carries a sidechain source (§3.3)
 function payloadV2(x) {
   if (!isObj(x)) return null;
   if (x.type === 'synth.fxmod' || typeof x.ftype === 'string') {
-    if (!typeOf(x.ftype) || !isObj(x.p)) return null;
-    return { type: 'synth.fxmod', v: 2, name: String(x.name || ''), ftype: x.ftype, fv: x.fv === 1 ? 1 : 2, p: x.p, sub: isObj(x.sub) ? x.sub : {} };
+    const T = typeOf(x.ftype);
+    if (!T || !isObj(x.p)) return null;
+    const fv = x.fv === 1 ? 1 : Array.isArray(T.variants) && T.variants.indexOf(x.fv) >= 0 ? x.fv : 2;
+    return { type: 'synth.fxmod', v: 2, name: String(x.name || ''), ftype: x.ftype, fv, p: x.p, sub: isObj(x.sub) ? noSrc(x.sub) : {} };
   }
   const m = modOf(x);
   if (!m || !isObj(x.p)) return null;
@@ -439,7 +480,7 @@ function branchRow(P, k, b) {
 function endRow(P, k, b) { return { kind: 'end', key: P.id + '/' + b + '/end', rack: k, parent: P.id, branch: b, depth: 1, at: arr(P.br[b]).length }; }
 
 // Items of the "+" menu of rack `rack` (top level: branch null) or of a splitter branch (branch = {splitter, branch}):
-// [{type, label, group: 'Effects' | 'Splitters', disabled}] — 13 effects (+ 3 splitters at the top level); disabled
+// [{type, label, group: 'Effects' | 'Splitters', disabled}] — 14 effects (+ 3 splitters at the top level); disabled
 // when the list (16 per rack, 8 per branch) or the track (48) is full.
 export function addMenuItems(fx, rack, branch) {
   const F = viewOf(fx), U = isObj(F.ui) ? F.ui : {};
@@ -535,6 +576,14 @@ const CSS = `
 [data-nomod] .wk-svg { opacity: 0.85; }
 .fxr2 .fxr-gr { touch-action: none; }
 .fxr2-emb { flex: 0 0 auto; align-self: center; padding: 1px 5px; color: var(--sx-on, #6fe3a1); border: 1px solid currentColor; border-radius: 3px; font: 700 8px/1.4 var(--ui, system-ui, sans-serif); letter-spacing: 0.08em; }
+.fxr2-pick .wk-mbtn { min-width: 96px; max-width: 176px; }
+.fxr2-pick.wk-dis { opacity: 0.55; }
+.fxr2-pick .wk-mbtn:disabled { cursor: default; }
+.fxr2-gone .wk-mtxt { color: var(--sx-warn, #ff6a4a); }
+.fxr2-gone .wk-mbtn { border-color: var(--sx-warn, #ff6a4a); }
+.fxr2-key.fxr2-dim { opacity: 0.4; }
+.fxr-dkcv { flex: 1 1 100%; min-width: 200px; }
+.fxr-m-duck .fxr-gr { flex: 1 1 110px; min-width: 96px; height: 30px; }
 @media (max-width: 699px) { .fxr2 .fxr2-list:where(:not([data-cv-world] *)) { flex-direction: column; overflow-x: visible; } .fxr2-d1:where(:not([data-cv-world] *)) { margin-left: 10px; } }
 `;
 // §13.1 touch rules (targets ≥ 44 px): emitted under `@media (pointer: coarse)` and again under `.wk-touch` (wk adds it to
@@ -1009,9 +1058,9 @@ export class FXRackUI {
       P.widgets.push(w);
       const r = row(pid), d = dest(pid);
       ui.knobs.set(d, w);
-      if (r && r.nomod) {
+      if (r && r.nomod) {   // (Convolve's IR shaping; IMPL-SC: the key's INT / EXT and LISTEN, the Ducker's NOTE — switches)
         w.el.setAttribute('data-nomod', '1');
-        tooltip(w.el, () => ui.label(id, pid) + ': ' + ui.fmtV(id, pid, ui.val(id, pid)) + '\nReshapes the IR — not modulatable');
+        tooltip(w.el, () => ui.label(id, pid) + ': ' + ui.fmtV(id, pid, ui.val(id, pid)) + (type === 'conv' ? '\nReshapes the IR — not modulatable' : '\nNot modulatable'));
       } else ui.tip(w, () => d);
       return w;
     };
@@ -1021,7 +1070,7 @@ export class FXRackUI {
         fmt: n => ui.fmtV(id, pid, n), parse: t => ui.parse(id, pid, t) }, o || {});
     };
     const c = {
-      id, type, v, P, dest, row,
+      id, type, v, P, dest, row, reg,
       val: pid => ui.val(id, pid),
       on: pid => ui.val(id, pid) >= 0.5,
       k: pid => { const r = row(pid), g = stepsOfRow(r); return g ? Math.round(ui.val(id, pid) * g) + (r.lo | 0) : 0; },
@@ -1032,16 +1081,16 @@ export class FXRackUI {
         if (!r) return null;
         return reg(pid, knob(base(pid, Object.assign({ label, steps: stepsOfRow(r), bipolar: !!r.ctr, size: 'md' }, o))));
       },
-      tg(pid, label, kind, text) {
+      tg(pid, label, kind, text, o) {
         if (!row(pid)) return null;
-        return reg(pid, toggle({ dest: dest(pid), label, text, kind: kind || 'btn', get: () => (ui.val(id, pid) >= 0.5 ? 1 : 0),
-          set: (x, ph) => ui.setP(id, pid, x ? 1 : 0, ph) }));
+        return reg(pid, toggle(Object.assign({ dest: dest(pid), label, text, kind: kind || 'btn', get: () => (ui.val(id, pid) >= 0.5 ? 1 : 0),
+          set: (x, ph) => ui.setP(id, pid, x ? 1 : 0, ph) }, o)));
       },
-      sg(pid, items, label) {
+      sg(pid, items, label, o) {
         const r = row(pid);
         if (!r) return null;
         const g = stepsOfRow(r) || 1;
-        return reg(pid, seg({ dest: dest(pid), label, items, get: () => Math.round(ui.val(id, pid) * g), set: k => ui.setP(id, pid, k / g, 'set') }));
+        return reg(pid, seg(Object.assign({ dest: dest(pid), label, items, get: () => Math.round(ui.val(id, pid) * g), set: k => ui.setP(id, pid, k / g, 'set') }, o)));
       },
       mn(pid, labels, label, groups) {
         const r = row(pid);
@@ -1164,13 +1213,14 @@ export class FXRackUI {
     const r3 = this.row(b);
     r3.append(this.delayDisplay(c).el, ...this.els(c.kn('freq', 'F'), c.kn('q', 'Q'), c.mix()));
   }
+  // S2 (v2) and the keyed S2 (v3, IMPL-SC §3: the v2 rows then ext / schp / listen) share the v2 controls (c.v >= 2)
   mod_cmp(c, b) {
-    const r0 = c.v === 2 ? this.row(b) : null;
-    if (r0) r0.append(c.sg('mb', ['SINGLE', 'MULTIBAND'], 'MODE').el);
+    const r0 = c.v >= 2 ? this.row(b) : null;
+    if (r0) r0.append(c.sg('mb', ['SINGLE', 'MULTIBAND'], 'MODE').el, this.keyGroup(c));
     const r1 = this.row(b);
     const dets = CMP_RATIO_DETENTS;
     r1.append(...this.els(c.kn('thr', 'THRESH'), c.kn('ratio', 'RATIO', { detents: dets }), c.kn('att', 'ATTACK'), c.kn('rel', 'RELEASE'), c.kn('gain', 'GAIN'), c.mix()));
-    if (c.v === 2) {
+    if (c.v >= 2) {
       const mb = this.group(b, 'MULTIBAND');
       mb.append(...this.els(c.kn('xlo', 'X-LOW', { size: 'sm' }), c.kn('xhi', 'X-HIGH', { size: 'sm' }), c.kn('below', 'BELOW', { size: 'sm', detents: dets }),
         c.kn('gH', 'H', { size: 'sm' }), c.kn('gM', 'M', { size: 'sm' }), c.kn('gL', 'L', { size: 'sm' })));
@@ -1224,6 +1274,233 @@ export class FXRackUI {
     cv.addEventListener('pointerup', end);
     cv.addEventListener('pointercancel', end);
   }
+  // IMPL-SC §6.3 the Compressor's sidechain key, after MODE. A v2 (every compressor until keyed: fx-core nv) shows only
+  // KEY: None ▾ — picking a source keys it (v3 in the same edit, setSrc); a v3 its group: KEY INT | EXT, FROM ▾, KEY HPF (its
+  // minimum = off), LISTEN, dimmed in MULTIBAND (the bands read their own audio, §11). The master has no key input (§4.4):
+  // its FROM is disabled, and KEY / LISTEN only stay reachable to switch back what a preset left on
+  keyGroup(c) {
+    if (c.v < 3) return this.srcPick(c, 'KEY').el;
+    const g = h('div', 'fxr-grp fxr2-key'), r = h('div', 'fxr-row');
+    g.append(h('div', 'fxr-gt', 'SIDECHAIN'), r);
+    const master = () => { const S = this.scs(); return !!S && S.self === null; };
+    const ext = c.sg('ext', ['INT', 'EXT'], 'KEY', { disabled: () => master() && !c.on('ext') });
+    if (ext) ext.el.title = 'INT: the compressor hears its own input · EXT: the source track’s audio';
+    const hp = c.kn('schp', 'KEY HPF', { size: 'sm', fmt: n => (n > 0 ? this.fmtV(c.id, 'schp', n) : 'Off'),
+      parse: t => (/^\s*off\s*$/i.test(String(t)) ? 0 : this.parse(c.id, 'schp', t)) });
+    const ls = c.tg('listen', 'LISTEN', null, undefined, { disabled: () => master() && !c.on('listen') });
+    if (ls) ls.el.title = 'Listen to the key (after KEY HPF)';
+    r.append(...this.els(ext, this.srcPick(c, 'FROM'), hp, ls));
+    c.upd(() => g.classList.toggle('fxr2-dim', c.on('mb')));
+    return g;
+  }
+  // IMPL-SC §6.2 the Ducker (§4: a shaped gain dip on the chosen track's notes): TRIGGER (srcPick) · NOTE (notePick);
+  // DEPTH · LENGTH (ms, or the SYNC ladder with BPM: two rows shown in turn, the pre-delay pattern) · ATTACK · SMOOTH ·
+  // LEVEL; the dip curve inline — sub.cv (x = time over LENGTH, y = gain before DEPTH) in a CurveEditor 'curve' (touch: a
+  // 22 px point / handle radius = 44 px targets, drag, double-tap adds / removes; no zoom: native pinch only) — and its
+  // SHAPE presets one tap away (DUCK_SHAPES; "Custom" when the points match none); the GR bar and the playhead from host.gr()
+  // (slots [4i] reduction dB, [4i + 1] position or −1), both drawn by the rack's grLoop (≤ 30 fps, drawGrs): the editor's
+  // own animator is replaced, so a page of Duckers runs one loop, and nothing is drawn while the position is unchanged
+  mod_duck(c, b) {
+    const P = c.P, id = c.id;
+    const r1 = this.row(b);
+    r1.append(this.srcPick(c, 'TRIGGER').el, this.notePick(c).el);
+    const r2 = this.row(b);
+    const len = c.kn('len', 'LENGTH'), lad = c.kn('lad', 'LENGTH');
+    if (len) c.vis(len.el, () => !c.on('bpm'));
+    if (lad) c.vis(lad.el, () => c.on('bpm'));
+    r2.append(...this.els(c.kn('depth', 'DEPTH'), this.col(...this.els(len, lad, c.tg('bpm', 'BPM'))), c.kn('att', 'ATTACK'), c.kn('smooth', 'SMOOTH'), c.mix()));
+    const box = h('div', 'fxr-dkcv');
+    const cv = () => { const I = this.inst(id); return I && isObj(I.sub) && Array.isArray(I.sub.cv) && I.sub.cv.length >= 2 ? I.sub.cv : core.DUCK_DEFAULT || DIAG(); };
+    const ed = P.ed = new CurveEditor(box, {
+      kind: 'curve', label: 'Ducker curve', height: 96, shapes: this.shapes, get: cv,
+      set: (p, ph) => {
+        P.cvRef = p; P.cvSig = JSON.stringify(p);
+        this.edit(fx => this.withInst(fx, id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub.cv = p; }), instTitle(this.fx(), id) + ' Curve', ph);
+      },
+    });
+    ed.anim = NO_ANIM;
+    ed.o.playhead = () => P.ph;
+    P.ph = null; P.phShown = null; P.cvRef = null; P.cvSig = null; P.cvOn = false;
+    P.offs.push(() => ed.destroy());
+    // the editor follows the state (undo, a preset, a shape): redrawn when the points change, and once it is in the page
+    c.upd(() => {
+      const p = cv();
+      if (p === P.cvRef && P.cvOn) return;
+      const k = JSON.stringify(p), on = ed.root.isConnected;
+      if (k !== P.cvSig || on !== P.cvOn) { P.cvSig = k; P.cvOn = on; ed.refresh(); }
+      P.cvRef = p;
+    });
+    this.row(b).append(box);
+    const SH = arr(core.DUCK_SHAPES);
+    const sh = iconSeg({ label: () => (shapeOf(cv()) < 0 ? 'SHAPE · CUSTOM' : 'SHAPE'), items: SH.map(s => ({ icon: shapeIcon(s.pts), label: s.name })),
+      get: () => shapeOf(cv()), set: k => this.setShape(id, k) });
+    P.widgets.push(sh);
+    const gr = h('canvas', 'fxr-gr');
+    gr.setAttribute('role', 'img');
+    gr.setAttribute('aria-label', 'Ducking (gain reduction)');
+    P.grCv = gr;
+    this.row(b).append(sh.el, gr);
+  }
+  setShape(id, k) {
+    const s = arr(core.DUCK_SHAPES)[k];
+    if (!s) return;
+    this.edit(fx => this.withInst(fx, id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub.cv = deep(s.pts); }), instTitle(this.fx(), id) + ' Shape', 'set');
+    this.refresh();
+  }
+  // the host's sidechain sources (IMPL-SC §6.1; an optional member): its object, or null (absent, failing, malformed)
+  scs() {
+    const f = this.host.scSources;
+    if (typeof f !== 'function') return null;
+    let S = null;
+    try { S = f.call(this.host); } catch (err) { S = null; }
+    return isObj(S) && Array.isArray(S.list) ? S : null;
+  }
+  // IMPL-SC §6.2 / §6.3 the sidechain source menu (a Ducker's TRIGGER, a compressor's KEY / FROM): a button in wk's menu
+  // look opening a contextMenu (the instMenu pattern, srcItems). A source gone from the project reads "— (deleted)" in the
+  // warning colour until changed (sub.src is kept for undo, §1.3), as KEY EXT without a source does; disabled without the
+  // host member (it then says where to set the source) and, for a compressor, on the master (no key input, §4.4)
+  srcPick(c, label) {
+    const cmp = c.type === 'cmp', el = h('div', 'wk-menu fxr2-pick'), row = h('div', 'wk-mrow');
+    const b = btn('wk-mbtn fxr2-srcb'), txt = h('span', 'wk-mtxt'), car = h('span', 'wk-caret', '▾');
+    car.setAttribute('aria-hidden', 'true');
+    b.setAttribute('aria-haspopup', 'menu');
+    b.append(txt, car);
+    row.append(b);
+    el.append(h('span', 'wk-lab', label), row);
+    const update = () => {
+      const s = this.srcState(c.id);
+      if (txt.textContent !== s.text) txt.textContent = s.text;
+      b.disabled = s.off;
+      el.classList.toggle('wk-dis', s.off);
+      el.classList.toggle('fxr2-gone', s.warn);
+      b.title = s.why;
+      b.setAttribute('aria-label', (cmp ? 'Key source' : 'Trigger track') + ': ' + s.text);
+    };
+    b.addEventListener('click', () => {
+      update();
+      if (b.disabled) return;
+      const r = b.getBoundingClientRect();
+      contextMenu(r.left, r.bottom + 2, this.srcItems(c.id), { anchor: b });
+    });
+    const w = { el, update, destroy: () => el.remove() };
+    c.P.widgets.push(w);
+    update();
+    return w;
+  }
+  srcState(id) {
+    const I = this.inst(id), S = this.scs(), cmp = !!I && I.type === 'cmp';
+    const src = I && isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : '';
+    if (!S) return { text: 'Set it in the track’s FX module', off: true, warn: false, why: 'The source is set in the track’s FX module on the canvas' };
+    const t = src ? srcList(S).find(x => x.id === src) : null, text = !src ? 'None' : t ? t.name : '— (deleted)';
+    if (cmp && S.self === null) return { text, off: true, warn: false, why: 'The master hears the whole mix' };
+    if (src && !t) return { text, off: false, warn: true, why: 'The track this followed was deleted: pick another source' };
+    if (!src && cmp && I.v === 3 && this.val(id, 'ext') >= 0.5) return { text, off: false, warn: true, why: 'KEY EXT needs a source: pick a track, or set KEY to INT' };
+    return { text, off: false, warn: false, why: '' };
+  }
+  // the menu: None, a deleted source (shown, not pickable), then the tracks — the track itself and a source that would
+  // close a loop disabled with the host's reason (its title; a short hint at the right end for touch, which has no hover)
+  srcItems(id) {
+    const I = this.inst(id), S = this.scs();
+    if (!I || !S) return [{ label: 'Set it in the track’s FX module', disabled: true }];
+    const cur = isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : '', L = srcList(S, true);
+    const items = [{ label: 'None', checked: cur === '', action: () => this.setSrc(id, '') }];
+    if (cur && !L.some(t => t.id === cur)) items.push({ label: '— (deleted)', checked: true, disabled: true, title: 'The track this followed was deleted' });
+    if (L.length) items.push({ sep: true });
+    for (const t of L) {
+      items.push({ label: t.name, checked: t.id === cur, disabled: !!t.why, title: t.why || undefined, hint: t.why ? (t.id === S.self ? 'this track' : 'loop') : undefined,
+        action: () => this.setSrc(id, t.id) });
+    }
+    return items;
+  }
+  // a source picked: one edit (knob policy, phase 'set'). A compressor v2 is keyed in the same edit (fx-core
+  // upgradeInstance → v3, then the source and KEY EXT); None → KEY INT (a v2 stays v2). A source the host refuses (the
+  // track itself, a loop) changes nothing and says why. The notice names the routing ("Kick now keys Bass’s Compressor")
+  setSrc(id, src) {
+    const I = this.inst(id), S = this.scs();
+    if (!I || !S || typeof src !== 'string') return false;
+    const cmp = I.type === 'cmp';
+    if (cmp && (I.v < 2 || S.self === null)) return false;
+    let why = '';
+    if (src) {
+      try { why = typeof S.ok === 'function' ? String(S.ok(src) || '') : ''; } catch (err) { why = ''; }
+      if (!why && src === S.self) why = 'A track cannot key itself';
+    }
+    if (why) { this.notify(why); return false; }
+    const cur = isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : '';
+    if (cmp && I.v === 2 && !src) return false;
+    if (cur === src && (!cmp || (this.val(id, 'ext') >= 0.5) === !!src)) return false;
+    const t = instTitle(this.fx(), id);
+    let done = false;
+    this.edit(fx => this.withInst(fx, id, J => {
+      if (cmp && J.v === 2) {
+        const U = core.upgradeInstance(J);
+        if (!isObj(U) || U.v !== 3) return;
+        for (const k of Object.keys(J)) delete J[k];
+        Object.assign(J, U);
+      }
+      if (cmp && J.v !== 3) return;
+      J.sub = isObj(J.sub) ? J.sub : {};
+      J.sub.src = src;
+      if (cmp) { J.p = isObj(J.p) ? J.p : {}; J.p.ext = src ? 1 : 0; }
+      done = true;
+    }), t + (cmp ? ' Key' : ' Trigger'), 'set');
+    this.refresh();
+    if (done && src) {
+      const L = srcList(S), nm = x => { const e = L.find(y => y.id === x); return e ? e.name : ''; }, me = S.self ? nm(S.self) : '';
+      this.notify(cmp ? nm(src) + ' now keys ' + (me ? me + '’s ' : 'this track’s ') + t
+        : (me || (S.self === null ? 'The master' : 'This track')) + ' now ducks with ' + nm(src));
+    }
+    return done;
+  }
+  // the Ducker's NOTE filter (row `note`: 0 Any, k = MIDI note k − 1; a switch — nomod, carries data-dest): a button in wk's
+  // menu look; Any, then a drum machine source's lanes by name (the host's notes(id): the primaries the registry stores,
+  // §2.1) with every other note one level deeper, else the 128 notes in octaves
+  notePick(c) {
+    const el = h('div', 'wk-menu fxr2-pick'), row = h('div', 'wk-mrow');
+    const b = btn('wk-mbtn'), txt = h('span', 'wk-mtxt'), car = h('span', 'wk-caret', '▾');
+    car.setAttribute('aria-hidden', 'true');
+    b.setAttribute('aria-haspopup', 'menu');
+    b.append(txt, car);
+    row.append(b);
+    el.append(h('span', 'wk-lab', 'NOTE'), row);
+    el.setAttribute('data-dest', c.dest('note'));
+    const text = () => {
+      const k = c.k('note');
+      if (!(k > 0)) return 'Any';
+      const l = (this.noteLanes(c.id) || []).find(x => x.n === k - 1);
+      return l ? l.name : String(arr(core.DUCK_NOTES)[k] || k - 1);
+    };
+    const update = () => { const t = text(); if (txt.textContent !== t) txt.textContent = t; b.setAttribute('aria-label', 'Note filter: ' + t); };
+    b.addEventListener('click', () => { const r = b.getBoundingClientRect(); contextMenu(r.left, r.bottom + 2, this.noteItems(c), { anchor: b }); });
+    const w = { el, update, setMod: () => {}, focus: () => b.focus({ preventScroll: true }), destroy: () => el.remove() };
+    update();
+    return c.reg('note', w);
+  }
+  noteLanes(id) {
+    const I = this.inst(id), S = this.scs(), src = I && isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : '';
+    if (!S || !src || typeof S.notes !== 'function') return null;
+    let L = null;
+    try { L = S.notes(src); } catch (err) { L = null; }
+    if (!Array.isArray(L)) return null;
+    return L.filter(x => isObj(x) && fin(x.n) && x.n >= 0 && x.n <= 127).map(x => ({ n: Math.round(x.n), name: String(x.name || arr(core.DUCK_NOTES)[Math.round(x.n) + 1]) }));
+  }
+  noteItems(c) {
+    const k = c.k('note'), N = arr(core.DUCK_NOTES), name = n => String(N[n + 1] || n).replace(/ \(\d+\)$/, '');
+    const set = j => { this.setP(c.id, 'note', j / 128, 'set'); this.refresh(); };
+    const octs = [];
+    for (let lo = 0; lo < 128; lo += 12) {
+      const hi = Math.min(127, lo + 11), sub = [];
+      for (let n = lo; n <= hi; n++) sub.push({ label: String(N[n + 1] || n), checked: k === n + 1, action: () => set(n + 1) });
+      octs.push({ label: name(lo) + ' … ' + name(hi), checked: k > lo && k <= hi + 1, sub });
+    }
+    const items = [{ label: 'Any', checked: k === 0, action: () => set(0) }], lanes = this.noteLanes(c.id);
+    if (lanes && lanes.length) {
+      items.push({ sep: true });
+      for (const l of lanes) items.push({ label: l.name, checked: k === l.n + 1, action: () => set(l.n + 1) });
+      items.push({ sep: true }, { label: 'All notes', sub: octs });
+    } else items.push({ sep: true }, ...octs);
+    return items;
+  }
   mod_rev(c, b) {
     if (c.v === 1) {
       const r1 = this.row(b);
@@ -1262,7 +1539,7 @@ export class FXRackUI {
     const L = this.group(r2, 'LOW'), H = this.group(r2, 'HIGH');
     L.append(...this.els(c.sg('typeL', EQ_TYPES_L.slice(), 'TYPE'), c.kn('freqL', 'FREQ'), c.kn('qL', 'Q'), c.kn('gainL', 'GAIN', { disabled: () => c.k('typeL') === 2 })));
     H.append(...this.els(c.sg('typeH', EQ_TYPES_H.slice(), 'TYPE'), c.kn('freqH', 'FREQ'), c.kn('qH', 'Q'), c.kn('gainH', 'GAIN', { disabled: () => c.k('typeH') === 2 })));
-    if (c.v === 2) r2.append(c.kn('level', 'LEVEL').el);
+    if (c.v >= 2) r2.append(c.kn('level', 'LEVEL').el);
   }
   mod_fil(c, b) {
     const r1 = this.row(b);
@@ -1892,7 +2169,8 @@ export class FXRackUI {
     const r = cv.getBoundingClientRect(), w = Math.max(40, cv.clientWidth || (r.width ? r.width - 2 : 120)), H = Math.max(16, cv.clientHeight || 62);
     const all = this.host.gr ? this.host.gr() : null, i = this.grSlot(P.id), o = 4 * i;
     const mb = this.val(P.id, 'mb') >= 0.5, gv = k => (i >= 0 && all && fin(all[o + k]) ? all[o + k] : 0);
-    const sig = [w, H, mb ? 1 : 0, gv(0), gv(1), gv(2), gv(3), mb ? [this.val(P.id, 'mbH'), this.val(P.id, 'mbM'), this.val(P.id, 'mbL')].join() : ''].join('|');
+    if (P.type === 'duck') { const q = i >= 0 && all ? all[o + 1] : NaN; P.ph = fin(q) && q >= 0 ? clamp01(q) : null; }   // IMPL-SC §4.2 the dip's position
+    const sig =[w, H, mb ? 1 : 0, gv(0), gv(1), gv(2), gv(3), mb ? [this.val(P.id, 'mbH'), this.val(P.id, 'mbM'), this.val(P.id, 'mbL')].join() : ''].join('|');
     if (lazy && sig === P.grSig) return;
     P.grSig = sig;
     const ctx = fitCanvas(cv, w, H);
@@ -1912,13 +2190,20 @@ export class FXRackUI {
         ctx.fillStyle = T.neg; ctx.fillRect(Math.round(tx) - 1, y + 1, 2, rh - 2);
       }
       ctx.fillStyle = T.mute;
-      if (ctx.fillText) { ctx.fillText(lab, 3, y + rh / 2 + 3); ctx.fillText((v > 0 ? '-' : v < 0 ? '+' : '') + Math.abs(v).toFixed(1), w - 32, y + rh / 2 + 3); }
+      const tv = P.type === 'duck' && v >= 60 ? '-∞' : (v > 0 ? '-' : v < 0 ? '+' : '') + Math.abs(v).toFixed(1);   // (a full dip: g floored at 1e-6)
+      if (ctx.fillText) { ctx.fillText(lab, 3, y + rh / 2 + 3); ctx.fillText(tv, w - 32, y + rh / 2 + 3); }
     });
   }
   grPanels() { return [...this.panels.values()].filter(P => P.grCv && P.el.isConnected); }
-  drawGrs(lazy) { for (const P of this.grPanels()) this.drawGr(P, lazy); }
+  // the GR bars, and a Ducker's playhead on its curve editor's overlay when the dip's position moved (IMPL-SC §6.2)
+  drawGrs(lazy) {
+    for (const P of this.grPanels()) {
+      this.drawGr(P, lazy);
+      if (P.ed && P.phShown !== P.ph) { P.phShown = P.ph; P.ed.drawOverlay(); }
+    }
+  }
   rendered() { const el = this.el; return el.isConnected && !(typeof el.getClientRects === 'function' && el.getClientRects().length === 0); }
-  // the GR display loop while a compressor is shown (wk.ticker, §13.1: ≤ 30 fps, 10 fps with prefers-reduced-motion,
+  // the GR display loop while a compressor or a Ducker is shown (wk.ticker, §13.1: ≤ 30 fps, 10 fps with prefers-reduced-motion,
   // nothing painted while the page is hidden; a frame repaints only what changed); it stops when no compressor is
   // shown or the rack is hidden (refresh() restarts it)
   grLoop() {
@@ -2122,10 +2407,17 @@ export class FXRackUI {
     items.push({ label: 'Move to', sub: this.moveItems(id) });
     items.push({ label: 'Remove FX Module', action: () => this.removeInst(id) });
     if (I.v === 1 && hasS2(I.type)) items.push({ label: 'Convert to Serum 2 Module', action: () => this.upgrade(id) });
+    if (I.type === 'cmp' && I.v === 2) { // IMPL-SC §6.3: the key group without a source yet (v3, KEY INT); none on the master
+      const S = this.scs(), m = !!S && S.self === null;
+      items.push({ label: 'Add a sidechain key', disabled: m, title: m ? 'The master hears the whole mix' : undefined, action: () => this.upgrade(id) });
+    }
     // (Limiter Latency Comp lives in the RATIO control's menu, ctlExtras — RULINGS2 U3)
     items.push({ sep: true }, { label: 'Init Module', action: () => this.initInst(id) });
     return items;
   }
+  // one variant up (fx-core upgradeInstance, §11.2: a new object, same id, written over the instance in place): S1 → S2
+  // ("Convert to Serum 2 Module", a seed), or a v2 Compressor → v3 (IMPL-SC §6.3 "Add a sidechain key": no source, KEY INT;
+  // the sound unchanged — no seed)
   upgrade(id) {
     const I = this.inst(id);
     if (!I) return;
@@ -2133,25 +2425,27 @@ export class FXRackUI {
       const ok = typeof globalThis.confirm === 'function' ? globalThis.confirm('Convert this reverb to the Serum 2 module? Its sound changes slightly (the parameter mapping is approximate).') : true;
       if (!ok) return;
     }
+    const key = I.type === 'cmp' && I.v === 2, to = I.v + 1, t = instTitle(this.fx(), id);
     let done = false;
-    // fx-core upgradeInstance (§11.2): a new S2 object (same id), written over the instance in place
     const ok = this.edit(fx => this.withInst(fx, id, J => {
-      const U = core.upgradeInstance(J);
-      if (!isObj(U) || U.v !== 2) return;
+      const U = J.v + 1 === to ? core.upgradeInstance(J) : null;
+      if (!isObj(U) || U.v !== to) return;
       for (const k of Object.keys(J)) delete J[k];
       Object.assign(J, U);
       done = true;
-    }), 'Convert ' + instTitle(this.fx(), id) + ' to Serum 2', 'set', { seed: true });
-    if (ok && done) this.notify(instTitle(this.fx(), id) + ' converted to the Serum 2 module');
+    }), key ? 'Add a sidechain key to ' + t : 'Convert ' + t + ' to Serum 2', 'set', key ? null : { seed: true });
+    if (ok && done) this.notify(key ? t + ': sidechain key added — pick its source under FROM' : t + ' converted to the Serum 2 module');
     this.refresh();
   }
+  // Init Module: the table defaults (`on` kept); a sidechain source stays (IMPL-SC §1.3: routing, as a preset keeps it)
   initInst(id) {
     this.edit(fx => this.withInst(fx, id, I => {
-      const on = isObj(I.p) ? I.p.on : undefined;
+      const on = isObj(I.p) ? I.p.on : undefined, src = isObj(I.sub) && typeof I.sub.src === 'string' ? I.sub.src : null;
       I.p = {};
       for (const r of tabOf(I.type, I.v)) I.p[r.pid] = r.def;
       if (fin(on)) I.p.on = on;
       I.sub = subDefault(I.type, I.v);
+      if (src !== null && typeof I.sub.src === 'string') I.sub.src = src;
       I.byp = 0;
     }), 'Init ' + instTitle(this.fx(), id), 'set', { seed: true });
     this.refresh();
@@ -2209,9 +2503,9 @@ export class FXRackUI {
   rackMenu() {
     const fx = this.fx(), k = this.curRack(), R = fx.racks[k] || emptyRack(), N = this.noun(), items = [];
     items.push({ label: 'Add', sub: this.addItems(null) }, { sep: true });
-    items.push({ label: 'Cut ' + N, disabled: !arr(R.mods).length, action: () => { RACK_CLIP = core.copyRack(this.fx(), k); this.clearRack(k, 'Cut ' + N); } });
-    items.push({ label: 'Copy ' + N, disabled: !arr(R.mods).length, action: () => { RACK_CLIP = core.copyRack(this.fx(), k); this.notify(N + ' copied'); } });
-    items.push({ label: 'Paste ' + N, disabled: !RACK_CLIP, action: () => this.putRackUI(k, RACK_CLIP, 'Paste ' + N) });
+    items.push({ label: 'Cut ' + N, disabled: !arr(R.mods).length, action: () => { RACK_CLIP = this.clipOut(k); this.clearRack(k, 'Cut ' + N); } });
+    items.push({ label: 'Copy ' + N, disabled: !arr(R.mods).length, action: () => { RACK_CLIP = this.clipOut(k); this.notify(N + ' copied'); } });
+    items.push({ label: 'Paste ' + N, disabled: !RACK_CLIP, action: () => this.putRackUI(k, this.clipIn(RACK_CLIP), 'Paste ' + N) });
     items.push({ label: 'Clear ' + N, disabled: !arr(R.mods).length, action: () => this.clearRack(k, 'Clear ' + N) });
     items.push({ sep: true });
     items.push({ label: 'Lock ' + N, checked: !!R.lock, action: () => this.setLock(k) });
@@ -2235,6 +2529,24 @@ export class FXRackUI {
     if (chains.length) items.push({ label: 'Delete Effect Chain', sub: chains.map(c => ({ label: c.name, action: () => this.delChain(c.name) })) });
     items.push({ sep: true }, { label: 'Reset All Racks', action: () => this.resetRack() });
     return items;
+  }
+  // the rack clipboard keeps sidechain sources within the project only (IMPL-SC §1.3): the copy remembers the name of
+  // each track the host lists; a paste keeps a source while the host still lists that id under that name (the same
+  // track), else blanks it — a track id names another track in another project (ids are per project, and reused)
+  scNames() { const S = this.scs(), o = {}; if (S) for (const t of arr(S.list)) if (isObj(t) && typeof t.id === 'string') o[t.id] = String(t.name == null ? '' : t.name); return o; }
+  clipOut(k) { const p = core.copyRack(this.fx(), k); if (p) p.scNames = this.scNames(); return p; }
+  clipIn(p) {
+    if (!isObj(p)) return p;
+    const now = this.scNames(), was = isObj(p.scNames) ? p.scNames : {}, o = deep(p);
+    delete o.scNames;
+    const go = n => {
+      if (Array.isArray(n)) { for (const e of n) go(e); return; }
+      if (!isObj(n)) return;
+      if (isObj(n.sub) && typeof n.sub.src === 'string' && n.sub.src && !(Object.prototype.hasOwnProperty.call(now, n.sub.src) && now[n.sub.src] === was[n.sub.src])) n.sub.src = '';
+      for (const x of Object.keys(n)) if (x !== 'sub') go(n[x]);
+    };
+    go(o.rack);
+    return o;
   }
   // Clear / Cut FX Bus (fx-core clearRack): the rack's instances and, in the Serum state, what addressed them
   clearRack(k, label) {
@@ -2271,15 +2583,16 @@ export class FXRackUI {
     out.push({ label: 'Import from File…', action: () => this.importRack(k) });
     return out;
   }
+  // (a library / file preset never brings a sidechain source, IMPL-SC §1.3: blanked as it loads, and as it is stored)
   applyRack(k, p) {
-    if (this.putRackUI(k, p, 'Load ' + this.noun() + ' “' + p.name + '”')) this.notify(this.noun() + ' “' + p.name + '” loaded');
+    if (this.putRackUI(k, blank(p), 'Load ' + this.noun() + ' “' + p.name + '”')) this.notify(this.noun() + ' “' + p.name + '” loaded');
   }
   rackPayload(k, name) { return core.rackPresetPayload(this.fx(), k, name); }
   saveRack(k) {
     const name = ask('Save ' + this.noun() + ' as', '');
     if (!name || !name.trim()) return;
     const nm = name.trim().slice(0, 48), list = this.rackPresets().filter(p => p.name !== nm);
-    list.push(this.rackPayload(k, nm));
+    list.push(blank(this.rackPayload(k, nm)));
     list.sort((a, b) => a.name.localeCompare(b.name));
     this.storeSet('synth.fxracks', list);
     this.notify(this.noun() + ' “' + nm + '” saved');
@@ -2287,15 +2600,15 @@ export class FXRackUI {
   exportRack(k) {
     const base = (ask('Export ' + this.noun() + ' as', 'FX Rack') || '').trim().slice(0, 48);
     if (!base) return;
-    saveFile(base.replace(/[\\/:*?"<>|]+/g, '_') + '.fxrack.json', JSON.stringify(this.rackPayload(k, base), null, 1));
+    saveFile(base.replace(/[\\/:*?"<>|]+/g, '_') + '.fxrack.json', JSON.stringify(blank(this.rackPayload(k, base)), null, 1));
   }
   importRack(k) {
     return pickFile('.json,application/json').then(f => (f && typeof f.text === 'function' ? f.text() : null)).then(t => {
       if (t == null) return;
       const j = JSON.parse(t);
       if (!isObj(j) || !isObj(j.rack) || !Array.isArray(j.rack.mods)) throw new Error('no FX rack in that file');
-      const p = { name: typeof j.name === 'string' && j.name.trim() ? j.name.trim().slice(0, 48) : 'Imported', rack: j.rack };
-      this.storeSet('synth.fxracks', this.rackPresets().filter(q => q.name !== p.name).concat([{ type: 'synth.fxrack', v: 1, name: p.name, rack: j.rack }]).sort((a, b) => a.name.localeCompare(b.name)));
+      const rk = blank(j.rack), p = { name: typeof j.name === 'string' && j.name.trim() ? j.name.trim().slice(0, 48) : 'Imported', rack: rk };
+      this.storeSet('synth.fxracks', this.rackPresets().filter(q => q.name !== p.name).concat([{ type: 'synth.fxrack', v: 1, name: p.name, rack: rk }]).sort((a, b) => a.name.localeCompare(b.name)));
       this.applyRack(k, p);
     }).catch(err => { this.notify('Could not import the FX rack'); warnOnce('rackimp', 'fx-ui: rack import failed', err); });
   }
@@ -2321,7 +2634,7 @@ export class FXRackUI {
   // the Serum state as refs (§2.6.3): the modules those rows, locks and MIDI entries address are kept (Phase 1 kept every
   // module and the locked values)
   loadChain(src, name) {
-    const n = deep(viewOf(src, this.sState())), locked = this.lockedIds(), cur = this.fx(), keep = {}, before = this.snapshot();
+    const n = deep(viewOf(blank(src), this.sState())), locked = this.lockedIds(), cur = this.fx(), keep = {}, before = this.snapshot();
     for (const id of locked) { const d = core.fxDest ? core.fxDest(id, cur) : null; if (d && d.inst) keep[id] = { type: d.inst.type, pid: d.pid, v: d.inst.p[d.pid] }; }
     const ok = this.edit(fx => {
       const locks = arr(fx.racks).map(R => (isObj(R) && R.lock ? 1 : 0));
@@ -2352,7 +2665,7 @@ export class FXRackUI {
     const name = ask('Save effect chain as', '');
     if (!name || !name.trim()) return;
     const nm = name.trim().slice(0, 48), list = this.rawChains().filter(c => c.name !== nm);
-    list.push({ name: nm, fx: this.chainCopy(this.fx()) });
+    list.push({ name: nm, fx: blank(this.chainCopy(this.fx())) });
     this.storeChains(list);
     this.notify('Effect chain “' + nm + '” saved');
   }
@@ -2363,9 +2676,9 @@ export class FXRackUI {
   exportChain() {
     const base = (ask('Export effect chain as', 'Effect Chain') || '').trim().slice(0, 48);
     if (!base) return;
-    saveFile(base.replace(/[\\/:*?"<>|]+/g, '_') + '.fxchains.json', this.chainFile([{ name: base, fx: this.chainCopy(this.fx()) }]));
+    saveFile(base.replace(/[\\/:*?"<>|]+/g, '_') + '.fxchains.json', this.chainFile([{ name: base, fx: blank(this.chainCopy(this.fx())) }]));
   }
-  exportAll() { saveFile('effect-chains.json', this.chainFile(this.chains())); }
+  exportAll() { saveFile('effect-chains.json', this.chainFile(blank(this.chains()))); }
   importChain() {
     return pickFile('.json,application/json').then(f => (f && typeof f.text === 'function' ? f.text().then(t => this.importText(t, f.name)) : null))
       .catch(err => { this.notify('Could not import the effect chain'); console.warn('fx-ui: import failed', err); });
@@ -2382,7 +2695,7 @@ export class FXRackUI {
     else add = [];
     if (!add.length) throw new Error('no effect chains in that file');
     const m = new Map(this.rawChains().map(c => [c.name, c]));
-    for (const c of add) { const name = c.name.trim().slice(0, 48); m.set(name, { name, fx: this.chainCopy(c.fx) }); }
+    for (const c of add) { const name = c.name.trim().slice(0, 48); m.set(name, { name, fx: blank(this.chainCopy(c.fx)) }); }
     this.storeChains([...m.values()]);
     this.notify(add.length === 1 ? 'Effect chain “' + add[0].name.trim().slice(0, 48) + '” imported' : add.length + ' effect chains imported');
     return add.length;

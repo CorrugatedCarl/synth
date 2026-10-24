@@ -102,7 +102,7 @@ import { isDrum } from './song.js?v=9';
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
 
 export { schemaOf };
-export const SCHEMA = 14;
+export const SCHEMA = 15;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -151,6 +151,10 @@ export const STEPS = Object.freeze([
   // 13 → 14: the master (stage M, IMPL-M §2.3: project.master — its FX rack and canvas) — additive, the identity; the bump keeps an
   // older build from dropping the master (a 14 file opens read-only there)
   p => Object.assign({}, p, { schema: 14 }),
+  // 14 → 15: stage SC: a 'duck' FX type and the compressor's variant 3 (its sidechain key) in any rack's FX state — additive; a
+  // schema-14 build's normalizeFx2 drops an unknown type (a Ducker: fx-core.js normalizeFx2) and reads an unknown variant as the
+  // highest it knows (a v3 compressor becomes a v2, its key rows and sub.src gone) and would autosave the loss: it opens a 15 read-only
+  p => Object.assign({}, p, { schema: 15 }),
 ]);
 
 export function upgrade(o) {
@@ -290,8 +294,37 @@ export function toV1(p0) {
   const dr = new Map();
   for (const o of out) if (isObj(o) && isDrum(o.model)) { if (!dr.has(o.model)) dr.set(o.model, []); dr.get(o.model).push(`“${o.name}”`); }
   for (const [id, names] of dr) lost.push(`${(MODELS.find(m => m.id === id) || { name: id }).name} track${names.length > 1 ? 's' : ''} ${names.join(', ')}: the live site has no drum machine — ${names.length > 1 ? 'their' : 'its'} piano-roll notes are kept`);
+  // (SC, IMPL-SC §5.3) main's fx-core knows no Ducker and no Compressor v3: each track's FX state leaves its sidechain behind —
+  // Duckers removed, a keyed compressor written as the v2 it renders as when unkeyed (its key rows and source gone); a line per track
+  for (const o of out) {
+    if (!isObj(o) || !isObj(o.fx) || !Array.isArray(o.fx.racks)) continue;
+    const r = scStrip(plainCopy(o.fx));
+    if (!r.d && !r.k) continue;
+    o.fx = r.fx;
+    const what = [r.d ? `${r.d} Ducker${r.d === 1 ? '' : 's'}` : '', r.k ? `${r.k} keyed compressor${r.k === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');
+    lost.push(`“${o.name}”: its sidechain (${what}) — the live site has no sidechain`);
+  }
   p.tracks = out;
   return { p, lost: [...new Set(lost)] };
+}
+// an FX state (a copy: edited in place) without its sidechain units → {fx, d: Duckers removed, k: v3 compressors written as v2}
+function scStrip(fx) {
+  const r = { fx, d: 0, k: 0 }, gone = new Set();
+  const list = L => {
+    if (!Array.isArray(L)) return L;
+    const out = [];
+    for (const I of L) {
+      if (!isObj(I)) { out.push(I); continue; }
+      if (I.type === 'duck') { r.d++; if (typeof I.id === 'string') gone.add(I.id); continue; }
+      if (I.type === 'cmp' && I.v === 3) { r.k++; I.v = 2; if (isObj(I.p)) { delete I.p.ext; delete I.p.schp; delete I.p.listen; } I.sub = {}; }
+      if (Array.isArray(I.br)) I.br = I.br.map(list);
+      out.push(I);
+    }
+    return out;
+  };
+  for (const R of fx.racks) if (isObj(R) && Array.isArray(R.mods)) R.mods = list(R.mods);
+  if (isObj(fx.ui) && gone.has(fx.ui.sel)) fx.ui.sel = '';
+  return r;
 }
 /* ---------------------------------------------------------------- stage 1f: one instrument per track in the UI */
 // a canonical one-instrument track (cv-graph §5.5) and nothing beside it but its panel and OUT — a classic one into a

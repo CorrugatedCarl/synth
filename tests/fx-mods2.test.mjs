@@ -7,12 +7,14 @@
 // spread), Utility (polarity, filters and their off states, MONO BASS, WIDTH, PAN), the S2 reverb tanks (finite, decaying,
 // decorrelated, Nitrous modes, Basin infinite), the splitter band builders (= FXDSP.splitResponse, allpass-flat sums,
 // M/S exact), Overdrive staging (static curve = FXDSP.distCurve, the 9 kHz stage low-pass), budgets (§8.5) and
-// allocation-free hot paths. Rack-level behaviour (FXRack with these modules) is in tests/fx-dsp.test.mjs.
+// allocation-free hot paths. IMPL-SC G3 (lane D): the Ducker — a trigger's sample exactness, shift invariance (att / smooth 0 and
+// the defaults, across call phases), identical hits, the tempo-synced length, a retrigger, the NOTE filter, velocity ignored, depth 0,
+// the gr slots, no allocation, no registry / stamp / source → identity × LEVEL, the curve table from the FXT. Rack-level behaviour (FXRack with these modules) is in tests/fx-dsp.test.mjs.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dspScope, source } from './dsp-scope.mjs';
-import { lawValue, lawNorm } from '../laws.js?v=9';
+import { dspScope, source, noAlloc } from './dsp-scope.mjs';
+import { lawValue, lawNorm, renderPts } from '../laws.js?v=9';
 import * as C from '../fx-core.js?v=9';
 import * as SMP from '../smp.js?v=9';
 
@@ -23,9 +25,9 @@ const scope = (opts = {}) => {
   const S = dspScope({ files: ['sx-base.js', 'fx-mods2.js'], ...opts });
   return { S, M: S.global('FXMods2'), B: S.global('SxBase') };
 };
-const MODULES = ['Bode', 'Convolve', 'Utility', 'RevVintage', 'RevNitrous', 'RevBasin'];
-const TYPE_OF = { Bode: 'bode', Convolve: 'conv', Utility: 'util', RevVintage: 'rev', RevNitrous: 'rev', RevBasin: 'rev' };
-const RUN_HERE = ['rev', 'bode', 'conv', 'util', 'split2', 'split3', 'splitms'];
+const MODULES = ['Bode', 'Convolve', 'Utility', 'RevVintage', 'RevNitrous', 'RevBasin', 'Duck']; // (Duck: IMPL-SC §4.2, lane D)
+const TYPE_OF = { Bode: 'bode', Convolve: 'conv', Utility: 'util', RevVintage: 'rev', RevNitrous: 'rev', RevBasin: 'rev', Duck: 'duck' };
+const RUN_HERE = ['rev', 'bode', 'conv', 'util', 'split2', 'split3', 'splitms', 'duck']; // ('duck': its table here from IMPL-SC phase 0; lane D's Duck runs it)
 // a Unit as FXRack passes it (§11.11 module protocol): table defaults, `set` = engine values by pid (en follows the law)
 function unit(M, type, set = {}, extra = {}) {
   const T = M.TAB[type], n = T.length;
@@ -174,7 +176,7 @@ test('source follows the DSP script rules (one IIFE, environment neutrality, SxB
 test('§11.11 exports: the exact list, the module protocol and every class signature', () => {
   const { M } = scope();
   assert.deepEqual(Object.keys(M), ['VER', 'TYPES', 'TAB', 'PIDX', 'Bode', 'Convolve', 'Utility', 'RevVintage', 'RevNitrous',
-    'RevBasin', 'XoverLH', 'XoverLMH', 'MS', 'Overdrive']);
+    'RevBasin', 'XoverLH', 'XoverLMH', 'MS', 'Overdrive', 'Duck']);
   const proto = { set: 1, alloc: 0, reset: 0, upd: 1, snap: 0, seed: 1, run: 5, flush: 0, tail: 0, bytes: 0 };
   for (const k of MODULES) {
     assert.equal(typeof M[k], 'function', k);
@@ -896,4 +898,150 @@ test('run / split / tick / poll and the adoption of an arriving IR allocate noth
   }
   for (const k of names) assert.doesNotThrow(() => S.run('new ' + k + '()', 'after.js'), k + ' restored');
   assert.equal(cv.ready, 1, 'adopted without allocating');
+});
+
+/* ------------------------------------------------------------------ the Ducker (IMPL-SC §4.2; G3, lane D) */
+// a sidechain context as the rack writes it (IMPL-SC §1.2): one ring for source `src`; duckDrive() fills the ring per quantum with
+// the hits of [F0, F0 + 128) and stamps it (q = F0), writes sc.q / sc.F per call and sc.b per block, like Track.process + FXRack.span
+const TAB_CLASSIC = renderPts(C.DUCK_DEFAULT, 1024), TAB_LIN = renderPts([[0, 0, 0], [1, 1, 0]], 1024);
+function duckCtx(hits, src = 'k') {
+  const ring = { q: -1, n: 0, f: new Float64Array(64), note: new Uint8Array(64), vel: new Float32Array(64) };
+  return { ring, hits, sc: { q: 0, F: 0, b: 0, reg: new Map([[src, ring]]), kL: null, kR: null } };
+}
+// the Ducker over L / Rc (frame f0 + i at index i) in `span`-frame calls; o.upd per block, o.flush per call; stamp = false leaves the
+// ring's q behind (a reader before its writer, §2.0)
+function duckDrive(o, R, ctx, L, Rc, { f0 = 0, span = 128, stamp = true, before } = {}) {
+  const { ring, sc, hits } = ctx;
+  for (let s = 0; s < L.length; s += span) {
+    const F0 = f0 + s, e = Math.min(L.length, s + span);
+    let n = 0;
+    for (const h of hits) if (h[0] >= F0 && h[0] < F0 + (e - s)) { ring.f[n] = h[0]; ring.note[n] = h[1]; ring.vel[n] = h[2]; n++; }
+    ring.n = n; if (stamp) ring.q = F0; sc.q = F0; sc.F = F0;
+    if (before) before(F0);
+    for (let b = s; b < e; b += 16) { sc.b = b - s; o.upd(R); o.run(R, L, Rc, b, Math.min(16, e - b)); }
+    o.flush();
+  }
+}
+// a Ducker unit (values by pid) with its sidechain fields; `tab` installed through setTab (the FXT cv path)
+function duck(M, set, ctx, { tab = TAB_CLASSIC, src = 'k', bpm = 120 } = {}) {
+  const R = unit(M, 'duck', Object.assign({ bpm: 0, len: 100, att: 0, smooth: 0 }, set), { sc: ctx.sc, src, bpm });
+  const o = fresh(M, 'Duck', R);
+  if (tab) o.setTab(tab);
+  return { o, R };
+}
+const ones = n => new Float64Array(n).fill(1);
+const tabAt = (tab, x) => { const i = x | 0; return tab[i] + (tab[i + 1] - tab[i]) * (x - i); };
+const LEN100 = Math.round(0.1 * FS);                        // LENGTH 100 ms in samples
+
+test('IMPL-SC G3 Ducker: a trigger at frame f (att 0, smooth 0) — g leaves 1 at sample f exactly and follows 1 − depth·(1 − tab(pos)) per sample; the table from the FXT, all 1 before one', () => {
+  const { M } = scope(), N = 4 * 128 * 20;
+  for (const [f, depth, tab] of [[1000, 1, TAB_CLASSIC], [1003, 0.6, TAB_LIN], [2557, 1, TAB_LIN]]) {
+    const ctx = duckCtx([[f, 36, 1]]), { o, R } = duck(M, { depth }, ctx, { tab }), L = ones(N), Rc = ones(N);
+    duckDrive(o, R, ctx, L, Rc);
+    for (let i = 0; i < f; i++) assert.equal(L[i], 1, 'untouched before the hit: ' + i);
+    for (let k = 0; k < LEN100; k++) {
+      const want = 1 - depth * (1 - tabAt(tab, 1024 * k / LEN100));
+      assert.ok(Math.abs(L[f + k] - want) <= 1e-6 && L[f + k] === Rc[f + k], `sample ${k} of the dip: ${L[f + k]} vs ${want}`);
+    }
+    assert.ok(L[f] < 1 - 0.5 * depth, 'the dip starts at the hit\'s own sample');
+    for (let i = f + LEN100; i < N; i++) assert.equal(L[i], 1, 'recovered exactly after LENGTH: ' + i);
+  }
+  // no table yet (a unit before its FXT): no dip at all; a table of ones the same
+  const ctx = duckCtx([[1000, 36, 1]]), { o, R } = duck(M, {}, ctx, { tab: null }), L = ones(N), Rc = ones(N);
+  duckDrive(o, R, ctx, L, Rc);
+  assert.ok(L.every(v => v === 1) && Rc.every(v => v === 1), 'all 1 until a curve arrives');
+});
+
+test('IMPL-SC G3 Ducker: shift invariance — a hit at f and at f + 1000 (other call phases) render shifted-identical, 0 samples differ; with att 0 / smooth 0 and with the defaults (att 1 ms, smooth 2 ms)', () => {
+  const { M } = scope(), N = 128 * 200;
+  for (const set of [{ att: 0, smooth: 0 }, { att: 1, smooth: 2 }, { att: 5, smooth: 20, depth: 0.8 }]) {
+    const f = 1037, d = 1000;
+    const a = duckCtx([[f, 36, 1]]), A = duck(M, set, a), LA = ones(N), RA = ones(N);
+    const b = duckCtx([[f + d, 36, 1]]), B = duck(M, set, b), LB = ones(N), RB = ones(N);
+    duckDrive(A.o, A.R, a, LA, RA); duckDrive(B.o, B.R, b, LB, RB);
+    // (an ATTACK ramp's first target is the current gain: with att > 0 the gain leaves 1 at the sample after the hit, §4.2)
+    assert.ok(LA[f - 1] === 1 && LB[f + d - 1] === 1 && LA[f + 1] < 1 && LB[f + d + 1] < 1 && (set.att > 0 || (LA[f] < 1 && LB[f + d] < 1)), 'both dip at their own sample');
+    let diff = 0, dips = 0;
+    for (let i = f; i + d < N; i++) { if (!Object.is(LA[i], LB[i + d]) || !Object.is(RA[i], RB[i + d])) diff++; if (LA[i] < 1) dips++; }
+    assert.equal(diff, 0, JSON.stringify(set) + ': shifted-identical');
+    assert.ok(dips >= LEN100, 'a dip was rendered');
+    assert.ok(LA.slice(f).some(v => v === 1), 'the recovery ends exactly at 1 (the per-sample snap)');
+  }
+});
+
+test('IMPL-SC G3 Ducker: 16 hits ≥ LENGTH apart are identical; velocity is ignored (v 0.1 ≡ v 1.0); depth 0 is the identity; a retrigger mid-dip restarts from the current gain', () => {
+  const { M } = scope(), gap = 8000, N = 17 * gap;
+  const hits = Array.from({ length: 16 }, (_, k) => [500 + k * gap, 36, k & 1 ? 0.1 : 1]);
+  const ctx = duckCtx(hits), { o, R } = duck(M, { att: 1, smooth: 2 }, ctx), L = ones(N), Rc = ones(N);
+  duckDrive(o, R, ctx, L, Rc);
+  const first = L.slice(500, 500 + gap);
+  for (let k = 1; k < 16; k++) {
+    const seg = L.slice(500 + k * gap, 500 + (k + 1) * gap);
+    assert.ok(seg.every((v, i) => Object.is(v, first[i])), 'hit ' + k + ' (v ' + hits[k][2] + ') ≡ hit 0');
+  }
+  assert.ok(first.some(v => v < 0.1) && first[gap - 1] === 1, 'a full dip, recovered before the next');
+  // depth 0: identity (bit for bit) even with hits
+  const z = duckCtx(hits), Z = duck(M, { depth: 0 }, z), X = noise(N, 7), Y = noise(N, 8), X0 = X.slice(), Y0 = Y.slice();
+  duckDrive(Z.o, Z.R, z, X, Y);
+  assert.ok(X.every((v, i) => Object.is(v, X0[i])) && Y.every((v, i) => Object.is(v, Y0[i])), 'depth 0 = identity');
+  // a retrigger mid-dip (att 0): the gain jumps back to the curve's start value; with smooth 0 and a hit at the dip's half
+  const r = duckCtx([[1000, 36, 1], [1000 + (LEN100 >> 1), 36, 1]]), Rr = duck(M, {}, r), LR = ones(N), RR = ones(N);
+  duckDrive(Rr.o, Rr.R, r, LR, RR);
+  const c0 = 1 - (1 - TAB_CLASSIC[0]), h = 1000 + (LEN100 >> 1);
+  assert.ok(LR[h - 1] > 0.3 && Math.abs(LR[h] - c0) <= 1e-6, `restart at the second hit: ${LR[h - 1]} → ${LR[h]} (c0 ${c0})`);
+  assert.equal(LR[h + LEN100], 1, 'recovered LENGTH after the second hit');
+});
+
+test('IMPL-SC G3 Ducker: tempo sync — \'1/8\' at 90 / 124 / 174 bpm = 0.5 beats · 60 / bpm · fs ± 1 sample; LENGTH is captured at the trigger; the NOTE filter (37 → note 36 passes, 38 dropped; Any)', () => {
+  const { M } = scope(), N = 128 * 200;
+  for (const bpm of [90, 124, 174]) {
+    const ctx = duckCtx([[600, 36, 1]]), { o, R } = duck(M, { bpm: 1, lad: 6 }, ctx, { tab: TAB_LIN, bpm }), L = ones(N), Rc = ones(N);
+    duckDrive(o, R, ctx, L, Rc);
+    let n = 0;
+    for (let i = 0; i < N; i++) if (L[i] < 1) n++;
+    const want = 0.5 * 60 / bpm * FS;
+    assert.ok(Math.abs(n - want) <= 1, `1/8 at ${bpm} bpm: ${n} samples (want ${want})`);
+    assert.ok(L[599] === 1 && L[600] < 1, 'from the hit');
+  }
+  // the length is read at the trigger: a tempo change during a dip changes the next dip only
+  {
+    const N2 = 128 * 320, ctx = duckCtx([[600, 36, 1], [14000, 36, 1]]), { o, R } = duck(M, { bpm: 1, lad: 6 }, ctx, { tab: TAB_LIN, bpm: 120 }), L = ones(N2), Rc = ones(N2);
+    duckDrive(o, R, ctx, L, Rc, { before: F0 => { R.bpm = F0 >= 3000 ? 60 : 120; } });
+    const dipLen = (from) => { let n = 0; for (let i = from; i < N2 && L[i] < 1; i++) n++; return n; };
+    assert.deepEqual([dipLen(600), dipLen(14000)], [Math.round(0.25 * FS), Math.round(0.5 * FS)], 'the first dip at 120 bpm, the second at 60');
+  }
+  // NOTE: the filter names a MIDI note (enum k → note k − 1); hits of other notes are dropped; 0 = any
+  for (const [note, pass] of [[37, true], [39, false], [0, true]]) {
+    const ctx = duckCtx([[1000, 36, 1], [9000, 38, 1]]), { o, R } = duck(M, { note }, ctx), L = ones(N), Rc = ones(N);
+    duckDrive(o, R, ctx, L, Rc);
+    assert.equal(L[1000] < 1, pass, 'NOTE ' + note + ': the note-36 hit');
+    assert.equal(L[9000] < 1, note === 0 || note === 39, 'NOTE ' + note + ': the note-38 hit');
+  }
+});
+
+test('IMPL-SC G3 Ducker: the gr slots [reduction dB, position | −1, 0, 0]; no registry / no source / a ring not stamped for this quantum → the input × LEVEL (× 1: bit-identical); no allocation per quantum', () => {
+  const { M, S } = scope(), N = 128 * 40, gr = new Float32Array(8);
+  const ctx = duckCtx([[1000, 36, 1]]), { o, R } = duck(M, {}, ctx), L = ones(N), Rc = ones(N);
+  o.meter(gr, 4);
+  assert.deepEqual(Array.from(gr), [0, 0, 0, 0, 0, -1, 0, 0], 'idle: no reduction, playhead −1');
+  duckDrive(o, R, ctx, L.subarray(0, 1024), Rc.subarray(0, 1024));
+  o.meter(gr, 0);
+  assert.ok(gr[0] > 6 && gr[1] > 0 && gr[1] < 1 && gr[2] === 0 && gr[3] === 0, 'mid-dip: ' + Array.from(gr.subarray(0, 4)));
+  assert.ok(Math.abs(gr[0] + 20 * Math.log10(o.g)) < 1e-4 && Math.abs(gr[1] - o.k / o.len) < 1e-6, 'reduction of the gain, position k / len');
+  // identity × LEVEL: (a) sc.reg null (a preview / resample node), (b) src '', (c) the ring's q is not this quantum's
+  const X = noise(N, 11), Y = noise(N, 12);
+  const same = (set, ctx2, opts, msg, lvl = 1) => {
+    const { o: u, R: U } = duck(M, set, ctx2, Object.assign({}, opts)), A = X.slice(), B = Y.slice();
+    duckDrive(u, U, ctx2, A, B, opts);
+    assert.ok(A.every((v, i) => Object.is(v, X[i] * lvl)) && B.every((v, i) => Object.is(v, Y[i] * lvl)), msg);
+  };
+  const noReg = duckCtx([[1000, 36, 1]]); noReg.sc.reg = null;
+  same({}, noReg, {}, 'reg null: identity');
+  same({}, duckCtx([[1000, 36, 1]]), { src: '' }, 'no source: identity');
+  same({}, duckCtx([[1000, 36, 1]]), { stamp: false }, 'unstamped ring: identity');
+  same({ level: 0.25 }, noReg, {}, 'reg null, LEVEL 0.25: the input × 0.25', 0.25);
+  // a live Ducker allocates nothing in upd / run / flush / meter (constructors banned in the scope)
+  const live = duckCtx([[3000, 36, 1], [3100, 38, 0.5]]), { o: w, R: W } = duck(M, { att: 1, smooth: 2 }, live), LW = ones(128 * 40), RW = ones(128 * 40);
+  noAlloc(S, () => { duckDrive(w, W, live, LW, RW); w.meter(gr, 0); });
+  assert.ok(LW[3001] < 1, 'it ducked');
 });
