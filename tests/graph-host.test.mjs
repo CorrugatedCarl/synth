@@ -419,8 +419,9 @@ test('H7: the safeguard never raises an instrument it lowered alone — the broa
   const os = node.posted.slice(k).map(x => x.m).filter(m => m.t === 'os'), v = os0 / 2;
   const tail = os.slice(-3);
   assert.deepEqual([tail[0].v, 'i' in tail[0], tail.slice(1).map(m => m.i + ':' + m.v).sort()], [v, false, ['i1:1', 'i2:1']], 'the broadcast, then the lowered ones again');
-  assert.deepEqual([sim.api.settings().os, engOS(), sim.api.capsOf(a, 'i1'), sim.api.capsOf(a, 'i2')], [v, 'i1:1 i2:1', `OS ${v}→1`, `OS ${v}→1`]);
-  sim.api.liftCaps(); sim.api.settings().os = os0; // (the app setting back for the tests after)
+  // (idle-DSP review #9: the broadcast is the session's — the app setting stays the user's; the badges count from the session's v)
+  assert.deepEqual([sim.api.settings().os, engOS(), sim.api.capsOf(a, 'i1'), sim.api.capsOf(a, 'i2')], [os0, 'i1:1 i2:1', `OS ${v}→1`, `OS ${v}→1`]);
+  sim.api.liftCaps(); sim.api.settings().os = os0; // (every step lifted for the tests after)
   for (const N0 of sim.api.nodes.values()) N0.node.port.postMessage({ t: 'os', v: os0 });
 });
 

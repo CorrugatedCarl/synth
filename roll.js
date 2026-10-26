@@ -12,6 +12,9 @@ import { drumRows, PERS } from './drum-core.js?v=9';
 
 const GUT_P = 64, GUT_D = 120, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
 const BG = '#0c0d0f', ACC = '#f2a33a', TEXT = '#e9e7e2', MUTE = '#8d8b86', LINE = '#24262b';
+// (R, IMPL-R §3) a lit key / drum row, a sounding note's wash; LONG_T: a note longer is kept apart (_sIndex)
+// ((review R-14) LIT_K: a lit compact drum row's note number, dimmer than its name)
+const LIT = 'rgba(242,163,58,0.85)', LIT_N = 'rgba(255,255,255,0.42)', LIT_K = 'rgba(12,13,15,0.6)', LONG_T = PPQ * 8;
 const FONT = "'JetBrains Mono', ui-monospace, Menlo, monospace";
 const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLK = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
@@ -47,6 +50,8 @@ const TOOLS = ['select', 'draw', 'erase'];
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const noteName = n => NAMES[n % 12] + (Math.floor(n / 12) - 1);
+// ((R) the lights draw names and numbers every frame: no string built per frame)
+const NN = Array.from({ length: 128 }, (_, n) => noteName(n)), NUMS = Array.from({ length: 128 }, (_, n) => String(n));
 /** (7a) The drum rows of an instrument device ({ model, drum }): a drum machine's mapped primaries, kick first, as
  * host.drumRows wants them ([{ n, name }]); null for any other model. (7b) The TR-606's are its seven (Kick, Snare, Low tom,
  * Hi tom, Cymbal, Open hat, Closed hat); a map without a `drum` record is the machine's default. */
@@ -105,6 +110,14 @@ export class PianoRoll {
     this.g = null; this.hover = null; this.keys = new Set(); this.touches = new Map(); this.lastTap = null;
     this.pals = new Map(); this.raf = 0; this.autoRaf = 0; this.dirty = true; this.cur = ''; this.focused = false;
     this.want = { type: 'center', lo: 48, hi: 72 };
+    // (R) the lights: hk the held notes (setHeld), play whether the song plays the track (setPlayhead), fl the chase floor
+    // (setPlayhead: _keyOn), the sounding notes (_sound: sAct[0…sCnt) — sAI their indices —, the cursor sI, the index sN /
+    // sLen / sV of render's version nv, sMax / sLong (sLI) / sOk, sNx / sPit / sOwn a pitch's takeover), lrow / lst a row lit
+    // once a frame, dfont the drum names' font, nfont / ncw the in-block names' font and character width (the scene's)
+    this.hk = new Uint8Array(128); this.play = false; this.nv = 0; this.fl = -Infinity;
+    this.sAct = []; this.sCnt = 0; this.sI = 0; this.sPh = NaN; this.sN = null; this.sLen = -1; this.sV = -1; this.sMax = 0; this.sLong = []; this.sOk = true;
+    this.sAI = new Int32Array(0); this.sLI = new Int32Array(0); this.sNx = new Float64Array(0); this.sPit = new Int32Array(128); this.sOwn = Array.from({ length: 128 }, () => null);
+    this.lrow = new Uint32Array(130); this.lst = 0; this.dfont = `12px ${FONT}`; this.nfont = `9px ${FONT}`; this.ncw = 5.6;
     for (const k of ['_down', '_move', '_up', '_cancel', '_lost', '_leave', '_wheel', '_frame', '_autoTick', '_focus', '_menu', '_gest']) this[k] = this[k].bind(this);
     this._ls = [['pointerdown', this._down], ['pointermove', this._move], ['pointerup', this._up], ['pointercancel', this._cancel], ['lostpointercapture', this._lost],
       ['pointerleave', this._leave], ['wheel', this._wheel, { passive: false }], ['focus', this._focus], ['blur', this._focus], ['contextmenu', this._menu]];
@@ -113,7 +126,7 @@ export class PianoRoll {
     for (const [ev, fn, o] of this._ls) c.addEventListener(ev, fn, o);
     if (typeof ResizeObserver !== 'undefined') { this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(container); }
     else { this.ro = null; this._wr = () => this.resize(); window.addEventListener('resize', this._wr); }
-    try { document.fonts.ready.then(() => this.render()); } catch { /* no font loading API */ }
+    try { document.fonts.ready.then(() => this._view()); } catch { /* no font loading API */ }
     this._syncRows(true);
     this.resize();
   }
@@ -197,14 +210,34 @@ export class PianoRoll {
     }
     this._applyWant();
     if (tall && !this.g && this._drumFit()) this.sy = 0; // ((7a review 2 #8) the compact drum rows refit a new height)
-    this.clampX(); this.clampY(); this.render();
+    this.clampX(); this.clampY(); this._view();
   }
-  render() { this.dirty = true; this._req(); }
+  render() { this.dirty = true; this.nv++; this._req(); } // ((R) nv: the notes may have changed — _sound re-reads them)
+  // ((review R-16) a redraw for the view alone — a scroll, a zoom, a tool —: the notes are as they were, the lights' index kept)
+  _view() { this.dirty = true; this._req(); }
   _req() { if (!this.raf && !this.dead) this.raf = requestAnimationFrame(this._frame); }
   setTrack() {
     if (this.g) this._finish(false);
     this.sel.clear(); this.ins = null; this.lastTap = null; this.hover = null; this._notify();
+    if (this.host.heldNotes) this.setHeld(this.host.heldNotes()); // ((R) the new track's held notes)
     this._syncRows(true); this._centre(); this.render();
+  }
+  // (R, IMPL-R §3) the held notes that reached the track (the keys, MIDI, pads: the host's), lit on the key strip — a frame
+  // only when they change
+  setHeld(ns) {
+    const H = new Uint8Array(128);
+    if (ns) for (const n of ns) if (n >= 0 && n <= 127) H[n | 0] = 1;
+    for (let i = 0; i < 128; i++) if (H[i] !== this.hk[i]) { this.hk = H; this._req(); return; }
+  }
+  // the notes under the playhead now (a copy: their blocks lit) and the keys lit — held, auditioned, the song's the engine
+  // plays (_keyOn) — sorted (the page, tests)
+  sounding() { this._sound(this.host.getTrack()); return this.sAct.slice(0, this.sCnt); }
+  litKeys() {
+    const L = new Set(this.keys);
+    for (let n = 0; n < 128; n++) if (this.hk[n]) L.add(n);
+    this._sound(this.host.getTrack());
+    for (let j = 0; j < this.sCnt; j++) if (this._keyOn(this.sAct[j], this.sAI[j])) L.add(this.sAct[j].n);
+    return [...L].sort((a, b) => a - b);
   }
   _centre() {
     const tr = this.host.getTrack();
@@ -227,7 +260,7 @@ export class PianoRoll {
   isDrum() { return !!this.dlist; }
   drumRows() { return this.dlist ? { on: !!this.rows, rows: this.dlist.map(e => ({ n: e.n, name: e.name })) } : null; }
   refreshRows() { if (this.g) return; if (this._syncRows()) { this._centre(); this.render(); } }
-  setTool(name) { if (TOOLS.includes(name)) { this.tool = name; this.render(); } }
+  setTool(name) { if (TOOLS.includes(name)) { this.tool = name; this._view(); } }
   setDrawLength(t) { this.drawLen = Math.max(0, Math.round(+t || 0)); this._req(); }
   zoomX(f, cx) {
     let ax;
@@ -237,8 +270,7 @@ export class PianoRoll {
     const t = this.x2t(ax);
     this.ppt = clamp(this.ppt * (+f || 1), this._minPpt(), MAXPPT);
     this.sx = t - (ax - this.gut) / this.ppt; this.clampX();
-    if (this.g) this._apply();
-    this.render();
+    if (this.g) { this._apply(); this.render(); } else this._view(); // (a gesture may move notes with the view)
   }
   // row height (the keys' size) by factor f about client y cy (default: the grid's middle): a user choice, kept (_rowsChosen)
   zoomY(f, cy) { this._rows(this.rowHf * (+f || 1), cy); }
@@ -255,8 +287,7 @@ export class PianoRoll {
     this.rowHf = clamp(hf, ROW_MIN, ROW_MAX); this.rowH = Math.round(this.rowHf);
     this.sy = row * this.rowH - ay; this.clampY();
     if (this.rowHf !== was) this._rowsChosen();
-    if (this.g) this._apply();
-    this.render();
+    if (this.g) { this._apply(); this.render(); } else this._view();
   }
   _rowsChosen() { this.rowPref = this.rowHf; if (this.host.onRows) this.host.onRows(this.rowH); }
   // (7a review 2 #8) the compact drum rows fill the grid's height (no chosen row height): up to Fit's caps (32 px with a
@@ -268,7 +299,7 @@ export class PianoRoll {
     return true;
   }
   _touch() { return !!this.host.touch || this.tseen; } // a touch device, or a finger seen on the roll
-  fit() { this.want = { type: 'fit' }; this._applyWant(); this.render(); }
+  fit() { this.want = { type: 'fit' }; this._applyWant(); this._view(); }
   _applyWant() {
     const w = this.want;
     if (!w || this.gw < 10 || this.gh < 10) return;
@@ -304,11 +335,17 @@ export class PianoRoll {
     this.sy = ((r0 + r1) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
   }
   setFollow(on) { this.follow = !!on; if (this.follow) this.setPlayhead(this.ph); }
-  setGhosts(on) { this.ghosts = !!on; this.render(); }
+  setGhosts(on) { this.ghosts = !!on; this._view(); }
   // sync: the caller is a frame callback (main.js frame()) — draw in this frame; a frame requested from inside one only
-  // runs in the next, so the playhead would show a value one frame old (as arrange.js; `now` is the clock helper above)
-  setPlayhead(t, sync) {
+  // runs in the next, so the playhead would show a value one frame old (as arrange.js; `now` is the clock helper above).
+  // (R) play: the song plays the track and it is heard (main: the heard tick, not muted / soloed out) — its notes under the
+  // playhead light; false once it stops; left out: as it was. (Review R-11) floor: the chase floor — the engine starts no song
+  // note before it (main: a start's / seek's anchor tick, the loop start after a wrap, a panic's tick), so none earlier lights
+  // its key (_keyOn; its block still brightens); left out: as it was, null: none
+  setPlayhead(t, sync, play, floor) {
     this.ph = +t || 0;
+    if (play !== undefined) this.play = !!play;
+    if (floor !== undefined) this.fl = typeof floor === 'number' && floor === floor ? floor : -Infinity;
     if (this.follow && !this.g && this.gw > 0) {
       const x = this.t2x(this.ph);
       if (x > this.W - 12 || x < this.gut) { const o = this.sx; this.sx = this.ph - this.gw * 0.04 / this.ppt; this.clampX(); if (this.sx !== o) this.dirty = true; }
@@ -324,7 +361,7 @@ export class PianoRoll {
     if (this.gw < 10) return;
     const x = this.t2x(t);
     if (x >= this.gut && x <= this.gut + this.gw * 0.75) return;
-    this.sx = t - this.gw * 0.04 / this.ppt; this.clampX(); this.render();
+    this.sx = t - this.gw * 0.04 / this.ppt; this.clampX(); this._view();
   }
   _notes() { const tr = this.host.getTrack(); return tr ? tr.notes : []; }
   _setSel(ids) { this.sel = new Set(ids); this._notify(); this.render(); }
@@ -416,13 +453,15 @@ export class PianoRoll {
   _pal(col) {
     let p = this.pals.get(col);
     if (p) return p;
-    const c = rgb(col), fill = [], sel = [], edge = [], txt = [];
+    // ((review R-13) lit: the names' ink on a block under the lights' wash — the same rule on the washed colour)
+    const c = rgb(col), fill = [], sel = [], edge = [], txt = [], lit = [], W = [255, 255, 255];
+    const ink = (b, s) => [lum(b) < 0.42 ? 'rgba(255,255,255,0.78)' : 'rgba(10,11,13,0.78)', lum(s) < 0.42 ? 'rgba(255,255,255,0.85)' : 'rgba(10,11,13,0.82)'];
     for (let i = 0; i < 16; i++) {
-      const b = c.map(x => x * (0.36 + 0.64 * i / 15)), s = mix(b, [255, 255, 255], 0.3);
+      const b = c.map(x => x * (0.36 + 0.64 * i / 15)), s = mix(b, W, 0.3);
       fill.push(css(b)); sel.push(css(s)); edge.push(css(b.map(x => x * 0.5)));
-      txt.push([lum(b) < 0.42 ? 'rgba(255,255,255,0.78)' : 'rgba(10,11,13,0.78)', lum(s) < 0.42 ? 'rgba(255,255,255,0.85)' : 'rgba(10,11,13,0.82)']);
+      txt.push(ink(b, s)); lit.push(ink(mix(b, W, 0.42), mix(s, W, 0.42)));
     }
-    p = { c, fill, sel, edge, txt, stem: css(c.map(x => x * 0.7)), head: css(c), ghost: `rgba(${c[0]},${c[1]},${c[2]},0.22)`, line: `rgba(${c[0]},${c[1]},${c[2]},0.6)` };
+    p = { c, fill, sel, edge, txt, lit, stem: css(c.map(x => x * 0.7)), head: css(c), ghost: `rgba(${c[0]},${c[1]},${c[2]},0.22)`, line: `rgba(${c[0]},${c[1]},${c[2]},0.6)` };
     this.pals.set(col, p);
     return p;
   }
@@ -539,7 +578,7 @@ export class PianoRoll {
     try { this.el.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     // pk: 'touch' | 'pen' get their zones and thresholds per event; a mouse (or '') keeps the legacy ones
     const pk = e.pointerType === 'touch' || e.pointerType === 'pen' ? e.pointerType : null;
-    if (pk && !this.coarse) { this.coarse = true; this.render(); }
+    if (pk && !this.coarse) { this.coarse = true; this._view(); }
     const reg = this._region(x, y), ts = e.timeStamp || Date.now(), lt = this.lastTap, m = this._mods(e);
     const tool = btn === 5 ? 'erase' : this.tool, tr = this.host.getTrack(), z = this._zones(pk, tool);
     // the hit first (hit / near: what a drag grabs): a double-tap counts only on the same target both times (a note, the
@@ -619,7 +658,7 @@ export class PianoRoll {
     if (g && g.type === 'pinch') { g.pend = true; this._req(); return; }
     if (g) { if (g.id === e.pointerId) this._dragMove(e); return; }
     if (e.pointerType !== 'touch' && !e.buttons) {
-      if (e.pointerType === 'mouse' && this.coarse) { this.coarse = false; this.render(); } // a mouse / trackpad again: no handles
+      if (e.pointerType === 'mouse' && this.coarse) { this.coarse = false; this._view(); } // a mouse / trackpad again: no handles
       const [x, y] = this._pos(e); this._hover(x, y, false, e.pointerType);
     }
   }
@@ -663,7 +702,7 @@ export class PianoRoll {
     this.sx += dx / this.ppt; this.sy += dy; this.clampX(); this.clampY();
     const ch = this.sx !== ox || this.sy !== oy;
     if (ch || Math.abs(dx) >= Math.abs(dy)) e.preventDefault(); // let the page scroll once the roll hits its vertical limit
-    if (ch) { if (this.g) this._apply(); this.render(); }
+    if (ch) { if (this.g) { this._apply(); this.render(); } else this._view(); }
   }
   // WebKit GestureEvents: always preventDefault (else Safari zooms the page). A gesture with a finger on the roll (gfing:
   // set by any touch pointerdown) is the pointers' pinch; without, it's a trackpad pinch: time, Shift = the keys
@@ -730,7 +769,7 @@ export class PianoRoll {
     if (!g) return;
     switch (g.type) {
       case 'pan': // a finger scrolls once past its drag threshold (a still finger may yet become a select box)
-        if (!g.touch || g.moved) { this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this.render(); }
+        if (!g.touch || g.moved) { this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this._view(); }
         break;
       case 'marquee': if (g.moved) this._marquee(); break;
       case 'move': if (g.moved) this._moveApply(); break;
@@ -785,7 +824,7 @@ export class PianoRoll {
     }
     if (g.began) { const tr = this.host.getTrack(); if (tr) sortNotes(tr.notes); this.host.endEdit(); }
     if (!g.touch) this._hover(g.x, g.y, true, g.pen ? 'pen' : undefined);
-    this.render();
+    if (g.began) this.render(); else this._view(); // ((review R-16) a scroll's end: the notes as they were)
   }
   _autoDir() {
     const g = this.g;
@@ -848,7 +887,7 @@ export class PianoRoll {
   _pinchEnd(g) {
     if (g.kaud != null) this._audOff(g.kaud);
     if (this.rowHf !== g.rh0) this._rowsChosen();
-    this.render();
+    this._view();
   }
   _rulerDown(g, x) {
     const edge = this._loopEdge(x, g.touch ? TLOOP : g.pen ? PLOOP : 5), p = this.host.getProject(), lp = p && p.loop;
@@ -1032,7 +1071,7 @@ export class PianoRoll {
     const ch = s.size !== this.sel.size;
     this.sel = s;
     if (ch) this._notify();
-    this.render();
+    this._view(); // ((review R-16) the selection only)
   }
   // ruler drags only touch the loop once they're clearly drags (8px mouse / 12px touch); shorter wobbles stay playhead clicks
   _loopWait(g) { return !g.looped && Math.abs(g.x - g.x0) < (g.touch ? 12 : 8); }
@@ -1190,14 +1229,14 @@ export class PianoRoll {
         c.fillStyle = 'rgba(12,13,15,0.55)'; c.fill();
       }
       if (rowH >= 10) {
-        const fs = clamp(Math.round(rowH * 0.4), 9, 14), cw = fs * 5.6 / 9; // names grow with tall (touch) rows
-        c.font = `${fs}px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left';
+        const fs = clamp(Math.round(rowH * 0.4), 9, 14), cw = this.ncw = fs * 5.6 / 9; // names grow with tall (touch) rows
+        c.font = this.nfont = `${fs}px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left'; // ((R) nfont / ncw: a lit note's name)
         for (const [sets, k] of [[un, 0], [se, 1]]) for (let i = 0; i < 16; i++) {
           if (!sets[i].length) continue;
           c.fillStyle = pal.txt[i][k];
           for (const x of sets[i]) {
             const [a, y, w] = rect(x), nm = this._nlab(x.n), vis = Math.min(a + w, W) - Math.max(a, GUT);
-            if (vis >= nm.length * cw + 8) c.fillText(nm, Math.max(a, GUT) + 4, y + rowH / 2 + 0.5);
+            if (vis >= nm.length * cw + 8) c.fillText(nm, Math.max(a, GUT) + 4, y + (rowH >> 1) + 1); // ((R) whole pixels: the lights draw it again)
           }
         }
       }
@@ -1289,9 +1328,9 @@ export class PianoRoll {
       c.beginPath(); rowsIn(r => { c.rect(0, this.r2y(r) + rowH - 1, GUT - 1, 1); });
       c.fillStyle = '#2a2c31'; c.fill();
       if (rowH >= 8) {
-        c.font = `${clamp(Math.round(rowH * 0.45), 9, 12)}px ${FONT}`; c.textBaseline = 'middle';
+        c.font = this.dfont = `${clamp(Math.round(rowH * 0.45), 9, 12)}px ${FONT}`; c.textBaseline = 'middle'; // ((R) dfont: a lit row's name)
         rowsIn((r, n) => {
-          const y = this.r2y(r) + rowH / 2 + 0.5;
+          const y = this.r2y(r) + (rowH >> 1) + 1;
           c.textAlign = 'left'; c.fillStyle = r ? '#d9d6ce' : MUTE; c.fillText(r ? dn.get(n) : 'Other', 6, y);
           if (r) { c.textAlign = 'right'; c.fillStyle = '#7a776f'; c.fillText(String(n), GUT - 5, y); }
         });
@@ -1341,6 +1380,126 @@ export class PianoRoll {
     c.fillText('127', GUT - 6, this.v2y(127) + 1);
     if (dn) c.fillText('100', GUT - 6, this.v2y(100)); else c.fillText('64', GUT - 6, this.v2y(64)); // ((7a) normal / accent)
   }
+  /* (R, IMPL-R §3) the lights — no allocation per frame: fixed lists, counts, stamps */
+  // the track's notes sounding at the playhead while the song plays (sAct[0…sCnt)). Notes are sorted by start (main's
+  // changed() sorts them): a frame moving forward walks a cursor over the starts it passed (sI) and drops the ended; a jump
+  // (back: a loop pass, a seek; far ahead) finds them again by a binary search over the starts — back by the longest short
+  // note (sMax), the long ones (> LONG_T) kept apart (sLong). An edit (render: nv) re-reads the lengths and the order; a
+  // dragged note may leave it unsorted until its edit ends — every frame scans then
+  // ((review R-12) sAI: each one's index in the clip, for _keyOn)
+  _sound(tr) {
+    const L = this.play && tr ? tr.notes : null, ph = this.ph, A = this.sAct;
+    if (!L || !L.length) { if (this.sN) { this.sLong.length = 0; this.sOwn.fill(null); } this.sCnt = 0; this.sN = null; return; } // (no clip held once none plays)
+    if (L !== this.sN || L.length !== this.sLen || this.nv !== this.sV) this._sIndex(L);
+    const n = L.length, I = this.sAI;
+    let k = 0;
+    if (!this.sOk) { // (and the last started of each pitch, in the song's order: by start, the array's for equal ones)
+      const O = this.sOwn;
+      O.fill(null);
+      for (let i = 0; i < n; i++) {
+        const x = L[i];
+        if (x.t > ph) continue;
+        const o = O[x.n];
+        if (o === null || x.t >= o.t) O[x.n] = x;
+        if (ph < x.t + x.d) { I[k] = i; A[k++] = x; }
+      }
+    } else if (ph >= this.sPh && ph - this.sPh <= Math.max(this.sMax, PPQ * 4)) {
+      for (let j = 0; j < this.sCnt; j++) { const x = A[j]; if (ph < x.t + x.d) { I[k] = I[j]; A[k++] = x; } }
+      let i = this.sI;
+      for (; i < n; i++) { const x = L[i]; if (x.t > ph) break; if (ph < x.t + x.d) { I[k] = i; A[k++] = x; } }
+      this.sI = i;
+    } else {
+      let lo = 0, hi = n;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (L[m].t <= ph) lo = m + 1; else hi = m; }
+      const e = lo, t0 = ph - this.sMax;
+      lo = 0; hi = e;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (L[m].t <= t0) lo = m + 1; else hi = m; }
+      for (let i = lo; i < e; i++) { const x = L[i]; if (x.d <= LONG_T && ph < x.t + x.d) { I[k] = i; A[k++] = x; } }
+      const G = this.sLong, GI = this.sLI;
+      for (let j = 0; j < G.length; j++) { const x = G[j]; if (x.t <= ph && ph < x.t + x.d) { I[k] = GI[j]; A[k++] = x; } }
+      this.sI = e;
+    }
+    this.sPh = ph; this.sCnt = k;
+  }
+  // (an edit: one pass over the clip — the longest short note, the long ones (sLong, sLI their indices), the order, and (review
+  // R-12) sNx: where the next note of each one's pitch starts, in the song's order (sPit: the last index of each pitch so far;
+  // Infinity: none) — typed arrays, grown only when the clip outgrows them)
+  _sIndex(L) {
+    const n = L.length, G = this.sLong, P = this.sPit;
+    if (this.sNx.length < n) { const c = n + (n >> 1) + 16; this.sNx = new Float64Array(c); this.sAI = new Int32Array(c); this.sLI = new Int32Array(c); }
+    const X = this.sNx, GI = this.sLI;
+    let m = 0, ok = true, pt = -Infinity, g = 0;
+    P.fill(-1);
+    for (let i = 0; i < n; i++) {
+      const x = L[i], t = x.t, j = P[x.n];
+      if (x.d > LONG_T) { GI[g] = i; G[g++] = x; } else if (x.d > m) m = x.d;
+      if (t < pt) ok = false;
+      pt = t;
+      if (j >= 0) X[j] = t;
+      P[x.n] = i; X[i] = Infinity;
+    }
+    G.length = g;
+    this.sN = L; this.sLen = n; this.sV = this.nv; this.sMax = m; this.sOk = ok; this.sPh = NaN; this.sCnt = 0;
+  }
+  // (review R-11 / R-12) a sounding note (index i in the clip) lights its key only while the engine plays it (engine.js
+  // songEvents): started at or after the chase floor (fl), and not taken over — the next note of its pitch in the song's order
+  // (by start, then pitch, stable: main's songData) not started yet (a new note of a sounding pitch owns it, its end the pitch's;
+  // equal starts: the later). No read of the clip; unsorted mid-drag: the frame's scan found each pitch's last started (sOwn)
+  _keyOn(x, i) { return x.t >= this.fl && (this.sOk ? this.sNx[i] > this.ph : this.sOwn[x.n] === x); }
+  // the sounding notes' blocks brightened: a white wash inside the scene's rect and its edge (whole pixels: no number boxed
+  // per call); (review R-13) their names drawn again over it — where, as and when the scene draws them (rows ≥ 10 px, a name
+  // that fits) — in the washed block's ink (pal.lit)
+  _litNotes(c, pal) {
+    const A = this.sAct, h = this.rowH, W = this.W, G = this.gut, gb = this.gb, rad = h >= 8 ? 2 : 0;
+    c.beginPath();
+    for (let i = 0; i < this.sCnt; i++) {
+      const x = A[i], y = this.n2y(x.n);
+      if (y + h <= RUL || y >= gb || h < 4) continue;
+      const a = Math.round(Math.max(G - 4, this.t2x(x.t))), b = Math.max(a + 2, Math.round(Math.min(W + 4, this.t2x(x.t + x.d))));
+      if (b < G || a > W || b - a < 3) continue;
+      rr(c, a + 1, y + 2, b - a - 2, h - 3, rad);
+    }
+    c.fillStyle = LIT_N; c.fill();
+    if (h < 10) return;
+    const cw = this.ncw, dn = this.dn, sel = this.sel;
+    c.font = this.nfont; c.textBaseline = 'middle'; c.textAlign = 'left';
+    for (let i = 0; i < this.sCnt; i++) {
+      const x = A[i], y = this.n2y(x.n);
+      if (y + h <= RUL || y >= gb) continue;
+      const a = Math.round(Math.max(G - 4, this.t2x(x.t))), b = Math.max(a + 2, Math.round(Math.min(W + 4, this.t2x(x.t + x.d))));
+      const nm = dn !== null && dn.has(x.n) ? dn.get(x.n) : NN[x.n];
+      if (nm === undefined || Math.min(b, W) - Math.max(a, G) < nm.length * cw + 8) continue;
+      c.fillStyle = pal.lit[Math.min(15, (x.v * 16 / 128) | 0)][sel.size > 0 && sel.has(x.id) ? 1 : 0];
+      c.fillText(nm, Math.max(a, G) + 4, y + (h >> 1) + 1); // (whole pixels, as the scene: V8 boxes a fraction at each call)
+    }
+  }
+  // the key strip: each lit row once (lrow stamped with this frame's lst) — the auditioned, the held, the sounding
+  _litKeys(c) {
+    const st = ++this.lst, H = this.hk, A = this.sAct;
+    if (this.keys.size) for (const n of this.keys) this._litRow(c, this._row(n), st);
+    for (let n = 0; n < 128; n++) if (H[n]) this._litRow(c, this._row(n), st);
+    for (let j = 0; j < this.sCnt; j++) { const x = A[j], r = this._row(x.n); if (this.lrow[r] !== st && this._keyOn(x, this.sAI[j])) this._litRow(c, r, st); }
+  }
+  // a lit row: the piano's key (a black key its own width; (review R-14) a drum row named on the piano: the key left of its
+  // name plate, the plate and its name kept), a drum row's plate with its name and note drawn again over it ("Other")
+  _litRow(c, r, st) {
+    if (this.lrow[r] === st) return;
+    this.lrow[r] = st;
+    const y = this.r2y(r), h = this.rowH, D = this.rows;
+    if (y + h <= RUL || y >= this.gb) return;
+    c.fillStyle = LIT;
+    if (!D) {
+      if (isBlk(127 - r)) c.fillRect(0, y, BW, h);
+      else c.fillRect(0, y + 1, this.dn !== null && this.dn.has(127 - r) ? BW : this.gut - 1, h - 1);
+      return;
+    }
+    c.fillRect(0, y + 1, this.gut - 1, h - 1);
+    if (h < 8) return;
+    const ty = y + (h >> 1) + 1; // (whole pixels, as the scene's names)
+    c.font = this.dfont; c.textAlign = 'left'; c.textBaseline = 'middle'; c.fillStyle = BG;
+    c.fillText(r ? this.dn.get(D.at[r]) : 'Other', 6, ty);
+    if (r) { c.textAlign = 'right'; c.fillStyle = LIT_K; c.fillText(NUMS[D.at[r]], this.gut - 5, ty); }
+  }
   _info() {
     const p = this.host.getProject(), g = this.g, hv = this.hover;
     if (!p) return null;
@@ -1363,8 +1522,10 @@ export class PianoRoll {
   _overlay(c) {
     const { W, H, rowH } = this, gb = this.gb, gw = this.gw, g = this.g, hv = this.hover, tr = this.host.getTrack(), GUT = this.gut;
     const pal = tr ? this._pal(tr.color) : this._pal(ACC);
+    this._sound(tr);
     // grid overlays
     c.save(); c.beginPath(); c.rect(GUT, RUL, gw, gb - RUL); c.clip();
+    if (this.sCnt) this._litNotes(c, pal);
     if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) { c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(GUT, this.r2y(hv.r), gw, rowH); }
     if (this.ins != null) {
       const x = Math.round(this.t2x(this.ins));
@@ -1406,11 +1567,14 @@ export class PianoRoll {
       }
     }
 
-    // pressed / hovered keys
+    // pressed / hovered keys; (R) every note sounding on the track, lit once: auditioned, held, under the playhead
     c.save(); c.beginPath(); c.rect(0, RUL, GUT - 1, gb - RUL); c.clip();
-    const keyHi = (r, a) => { const y = this.r2y(r); c.fillStyle = `rgba(242,163,58,${a})`; if (!this.rows && isBlk(this._noteAt(r))) c.fillRect(0, y, BW, rowH); else c.fillRect(0, y + 1, GUT - 1, rowH - 1); };
-    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) keyHi(hv.r, 0.3);
-    for (const n of this.keys) keyHi(this._row(n), 0.85);
+    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) { // (the hovered row; (R) no closure per frame)
+      const y = this.r2y(hv.r);
+      c.fillStyle = 'rgba(242,163,58,0.3)';
+      if (!this.rows && isBlk(this._noteAt(hv.r))) c.fillRect(0, y, BW, rowH); else c.fillRect(0, y + 1, GUT - 1, rowH - 1);
+    }
+    this._litKeys(c);
     c.restore();
 
     // velocity lane overlays

@@ -425,6 +425,7 @@ export class History {
   constructor(limit = 200, maxChars = 64e6) {
     this.limit = Math.max(1, R(num(limit, 200))); this.max = Math.max(0, num(maxChars, 64e6));
     this.u = []; this.r = []; this.pool = new Map(); this.size = 0; this.noop = false;
+    this.seq = 0; // (each entry's seq: its order of creation — this.seq the newest's; main's held keys compare, IMPL-R review R-2)
   }
   _snap(project) {
     const js = x => { const s = JSON.stringify(x); return s === undefined ? 'null' : s; };
@@ -439,7 +440,7 @@ export class History {
   }
   _unref(s) { const e = this.pool.get(s); if (e && !--e.n) { this.pool.delete(s); this.size -= s.length; } }
   // meta: a step's own data (a caller sets entry.meta after record), carried with its label across undo / redo
-  _hold(sn, label, meta) { const e = { m: this._ref(sn.m), t: sn.t && sn.t.map(s => this._ref(s)), label }; if (meta !== undefined) e.meta = meta; return e; }
+  _hold(sn, label, meta) { const e = { m: this._ref(sn.m), t: sn.t && sn.t.map(s => this._ref(s)), label, seq: ++this.seq }; if (meta !== undefined) e.meta = meta; return e; }
   _drop(e) { this._unref(e.m); if (e.t) for (const s of e.t) this._unref(s); }
   _load(e) { const p = JSON.parse(e.m); if (e.t) p.tracks = e.t.map(s => JSON.parse(s)); return p; }
   _trim() {
@@ -450,15 +451,18 @@ export class History {
       else break;
     }
   }
-  record(project, label = '') {
+  // force: a step of its own even when the top holds this state (main's loop-pass steps, IMPL-R: named, and the top they
+  // would share is another action's — undo skips it as a no-op once this one is undone)
+  record(project, label = '', force = false) {
     const sn = this._snap(project), top = this.u[this.u.length - 1];
-    for (const e of this.r) this._drop(e);
-    this.r.length = 0;
-    if (top && snapSame(top, sn)) return false;
+    this.dropRedo();
+    if (top && snapSame(top, sn) && !force) return false;
     this.u.push(this._hold(sn, label));
     this._trim();
     return true;
   }
+  // a new change: what was undone is no longer redoable (record; main's loop pass joining its own step, IMPL-R review R-8)
+  dropRedo() { for (const e of this.r) this._drop(e); this.r.length = 0; }
   // A step carrying meta is never skipped as a no-op: what it did lives partly outside the snapshot (a canvas cable's
   // Serum fields, written back from its meta — knob tweaks are kept across undo), so a step another undo already reverted
   // there looks like nothing; the ↶ that names it consumes it alone (this.noop says so) instead of undoing the step
@@ -472,6 +476,15 @@ export class History {
     this.r.push(this._hold(cur, e.label, e.meta)); this._drop(e);
     this._trim();
     return out;
+  }
+  // the step undo(project) would take back (its no-op steps skipped, as there) — null when none; nothing changes
+  undoStep(project) {
+    let cur = null;
+    for (let i = this.u.length - 1; i >= 0; i--) {
+      const e = this.u[i];
+      if (e.meta !== undefined || !snapSame(e, cur || (cur = this._snap(project)))) return e;
+    }
+    return null;
   }
   redo(project) {
     const cur = this._snap(project);

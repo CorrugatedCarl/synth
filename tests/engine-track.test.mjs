@@ -120,7 +120,7 @@ test('hosts: only Inst objects reach the voices, the divider, SerumDSP, SxSeq (m
   assert.ok(p.i0.sxSeq && p.i0.sxSeq.proc === p.i0, 'SxSeq.proc');
 });
 
-test('stats per Inst / Chain: {t: stats, load, voices, os, per: [{id: i0, load, voices, os}, {id: c0, load}]} — the Chain its own processing time, the Inst the rest', () => {
+test('stats per Inst / Chain: {t: stats, load, voices, snd, os, per: [{id: i0, load, voices, os}, {id: c0, load}]} — the Chain its own processing time, the Inst the rest; snd 1 while a voice sounded in the window (idle-DSP review #9)', () => {
   const D = dspScope({ engine: true, console: quiet });
   let clock = 0; // the scope's Date.now: a clock the test advances (1 ms per rack call, 2 per Inst span)
   D.run('(function (f) { Date.now = function now() { return f(); }; })', 'clock.js')(() => clock);
@@ -134,7 +134,8 @@ test('stats per Inst / Chain: {t: stats, load, voices, os, per: [{id: i0, load, 
     const st = sent.filter(m => m.t === 'stats');
     assert.equal(st.length, 2, name + ': every 0.25 s of audio');
     for (const m of st) {
-      assert.deepEqual(Object.keys(m).sort(), ['load', 'os', 'per', 't', 'voices'], name);
+      assert.deepEqual(Object.keys(m).sort(), ['load', 'os', 'per', 'snd', 't', 'voices'], name);
+      assert.equal(m.snd, 1, name + ': the chord sounds through both windows');
       assert.equal(m.per.length, 2);
       const [i, c] = m.per;
       assert.deepEqual([i.id, c.id, i.os, i.voices, Object.keys(c).sort().join()], ['i0', 'c0', m.os, m.voices, 'id,load'], name);

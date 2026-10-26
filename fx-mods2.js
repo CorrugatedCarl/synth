@@ -258,6 +258,20 @@
     function silence(L, R, o, m) { for (let i = o, e = o + m; i < e; i++) { L[i] = 0; R[i] = 0; } }
     function flushArr(s) { for (let i = 0; i < s.length; i++) { const v = s[i]; if (v < 1e-30 && v > -1e-30) s[i] = 0; } }
     const flush1 = (v) => (v < 1e-30 && v > -1e-30 ? 0 : v);
+    // review #7 (fx-dsp's difFlush, which calls dif(z, m) after a run): a tank's input diffusers — the allpasses ahead of its
+    // FDN (g > 0.5) — flush below FLT_MIN after a run on a silent input, else they stick at ±the smallest float32 subnormal while
+    // the tail rings (for ever at Basin's infinite FEED); dz / dzM as there. The audio is unchanged
+    const FLT_MIN = 1.1754943508222875e-38;
+    function fl32(P, a, b) {                                  // → 1 if a value was nonzero
+      let nz = 0;
+      for (let i = a; i < b; i++) { const v = P[i]; if (v !== 0) { nz = 1; if (Math.abs(v) < FLT_MIN) P[i] = 0; } }
+      return nz;
+    }
+    function ring32(P, o, c, w, m) {                         // ring at o (capacity c, write index w): its last m entries
+      if (m >= c) return fl32(P, o, o + c);
+      if (w >= m) return fl32(P, o + w - m, o + w);
+      return fl32(P, o + w - m + c, o + c) | fl32(P, o, o + w);
+    }
     // crossover frequency: Hz in [10, 0.45·fs] (NaN → 10)
     const xoF = (f, fs) => { const hi = 0.45 * fs; f = +f; return f > 10 ? (f < hi ? f : hi) : 10; };
     // delay time (s) of a time / BPM-ladder pair, ≤ cap
@@ -999,6 +1013,7 @@
         this.size = 0.5; this.decay = 0.3; this.damp = 0.5; this.hicut = 0.3; this.chr = 0.2; this.chd = 0.2;
         this.k = this.fs / 48000;
         this.capsArr = null;                                    // line capacities (constant per rate; set by the subclass)
+        this.d0 = 0; this.d1 = -1; this.dz = 0; this.dzM = 0;    // input diffusers d0 … d1 (set by the subclass; dif, review #7)
       }
       set(R) { return okUnit(R, N_REV); }
       need() { return layLines(this.capsArr, this.off); }
@@ -1008,11 +1023,24 @@
         if (!buf || !(buf.length >= n)) return false;
         this.buf = buf; this.used = n; this.has = 1;
         for (let e = 0; e < this.cap.length; e++) this.cap[e] = this.capsArr[e];
+        let c = 0;
+        for (let e = this.d0; e <= this.d1; e++) if (this.cap[e] > c) c = this.cap[e];
+        this.dzM = 2 * c;
         this.reset();
         return true;
       }
       alloc() { if (this.buf === null) { this.bind(new Float32Array(this.need())); this.own = 1; } }
-      reset() { if (this.buf) this.buf.fill(0, 0, this.used); this.wp.fill(0); this.ir = 1; this.clr(); }
+      reset() { if (this.buf) this.buf.fill(0, 0, this.used); this.wp.fill(0); this.ir = 1; this.dz = 0; this.clr(); }
+      // after a run of m samples whose input silent() (fx-dsp) found z: the input diffusers' last m entries flush below FLT_MIN
+      // (0: audio; 2: exact zeros — skipped once they have read 0 for dzM samples, two laps of the longest)
+      dif(z, m) {
+        if (z === 0) { this.dz = 0; return; }
+        if (z === 1) this.dz = 0; else if (this.dz >= this.dzM) return;
+        const P = this.buf, off = this.off, cap = this.cap, wp = this.wp;
+        let nz = 0;
+        for (let e = this.d0; e <= this.d1; e++) nz |= ring32(P, off[e], cap[e], wp[e], m);
+        this.dz = nz !== 0 ? 0 : this.dz + m;
+      }
       clr() {}
       snap() {}
       seed(p) { this.cph = frac(+p); }
@@ -1028,7 +1056,7 @@
         this.dA = new Float64Array(4); this.dL = new Float64Array(4); this.g = new Float64Array(4);
         this.tE = new Float64Array(12); this.gE = new Float64Array(12);
         this.ersize = 0.5; this.diffa = 0.7; this.diffb = 0.5; this.lpK = 1; this.gD = 0.63; this.gA = 0.35;
-        this.capsArr = Int32Array.from(this.caps());
+        this.capsArr = Int32Array.from(this.caps()); this.d0 = 1; this.d1 = 4;
       }
       caps() {                                                  // (constructor only)
         const k = this.k, c = [ceil(0.08 * this.fs) + 4];
@@ -1106,7 +1134,7 @@
         // installed at once; inside the S2 Reverb unit (auto 0) a MODE change is a topology change (ducked, tank cleared,
         // like TYPE) — the eight lines must not sweep thousands of samples within one block
         this.nmode = 0; this.nwant = 0; this.auto = 1;
-        this.capsArr = Int32Array.from(this.caps());
+        this.capsArr = Int32Array.from(this.caps()); this.d0 = 0; this.d1 = 1;
       }
       caps() {                                                  // (constructor only)
         const k = this.k, c = [];
@@ -1168,7 +1196,7 @@
         super(fs, 20);
         this.st = new Float64Array(4); this.dF0 = new Float64Array(4); this.dF1 = new Float64Array(4); this.dA = new Float64Array(16);
         this.feed = 0.6; this.gl = 0.6; this.inf = 0; this.lpK = 1;
-        this.capsArr = Int32Array.from(this.caps());
+        this.capsArr = Int32Array.from(this.caps()); this.d0 = 0; this.d1 = 15;
       }
       caps() {                                                  // (constructor only)
         const k = this.k, c = [];

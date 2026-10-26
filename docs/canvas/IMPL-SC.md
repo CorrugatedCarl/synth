@@ -947,6 +947,217 @@ base; the Ducker's and the keyed compressor's outputs for fixed programs, the mo
   (25), sidechain-dsp (9), fx-dsp (78), fx-mods2 (28), canvas-SC-sim (15), bench (6: row p's skip-path gate included), lint (165),
   pwa (25) — every one rc 0; sw.js rebuilt (`tools/precache.mjs --write`).
 
+### Windows idle-DSP fixes (lane A) — the sweep (2026-10-26; base 3c9e725, the merge of a4696d5; tests first 8d59a81)
+The review of a4696d5 (FXRack.sweep: a never-calm rack's Float32 lines flushed after ≥ 1 s of silence) — items #3–#7, #10–#15 (lanes B
+and C hold the instruments and main.js). Code b287a35, then b93c36e (#7's decision, the bench row) and 95c93d6 (a test's order).
+- **#4 (P3, the one regression) fixed — b287a35.** The sweep's schedule (`swT`, `swi`, the new `swN`) restarts whenever `quietT` does
+  (a nonzero input or bus sample, a module output ≥ 1e-6) and at `clear()` / `wipe()`: a live rack's silent history before ▶ no longer
+  moves the sweeps inside a later gap — live ≡ fresh / offline bit for bit again (§10.7f). Tests: fx-denormal "§10.7f after a long
+  silence" (P4 extended: a rack with 20 quanta more of silent history vs a fresh one through 1 s / a 30 s gap / 0.5 s / 3 s / 0.5 s /
+  12 s — 168 341 samples differed at ≈ −600 dBFS, now 0) and master-proc **G2 (e)** (`g2(…, {sig})`: 1 s of program, 30 s of
+  silence, 0.5 s, a 2 s tail; a Reverb alone and RACK6, ▶ after 187 / 250 quanta — 150 510 samples differed, now 0).
+- **#3 (P2) fixed — b287a35.** (a) Only the reverb pools are swept, the S1 Reverb's (kind 7) and the S2 Reverb's (kind 15): the Hyper,
+  Flanger, Chorus, Delay (and Delay2), Bode and Convolve sweeps and the S2 Reverb's 120 k-float pre-delay sweep are gone (their feedback
+  goes through sat() / flush1, the rest are feed-forward copies of a zero input — test 1's rack holding all of them still keeps no
+  subnormal after 40 s). `FXRack.sweep` takes the next unit of kind 7 / 15 (no `typeof` probe). One pool per sweep: the worst quantum is
+  the Plate's 64 k floats at 48 kHz (Nitrous's 154 k at 192 kHz), not 184 k (the S2 pool + its pre-delay), Delay2's 192 k or the Bode's
+  197 k. (b) `idle()` gates it, looked at once per ⅛ s (the timer restarts either way): a host skips an idle panel, so only MASTER and
+  sidechain-live panels keep sweeping (an instrument's own rack can still sweep between its `idle()` and the instrument's 2 s quiet).
+  (c) The comments (sweepArr, post, sweep) say what is swept and when. (d) Bench row **`sweep`** (bench-scenarios kind 'sweep': a Plate
+  on exact zeros after 0.5 s of the bench noise, fresh racks; load = the slowest quantum holding a sweep): node 0.039–0.044 (a4696d5's
+  code 0.080–0.099), the macOS jsc shell 0.020–0.021 (0.068); target 0.1 (bench.json "idle"); the reverb rows' hot path unchanged
+  (jsc k0–k4 / v1 Plate / v1 Hall vs a4696d5 0.97–1.03, inside the A/A floor). Tests: "the sweep clears only the reverb pools" (the
+  units with a sweep(): the S2 Reverb, and the S1 Reverb in its own rack; at most one pool per rack sweep; a 1e-31 marker planted in the
+  pre-delay line survives every sweep) and "the sweep runs only in the idle() regime" (+ a 0.5 s Delay ahead of the reverb: no sweep
+  before `idle()` — 4 before the fix).
+- **#5 (P3) fixed — b287a35.** `sweepArr` reports whether the pool held any nonzero value; the rack counts clean pools in a row (`swN`)
+  and stops (`swN` −1) after a full round of its reverbs since the last dirty one; a nonzero module output (`qmax` ≠ 0) or a new silence
+  re-arms it (a quiet echo from upstream cannot re-dirty a finished pool unseen). Test "the sweep stops …": each S2 type with the line
+  modules, a MASTER-like rack, two reverbs in series, the S1 Hall — sweeps in the first 40 s, none in the next 20 s with every pool
+  exact zero, sweeps again after a new burst, then none (before: 160 per 20 s for ever).
+- **#6 (P3) fixed — b287a35.** fx-mods2's `sweepArr` went with the Bode / Convolve sweeps (fx-mods2.js is back to its text before
+  a4696d5); the one sweep loop is fx-dsp's. Pinned by "the sweep clears only the reverb pools" (the Bode and Convolve units carry no
+  sweep()).
+- **#7 (P3) not landed — b93c36e.** The minimal store flush (`if (abs(u) < FLT_MIN) u = 0` before each input-diffuser store: the S1
+  Reverb's Plate / Hall — also the S2 types 0 / 1 —, Vintage, Nitrous, Basin) is bit-identical by the review's canary but costs
+  JavaScriptCore, the iPad's engine: jsc ($262 realms, interleaved 1 s pairs against the sweep-only tree, three processes) k0
+  1.021–1.028, v1 Plate 1.021–1.035, k2 1.013–1.034, the others 0.99–1.01 (A/A 0.97–1.00); two compares +30–95 %, a select (`abs(u) <
+  FLT_MIN ? 0 : u`) +6–8 %; node 0.98–1.02. So the residual stays: while a tail rings, the input diffusers hold 600–1 900 float32
+  subnormals (Basin's sixteen ~9 000), for ever at Hall decay / Basin feed ≥ 0.999 (x86 only, an estimated 1–4 % per reverb; the
+  sweep clears them once `idle()`). Pinned by "while a tail rings … only in their input diffusers" (no other line holds one). A
+  zero-hot-path option for a later call: sweep only the diffuser lines (≤ 11 k floats) on the rack's ⅛ s clock once its input has been
+  exact zero ≥ 1 s, at the FLT_MIN threshold (the values the store flush would have caught — none in a golden by the canary).
+- **Tests #10–#15 — 8d59a81, 95c93d6.** #10: the Ducker panel's Delay short and unsynced (20 / 30 ms) and its sweeps counted (> 0,
+  none outside `idle()`); before the original fix it holds 4 557 stuck pool floats. #11: the reviewer's P3 adopted, plus `idle()` on
+  every call and the echo-gap case; a sweep-every-⅛ s mutant fails it (7 sweeps outside the regime). #12: the S1 Reverb, Plate and
+  Hall, raw v1 and through migrateFx1, 40 s of zeros — no subnormal (before the fix 341 / 849; without its sweep() the rack throws).
+  #13: test 1 retitled, the file's header rewritten (the pools swept whole, why the other lines need none). #14: the page sim
+  (project-p1 + a MASTER Reverb, ▶ 4 s, ■, 60 s): MASTER's rack runs every quantum and MASTER holds no subnormal (343 before the fix);
+  the racks that ran in the last 2 s none. #15: T_OUT dropped, every quantum loop checks a wall-clock `deadline()`.
+- **Gates** (on 95c93d6's code with sw.js rebuilt, one file at a time at 2 GB): fx-denormal (10), fx-dsp (78), fx-mods2 (28), golden-classic
+  / -fx (also GOLDEN_SEED 1, 2, 20752) / -presets / -random / -graph / -drums / -606 / -909 / -sdsv / -moog / -moog-b / -moog-c,
+  canonical-stream, canvas-M-bounce, canvas-M-sim (20), canvas-SC-live, canvas-SC-sim (15), master-proc (26), engine-track (107),
+  sidechain-dsp (9), dr-808 (25), dr-909 (29), bench (6), bench-page (2), main (47), lint (165), pwa (25) — every one rc 0.
+
+### Windows idle-DSP fixes (lane A) — the skeptic round (2026-10-26; tests first 301801f)
+Two skeptics per item re-checked lane A; #5 came back not fully fixed and #7 not fixed (it had been declined). This supersedes the
+"#7 not landed" bullet above.
+- **#5 — the stop's last variants.** (a) A TYPE switched mid-tail: a Vintage / Nitrous / Basin tank resets only its own region of the
+  shared pool (`fill(0, 0, used)`; Plate / Hall clear it all), so the old type's data (up to 0.28) stayed beyond it, never read, and the
+  sweep over the whole pool found it nonzero for ever — 8 sweeps a second on an idle rack through clear(), transport() and new bursts
+  (Plate → Vintage / Nitrous / Basin, Hall / Nitrous / Basin → Vintage, Nitrous → Basin). `Rev2.sweep` scans the installed type's
+  region `[0, nd[type])`. (b) A reverb frozen in a bypassed splitter branch, or under a stopped splitter (its units keep st ≠ 0 but do
+  not run), kept its tail and the sweep with it: `FXRack.frozen(u)` (runSplit's condition) leaves such a unit out of the round; a
+  nonzero output when the branch runs again re-arms it. (c) Neither re-arm was pinned (a mutant without either passed fx-denormal).
+  Tests: "the sweep stops after a reverb TYPE switched mid-tail … frozen …" (eight pairs, Vintage → Plate the control, both frozen
+  cases: 160 sweeps per 20 s before, now none; the frozen pools keep their tail) and "a finished sweep re-arms …" (a reverb at MIX 0:
+  the dirty-pool re-arm — 24 407 floats stuck without it; a frozen branch back in silence below 1e-6, an S2 Plate at SIZE 0.3 looping
+  at 0.585 > ½: the output re-arm — 23 785 without it). The skeptic's echo probe (a 2 s Delay into a SIZE-0 Plate) no longer
+  tells the output re-arm apart: with #7's flush that tank (0.29 per pass) clears itself, the mutant included.
+- **#7 — landed, outside the tank loops.** After a tank run whose input is silent (`silent()`: 0 at the first sample ≥ 1e-30 — one
+  look while audio plays —, 1 all below, 2 exact zeros) the entries each input diffuser wrote in it (its last m) flush below FLT_MIN
+  (`difFlush` / `Tank.dif`: the Plate's lines 1–4, the Hall's 0–3, Vintage 1–4, Nitrous 0–1, Basin 0–15). The S1 Reverb's run and
+  Rev2.run (on the tank's input, after the pre-delay) call it after the tank; the tank loops are byte-identical. On exact zeros it
+  stops once every entry has read 0 for two laps of its lines (`dz` ≥ `dzM`; the Plate's pre-delay counted), 0.9–6.7 s into a
+  silence; any sample ≥ 1e-30 or a nonzero entry restarts it. Test "while a tail rings … no reverb line holds a float32 subnormal"
+  (the residual pin tightened to none: Plate, Hall, Vintage, Nitrous, Basin, the S1 Plate / Hall, infinite Hall (S2, S1) and Basin at
+  44.1 / 48 / 96 kHz — 585–18 531 at a check before, now 0). Cost — jsc ($262 realms, 1 s pairs against 6ba4c31, 15 pairs, three
+  processes; A/A 0.975–1.027): k0–k4 0.980–1.017, v1 Plate 1.005–1.018, v1 Hall 1.008–1.055 (noise); a tail ringing over silence with
+  the flush on (1–3 s after the noise) Plate 1.046–1.079, Vintage 1.046–1.061; after it stops (silent() alone, ~0.1 µs a quantum)
+  Hall ∞ 1.022–1.032, Basin ∞ 1.025–1.063. node: the noise rows 0.97–1.02, the tails 1.01–1.05 (A/A 0.99–1.02). (The store flush
+  inside the loops had cost k0 / v1 Plate +2–3 % while playing; this costs the playing rows nothing and a ringing tail a few % on
+  Apple Silicon, where it saves nothing, against ~100 cycles per subnormal on x86.)
+- **Gates** (this code with sw.js rebuilt, one file at a time at 2 GB): fx-denormal (12), fx-dsp (78), fx-mods2 (28), golden-fx (also
+  GOLDEN_SEED 1, 2, 20752) / -classic / -presets / -random / -graph / -drums / -606 / -909 / -sdsv / -moog / -moog-b / -moog-c,
+  canonical-stream, canvas-M-bounce, canvas-M-sim (20), canvas-SC-live, canvas-SC-sim (15), master-proc (26), engine-track (107),
+  sidechain-dsp (9), dr-808 (25), dr-909 (29), bench (6), bench-page (2), main (47), lint (165), pwa (25) — every one rc 0.
+
+### Windows idle-DSP fixes (lane B) — the instruments' leaks (2026-10-26; base 3c9e725, the FXRack.sweep merge; review-idle #1, #2, #8, the Juno's hiss)
+The sweep cleans a rack's Float32 lines once its input has been exact zero for 1 s; these instruments never handed their panel exact
+zero. A Float64 state on a y ← c·y recursion sticks in the subnormal range (c × the value rounds back to it), so with any panel module
+the rack never idled, the Inst rendered every quantum for ever, the panel's sweep never ran and, with a panel reverb, the track's
+float32 output (±1.4e-44) held MASTER's sweep off too: 54 k + 15–38 k stuck pool entries, every one an x86 assist. An empty panel (the
+default) skips 2 s after release and never met them. Tests first, one per item: `tests/inst-denormal.test.mjs` (6 tests, ~32 s; fixed
+quantum counts + a wall-clock `deadline()`). Each case is the instrument with a panel EQ or a panel Reverb (pre-delay 250 ms, see the
+note below) + a MASTER Reverb: play (drums: their pattern 4 s, then ■; classics: a 4-note chord 2 s, then key-up), 40 s of silence.
+The Inst must have stopped rendering within 20 s, MASTER must have run every quantum, and no subnormal may be left anywhere (f32 and
+f64, over the whole Track and MASTER: fx-denormal's walk).
+- **#1 (P1) fixed — 4c38844 tests, 4e7d1ec code.** `post8` / `post6` / `post9` (dr-808.js) flush their stored coupling states below
+  1e-30 at the store, as `postV` already did (808 / 606: s0–s3, 909: s0, s3; the stereo copy after). They stuck at ±2.65e-321 (808) and
+  4.6e-321 (909). 1e-30 held: golden-drums / -606 / -909 / -sdsv and dr-808 / -606 / -909 / -sdsv bit-identical, so the true-subnormal
+  fallback was not needed. The tracks now skip 4.3–4.9 s (909), 6.2–6.4 s (808) and 7.5–9.0 s (606) after ■. The SDS-V is in the test as a control
+  (it already passed).
+- **#2 (P2) fixed — 81212aa tests, ce3ac0e code.** `flushSVF` (engine.js, beside `resetSVF`) zeroes a Biquad2's s1 / s2 below
+  `MIN64` (2.2250738585072014e-308, the smallest normal double; such values round to float32 0). `Ensemble.process` flushes pre / pl /
+  pr once a block, which fixes the ±1e-323 limit cycle that held a Solina at its defaults (EN 1) with a panel module busy for ever
+  (Lb ±9.88e-324). Both bypass paths (`Chorus` and `Ensemble`: a real BBD is always clocked) flush their pre-filter too. Without that,
+  eight classics skipped with their 2 048-entry lines frozen full of f64 subnormals (review-idle #14's "bypassed buffers"), so the
+  Solina test's twin covers the other ten classics (not the Juno). The Solina skips 3.4 s (EQ) / 4.4 s (Reverb) after key-up, the others 2.0–5.4 s.
+- **The Juno's hiss, the lead's call (a) — d3df39e tests, f00babd code.** `Chorus.process(x, L, R, n, mute)`: `Inst.renderSpan`
+  passes `quietF > base · 2`, the skip's own rule. Muted, the hiss is exact 0 and its PRNG is frozen, as it is at the skip. The main
+  path's 2-poles flush too, so the output rings out to exact 0 in ~19 ms (7 quanta). The test compares a Juno with a panel EQ against
+  one without, on the same track id. Their machine outputs are bit-identical until the panel-less Inst skips. With the panel, the
+  output is < 1e-30 from the next quantum and exact 0 within 8. The Inst then skips once its panel idles (3.2 s with the EQ, 4.6 s with the Reverb). Without a panel
+  nothing changes: the mute can only reach a span rendered past 2 s of quiet, and only a busy rack renders one.
+- **#8 (P3) fixed — b868cbb tests, aa5a207 code.** `Track.outStage` flushes dcx / dcy below `MIN64` once a call. On a never-quiet
+  900 Series track gone silent, y ← Rdc·y stuck at ±4.71e-321 after ~29 s, and with it Lb / Rb and the limiter's xl / xr ring (386 f64
+  subnormals every quantum). The test plays Classic bass with no panel module, an EQ or a Reverb, + a MASTER Reverb, then 60 s after
+  key-up checks that it still renders and holds no subnormal.
+- **Note for lane A / the lead: a panel reverb with a short pre-delay freezes unswept at the skip.** `idle()` waits for `quietT ≥ fs +
+  tail()`, and Rev2's `tail()` is its pre-delay (`pt`), so with the default 0 ms it is true at `quietT ≈ fs`, before `swT` reaches the
+  first ⅛ s sweep. The host's skip then freezes the panel pool as it stands: 342–584 f32 subnormals on a classic, 2 207 on a drum
+  machine (Reverb mix / size / decay .3). This holds for every instrument, before lane B too, and the SDS-V at 3c9e725 shows it. It
+  costs nothing while skipped; they are read once when audio returns. The tests use a 250 ms pre-delay, which puts at least one panel
+  sweep before the skip. Review #3(b)'s gate (`… && swT ≥ fs·SWEEP && idle()`) would not change this for a 0 ms pre-delay: `swT`
+  < fs/8 at the first idle quantum. Sweeping once more on the quantum `idle()` first turns true would.
+- **Gates** (on aa5a207's code, one file at a time at 2 GB): inst-denormal (6), fx-denormal (3), fx-dsp (78), fx-mods2 (28),
+  golden-fx (today's seed and GOLDEN_SEED 1, 2, 20752), golden-classic / -presets / -random / -graph / -drums / -606 / -909 / -sdsv /
+  -moog / -moog-b / -moog-c, canonical-stream, canvas-M-bounce, canvas-M-sim (20), canvas-SC-live, canvas-SC-sim (15), master-proc
+  (25), engine-track (107), sidechain-dsp (9), dr-808 (25) / -606 (25) / -909 (29) / -sdsv (20), main (47), lint (165), pwa (25).
+  Every one passed (rc 0), the goldens bit-identical; sw.js rebuilt (`tools/precache.mjs --write`).
+
+### Windows idle-DSP fixes (lane C) — the CPU safeguard, idle review #9 (2026-10-26; base 3c9e725; tests first a258936, the fix 6028354)
+- **Armed only while something sounds.** `statsText` takes a step only within 2.5 s of a track report whose new `snd` is 1 (`sndT`,
+  set in the node's stats handler; 2.5 s = the engine's 2 s quiet rule, §6.4, plus one report: the tail right after the playing,
+  staccato gaps). In silence every Inst is skipped and the summed load is the racks' (MASTER's, a scIdle panel on zeros) or a
+  starved thread's, which no lever lowers: on Windows the idle denormal load (before 3c9e725) ran the whole cascade while nothing
+  played — sxCap 8→1, Q1…Q6, ⚙ 4→2→1, about one step per 2.25 s (main-sim: 6 steps in 15 s at a summed 91 %). It rests through a
+  silent stretch of ▶ too (the levers would lower nothing there) and re-arms with the next note.
+- **`snd` (engine.js — the only engine change; no DSP behaviour change).** `Track.process` sets `this.snd` once an Inst's `act` is
+  > 0 after a quantum (one compare per quantum while 0; reset at construction, in `restore()` after the warm-up and at each post);
+  `stats()` posts it beside `voices`, legacy and graph form. `act` is what sounds, every kind: voices (classic; Serum's — not its
+  hidden warm-up voices), a drum's live machine (`dm.live()`), a powered 900 Series with MAIN OUT patched (never quiet, IMPL-9 §3.6:
+  it sounds, so it arms — its oversampling is a real lever), a held note, every Inst of a graph (milestone 3: not only insts[0]).
+  Not the report's `voices` alone (review #9's sketch): that is the last quantum's snapshot, and a drum's short hits between two
+  reports read 0 at every report — measured act: 808 maracas 27 ms, claves 115 ms, rimshot 144 ms, 909 rimshot 67 ms; a report
+  (94 quanta = 12 032 frames at 48 kHz) drifts 32 frames a report against 16ths at 120 BPM, so it misses them for tens of seconds.
+- **Session only.** The broadcast step (the other models' oversampling) sets `plCap` (beside `osFor`: `min(settings.os, osCap(sr),
+  plCap)`) instead of writing `settings.os`, the ⚙ select and the store: a heavy moment no longer lowers every later session.
+  `liftCaps` (a Quality choice: ⚙ or Serum's GLOBAL page) and a reload lift it (liftCaps posts the setting again); the rate line
+  says `(4× · CPU cap)` (`capped` stays the 384 kHz cap's word); a track added this session starts at the session's value
+  (`trackOS` / `hostOS` read `osFor`); offline renders (the bounce's "Same as playback") use the setting — no CPU step offline, as
+  Serum's. The per-instrument step (stage 1e) and the Serum caps were session only already.
+- **Tests.** tests/safeguard-sim (10; main-sim, clock 'std', every report's load forced on its way to main.js; bounded: fixed frame
+  and report counts). Fed reports: silence lowers nothing in 15 s; voices, voices 0 with snd 1, snd every other report — one step
+  each. The real engine (a Serum, a Minimoog, an 808, MASTER): a note, its release, then 12 s at 90 % — no step, every report snd
+  0; 808 maracas right after each of its reports — voices 0 / snd 1 in ≥ 12 of 16 reports, a step; a held Minimoog note — a step;
+  a Serum note 0.5 s then 12 s of its tail at 90 % — exactly one step; the Model 15 tile's Classic bass, no key — snd 1, a step; the
+  broadcast step — the setting, `#os` and the saved `synth.settings` stay 4, the engine and a new track at 2, the rate line names
+  the CPU cap, `liftCaps` posts 4 again. Before the fix 7 of 10 failed (6 steps in fed silence, 5 in the real one, the cascade
+  running on through a tail, no `snd`, ⚙ saved at 1×). Changed by design: engine-track "stats per Inst / Chain" (the key list gains
+  `snd`, asserted 1 under its held chord), graph-host H7 (the setting stays `os0` after the broadcast; the badges as before).
+- **For the lead.** A ⚙ Oversampling the old cascade saved (the user's Windows browser: maybe 1×) stays saved — nothing here raises a
+  setting; ask the user to set it again.
+- **Gates** (on 6028354's code, one file at a time at 2 GB): fx-denormal (3), fx-dsp (78), fx-mods2 (28), golden-classic / -fx (also
+  GOLDEN_SEED 1, 2, 20752) / -presets / -random / -graph / -drums / -606 / -909 / -sdsv / -moog / -moog-b / -moog-c, canonical-stream,
+  canvas-M-bounce, canvas-M-sim (20), canvas-SC-live, canvas-SC-sim (15), master-proc (25), engine-track (107), sidechain-dsp (9),
+  dr-808 (25), dr-909 (29), dr-606 (25), dr-sdsv (20), main (47), lint (165), pwa (25), safeguard-sim (10), graph-host (22),
+  canvas-9-sim (22), integration (44), accessors (30) — every one rc 0; sw.js rebuilt (`tools/precache.mjs --write`).
+
+### Windows idle-DSP fixes — the merge (wt-R): the skip's line flush, FXRack.rest (2026-10-26; base b607785)
+- **The meeting point.** On the merged tree lane B's inst-denormal failed twice: `tr909 + panel rev` 7 and `juno60 + panel rev` 21
+  float32 subnormals, all in the panel Reverb's 2.5 s pre-delay (`Rev2.pl`). Lane A's #3 dropped the sweep of the
+  non-recirculating lines: a running rack refills them with its zero input within one ring. But the host's idle skip stops the
+  rack, so what its input wrote on the way to exact 0 stays in the part of the ring not yet overwritten (it costs nothing until
+  the next note reads it once).
+- **The fix.** `FXRack.rest(n)` makes one pass over every allocated unit's Float32 lines (`LINES` by kind: the Hyper, Flanger, Chorus
+  and Delay lines, both Reverbs' pools, the S2 pre-delay, the Bode's line and BLUR allpasses, the Convolve's pre-delay and input
+  FDLs; not the tables: shaper curves, the Ducker's curve, IR spectra). It flushes |x| < FLT_MIN to 0 (`fl32`, #7's helper): the
+  values a float32 holds only as subnormals. Nothing ≥ FLT_MIN and no −0 changes. No sweep of the non-recirculating lines comes back.
+  - **A share per skipped frame, not one shot.** `REST` = 256 floats per skipped frame (32 k a quantum, ~30 µs on node), then
+    nothing until the rack runs again. One shot would be a spike on the audio thread at the skip. Measured on node (M4 Max): 0.36 ms
+    for a Delay + Reverb rack at 48 kHz (376 k floats), 0.67 ms at 96 kHz (752 k), 1.6 ms for a Convolve's 10 s FDL (~2 M), i.e.
+    13 % / 50 % / 60 % of a quantum on the fastest machine, and ■ skips every track in the same quantum. Spread out, the pass
+    takes 12 / 23 / 61 quanta.
+  - **State `rs`.** `process()` sets it to 1 (one store, after the calm early return). `rest()` moves it to 2 while a pass runs
+    and to 0 when the pass is done. `set()`, `assets()` and `collect()` restart a pass under way (the units or the FDLs may move).
+  - **Hosts: where scIdle is decided.** A classic Inst's panel in the simple shape from `Track.renderSpan`'s skip, every panel
+    of a graph from `chainSpan`'s idle branch, a Serum's own FX from `Inst.renderSpan`'s skip. One call per skipped span and
+    rack. A sidechain-live rack runs on (scIdle, with the sweep) and is not rested.
+  - **Cost.** While playing: one field store per rack call. Idle, once the pass is done: one compare per skipped span.
+  - **live ≡ bounce.** The budget is counted in frames, not calls: the same state for any split of the spans.
+  - **Bit-safety.** Only an idle(), skipped rack's float32 subnormals change, and only to 0. A running rack, MASTER and a
+    sidechain-live rack are untouched. Every golden and stream gate below is bit-identical.
+- **Lane B's note (a 0 ms pre-delay freezes the pool unswept).** Covered: the pool now reaches the skip clean (the diffusers'
+  flush, lane A's #7) and `rest()` passes over the pools anyway. What was left was the pre-delay: 22 subnormals after a Prophet-5.
+- **Tests.** inst-denormal's six are unchanged (the two red ones now pass).
+  - inst-denormal (+1): "a panel Reverb at its default 0 ms pre-delay after a 20 ms Delay, + a MASTER Reverb". Prophet-5, Juno-60
+    and Solina with the panel held by the Inst (the simple shape) or by none (the Inst also patched to OUT: a graph), and a Serum's
+    own FX. Each must stop the rack, finish the pass (`rs` 0) and leave no subnormal. Mutants: without the `Track.renderSpan`
+    hook the held cases fail (22 in `pl`, `rs` 1), without `chainSpan`'s the graph cases, without the Inst's the Serum (`rs` 1).
+  - fx-denormal (+1): "FXRack.rest — the idle skip's pass", on the S2 line modules + a Convolve and the S1 rack. Every own
+    Float32Array of every module is a line the pass clears; each call clears exactly its budget (128 × 256); the split
+    1 / 127 / 64 / 64 / 100 / 28 ≡ 128s at every boundary; normal values and −0 kept; no pass without a run; `set()` restarts a
+    pass under way. Mutants all fail: `pl` left out of `LINES`, a per-call budget, a 1e-30 threshold, no `rs = 1` in `process()`.
+- **Gates** (this code with sw.js rebuilt, one file at a time at 2 GB; every one rc 0):
+  - **New and FX.** inst-denormal (7), fx-denormal (13), fx-dsp (78), fx-mods2 (28).
+  - **Goldens, bit-identical.** golden-classic, golden-fx (today's seed and GOLDEN_SEED 1, 2, 20752), golden-presets, golden-random,
+    golden-graph, golden-drums, golden-606, golden-909, golden-sdsv, golden-moog, golden-moog-b, golden-moog-c.
+  - **Streams and sims.** canonical-stream, canvas-M-bounce, canvas-M-sim (20), canvas-SC-live, canvas-SC-sim (15).
+  - **Engine and drums.** master-proc (26), engine-track (107), sidechain-dsp (9), dr-808 (25), dr-909 (29), dr-606 (25), dr-sdsv (20).
+  - **Bench and app.** bench (6), bench-page (2), lint (165), pwa (25), main (47).
+  - **Graph.** graph-host (22), integration (44), safeguard-sim (10), canvas-9-sim (22).
+
 ## 13. Review log
 
 ### The skeptic review (2026-10-24, against the draft)

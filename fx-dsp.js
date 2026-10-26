@@ -90,6 +90,8 @@
  *   until process() has rendered it) and clears at once when nothing is audible; parameters keep gliding.
  * - idle(): no module enabled, or every enabled module's output < 1e-6 for 1 s of zero input plus the longest delay
  *   line gap (an echo can still be in flight).
+ * - rest(n): the host calls it for each span it skips an idle() rack (n frames): one pass over the Float32 lines, below
+ *   FLT_MIN → 0, a bounded share per frame, until the rack runs again (the frozen lines keep no float32 subnormal).
  * - warmUp() exercises every module and mode on a temporary rack (same classes ⇒ the JIT state is shared), then
  *   reset()s this rack; the temporary buffers are garbage afterwards (memory budget of the idle rack is kept).
  */
@@ -105,7 +107,7 @@
     const DB = 20 / LN10;                                      // 20·log10(x) = DB·ln(x)
     const IDB = LN10 / 20;                                     // 10^(g/20) = exp(IDB·g)
 
-    const VER = 2, NF = 100, NMOD = 10, BLK = 16, SPAN = 128, NXS = 1025;   // VER = FXP major (§2.6.5); NF = v1 FX rows
+    const VER = 2, NF = 100, NMOD = 10, BLK = 16, SPAN = 128, NXS = 1025, SWEEP = 0.125;   // VER = FXP major (§2.6.5); NF = v1 FX rows
     const MIDI0 = 440 * Math.pow(2, -69 / 12), MIDI128 = 440 * Math.pow(2, 59 / 12);
 
     /* ------------------------------------------------------------ FX destinations (§3.13 FX segment, fx idx order) */
@@ -289,6 +291,64 @@
     function flushArr(s) {
       for (let i = 0; i < s.length; i++) { const v = s[i]; if (v < 1e-30 && v > -1e-30) s[i] = 0; }
     }
+    // flushArr of a reverb pool's first n floats (default: all; null: nothing) → 1 if they held any nonzero value (0: clean,
+    // FXRack.sweep's stop). The pools are Float32: a tail that decays into the float32 subnormal range never reaches 0 in a recirculating loop (g × the
+    // smallest subnormal rounds back to it), and x86 pays a microcode assist per subnormal conversion — a never-calm rack
+    // (MASTER's, a sidechain-live panel) on silence read and wrote tens of thousands for ever (the Windows idle-load report,
+    // 2026-10-25). Only the reverb pools keep one: the Delay / Chorus / Flanger feedback goes through sat() (< 1e-25 → 0), the
+    // Bode's through flush1, the other lines are feed-forward copies of a zero input. Whole, not in strides: the unswept part of
+    // a loop re-infects a swept window within one period (the Plate kept 21 k of its 64 k floats under a 512-stride sweep)
+    function sweepArr(s, n) {
+      if (s === null) return 0;
+      let nz = 0;
+      if (!(n <= s.length)) n = s.length;
+      for (let i = 0; i < n; i++) { const v = s[i]; if (v !== 0) { nz = 1; if (v < 1e-30 && v > -1e-30) s[i] = 0; } }
+      return nz;
+    }
+    // review #7: a reverb's input diffusers (allpasses ahead of the tank, g > 0.5) stuck at ±the smallest float32 subnormal 1–3 s
+    // after their input stopped while the tank still rang — no sweep before idle(), for ever at Hall / Basin's infinite
+    // settings. After a tank run on a silent input (silent(): 0 a sample ≥ 1e-30 — its first, while audio plays —, 1 every
+    // sample below, 2 exact zeros) the entries each diffuser wrote in it (its last m ≥ its writes, the whole line when m ≥ its
+    // capacity) flush below FLT_MIN, the values a float32 holds only as subnormals (difFlush, Tank.dif in fx-mods2; outside the
+    // tank loops: a store flush inside them cost JavaScriptCore 2–3 %). No diffuser gets there inside a golden: the audio is
+    // unchanged
+    const FLT_MIN = 1.1754943508222875e-38;
+    function silent(L, R, o, m) {
+      let s = 2;
+      for (let i = o, e = o + m; i < e; i++) {
+        const a = L[i], b = R[i];
+        if (a !== 0 || b !== 0) { if (a >= 1e-30 || a <= -1e-30 || b >= 1e-30 || b <= -1e-30) return 0; s = 1; }
+      }
+      return s;
+    }
+    function fl32(P, a, b) {                                  // → 1 if a value was nonzero
+      let nz = 0;
+      for (let i = a; i < b; i++) { const v = P[i]; if (v !== 0) { nz = 1; if (Math.abs(v) < FLT_MIN) P[i] = 0; } }
+      return nz;
+    }
+    function ring32(P, o, c, w, m) {                         // ring at o (capacity c, write index w): its last m entries
+      if (m >= c) return fl32(P, o, o + c);
+      if (w >= m) return fl32(P, o + w - m, o + w);
+      return fl32(P, o + w - m + c, o + c) | fl32(P, o, o + w);
+    }
+    // the Reverb's diffusers e0 … e1 after a run of m samples with silent() = z (T.dz: samples of exact-zero input their entries
+    // have read 0 for; past T.dzM, two laps of every line on the way in — the Plate's pre-delay too —, nothing can reach them
+    // until a sample arrives: the flush stops)
+    function difFlush(T, P, e0, e1, z, m) {
+      if (z === 0) { T.dz = 0; return; }
+      if (z === 1) T.dz = 0; else if (T.dz >= T.dzM) return;
+      const off = T.off, cap = T.cap, wp = T.wp;
+      let nz = 0;
+      for (let e = e0; e <= e1; e++) nz |= ring32(P, off[e], cap[e], wp[e], m);
+      T.dz = nz !== 0 ? 0 : T.dz + m;
+    }
+    // FXRack.rest: the Float32 lines of each kind (u.mod's fields; none: null) — the Hyper, Flanger, Chorus and Delay lines, the
+    // reverb pools (the S2 pool holds the Vintage / Nitrous / Basin tanks too) and the S2 Reverb's pre-delay, the Bode's line
+    // and BLUR allpasses, the Convolve's pre-delay and input FDLs; not tables (the shaper curves, the Ducker's curve, the IR
+    // spectra). REST: floats per skipped frame (32 k a quantum, half the sweep's slowest)
+    const LINES = [['lL', 'lR', 'lD'], null, ['lL', 'lR'], null, ['buf'], ['lL', 'lR'], null, ['pool'], null, null, null, null,
+      ['buf'], ['lL', 'lR'], null, ['pool', 'pl'], null, null, ['lL', 'lR', 'bl'], ['pL', 'pR', 'mXr', 'mXi', 'tXr', 'tXi'], null, null, null];
+    const REST = 256;
 
     // EQ band (§8.5.3): RBJ cookbook, A = 10^(gain/40), Q = 0.25·40^q, α = sin w0/(2Q). type 0 shelf, 1 peak, 2 pass
     // (left band: low shelf / HP; right band: high shelf / LP)
@@ -1163,6 +1223,7 @@
         flushArr(this.xs);
         if (this.pk < 1e-30) this.pk = 0;
         for (let b = 0; b < 3; b++) if (this.bp[b] < 1e-30) this.bp[b] = 0;
+        flushArr(this.bg);                                     // (the band gains' attack one-poles decay to 0 in dB: ±)
         if (this.hpOn === 1) flushArr(this.ks);
       }
     }
@@ -1197,6 +1258,7 @@
         this.hph = 0; this.xa = 0; this.yl = 0; this.yr = 0;
         this.sph = 0; this.srate = 0.05; this.sdep = 0; this.lpK = 1; this.inf = 0;
         this.ir = 1; this.ist = 1 / (0.005 * fs);
+        this.dz = 0; this.dzM = 0;                             // (difFlush, review #7)
       }
       // pool layout of a topology (floats); wr = 1 also installs it (off / cap)
       layout(type, wr) {
@@ -1221,12 +1283,18 @@
           this.pool = p;
         }
       }
-      apply(type) { this.layout(type, 1); this.type = type; this.reset(); }   // new topology, empty (no allocation)
+      apply(type) {                                            // new topology, empty (no allocation)
+        this.layout(type, 1); this.type = type; this.reset();
+        let c = 0;                                             // (difFlush: the Plate's pre-delay 0 and diffusers 1–4, the Hall's diffusers 0–3)
+        for (let e = 0; e <= 4 - type; e++) if (this.cap[e] > c) c = this.cap[e];
+        this.dzM = 2 * c * this.dec;                           // (samples at fs: the Plate's half rate above 96 kHz)
+      }
+      sweep() { return sweepArr(this.pool); }                // (FXRack.sweep: the denormal sweep)
       alloc(type) { type = type === 0 ? 0 : 1; this.ensure(type); this.apply(type); }
       reset() {
         if (this.pool) this.pool.fill(0);
         this.wp.fill(0); this.lp.fill(0); this.hs.fill(0); this.bw = 0; this.dmL = 0; this.dmR = 0;
-        this.hph = 0; this.xa = 0; this.yl = 0; this.yr = 0; this.ir = 1;
+        this.hph = 0; this.xa = 0; this.yl = 0; this.yr = 0; this.ir = 1; this.dz = 0;
       }
       seed() {                                                 // modulation phases restart at 0 (ramps restart there)
         this.mph = 0; this.sph = 0; this.hph = 0;
@@ -1268,7 +1336,12 @@
         this.ex0 = E * sin(TAU * this.mph); this.ey0 = E * cos(TAU * this.mph);
         if (this.type === 1) for (let q = 0; q < 8; q++) this.dl[q] = this.hallD(q, this.sph);
       }
-      run(R, L, Rc, o, m) { if (this.type === 0) this.runPlate(L, Rc, o, m); else this.runHall(L, Rc, o, m); }
+      run(R, L, Rc, o, m) {                                    // (the S1 Reverb)
+        const z = silent(L, Rc, o, m);
+        if (this.type === 0) this.runPlate(L, Rc, o, m); else this.runHall(L, Rc, o, m);
+        this.dif(z, m);
+      }
+      dif(z, m) { if (this.type === 0) difFlush(this, this.pool, 1, 4, z, m); else difFlush(this, this.pool, 0, 3, z, m); }   // (review #7)
       outHP(L, Rc, i, yl, yr) {                                // output low-cut (2-pole SVF HP per channel)
         const hc = this.hc, a1 = hc[0], a2 = hc[1], a3 = hc[2], h = this.hs;
         let lp = svfT(h, 0, yl, a1, a2, a3);
@@ -1828,6 +1901,10 @@
         if (t >= 0) { if (t <= 1) this.rv.reset(); else this.tk[t].reset(); }
       }
       seed() { this.rv.seed(); for (let t = 2; t < 5; t++) if (this.tk[t]) this.tk[t].seed(0); }
+      // (FXRack.sweep: the installed type's region of the pool, [0, nd[type]) — a Vintage / Nitrous / Basin tank resets only that
+      // part, so a TYPE switched mid-tail leaves the old type's data beyond it, never read, which kept the sweep going for ever;
+      // the pre-delay line is a copy of the input)
+      sweep() { return this.type < 0 ? 0 : sweepArr(this.pool, this.nd[this.type]); }
       upd(R) {
         const ev = R.ev, fs = this.fs;
         let t = ev[1], nm = ev[20];
@@ -1904,11 +1981,12 @@
           L[i] = y; Rc[i] = y;
         }
         this.pd = pd; this.pw = pw; this.pc = pc; this.pa = pa; this.ir = ir;
-        // the tank (Plate / Hall include the output HP)
-        if (t === 0) this.rv.runPlate(L, Rc, o, m);
-        else if (t === 1) this.rv.runHall(L, Rc, o, m);
+        // the tank (Plate / Hall include the output HP); its input diffusers flushed after a silent input (review #7)
+        const z = silent(L, Rc, o, m);
+        if (t === 0) { this.rv.runPlate(L, Rc, o, m); this.rv.dif(z, m); }
+        else if (t === 1) { this.rv.runHall(L, Rc, o, m); this.rv.dif(z, m); }
         else {
-          this.tk[t].run(R, L, Rc, o, m);
+          this.tk[t].run(R, L, Rc, o, m); this.tk[t].dif(z, m);
           const hc = this.hc, a1 = hc[0], a2 = hc[1], a3 = hc[2], h = this.hs;
           for (let j = 0; j < m; j++) {
             const i = o + j;
@@ -2224,6 +2302,8 @@
         this.tapId = ''; this.tapU = null; this.tapB = new Float32Array(TAP_N); this.tapW = 0; this.tapO = new Float32Array(TAP_N);
         // fresh: 1 never given a real FXP, 2 reset() with no audio processed since → the next set() snaps like a first call
         this.fresh = 1; this.calm = 1; this.nAct = 0; this.quietT = QBIG; this.inZero = 0; this.qmax = 0;
+        this.swT = 0; this.swi = 0; this.swN = 0;                // the denormal sweep (sweep()): audio since its last look, the next unit, clean pools in a row (−1: done)
+        this.rs = 0; this.rsU = 0; this.rsJ = 0; this.rsI = 0;   // the idle skip's flush (rest()): 0 rested, 1 run since, 2 under way at unit / line / float
         this.gm0 = 1; this.gm1 = 1; this.gate = 1; this.gT = 1; this.rf = 1; this.rfT = 1; this.fstep = 1 / (0.005 * fs);
         this.gd0 = 1; this.gd1 = 1; this.gb0 = new Float64Array(3).fill(1); this.gb1 = new Float64Array(3).fill(1); this.xd = 0;
         // setNote: key-tracking pitch and factor 2^((pitch − 60)/12); note a double field from the start (V8: the first
@@ -2277,6 +2357,7 @@
         this.gdirty = 1;
         if (this.fresh !== 0) { this.snap(); this.seed(1); if (ok) this.fresh = 0; } else if (ok && fxp.seed) this.seed(0);
         this.calm = 0;
+        if (this.rs === 2) this.rs = 1;                        // (rest(): a pass under way starts over on the new graph)
       }
       // module kind of an FXP (type, variant), −1 when it cannot run here (the instance passes its input): S2 variants need
       // SxBase, the FXMods2 types need FXMods2 (§0.3 failure column)
@@ -2481,6 +2562,7 @@
           if (u.st === 0 && u.mod.ready === 0) u.mod.release();
         }
         this.calm = 0;
+        if (this.rs === 2) this.rs = 1;                        // (rest(): a re-sized FDL — a pass under way starts over)
       }
       // removed units of an old chain that still sound go into the new chain after their nearest kept predecessor
       fadeIns(oc, nc, U) {
@@ -2729,12 +2811,13 @@
         const U = this.U;
         for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
         this.flushPend(); this.dropGone(); this.grOut.fill(0); this.seed(1);
-        this.quietT = QBIG; this.calm = 0;
+        this.quietT = QBIG; this.calm = 0; this.swT = 0; this.swi = 0; this.swN = 0;
       }
       clear() {
         const U = this.U;
         for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
         this.quietT = QBIG; this.qmax = 0; this.rf = 1; this.rfT = 1;    // (qmax: this span counts from the clear on)
+        this.swT = 0; this.swi = 0; this.swN = 0;
         this.grOut.fill(0);
         this.snap(); this.seed(1);
         this.calm = 0;
@@ -2748,6 +2831,7 @@
       collect() {                                              // in place (no allocation): drop gone units with st 0
         if (this.gc === 0) return;
         this.gc = 0;
+        if (this.rs === 2) this.rs = 1;                        // (rest(): the units move — a pass under way starts over)
         const L = [this.U, this.C0, this.C1, this.C2];
         for (let a = 0; a < 4; a++) this.compact(L[a]);
         const U = this.U;
@@ -2938,6 +3022,7 @@
         if (this.fresh === 2) this.fresh = 0;                // audio after a reset(): later edits glide again
         if (this.calm === 1 && !dL && !b1L && !b2L && (this.nConv === 0 || !this.wake())) return;   // bypass-cheap: O(1)
         n = n | 0;
+        this.rs = 1;                                           // (the lines run: rest() flushes them again at the next skip)
         for (let o = 0; o < n; o += SPAN) this.span(L, R, o, n - o < SPAN ? n - o : SPAN, dL, dR, b1L, b1R, b2L, b2R);
       }
       // a calm rack polls its Convolve instances: one that is enabled and has just received its IR wakes the rack
@@ -3336,10 +3421,72 @@
         }
         if (this.gc === 1) this.collect();
         this.nAct = act;
-        if (act > 0 && this.inZero === 1 && this.qmax < 1e-6) this.quietT += n; else this.quietT = 0;
+        // (the denormal sweep's schedule restarts with each silence — never carried over from an earlier one: live ≡ bounce,
+        // §10.7f; a nonzero module output re-arms a finished sweep; idle() looked at once per SWEEP s, the sweep only then)
+        if (act > 0 && this.inZero === 1 && this.qmax < 1e-6) { this.quietT += n; if (this.qmax !== 0) this.swN = 0; }
+        else { this.quietT = 0; this.swT = 0; this.swi = 0; this.swN = 0; }
+        if (act > 0 && this.inZero === 1 && this.swN >= 0 && this.quietT >= this.fs && (this.swT += n) >= this.fs * SWEEP) { this.swT = 0; if (this.idle()) this.sweep(); }
         const g = this.gm1;
         this.calm = act === 0 && this.gate === 1 && this.gT === 1 && this.rf === 1 && this.rfT === 1 &&
           g - 1 < 1e-9 && 1 - g < 1e-9 && this.gb[0] === this.gt[0] ? 1 : 0;
+      }
+      // the denormal sweep (sweepArr): the next reverb's pool (S1 Reverb, S2 Reverb — the only lines that keep a subnormal),
+      // whole, every SWEEP s once the rack is idle() — ≥ 1 s of exact-zero input with every module output < 1e-6, plus the longest
+      // echo gap: its host skips an ordinary panel from there (an instrument's own rack once the instrument has been quiet 2 s),
+      // so only MASTER and a sidechain-live panel keep sweeping; never inside a golden's gaps between bursts (0.25–0.5 s; their
+      // tails far above 1e-30: the audio is unchanged). Round robin, one pool per sweep (the largest: the Plate's 64 k floats at
+      // 48 kHz, Nitrous's 154 k at 192 kHz); done (swN −1) after a full round of clean pools since the last dirty one with no
+      // module output, until the next sound; a reverb that does not run (frozen()) is left as it is. The small states flush per
+      // block (modFlush)
+      sweep() {
+        const U = this.U, nu = U.length;
+        let n = 0, j = -1;
+        for (let k = 0; k < nu; k++) {
+          const i = (this.swi + k) % nu, u = U[i];
+          if (u.st === 0 || u.has !== 1 || (u.k !== 7 && u.k !== 15) || this.frozen(u) === 1) continue;
+          n++;
+          if (j < 0) j = i;
+        }
+        if (j < 0) { this.swi = 0; this.swN = -1; return; }
+        this.swi = j + 1;
+        if (U[j].mod.sweep() !== 0) this.swN = 0; else if (++this.swN >= n) this.swN = -1;
+      }
+      // 1: unit x sits in a splitter branch that does not run (bypassed: its band passes, runSplit; or the splitter stopped) —
+      // frozen, its tail neither decays nor reaches the output until the branch runs again (a nonzero output then re-arms the
+      // sweep); a frozen pool kept the sweep going for ever (review #5)
+      frozen(x) {
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) {
+          const s = U[i];
+          if (s.k !== 21 || s.br === null) continue;
+          for (let c = 0; c < s.mod.nb; c++) if (s.br[c].indexOf(x) >= 0) return s.st === 0 || (s.bb[c] !== 0 && s.mod.bx[c] === 1) ? 1 : 0;
+        }
+        return 0;
+      }
+      // the host's idle skip (engine.js, §6.4: an Inst holding the rack, or a panel no source feeds, skipped while idle(); not
+      // a sidechain-live rack, which runs on): the rack stops with its lines as they stand. Running, a feed-forward line refills
+      // with the zero input within one ring (review #3); skipped, it keeps what its input wrote on the way to exact 0 — float32
+      // subnormals in the S2 Reverb's 2.5 s pre-delay (7 after a 909, 21 after a Juno, 22 after a Prophet-5: inst-denormal), a
+      // Delay's 2 s lines. One pass over every unit's Float32 lines (LINES; the pools too: a short pre-delay idles before the
+      // first ⅛ s sweep) flushes below FLT_MIN — the values a float32 holds only as subnormals; no normal value, no −0 changes —
+      // REST floats per skipped frame (a Delay + Reverb rack holds ~380 k at 48 kHz, ~750 k at 96: no quantum carries it), then
+      // nothing until the rack runs again (process(): rs 1). Counted in frames, not calls: live ≡ bounce
+      rest(n) {
+        if (this.rs === 0) return;
+        if (this.rs === 1) { this.rs = 2; this.rsU = 0; this.rsJ = 0; this.rsI = 0; }
+        const U = this.U;
+        let b = n * REST;
+        for (;;) {
+          if (this.rsU >= U.length) { this.rs = 0; return; }
+          const u = U[this.rsU], L = u.has === 1 ? LINES[u.k] : null;
+          if (!L || this.rsJ >= L.length) { this.rsU++; this.rsJ = 0; this.rsI = 0; continue; }
+          const a = u.mod[L[this.rsJ]], c = a ? a.length : 0, i0 = this.rsI < c ? this.rsI : c, e = c - i0 > b ? i0 + b : c;
+          if (e > i0) fl32(a, i0, e);
+          b -= e - i0;
+          if (e < c) { this.rsI = e; return; }
+          this.rsJ++; this.rsI = 0;
+          if (b <= 0) return;
+        }
       }
 
       /* ---------------- JIT warm-up and test hooks */

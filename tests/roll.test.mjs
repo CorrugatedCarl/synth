@@ -1154,6 +1154,263 @@ test('7a "Drum rows" off: the full keyboard with the drum rows named in the gutt
   eq(s.roll.bctx.calls.some(c => c[0] === 'fillRect' && c[1] === 64 && c[2] === Math.round(s.roll.v2y(100)) && c[4] === 1), false);
 });
 
+/* ------------------------------------------------------------------ (R) lights: the held and the sounding notes */
+// IMPL-R §3: the key strip lights every note sounding on the track — the held ones the host passes (setHeld) and the song's
+// under the heard playhead while it plays (setPlayhead's third argument) —, the note blocks under the playhead brighten
+const brute = (notes, t) => notes.filter(x => x.t <= t && t < x.t + x.d).map(x => x.id).sort((a, b) => a - b);
+const sids = roll => roll.sounding().map(x => x.id).sort((a, b) => a - b);
+const BW = 38, GUT_D = 120;
+const keyLit = (calls, roll, n, gut = GUT) => calls.some(k => k[0] === 'fillRect' && k[1] === 0 && (
+  [1, 3, 6, 8, 10].includes(n % 12) ? k[2] === roll.n2y(n) && k[3] === BW && k[4] === roll.rowH : k[2] === roll.n2y(n) + 1 && k[3] === gut - 1 && k[4] === roll.rowH - 1));
+// (review R-11 / R-12) the keys the engine sounds at tick t: per pitch the last note started by t in the song's order (by start,
+// then pitch, stable: main's songData) owns it — a later note of a sounding pitch takes it over, its end the pitch's —, sounding
+// while t < its end and only when it started at or after the chase floor fl (the engine starts no note before it)
+const engineKeys = (notes, t, fl = -Infinity) => {
+  const own = new Map();
+  for (const x of notes.slice().sort((a, b) => a.t - b.t || a.n - b.n)) if (x.t <= t) own.set(x.n, x);
+  return [...own.values()].filter(x => x.t >= fl && t < x.t + x.d).map(x => x.n).sort((a, b) => a - b);
+};
+// a context's fillText / fill / fillRect calls with the fillStyle and font they drew with: [op, fillStyle, font, ...args]
+const inks = c => {
+  const out = [];
+  for (const k of ['fillText', 'fill', 'fillRect']) c[k] = function (...a) { out.push([k, this.fillStyle, this.font, ...a]); };
+  return out;
+};
+
+test('R lights: setHeld lights the held notes on the key strip — a frame only when the set changes —; the song\'s notes under the playhead while it plays (setPlayhead(t, sync, true)), brightened in the grid; none once stopped (play false), kept when the argument is left out', () => {
+  const { roll } = mk({ notes: [N(0, 960, 60), N(480, 960, 64), N(1920, 480, 67), N(1920, 480, 72), N(1920, 480, 61)] });
+  F();
+  eq([roll.litKeys(), roll.sounding().length], [[], 0], 'nothing lit');
+  roll.setHeld([62, 65]);
+  eq([dom.raf.pending, roll.litKeys()], [1, [62, 65]], 'held: one frame');
+  F();
+  roll.setHeld(new Set([65, 62]));
+  eq(dom.raf.pending, 0, 'the same set: no frame');
+  const c = roll.el.getContext('2d');
+  c.calls.length = 0; roll.setPlayhead(0, true);
+  ok(keyLit(c.calls, roll, 62) && keyLit(c.calls, roll, 65), 'the overlay lights the two keys');
+  eq(roll.sounding().length, 0, 'not playing: no song notes');
+  roll.setHeld([]); F();
+  // playing: the notes under the playhead (t ≤ ph < t + d)
+  c.calls.length = 0; roll.setPlayhead(600, true, true);
+  eq([sids(roll), roll.litKeys()], [[1000, 1001], [60, 64]], 'C4 and E4 sound at 600');
+  const a = Math.round(Math.max(GUT - 4, roll.t2x(0))), b = Math.round(Math.max(GUT - 4, roll.t2x(480)));
+  ok(c.calls.some(k => k[0] === 'moveTo' && k[1] === a + 3 && k[2] === roll.n2y(60) + 2), 'C4\'s block brightened (inside its rect)');
+  ok(c.calls.some(k => k[0] === 'moveTo' && k[1] === b + 3 && k[2] === roll.n2y(64) + 2), 'E4\'s block brightened');
+  ok(keyLit(c.calls, roll, 60) && keyLit(c.calls, roll, 64), 'their keys lit');
+  roll.setPlayhead(1440, true, true);
+  eq(sids(roll), [], 'C4 ended at 960, E4 at 1440 (its end is not sounding)');
+  c.calls.length = 0; roll.setPlayhead(2000, true, true);
+  eq([sids(roll), roll.litKeys()], [[1002, 1003, 1004], [61, 67, 72]], 'a chord with a black key');
+  ok(keyLit(c.calls, roll, 61), 'the black key lit at its own width');
+  roll.setPlayhead(2010, true);
+  eq(sids(roll), [1002, 1003, 1004], 'the argument left out: still playing');
+  roll.setPlayhead(2020, false, false);
+  eq([sids(roll), roll.litKeys(), dom.raf.pending], [[], [], 1], 'stopped: none (a frame to clear them)');
+  F();
+  roll.setPlayhead(-480, true, true);
+  eq(sids(roll), [], 'the count-in: nothing');
+  // held and sounding together: one light per key; the roll's own audition keys too
+  roll.setPlayhead(600, true, true); roll.setHeld([60, 62]); roll._aud(64, 100);
+  eq(roll.litKeys(), [60, 62, 64], 'the union');
+  c.calls.length = 0; roll.setPlayhead(610, true, true);
+  eq(c.calls.filter(k => k[0] === 'fillRect' && k[1] === 0 && k[2] === roll.n2y(60) + 1 && k[3] === GUT - 1).length, 1, 'a key lit by both is drawn once');
+  roll._audOff(64);
+});
+
+test('R lights, a 5 000-note clip: the sounding notes match a brute force at every frame — forward, a loop back, a seek ahead, an edit, unsorted notes mid-drag, very long notes —, and the lit keys the engine\'s rule (the chase floor, a later note of a pitch taking it over); a forward frame reads a few notes, a jump a binary search\'s worth, never the whole clip', () => {
+  let s = 7;
+  const rnd = () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296;
+  const notes = [];
+  for (let i = 0; i < 5000; i++) notes.push({ id: 1000 + i, t: Math.floor(rnd() * 200 * BAR), d: 1 + Math.floor(rnd() * 1920), n: 36 + Math.floor(rnd() * 48), v: 100 });
+  notes.push({ id: 9000, t: 10 * BAR, d: 64 * BAR, n: 30, v: 100 }, { id: 9001, t: 0, d: 150 * BAR, n: 31, v: 100 }); // (two very long notes)
+  S.sortNotes(notes);
+  const { roll, tr } = mk();
+  const R = { n: 0 };
+  // ((review R-16) every index read counts: '90'…'99', '900'… too — a string compare with '9' skipped them)
+  tr.notes = new Proxy(notes, { get(o, k) { if (typeof k === 'string' && /^\d+$/.test(k)) R.n++; return o[k]; } });
+  roll.render(); F();
+  let fl = -Infinity; // (the chase floor main passes: a start's / seek's tick, the loop start after a wrap; kept by a tempo change)
+  const frame = t => { R.n = 0; roll.setPlayhead(t, true, true, fl); const n = R.n; roll.bctx.calls.length = 0; roll.el.getContext('2d').calls.length = 0; return n; };
+  const chk = (t, m) => { const n = frame(t); eq(sids(roll), brute(notes, t), `${m} @${t}`); eq(roll.litKeys(), engineKeys(notes, t, fl), `${m}: the keys @${t}`); return n; };
+  fl = 50 * BAR; chk(50 * BAR, 'first frame');
+  let mx = 0;
+  for (let k = 1; k <= 300; k++) mx = Math.max(mx, chk(50 * BAR + 37 * k, 'forward'));
+  ok(mx <= 12, 'a forward frame reads a few notes: ' + mx);
+  const back = chk(50 * BAR, 'the loop back');
+  ok(back <= 120, 'a jump back: a binary search and its window: ' + back);
+  fl = 120 * BAR + 5;
+  const ahead = chk(120 * BAR + 5, 'a seek ahead');
+  ok(ahead <= 120, 'a jump ahead too: ' + ahead);
+  fl = -Infinity; // (from here as a song played from its start)
+  for (let k = 1; k <= 60; k++) chk(120 * BAR + 5 + 41 * k, 'forward again');
+  // an edit: a note added under the playhead (sorted in, render) — seen at once
+  const ph = 120 * BAR + 5 + 41 * 60;
+  notes.push({ id: 9100, t: ph - 10, d: 100, n: 90, v: 100 }); S.sortNotes(notes); roll.render();
+  chk(ph + 1, 'an added note');
+  ok(sids(roll).includes(9100), 'the new note sounds');
+  // mid-drag the roll's array may be out of order until the edit ends: still exact
+  const x = notes.find(o => o.t > ph + 2000 && o.t < ph + 3000 && o.d > 100);
+  const t0 = x.t; x.t = ph - 5; roll.render();
+  chk(ph + 2, 'unsorted (a dragged note)');
+  ok(sids(roll).includes(x.id), 'the dragged note sounds where it is now');
+  x.t = t0; S.sortNotes(notes); roll.render();
+  chk(ph + 3, 'sorted again');
+  // the very long notes: from the clip's start, and across the jumps
+  for (const t of [0, 5, 10 * BAR, 73 * BAR, 149 * BAR, 150 * BAR]) chk(t, 'long notes');
+});
+
+test('R lights on the drum rows: a sounding note lights its row\'s plate with the name kept readable ("Other" for an unnamed note); the piano layout of a drum track lights its keys', () => {
+  const { roll } = mkDrum({ notes: [N(0, 480, 36), N(0, 480, 60), N(960, 120, 38)] });
+  F();
+  const c = roll.el.getContext('2d');
+  const plate = r => c.calls.some(k => k[0] === 'fillRect' && k[1] === 0 && k[2] === roll.r2y(r) + 1 && k[3] === GUT_D - 1 && k[4] === roll.rowH - 1);
+  const said = s => c.calls.some(k => k[0] === 'fillText' && k[1] === s);
+  c.calls.length = 0; roll.setPlayhead(100, true, true);
+  eq(roll.litKeys(), [36, 60], 'the kick and an unnamed note');
+  ok(plate(16) && plate(0), 'the Kick row (16) and "Other" (0) lit');
+  ok(said('Kick') && said('Other'), 'their names drawn over the light');
+  c.calls.length = 0; roll.setPlayhead(1000, true, true);
+  ok(plate(15) && said('Snare') && !plate(16), 'the snare now, the kick off');
+  roll.setDrumRows(false);
+  c.calls.length = 0; roll.setPlayhead(100, true, true);
+  // ((review R-14) a named white key lights left of its name plate — the plate and its name stay as drawn)
+  const y36 = roll.n2y(36);
+  ok(c.calls.some(k => k[0] === 'fillRect' && k[1] === 0 && k[2] === y36 + 1 && k[3] === BW && k[4] === roll.rowH - 1) && keyLit(c.calls, roll, 60, GUT_D), 'the piano layout: the keys');
+});
+
+test('R lights, review R-11 / R-12: a key lights only while the engine plays its note — none started before the chase floor (setPlayhead\'s 4th argument: a start or a seek inside a note, a loop pass after the wrap; kept when left out, null: none) and, of overlapping notes of one pitch, only the latest started (it takes the pitch over: the earlier stays dark once it ends; equal starts: the later in order); the blocks keep "under the playhead"', () => {
+  const { roll, tr } = mk({ notes: [N(0, 4 * BAR, 72), N(0, BAR, 76), N(BAR / 4, BAR / 4, 76), N(BAR / 2, BAR, 74),
+    N(2 * BAR, 960, 64), N(2 * BAR, 480, 64), N(2 * BAR, 480, 65), N(2 * BAR, 960, 65)] });
+  S.sortNotes(tr.notes); roll.render(); F();
+  const c = roll.el.getContext('2d');
+  const at = (t, ...fl) => { c.calls.length = 0; roll.setPlayhead(t, true, true, ...fl); return [roll.sounding().map(x => x.n).sort((a, b) => a - b), roll.litKeys()]; };
+  // played from the start (floor 0): every note under the playhead the engine started
+  eq(at(BAR / 8, 0), [[72, 76], [72, 76]], 'C5 and E5 from the start');
+  eq(at(BAR / 4 + 100, 0), [[72, 76, 76], [72, 76]], 'the second E5 takes the pitch over');
+  eq(at(3 * BAR / 4, 0), [[72, 74, 76], [72, 74]], 'the second E5 ended: the pitch is silent though the first one\'s block is under the playhead');
+  const a = Math.round(Math.max(GUT - 4, roll.t2x(0)));
+  ok(c.calls.some(k => k[0] === 'moveTo' && k[1] === a + 3 && k[2] === roll.n2y(76) + 2) && !keyLit(c.calls, roll, 76), 'its block still brightened, its key dark');
+  // equal starts: the later in the song's order owns the pitch (E4: the shorter one; F4: the longer one)
+  eq(at(2 * BAR + 300, 0), [[64, 64, 65, 65, 72], [64, 65, 72]], 'both pairs sound');
+  eq(at(2 * BAR + 600, 0), [[64, 65, 72], [65, 72]], 'E4\'s owner ended: dark; F4\'s sounds on');
+  // a start or seek inside a note (the floor its tick): the engine never starts it — dark, its block still brightened
+  eq(at(2 * BAR + 600, 2 * BAR), [[64, 65, 72], [65]], 'C5 started before the start / seek point');
+  ok(c.calls.some(k => k[0] === 'moveTo' && k[1] === a + 3 && k[2] === roll.n2y(72) + 2) && !keyLit(c.calls, roll, 72) && keyLit(c.calls, roll, 65), 'C5\'s block brightened, its key dark; F4\'s lit');
+  // a loop pass after the wrap (the floor the loop start): a note crossing the loop start is not restarted
+  eq(at(BAR + 100, 0), [[72, 74], [72, 74]], 'pass 1 (played from the start)');
+  eq(at(BAR + 100, BAR), [[72, 74], []], 'pass 2: from the loop start (BAR) on only');
+  eq(at(BAR + 200), [[72, 74], []], 'the floor left out: kept');
+  eq(at(BAR + 300, null), [[72, 74], [72, 74]], 'null: no floor');
+  // held and auditioned keys light whatever the floor
+  roll.setHeld([72]); roll._aud(74, 100);
+  eq(at(BAR + 400, BAR)[1], [72, 74], 'held / auditioned keys');
+  roll._audOff(74); roll.setHeld([]);
+});
+
+test('R lights, review R-13: a sounding note\'s name (rows of 10 px or more) is drawn again over its wash — where, as and when the scene draws it — in a text colour for the washed block: every track colour × velocity × selection reads at 3:1 or better; rows under 10 px draw none', () => {
+  const { roll, tr } = mk({ notes: [N(0, 1920, 60)], rollRowH: 18 });
+  F();
+  const c = roll.el.getContext('2d'), sc = roll.bctx, ov = inks(c), bk = inks(sc);
+  const lin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const L = x => 0.2126 * lin(x[0]) + 0.7152 * lin(x[1]) + 0.0722 * lin(x[2]);
+  const cr = (p, q) => { const x = L(p), y = L(q); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const rgba = s => { const m = String(s).match(/[\d.]+/g).map(Number); return [m.slice(0, 3), m.length > 3 ? m[3] : 1]; };
+  const over = (bg, [fg, al]) => bg.map((x, i) => x * (1 - al) + fg[i] * al);
+  let worst = 99, n = 0;
+  for (const col of S.TRACK_COLORS) for (let lv = 0; lv < 16; lv++) for (const sel of [false, true]) {
+    tr.color = col; tr.notes[0].v = Math.min(127, lv * 8 + 4);
+    if (sel) roll.selectAll(); else roll.selectNone();
+    roll.setPlayhead(0, false, false); F();
+    bk.length = 0; roll.render(); F(); // (the scene: the block's fill, its name)
+    const fill = bk.find(k => k[0] === 'fill' && /^rgb\(/.test(k[1])), name = bk.find(k => k[0] === 'fillText' && k[3] === 'C4');
+    ov.length = 0; roll.setPlayhead(600, true, true);
+    const w = ov.findIndex(k => k[0] === 'fill' && k[1] === 'rgba(255,255,255,0.42)'), lit = ov.findIndex(k => k[0] === 'fillText' && k[3] === 'C4');
+    ok(fill && name && w >= 0 && lit > w, `${col} v${lv} ${sel}: the name drawn after the wash`);
+    eq(ov[lit].slice(2), [name[2], 'C4', name[4], name[5]], 'at the scene\'s place, in its font');
+    const washed = over(rgba(fill[1])[0], [[255, 255, 255], 0.42]), k = cr(over(washed, rgba(ov[lit][1])), washed);
+    worst = Math.min(worst, k); n++;
+  }
+  ok(n === 384 && worst >= 3, `lit names read at ${worst.toFixed(2)}:1 or better`);
+  roll.setPlayhead(0, false, false);
+  while (roll.rowH >= 10) roll.zoomRows(-1);
+  F();
+  ok(roll.rowH < 10, 'small rows: ' + roll.rowH);
+  ov.length = 0; roll.setPlayhead(600, true, true);
+  ok(ov.some(k => k[0] === 'fill' && k[1] === 'rgba(255,255,255,0.42)') && !ov.some(k => k[0] === 'fillText' && k[3] === 'C4'), 'under 10 px: the wash, no name (the scene draws none)');
+});
+
+test('R lights, review R-14: "Drum rows" off — a lit drum row on a white key lights the key left of its name plate (the plate and its name stay as drawn), as a black key lights; an unnamed white key its whole width; the compact rows light the plate and draw the name and the note number again', () => {
+  const { roll } = mkDrum({ notes: [N(0, 480, 36), N(0, 480, 38), N(0, 480, 39), N(0, 480, 60)], rollRowH: 12 });
+  roll.setDrumRows(false); F();
+  ok([36, 60].every(n => roll.n2y(n) >= RUL && roll.n2y(n) + roll.rowH <= roll.gb), 'the rows in view');
+  const c = roll.el.getContext('2d'), ov = inks(c);
+  roll.setPlayhead(100, true, true);
+  eq(roll.litKeys(), [36, 38, 39, 60], 'all four lit');
+  const h = roll.rowH, on = (n, x0, w) => ov.filter(k => k[0] === 'fillRect' && k[1] === 'rgba(242,163,58,0.85)' && k[4] >= roll.n2y(n) && k[4] < roll.n2y(n) + h && k[3] === x0 && k[5] === w).length;
+  const plate = n => ov.filter(k => k[0] === 'fillRect' && k[1] === 'rgba(242,163,58,0.85)' && k[4] >= roll.n2y(n) && k[4] < roll.n2y(n) + h && k[3] + k[5] > BW).length;
+  eq([on(36, 0, BW), plate(36), on(38, 0, BW), plate(38)], [1, 0, 1, 0], 'Kick and Snare: the key part only, never the plate');
+  eq([on(39, 0, BW), plate(39)], [1, 0], 'the clap (a black key) as before');
+  eq([on(60, 0, GUT_D - 1), plate(60)], [1, 1], 'C4 (no sound named): its whole key');
+  // the compact rows: the plate lit, its name and note drawn again in the dark ink
+  roll.setDrumRows(true); F();
+  ov.length = 0; roll.setPlayhead(110, true, true);
+  const r = roll._row(36), y = roll.r2y(r);
+  const txt = ov.filter(k => k[0] === 'fillText' && k[5] >= y && k[5] <= y + roll.rowH).map(k => [k[3], k[1]]);
+  eq(txt.map(k => k[0]), ['Kick', '36'], 'the name and the note number over the light');
+  ok(txt.every(k => /^rgba\(12,13,15|^#0c0d0f$/.test(k[1])), 'in the dark ink: ' + JSON.stringify(txt));
+});
+
+test('R lights, review R-16: a view-only frame while the song plays — a one-finger scroll, the wheel, a zoom, Keys −/+, Fit, a tool or ghost switch, reveal, a resize — never re-reads the clip (no re-index: a forward frame\'s or a jump\'s reads); an edit still does', () => {
+  let s = 7;
+  const rnd = () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296;
+  const notes = [];
+  for (let i = 0; i < 5000; i++) notes.push({ id: 1 + i, t: Math.floor(rnd() * 200 * BAR), d: 1 + Math.floor(rnd() * 1920 * (i % 10 ? 1 : 5)), n: 36 + Math.floor(rnd() * 48), v: 100 });
+  S.sortNotes(notes);
+  const { roll, tr } = mk({ touch: true });
+  const R = { n: 0 };
+  tr.notes = new Proxy(notes, { get(o, k) { if (typeof k === 'string' && /^\d+$/.test(k)) R.n++; return o[k]; } });
+  roll.render(); F();
+  roll._scene = () => {}; // (the scene's own reads are not the lights')
+  let idx = 0;
+  const si = roll._sIndex.bind(roll); roll._sIndex = L => { idx++; return si(L); };
+  let t = 50 * BAR, mx = 0;
+  const frame = () => { t += 32; R.n = 0; roll.setPlayhead(t, true, true); mx = Math.max(mx, R.n); };
+  frame(); frame();
+  eq(idx, 1, 'the first playing frame indexes the clip once');
+  const long = roll.sLong;
+  const views = {
+    'a one-finger scroll': () => {
+      let T0 = 90000;
+      const o = { pointerId: 77, pointerType: 'touch', isPrimary: true };
+      roll.sy = 0; roll.clampY(); // (the top rows: no note under the finger)
+      dom.ptr(roll.el, 'pointerdown', 500, 300, Object.assign({ timeStamp: (T0 += 400) }, o));
+      ok(roll.g && roll.g.type === 'pan', 'a scroll');
+      for (let k = 1; k <= 30; k++) { dom.ptr(roll.el, 'pointermove', 500 - 6 * k, 300 - 4 * k, Object.assign({ timeStamp: (T0 += 16) }, o)); frame(); }
+      dom.ptr(roll.el, 'pointerup', 320, 180, Object.assign({ timeStamp: (T0 += 16) }, o));
+    },
+    'the wheel': () => { for (let k = 0; k < 5; k++) { dom.fire(roll.el, 'wheel', { deltaX: 40, deltaY: 30, clientX: 400, clientY: 200 }); frame(); } },
+    'a zoom (Ctrl+wheel, Alt+wheel)': () => { dom.fire(roll.el, 'wheel', { deltaY: -60, ctrlKey: true, clientX: 400, clientY: 200 }); frame(); dom.fire(roll.el, 'wheel', { deltaY: -60, altKey: true, clientX: 400, clientY: 200 }); frame(); },
+    'Keys −/+': () => { roll.zoomRows(1); frame(); roll.zoomRows(-1); frame(); },
+    'Fit': () => { roll.fit(); frame(); },
+    'a tool switch': () => { roll.setTool('draw'); frame(); roll.setTool('select'); frame(); },
+    'ghosts': () => { roll.setGhosts(false); frame(); roll.setGhosts(true); frame(); },
+    'reveal': () => { roll.reveal(140 * BAR); frame(); },
+    'a resize': () => { dom.place(roll.box, 0, 0, 1000, 600); roll.resize(); frame(); },
+  };
+  for (const [m, f] of Object.entries(views)) {
+    const i0 = idx; mx = 0; f();
+    eq(idx - i0, 0, `${m}: no re-index`);
+    ok(mx <= 120, `${m}: a frame read ${mx} notes`);
+  }
+  ok(roll.sLong === long, 'the long notes\' list kept');
+  // an edit (render): read again once
+  notes.push({ id: 9100, t: t + 10, d: 100, n: 90, v: 100 }); S.sortNotes(notes); roll.render();
+  frame(); frame();
+  eq(idx, 2, 'an edit re-indexes once');
+  ok(roll.sounding().some(x => x.id === 9100), 'and the new note sounds');
+});
+
 /* ------------------------------------------------------------------ the page: synth.rollView */
 test('page: Keys −/+ in the Piano Roll toolbar; the row height persists per device (synth.rollView) into the next session; save() writes a pending one; a bad value is ignored', async () => {
   // last: the page simulation replaces the globals the fake DOM above installed
@@ -1248,4 +1505,74 @@ test('page: the arrangement host\'s restoreLoop (a two-finger takeover of a rule
   eq([p.loop.start, p.loop.end, p.loop.on], [0, 7680, false], 'restored, off again');
   h.restoreLoop(L0);
   eq([p.loop.start, p.loop.end, p.loop.on], [L0.start, L0.end, L0.on]);
+});
+
+test('page, review R-11 / R-12 (the real engine): the key strip lights a song note exactly while the engine plays it — played or sought from inside a note: dark; a note crossing the loop start, after the wrap: dark; a panic: dark (a later note lit); a tempo change (no release): lit on; overlapping notes of one pitch; a count-in\'s pre-roll bar lit — the blocks keep "under the playhead"', async () => {
+  const { bootMain } = await import('./main-sim.mjs');
+  const { fakeStorage } = await import('./fakes.mjs');
+  const sim = await bootMain({ ls: fakeStorage({}), clock: 'std', outLat: 0.03 });
+  const api = sim.api, cv = globalThis.__synthTest.cv;
+  await sim.power(); await sim.settle(20);
+  sim.$('#modal').hidden = true;
+  const P = () => api.project(), TR = () => P().tracks.find(t => t.id === P().selTrack), Tx = () => api.transport(), roll = api.roll();
+  const settle = async (n = 3) => { for (let i = 0; i < n; i++) { sim.raf(); await sim.settle(3); } };
+  // the song on, a frame every 6 quanta (16 ms), until the heard tick is past `to` in loop pass `pass` (a wrap: the tick steps back)
+  let wraps = 0, lastT = -Infinity;
+  const until = (pass, to) => {
+    for (let q = 0; q < 400000; q++) {
+      const t = api.curTick();
+      if (t < lastT - 1) wraps++;
+      lastT = t;
+      if (wraps + 1 > pass || (wraps + 1 === pass && t >= to)) { sim.raf(); return t; }
+      sim.run(128); if (q % 6 === 5) sim.raf();
+    }
+    throw new Error('never reached pass ' + pass + ' tick ' + to);
+  };
+  const stopAll = async () => { if (Tx().rec) sim.$('#tRec').click(); if (Tx().playing) sim.$('#tPlay').click(); await settle(); };
+  const go = async (notes, o = {}) => {
+    await stopAll();
+    const p = P(), t = TR();
+    t.notes = notes.map((x, i) => Object.assign({ id: 'n' + i, v: 100 }, x)); S.sortNotes(t.notes); t.cc = []; t.mute = false;
+    p.bpm = 120; p.metronome.countIn = o.countIn || 0; p.metronome.on = false;
+    Object.assign(p.loop, o.loop ? { on: true, start: o.loop[0], end: o.loop[1] } : { on: false });
+    Tx().pos = o.from || 0; wraps = 0; lastT = -Infinity;
+    api.applyRestore(p); await settle();
+    sim.$(o.rec ? '#tRec' : '#tPlay').click(); await sim.settle(5);
+  };
+  // the key lit ⇔ the engine sounds the pitch (its song notes on: seqOn)
+  const both = (n, want, m) => eq([roll.litKeys().includes(n), sim.nodeOf(TR().id).proc.songHas(n)], [want, want], m);
+  const under = n => roll.sounding().some(x => x.n === n);
+  // played from inside a long note: the engine starts it never; a note after the start point as usual
+  await go([{ t: 0, d: 4 * BAR, n: 72 }, { t: 2 * BAR + 960, d: 960, n: 67 }], { from: 2 * BAR });
+  until(1, 2 * BAR + 600);
+  both(72, false, 'played from inside C5'); ok(under(72), 'its block under the playhead');
+  until(1, 2 * BAR + 1400);
+  both(67, true, 'G4 after the start point'); both(72, false, 'C5 still');
+  // sought into a note
+  await go([{ t: 0, d: 4 * BAR, n: 72 }]);
+  until(1, 600); both(72, true, 'played from its start');
+  roll.host.setPlayhead(2 * BAR);
+  until(1, 2 * BAR + 600); both(72, false, 'a seek into it');
+  // a loop pass after the wrap: a note crossing the loop start is not restarted
+  await go([{ t: BAR / 2, d: BAR, n: 74 }], { loop: [BAR, 2 * BAR] });
+  until(1, BAR + 300); both(74, true, 'pass 1: played from the start');
+  until(2, BAR + 300); both(74, false, 'pass 2'); ok(under(74), 'its block under the playhead');
+  // a panic: what sounds stops; a note after it plays
+  await go([{ t: 0, d: 4 * BAR, n: 72 }, { t: BAR, d: 960, n: 67 }]);
+  until(1, 300); both(72, true, 'before the panic');
+  cv.panic();
+  until(1, 900); both(72, false, 'after the panic');
+  until(1, BAR + 300); both(67, true, 'a note after the panic');
+  // a tempo change re-anchors without a release
+  await go([{ t: 0, d: 4 * BAR, n: 72 }]);
+  until(1, 600); cv.setProjectBpm(100);
+  until(1, 1500); both(72, true, 'a tempo change: lit on');
+  // overlapping notes of one pitch: the later one owns it
+  await go([{ t: 0, d: BAR, n: 76 }, { t: BAR / 4, d: BAR / 4, n: 76 }]);
+  until(1, BAR / 4 + 300); both(76, true, 'the second E5');
+  until(1, 3 * BAR / 4); both(76, false, 'the second E5 ended: the pitch is silent'); ok(under(76), 'the first one\'s block under the playhead');
+  // a count-in from bar 3: the pre-roll bar plays
+  await go([{ t: 1.5 * BAR, d: BAR / 4, n: 77 }], { from: 2 * BAR, countIn: 1, rec: true });
+  until(1, 1.5 * BAR + 300); both(77, true, 'the pre-roll bar\'s note');
+  await stopAll();
 });

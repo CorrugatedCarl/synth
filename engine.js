@@ -1117,6 +1117,11 @@ const CHORUS_MODES = [null, [0.513, 1.66e-3, 5.35e-3], [0.863, 1.66e-3, 5.35e-3]
 // Both effects are always fed (a real BBD is always clocked), so switching one on never replays stale
 // audio; the wet path fades in/out over ~15 ms and adds onto L/R, which hold the dry signal.
 function resetSVF(b) { b.f.s1 = b.f.s2 = 0; }
+// a silent line's 2-pole falls into a ±1e-323 limit cycle (only panicClear reset it): its output never exact 0 — a panel
+// module behind never idle, the Inst never skipped, MASTER's sweep held off (review-idle #2), every sample an x86 assist; a
+// subnormal state (below the smallest normal double: it rounds to float32 0, the audio unchanged) is flushed once a block
+const MIN64 = 2.2250738585072014e-308;
+function flushSVF(b) { const f = b.f; if (f.s1 < MIN64 && f.s1 > -MIN64) f.s1 = 0; if (f.s2 < MIN64 && f.s2 > -MIN64) f.s2 = 0; }
 
 // Roland Juno BBD chorus: two MN3009 lines with opposite triangle LFO, each with its own hiss
 class Chorus {
@@ -1138,17 +1143,19 @@ class Chorus {
     if (this.mode && this.g === 0) { resetSVF(this.pl); resetSVF(this.pr); }
     this.g = this.mode ? 1 : 0; this.ctr = (this.P[1] + this.P[2]) * 0.5 * this.fs; this.dep = (this.P[2] - this.P[1]) * 0.5 * this.fs;
   }
-  process(x, L, R, n) {
+  // mute: the Inst's voices quiet for its idle skip's 2 s (renderSpan; the review's Juno item, the lead's call (a)): the hiss is
+  // exact 0, its PRNG frozen, as at the skip — which a panel module's never-idle rack (the hiss its input) held off for ever
+  process(x, L, R, n, mute) {
     const fs = this.fs, buf = this.buf, mask = this.mask, mode = this.mode, gt = mode ? 1 : 0;
     if (mode) this.P = CHORUS_MODES[mode];
     const P = this.P, rate = P[0] / fs, ctrT = (P[1] + P[2]) * 0.5 * fs, depT = (P[2] - P[1]) * 0.5 * fs;
     let w = this.w, ph = this.ph, g = this.g;
     if (g === 0 && !gt) { // bypassed: keep the line fed
       for (let i = 0; i < n; i++) { const v = this.pre.process(x[i]); buf[w & mask] = v * tr(v * 0.3); w++; }
-      this.w = w & mask; return;
+      this.w = w & mask; flushSVF(this.pre); return;
     }
     if (g === 0) { resetSVF(this.pl); resetSVF(this.pr); this.ctr = ctrT; this.dep = depT; }
-    const hs = this.hiss * 2e-4, gk = this.gk, sk = this.sk;
+    const hs = mute ? 0 : this.hiss * 2e-4, gk = this.gk, sk = this.sk;
     let ctr = this.ctr, dep = this.dep, r = this.r;
     for (let i = 0; i < n; i++) {
       const xi = x[i], v = this.pre.process(xi);
@@ -1168,6 +1175,7 @@ class Chorus {
     }
     if (!gt && g < 1e-5) g = 0;
     this.w = w & mask; this.ph = ph; this.g = g; this.ctr = ctr; this.dep = dep; this.r = r;
+    flushSVF(this.pre); flushSVF(this.pl); flushSVF(this.pr);
   }
 }
 
@@ -1187,7 +1195,7 @@ class Ensemble {
     let w = this.w, ps = this.ps, pf = this.pf, g = this.g;
     if (g === 0 && !gt) { // bypassed: keep the line fed
       for (let i = 0; i < n; i++) { buf[w & mask] = this.pre.process(x[i]); w++; }
-      this.w = w & mask; return;
+      this.w = w & mask; flushSVF(this.pre); return;
     }
     if (g === 0) { resetSVF(this.pl); resetSVF(this.pr); }
     const third = 1 / 3;
@@ -1205,6 +1213,7 @@ class Ensemble {
     }
     if (!gt && g < 1e-5) g = 0;
     this.w = w & mask; this.ps = ps; this.pf = pf; this.g = g;
+    flushSVF(this.pre); flushSVF(this.pl); flushSVF(this.pr);
   }
 }
 
@@ -3291,7 +3300,7 @@ class Inst {
       if (this.kind === 'serum') { // LFOs, clocks, smoothers keep time; its own rack's sidechain units follow the key (IMPL-SC review 1 F1)
         const SD = globalThis.SerumDSP, r = this.rack;
         if (SD && this.sx) SD.idle(this, n);
-        if (r && r.nSC > 0 && r.scLive()) this.T.scIdle(r, n, null);
+        if (r) { if (r.nSC > 0 && r.scLive()) this.T.scIdle(r, n, null); else if (r.rs > 0) r.rest(n); } // (else stopped as it stands: FXRack.rest)
       }
       else if (this.kind === 'drums' && this.dm !== null) this.dm.poll(this.T.spanF); // (7c review 1 F3: a 909's chip swaps convert while it waits)
       return 0;
@@ -3351,7 +3360,7 @@ class Inst {
     const mono = this.monoBuf, Lb = this.Lb, Rb = this.Rb;
     if (this.osPend || this.osR < 1) this.osFade(n, mono);
     for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
-    this.chorus.process(mono, Lb, Rb, n);
+    this.chorus.process(mono, Lb, Rb, n, this.quietF > this.base * 2); // (quiet 2 s, the skip's rule: no hiss)
     this.ens.process(mono, Lb, Rb, n);
     if (this.moN !== 0) this.moRestore(); // (smStep / smTargets see today's numbers)
     if (this.rack) this.rack.setNote(this.lastNote); // the track's FX rack (bypass-cheap when every module is off): its process, Track.renderSpan (§6.2)
@@ -3551,16 +3560,18 @@ class Track extends Facade {
     // anch: the next re-seek follows a transport start / seek or a loop wrap, whose anchor (tp.frame, tp.tick) may lie up to
     // one 4-frame span before the frame it is handled at (RULINGS2 bug fix 1); fresh: that start / seek came from play() /
     // a seek (accepted late, R7 B1); lastT: the song position of the last span whose events fired (NaN: none since the
-    // start / stop; R7 B2 / B3)
+    // start / stop; R7 B2 / B3). seqOn: the song's sounding notes, flat [pitch, end tick, start tick]; liveK: the keys the
+    // player holds per key k = ch × 128 + pitch, noteOn's ({t: 'on'} / 'off' messages, previews excluded: a song update never
+    // ends the voice of a key on the song's channel 0, IMPL-R R-15 — an MPE key on another channel holds a voice of its own)
     this.sn = []; this.sc = []; this.ni = 0; this.ci = 0; this.seqOn = []; this.reseek = true; this.anch = false; this.frames = 0;
-    this.fresh = false; this.lastT = NaN; this.songCtl = false;
+    this.fresh = false; this.lastT = NaN; this.songCtl = false; this.liveK = new Uint8Array(17 * 128);
     this.tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null };
     this.inSpan = 0; this.spanF = 0; this.ending = 0;
     // MIDI OUT ring (§7.9): [frame, on, note, velocity] × EXT_N, extN entries in arrival order
     this.ext = new Float64Array(EXT_N * 4); this.extN = 0;
     this.pnN = 0; this.pnM = Math.max(1, Math.round(this.base * 0.005)); // panic: frames left of the output fade, its length
     this.mon = false; this.monF = 0; // a snapshot / FX monitor subscription is on (smon / mon); frames since the last one
-    this.loadT = 0; this.statN = 0;
+    this.loadT = 0; this.statN = 0; this.snd = 0; // (snd: an Inst sounded in this stats window — stats())
     this.lim = new Limiter(this.base);
     this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
     this.trackId = ''; this.procs = null;
@@ -3971,10 +3982,10 @@ class Track extends Facade {
   // back to the freshly built state after the warm-up (Inst.restore: in place), in the legacy structure
   restore(os) {
     if (this.wI !== null) { this.legacy(this.wI, this.wC); this.wI = null; this.wC = null; }
-    this.loadT = 0; this.statN = 0; this.c0.t = 0; this.c0.mon = false;
+    this.loadT = 0; this.statN = 0; this.snd = 0; this.c0.t = 0; this.c0.mon = false;
     this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
     this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0; this.qF = 0; this.inK = null;
-    this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0);
+    this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0); this.liveK.fill(0);
     this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null; this.mcMon = false; this.c0.mcOn = 0;
     this.i0.restore(os);
   }
@@ -3983,8 +3994,8 @@ class Track extends Facade {
     switch (d.t) {
       // ch: the MIDI channel of a note of an MPE track (§12.4, §6.17); absent for every other note. aud: a preview (R7 B5);
       // i: the Inst a preview plays (graph nodes, IMPL-1e §2.5)
-      case 'on': this.noteOn(d.n, d.v, d.ch, 0, d.aud ? 1 : 0, d.i); break;
-      case 'off': this.noteOff(d.n, d.rv, d.ch, 0, d.aud ? 1 : 0, d.i); break;
+      case 'on': if (!d.aud) this.liveKey(d.n, d.ch, 1); this.noteOn(d.n, d.v, d.ch, 0, d.aud ? 1 : 0, d.i); break;
+      case 'off': if (!d.aud) this.liveKey(d.n, d.ch, 0); this.noteOff(d.n, d.rv, d.ch, 0, d.aud ? 1 : 0, d.i); break;
       case 'wt': { const SD = globalThis.SerumDSP; if (SD) SD.storeWT(d.id, d); break; }
       case 'wtf': { const SD = globalThis.SerumDSP; if (SD) SD.storeWTFrame(d.id, d.frame, d.levels); break; }
       case 'wtdel': { const SD = globalThis.SerumDSP; if (SD) SD.dropWT(d.id); break; }
@@ -4403,14 +4414,20 @@ class Track extends Facade {
     if (MC !== null && (got === 1 || cnt !== 0)) MC.noteOff(n, this.nHeld);
   }
   // R7 B5: the song holds note n (its note-off is still due)
-  songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
+  songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 3) if (on[i] === n) return true; return false; }
+  // a live key of pitch n on channel ch down (on 1) or up (on 0): the count per key (noteOn's k: ch × 128 + n, ch 0 unless 1–16)
+  liveKey(n, ch, on) {
+    if (!(n >= 0 && n <= 127 && n === Math.floor(n))) return;
+    const K = this.liveK, k = (ch > 0 && ch <= 16 ? ch | 0 : 0) * 128 + n;
+    if (on === 1) { if (K[k] < 255) K[k]++; } else if (K[k] > 0) K[k]--;
+  }
   // the frame an event handled now belongs to: the current span inside process(), else the next render quantum
   nowF() { return this.inSpan === 1 ? this.spanF : typeof currentFrame === 'number' ? currentFrame : this.frames; }
   panic() {
     const I = this.insts, D = this.dyI;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.allOff(true); if (x.sq) x.sq.run = false; }
     for (let k = 0; k < D.length; k++) D[k].allOff(true);
-    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0); this.nHeld = 0;
+    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0); this.nHeld = 0; this.liveK.fill(0);
     if (this.mc !== null) this.mc.noteOff(0, 0);
     let quiet = D.length === 0 && this.dyC.length === 0;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.panicSx(); if (!x.isQuiet()) quiet = false; }
@@ -4468,6 +4485,30 @@ class Track extends Facade {
   songMsg(d) {
     this.sn = d.notes || []; this.sc = d.cc || [];
     this.reseek = true;
+    if (this.tp.play && this.seqOn.length !== 0) this.songGone();
+  }
+  // IMPL-R review R-15: a song update while playing (an undone loop pass, a deleted or moved note) ends the sounding song
+  // notes it no longer has — by (pitch, start) — at once: they rang on to their old end. A pitch the player holds live on the
+  // song's channel (0: liveK[n]) is left to its key (the song had taken the voice over): its entry goes, no note-off (review
+  // R-1's takeover); a key on another channel (MPE) has a voice of its own — the song's is released. One the new song still
+  // has ends at that note's end (the note-on's rule: the wrap's cut; the last of a pitch at a start owns it): a restored
+  // shorter note — an input-quantized pass re-played on the same start, undone — ends there; an end moved to one already
+  // passed is a note gone (the rule above)
+  songGone() {
+    const on = this.seqOn, sn = this.sn, K = this.liveK, tp = this.tp, t = this.tickAt(this.nowF());
+    for (let i = on.length - 3; i >= 0; i -= 3) {
+      const n = on[i], st = on[i + 2];
+      let lo = 0, hi = sn.length >> 2, at = -1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] < st) lo = m + 1; else hi = m; }
+      for (let j = lo * 4; j < sn.length && sn[j] === st; j += 4) if (sn[j + 2] === n) at = j;
+      if (at >= 0) {
+        let end = st + sn[at + 1];
+        if (tp.wrap && end > tp.le) end = tp.le;
+        if (end === on[i + 1] || end > t) { on[i + 1] = end; continue; } // (unchanged, or still ahead: it ends there)
+      }
+      on.splice(i, 3);
+      if (!(K[n] > 0)) this.noteOff(n);
+    }
   }
   transportMsg(d) {
     const tp = this.tp;
@@ -4489,7 +4530,7 @@ class Track extends Facade {
   }
   releaseSong(stop) {
     const on = this.seqOn;
-    for (let i = 0; i < on.length; i += 2) this.noteOff(on[i]);
+    for (let i = 0; i < on.length; i += 3) this.noteOff(on[i]);
     this.seqOn = [];
     if (stop && this.songCtl) {
       this.songCtl = false;
@@ -4581,7 +4622,7 @@ class Track extends Facade {
     }
     // note-offs first
     const on = this.seqOn;
-    for (let i = on.length - 2; i >= 0; i -= 2) if (on[i + 1] <= t) { this.noteOff(on[i]); on.splice(i, 2); }
+    for (let i = on.length - 3; i >= 0; i -= 3) if (on[i + 1] <= t) { this.noteOff(on[i]); on.splice(i, 3); }
     // controllers
     while (this.ci * 3 < sc.length && sc[this.ci * 3] <= t) {
       const k = sc[this.ci * 3 + 1], v = sc[this.ci * 3 + 2];
@@ -4597,18 +4638,18 @@ class Track extends Facade {
       const j = this.ni * 4, st = sn[j], n = sn[j + 2];
       this.ni++;
       if (tp.wrap && st >= tp.le) continue;
-      for (let i = on.length - 2; i >= 0; i -= 2) if (on[i] === n) on.splice(i, 2); // overlapping same pitch: the new note owns it
+      for (let i = on.length - 3; i >= 0; i -= 3) if (on[i] === n) on.splice(i, 3); // overlapping same pitch: the new note owns it
       this.noteOn(n, sn[j + 3] / 127);
       let end = st + sn[j + 1];
       if (tp.wrap && end > tp.le) end = tp.le;
-      on.push(n, end);
+      on.push(n, end, st);
     }
     this.lastT = t; // every event at or before t has been handled
     // distance to the next event
     let nt = 1e18;
     if (this.ni * 4 < sn.length) nt = sn[this.ni * 4];
     if (this.ci * 3 < sc.length && sc[this.ci * 3] < nt) nt = sc[this.ci * 3];
-    for (let i = 1; i < on.length; i += 2) if (on[i] < nt) nt = on[i];
+    for (let i = 1; i < on.length; i += 3) if (on[i] < nt) nt = on[i];
     if (tp.wrap && tp.le < nt) nt = tp.le;
     if (tp.end != null && tp.end < nt) nt = tp.end;
     if (nt < 1e17) { const df = (nt - t) * tp.fpt; if (df < dist) dist = df; }
@@ -4695,6 +4736,7 @@ class Track extends Facade {
     this.inSpan = 0;
     if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
     this.loadT += Date.now() - t0;
+    if (this.snd === 0) for (let k = 0; k < I.length; k++) if (I[k].act > 0) { this.snd = 1; break; } // (stats' snd: any quantum of the window)
     this.statN += n;
     if (this.statN >= this.base * 0.25) this.stats();
     return true;
@@ -4703,7 +4745,8 @@ class Track extends Facade {
   // Inst renders (a Serum through its own FX), the panel processes a classic Inst's output in place, then panicFade →
   // outStage — 1d's statements. The track skips the span — zero output, no panicFade, no output stage — when the Inst skips
   // (§6.4: only once quiet for 2 s with its FX idle, so the DC block and limiter state freeze during silence; a panel holding a
-  // live sidechain unit still runs on zeros, scIdle — a Serum's own rack from its Inst's skip)
+  // live sidechain unit still runs on zeros, scIdle — a Serum's own rack from its Inst's skip; any other skipped rack stops as it
+  // stands, its Float32 lines' subnormals flushed once, FXRack.rest — a graph's panels from chainSpan)
   renderSpan(Lo, Ro, off, n) {
     if (this.inK !== null) this.scKey(off, n);
     if (this.simple !== 1) { this.spanG(Lo, Ro, off, n); return; }
@@ -4711,7 +4754,7 @@ class Track extends Facade {
     if (this.mc !== null) this.modPre(n);
     if (I.renderSpan(n) === 0) {
       for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; }
-      if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null && r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); }
+      if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { if (r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); else if (r.rs > 0) r.rest(n); } }
       return;
     }
     if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r); this.scRack(r); const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
@@ -4815,7 +4858,10 @@ class Track extends Facade {
     for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } } // (removed sources: their fade / tail)
     for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } }
     if (nl === 0) {
-      if (r === null || r.idle()) { if (r !== null && r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); c.live = 0; return; } // (review 1 F1)
+      if (r === null || r.idle()) { // (review 1 F1; else stopped as it stands, FXRack.rest — as a skipped Inst's)
+        if (r !== null) { if (r.nSC > 0 && r.scLive()) this.scIdle(r, n, c); else if (r.rs > 0) r.rest(n); }
+        c.live = 0; return;
+      }
       c.Lb = c.oL; c.Rb = c.oR; c.oL.fill(0, 0, n); c.oR.fill(0, 0, n);
     } else if (nl === 1 && g1 === 1 && one.nOut === 1) { c.Lb = one.Lb; c.Rb = one.Rb; }
     else {
@@ -4875,16 +4921,18 @@ class Track extends Facade {
     if (DI.length === 0 && DC.length === 0) this.resolveSimple();
   }
   // stats (every 0.25 s of audio): the track's load, voices and oversampling (of insts[0]), and per part (§6.8 per — the
-  // modules' CPU on the canvas). Legacy / simple: the Chain its own processing time, the Inst the rest of the track's;
-  // otherwise every Inst its own spans (a Serum's own FX excluded), every panel and every Serum's own FX their processing
+  // modules' CPU on the canvas); snd 1: an Inst sounded in some quantum of this window (act > 0 — a drum's or a 900 Series' live
+  // machine counts; the CPU safeguard's arm, main.js statsText: a short hit between two reports is not in voices). Legacy /
+  // simple: the Chain its own processing time, the Inst the rest of the track's; otherwise every Inst its own spans (a Serum's own FX excluded), every panel and every Serum's own FX their processing
   // (7a review 1 F6: the times are wall-clock (Date.now) differences — a clock stepped back inside a window (NTP after a
   // wake) would make one negative; a CPU load never is: every load clamped at 0. A stat only: no audio reads it)
   stats() {
     const X = this.insts, I = X[0], c = this.c0, ms = this.statN / this.base * 1000, load = Math.max(0, this.loadT / ms);
-    const voices = I.kind === 'serum' ? I.sxVoices() : I.act;
+    const voices = I.kind === 'serum' ? I.sxVoices() : I.act, snd = this.snd;
+    this.snd = 0;
     if (this.simple === 1) {
       const fl = Math.max(0, c.t / ms);
-      this.port.postMessage({ t: 'stats', load, voices, os: I.OS, per: [{ id: I.id, load: Math.max(0, load - fl), voices, os: I.OS }, { id: c.id, load: fl }] });
+      this.port.postMessage({ t: 'stats', load, voices, snd, os: I.OS, per: [{ id: I.id, load: Math.max(0, load - fl), voices, os: I.OS }, { id: c.id, load: fl }] });
       this.loadT = 0; this.statN = 0; c.t = 0; I.t = 0; I.fxc.t = 0;
       return;
     }
@@ -4895,7 +4943,7 @@ class Track extends Facade {
     }
     for (const C of this.chains) { per.push({ id: C.id, load: Math.max(0, C.t / ms) }); C.t = 0; }
     for (const x of X) { if (x.kind === 'serum') per.push({ id: x.fxc.id, load: Math.max(0, x.fxc.t / ms) }); x.t = 0; x.fxc.t = 0; }
-    this.port.postMessage({ t: 'stats', load, voices, os: I.OS, per });
+    this.port.postMessage({ t: 'stats', load, voices, snd, os: I.OS, per });
     this.loadT = 0; this.statN = 0;
   }
   // monitor message (§8.4.4, §11.6): Serum's snapshot (null for other models), the rack's gain reduction and phases — each
@@ -4968,6 +5016,11 @@ class Track extends Facade {
       y0 = a - x0 + Rdc * y0; x0 = a; y1 = b - x1 + Rdc * y1; x1 = b;
       Lb[i] = y0; Rb[i] = y1;
     }
+    // (review-idle #8) y ← Rdc·y on exact zeros sticks at ±4.71e-321 (a never-quiet 900 Series track gone silent, IMPL-9 §3.6:
+    // Lb / Rb, the limiter's ring, every frame an x86 assist): a subnormal state flushed (it rounds to float32 0, the output
+    // unchanged; the limiter's ring then refills with zeros)
+    if (x0 < MIN64 && x0 > -MIN64) x0 = 0; if (y0 < MIN64 && y0 > -MIN64) y0 = 0;
+    if (x1 < MIN64 && x1 > -MIN64) x1 = 0; if (y1 < MIN64 && y1 > -MIN64) y1 = 0;
     this.dcx[0] = x0; this.dcy[0] = y0; this.dcx[1] = x1; this.dcy[1] = y1;
     this.lim.process(Lb, Rb, n);
     for (let i = 0; i < n; i++) {

@@ -813,7 +813,11 @@ const quiet = p => { if (p && p.catch) p.catch(() => {}); };
 // Internal rate cap: oversampling is a power of two with sampleRate × OS ≤ 384 kHz (more costs CPU for no audible gain)
 const MAX_INTERNAL = 384000;
 const osCap = sr => Math.max(1, 2 ** Math.floor(Math.log2(MAX_INTERNAL / sr + 1e-9)));
-const osFor = sr => Math.min(settings.os, osCap(sr));
+// the app setting (⚙ Oversampling: the models other than Serum), capped at 384 kHz and by plCap, the CPU safeguard's broadcast
+// step (session only, as sxCap: idle-DSP review #9 — it was written into the setting, so a heavy moment lowered every later
+// session; a Quality choice or a reload lifts it, liftCaps)
+let plCap = 8;
+const osFor = sr => Math.min(settings.os, osCap(sr), plCap);
 // A Serum track runs at its own Global quality (1/2/4×) instead of the app setting, capped like every track at 384 kHz
 // and by sxCap, the CPU safeguard's cap for Serum tracks (lead sign-off on SPEC-serum deviation 9). Session only.
 // Halving Serum's oversampling recovers only a quarter of its cost, so once sxCap is 1 the safeguard takes the quality
@@ -850,6 +854,7 @@ const sxOSFor = (d, sr, offline = false) => Math.min(offline && prefs.ultra ? 4 
 function liftCaps() {
   hotT = 0;
   if (sxCap < 8 || qrStep > 0) { sxCap = 8; qrStep = 0; for (const t of project.tracks) if (hasSx(t)) queuePatch(t); }
+  if (plCap < 8) { plCap = 8; if (ctx) postAll({ t: 'os', v: osFor(ctx.sampleRate) }); } // (the other models back to the setting)
   if (ctx) for (const [id, N] of nodes) if (N.osI && N.osI.size) { // (stage 1e: the instruments lowered alone go back up)
     for (const i of N.osI.keys()) postTo({ id }, { t: 'os', v: osFor(ctx.sampleRate) }, i);
     N.osI.clear();
@@ -1058,6 +1063,7 @@ function powerOff() {
   for (const k of [...held.keys()]) held.delete(k);
   hk.clear();
   for (const n of [...keyEls.keys()]) keyVis(n, false);
+  rollHeld();
   playbackSession(false);
   powerUI();
   return c.close().catch(() => {});
@@ -1096,7 +1102,7 @@ function makeNode(tr) {
   const id = tr.id;
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
-    if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); if (Array.isArray(d.per)) cvCpu(id, N, d.per); }
+    if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; if (d.snd === 1) sndT = performance.now(); statsText(); if (Array.isArray(d.per)) cvCpu(id, N, d.per); }
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
     else if (d.t === 'step') { // (a graphed node names the 303: d.i; legacy: the primary)
       const dev = typeof d.i === 'string' ? d.i : CMOD.primId(t);
@@ -1553,7 +1559,7 @@ function rateText() {
   if (!ctx || ctx === holdCtx) return;
   const sr = ctx.sampleRate, os = osFor(sr);
   let s = `${kHz(sr)} kHz × ${os} = ${kHz(sr * os)} kHz · 64-bit`;
-  if (os < settings.os) s += ` (${settings.os}× capped)`;
+  if (os < settings.os) s += os < Math.min(settings.os, osCap(sr)) ? ` (${settings.os}× · CPU cap)` : ` (${settings.os}× capped)`;
   if (devRate && sr !== devRate) s += ` · resampled to ${kHz(devRate)} kHz`;
   // Serum instruments run at their own oversampling (Global quality, CPU cap) — (R2) every Serum of every track
   const sxs = project.tracks.flatMap(t => serumIds(t).map(id => t.dev[id]));
@@ -1578,7 +1584,7 @@ function rateLabels() {
     o.textContent = base(o) + (v > cap ? ` → ${cap}× at ${kHz(sr)} kHz` : '');
   }
 }
-let statT = 0, hotT = 0;
+let statT = 0, hotT = 0, sndT = -Infinity; // sndT: the last report of a track that sounded ({t: 'stats'} snd: the safeguard's arm)
 function statsText() {
   const now = performance.now();
   if (now - statT < 200 || !ctx || ctx.state !== 'running') return;
@@ -1590,8 +1596,12 @@ function statsText() {
   el.textContent = `DSP load ${pct}% · ${voices} voice${voices === 1 ? '' : 's'} · ${nodes.size} track${nodes.size === 1 ? '' : 's'}`;
   el.classList.toggle('warn', pct > 75);
   if (pct > 75) el.textContent += ' — lower oversampling';
-  // safeguard: summed load above 85% for 2 s (all tracks share one audio thread) -> drop oversampling one step
-  if (load > 0.85 && (maxOS() > 1 || qrLever())) { if (!hotT) hotT = now; else if (now - hotT > (load > 1 ? 1000 : 2000)) lowerOS(); }
+  // safeguard: summed load above 85% for 2 s (all tracks share one audio thread) -> drop oversampling one step — armed only while
+  // an instrument sounds or did within 2.5 s (review #9: the engine's 2 s quiet rule, §6.4, plus a report: the tail right after
+  // the playing, staccato gaps). Its levers lower what renders; in silence every instrument is skipped and the load is the racks'
+  // (MASTER's, a sidechain panel on zeros) or a starved thread's — on Windows the idle denormal load stepped all down to 1×
+  // (snd: a voice in any quantum of the report's window — a drum's short hit between two reports; a 900 Series is never quiet)
+  if (load > 0.85 && now - sndT < 2500 && (maxOS() > 1 || qrLever())) { if (!hotT) hotT = now; else if (now - hotT > (load > 1 ? 1000 : 2000)) lowerOS(); }
   else hotT = 0;
 }
 // highest oversampling in use: the app setting (instruments of the other models) and Serum instruments (their own; a
@@ -1637,10 +1647,10 @@ function capsOf(t, dev) {
 }
 // ((9, IMPL-9 §4.7) a 900 Series lowered: FM into audio inputs aliases differently and a feedback cord's one-sample delay grows)
 const PT_OS_TXT = ' (cords into audio inputs may sound different at lower oversampling)';
-// one step down for the group carrying more of the load (the per-node loads the processors report): the app setting
-// for the other models (persisted, as the select shows it), or the Serum tracks' caps (session only): their
-// oversampling first (never above a track's own quality, §11.4 sign-off), at 1× their unison voices; the other group
-// when the first has nothing left to lower
+// one step down for the group carrying more of the load (the per-node loads the processors report): the other models'
+// oversampling (plCap under the app setting — session only: the setting, its select and what is saved stay the user's, #9),
+// or the Serum tracks' caps (session only): their oversampling first (never above a track's own quality, §11.4 sign-off), at
+// 1× their unison voices; the other group when the first has nothing left to lower
 // ((M, §2.1) a heavy master is the user's call, as a heavy track rack: the levers stay the tracks', the notice names it when
 // MASTER's load is the largest single share)
 const masterTop = () => !!mnode && mnode.load > 0 && [...nodes.values()].every(N => mnode.load >= N.load);
@@ -1660,7 +1670,7 @@ function lowerOS() {
     notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts${isPatchDev(h.t, h.id) ? PT_OS_TXT : ''}${mx}`, 9000);
   } else if (!sxFirst && po > 1) {
     const v = po / 2;
-    settings.os = v; $('#os').value = String(v); persist();
+    plCap = v;
     postAll({ t: 'os', v }); rateText(); rateLabels();
     for (const [id, N] of nodes) if (N.osI) for (const [i, o] of [...N.osI]) { // (the instruments lowered alone below it stay there)
       if (o < v) postTo({ id }, { t: 'os', v: o }, i); else N.osI.delete(i);
@@ -1686,9 +1696,11 @@ const CCK = { bend: 0, wheel: 1, sus: 2, at: 3 };
 // below) need them in order — a sorted copy (song.sortNotes order) when they are not
 function inOrder(a, cmp) { for (let i = 1; i < a.length; i++) if (cmp(a[i - 1], a[i]) > 0) return a.slice().sort(cmp); return a; }
 const noteCmp = (a, b) => a.t - b.t || a.n - b.n, ccCmp = (a, b) => a.t - b.t;
+// ((R review R-1) the live song leaves out a recorded note whose key is still down — recCutN —; a bounce (a range) has every note)
 function songData(tr, start = -Infinity, end = Infinity) {
-  const notes = [], cc = [];
+  const notes = [], cc = [], live = start === -Infinity;
   for (const n of inOrder(tr.notes, noteCmp)) {
+    if (live && recCutN.has(n)) continue;
     if (n.t < start - 1e-9 && n.t + n.d <= start) continue;
     if (n.t >= end) break;
     notes.push(n.t, Math.min(n.d, end - n.t), n.n, n.v);
@@ -1813,6 +1825,7 @@ function applyRestore(p, keepSound = false) {
   if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); keepMaster(p, project); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5; (M) the master rack, §2.3)
   else { for (const t of p.tracks) seedPend.add(t.id); seedPend.add(MASTER); if (p !== project) abEnd(); } // a loaded project re-seeds the racks' LFO phases (the master's too); (M, R1-3) and ends the A/B (its match belongs to the old master)
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
+  recCutMark(p); // ((R review R-1) the notes of keys still down, found again in the restored tracks: kept out of the songs sent below)
   const prevSel = project.selTrack;
   project = p;
   bind();
@@ -1831,8 +1844,53 @@ function applyRestore(p, keepSound = false) {
   persist();
   cvModSync(); // (stage 2a: the open inspector / Mod list re-read the project)
 }
-function undo() { PATCH.cancel(); const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; } updateUndoUI(); }
-function redo() { PATCH.cancel(); const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; } updateUndoUI(); }
+// own true: a "tap to undo" undoing its own step (the newest), never the held notes of the pass in progress (R-2)
+function undo(own) {
+  PATCH.cancel();
+  if (own !== true && T.rec && T.step !== T.pass && recDropPass()) { updateUndoUI(); return; } // ((R review R-2) the pass in progress held its only content)
+  const p = hist.undo(project), rec = !!p && recHold(); // ((R-5) an undo that finds nothing changes nothing)
+  modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false);
+  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; if (rec) recResume(); }
+  updateUndoUI();
+}
+function redo() {
+  PATCH.cancel();
+  const p = hist.redo(project), rec = !!p && recHold();
+  modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true);
+  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; if (rec) recResume(); }
+  updateUndoUI();
+}
+// (R) an undo / redo while recording: the notes held now are the undone pass's — dropped, never committed (the restore's own
+// releases included) —; nothing records a step during the restore (recIdle: what the take changes then is the old project's),
+// and the pass's next change records its step again (T.step −1) — unless a step of the take is the newest again (review R-8:
+// an edit made in the middle of the pass undone — after a redo or another undo between too, a pass's later step undone back
+// to its first: passStep, by identity —; the pass that step belongs to carries on in it). Only when something is restored (R-5)
+let recIdle = false;
+function recHold() { if (!T.rec) return false; recLive.clear(); recIdle = true; return true; }
+function recResume() {
+  recIdle = false;
+  const e = hist.u[hist.u.length - 1], s = e ? passStep.get(e) : null;
+  if (s && s.take === T.take) { T.stepE = e; T.step = s.pass; } else T.step = -1;
+}
+// (R review R-2) Ctrl+Z while the pass in progress has no step yet: the notes held from it are its whole content — they are
+// dropped (its boundary state); an empty pass with nothing held undoes the pass before (false). Undo follows what happened:
+// only the keys that went down after the step hist.undo would take back (u: History.seq at the key-down; a step that changed
+// nothing is skipped there — the roll's Q with nothing to move —, so here) — a step recorded since (a roll edit) is undone
+// first (false: hist.undo, the held notes going with the restore)
+function recDropPass() {
+  const top = hist.u[hist.u.length - 1]; let X, n = 0;
+  for (const [k, r] of recLive) {
+    if (r.p !== T.pass) continue;
+    if (top && top.seq > r.u) { if (X === undefined) X = hist.undoStep(project); if (X && X.seq > r.u) continue; } // (a step since: a real one first)
+    recLive.delete(k); n++;
+  }
+  return n > 0;
+}
+// (R review R-10) arming is not undoable (Ableton): a restore while recording keeps the live tracks' arm, by id (one project)
+function keepArm(p) {
+  if (!p || p.uid !== project.uid || !Array.isArray(p.tracks)) return;
+  for (const t of p.tracks) { const c = project.tracks.find(x => x.id === t.id); if (c) t.arm = !!c.arm; }
+}
 let undoT = 0;
 function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce bursts of calls into one per frame
   if (undoT) return;
@@ -1843,10 +1901,34 @@ function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce 
 // a: the anchor the nodes play from (render frames); as: the anchors still sounding, oldest first (the play() start,
 // then each seek / tempo / loop change while playing: an older one's audio is heard until the next one's frame comes out
 // of the speakers); seekA: the latest seek's anchor (recTick)
-const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0, padRec: new Set() }; // ((8, §4.3) padRec: the take's pad-recorded track ids
+// ((R, IMPL-R §2) pass: the take's loop pass heard (passAt), pass0 its first, step: the pass whose undo step the take's changes
+// join — −1 none yet —, stepE that step's History entry)
+const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0, padRec: new Set(), pass: 0, pass0: 0, step: -1, stepE: null }; // ((8, §4.3) padRec: the take's pad-recorded track ids
+// ((R review R-8) every pass step's History entry → { take, pass }: whichever of a take's steps is the newest again resumes)
+const passStep = new WeakMap();
 const fpt = () => ctx.sampleRate * 60 / (project.bpm * S.PPQ);
 function loopInfo() { const L = project.loop; return { loop: !!(L.on && L.end > L.start), ls: L.start, le: L.end }; }
 function anchor(F, tick) { const L = loopInfo(); return { frame: F, tick, fpt: fpt(), loop: L.loop, ls: L.ls, le: L.le, wrap: L.loop && tick < L.le }; }
+// (R) the loop pass at frame F on anchor a: the pass it was made in (passOf: a re-anchor's, a seek in a looping song one more —
+// a new pass —; play() 0) + the wraps on its line (audioclock tickAt's). Kept beside the anchor, never posted with it
+const passOf = new WeakMap();
+// (R review R-4) the anchors that carry a seek's jump (reanchor: T.seekA's): a pass reached on one of them, before it wraps, is
+// the seek's — never a wrap's
+const seekAs = new WeakSet();
+const seekPass = p => T.as.some(x => seekAs.has(x) && (passOf.get(x) || 0) === p);
+function passAt(F, a) {
+  const t = a.tick + (F - a.frame) / a.fpt;
+  return (passOf.get(a) || 0) + (a.wrap && t >= a.le ? 1 + Math.floor((t - a.le) / (a.le - a.ls)) : 0);
+}
+// the pass heard at frame F: on the anchor heardTick reads
+function heardPass(F) { const as = T.as; for (let i = as.length - 1; i >= 0; i--) if (F >= as[i].frame) return passAt(F, as[i]); return as.length ? passOf.get(as[0]) || 0 : 0; }
+// (review R-11) the chase floor: the engine starts a song note only at its start (engine.js songEvents) — from a start's / seek's
+// anchor tick on, from ls after a wrap, from a panic's tick on —, so the roll's key strip lights none started before it (its 4th
+// setPlayhead argument). chase: anchor → [pass, floor] in that pass of its line (a later pass: ls; an earlier, before a panic
+// rendered ahead of the heard pass: none); a tempo / loop re-anchor (no release) inherits its frame's. Beside the anchor, never posted
+const chase = new WeakMap();
+function floorAt(F, a) { const c = chase.get(a), q = passAt(F, a); return !c ? -Infinity : q > c[0] ? a.ls : q < c[0] ? Infinity : c[1]; }
+function heardFloor(F) { const as = T.as; for (let i = as.length - 1; i >= 0; i--) if (F >= as[i].frame) return floorAt(F, as[i]); return as.length ? floorAt(F, as[0]) : -Infinity; }
 // frame of the audio that is (was) leaving the speakers at a performance.now() time (audioclock.js: WebKit's render-stamped
 // timestamp less its output path; + the Latency setting)
 function outFrame(perfTs) { const now = performance.now(); return AC.outFrame(CLK, ctx, perfTs == null ? now : perfTs, now); }
@@ -1858,11 +1940,15 @@ function outLatency() { return ctx ? clamp(ctx.currentTime - outFrame() / ctx.sa
 function curTick(perfTs) { return T.playing && T.a ? AC.heardTick(outFrame(perfTs), T.as) : T.pos; }
 // the recorded position: after a seek the take reads the seek's line from the jump on (extrapolated back while the old
 // audio is still heard: a key pressed after the jump belongs to it, its start and end on one line); else curTick
+// ((R) recP: the loop pass of that position — its anchor's, as the tick). (R review R-7) A seek line that loops is never
+// extrapolated back past its own tick (⏮ to the loop start: never before the loop, unheard there and overwriting what is)
+let recP = 0;
 function recTick(perfTs) {
-  const s = T.playing ? T.seekA : null;
-  if (!s || !T.as.includes(s)) return curTick(perfTs);
-  const F = outFrame(perfTs);
-  return F < s.frame ? AC.tickAt(F, s) : AC.heardTick(F, T.as);
+  if (!T.playing || !T.a) { recP = T.pass; return T.pos; }
+  const s = T.seekA, F = outFrame(perfTs);
+  if (s && T.as.includes(s) && F < s.frame) { recP = passOf.get(s) || 0; const t = AC.tickAt(F, s); return s.wrap ? Math.max(s.tick, t) : t; }
+  recP = heardPass(F);
+  return AC.heardTick(F, T.as);
 }
 // fresh: a start / seek (the engine plays the anchor tick's notes even when the message arrives a little late); never on the
 // re-sends to a node created mid-song (makeNode) or after a panic, or a tempo / loop change
@@ -1876,7 +1962,7 @@ async function play(from = T.pos, countBars = 0) {
   if (!ctx || T.playing) return;
   for (const t of project.tracks) if (songQ.has(t.id)) sendSong(t, true);
   const F = mAlign(Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate));
-  T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null;
+  T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null; chase.set(T.a, [0, T.a.tick]);
   T.playing = true; T.startPos = from; T.lastClr = from;
   postTransport(true);
   DRUM.transport(true); // ((7a) the synced drum machines' START state and LEDs follow the song)
@@ -1887,9 +1973,10 @@ async function play(from = T.pos, countBars = 0) {
 function stop() {
   if (!T.playing) { if (T.pos !== 0) { T.pos = 0; posUI(); } return; }
   const t = recTick();
-  if (T.rec) finishRec(t);
+  if (T.rec) { recAdv(recP); finishRec(t); }
   postAll({ t: 'transport', play: false });
   T.playing = false; T.rec = false; T.a = T.seekA = null; T.as = [];
+  recCutEnd(); // ((R review R-1) the song stopped: the notes of keys still down join it)
   T.pos = T.startPos;
   metroStop();
   for (const [k, P] of classicPanels) if (!seqRun.has(k) && !P.dead) P.seqStep(-1); // synced 303s stopped with the song
@@ -1900,11 +1987,12 @@ function stop() {
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
   if (!T.playing || !ctx) return;
   const sr = ctx.sampleRate, F = mAlign(Math.round((ctx.currentTime + 0.05) * sr)), H = outFrame(), sk = seekTick != null && seekTick !== false;
-  const t = sk ? seekTick : AC.tickAt(F, T.a);
+  const t = sk ? seekTick : AC.tickAt(F, T.a), pa = passAt(F, T.a) + (sk && T.a.wrap ? 1 : 0); // ((R) a seek while looping: a new pass)
+  const fl = sk ? t : floorAt(F, T.a); // ((review R-11) a seek starts from its tick; a tempo / loop change releases nothing)
   // an anchor not rendered yet never sounds: the nodes' single pending slot (engine tp.pend) takes this one instead
   const p = T.a.frame > ctx.currentTime * sr ? T.as.pop() : null;
-  T.a = anchor(F, t); T.as.push(T.a);
-  if (sk || (p && p === T.seekA)) T.seekA = T.a; // (a seek replaced before it sounded: this one carries its jump)
+  T.a = anchor(F, t); T.as.push(T.a); passOf.set(T.a, pa); chase.set(T.a, [pa, fl]);
+  if (sk || (p && p === T.seekA)) { T.seekA = T.a; seekAs.add(T.a); } // (a seek replaced before it sounded: this one carries its jump)
   let j = -1; for (let i = 0; i < T.as.length - 1; i++) if (T.as[i].frame <= H) j = i;
   if (j > 0) T.as.splice(0, j); // the anchors before the latest one heard are gone
   postTransport(sk);
@@ -1916,12 +2004,14 @@ function seek(tick) {
   else T.pos = tick;
   posUI();
 }
+// (R, IMPL-R §2) no History step here: each loop pass records its own before its first change (recStep)
 function toggleRec() {
-  if (T.rec) { finishRec(recTick()); T.rec = false; transportUI(); return; }
+  if (T.rec) { const t = recTick(); recAdv(recP); finishRec(t); T.rec = false; transportUI(); return; }
   if (!project.tracks.some(t => t.arm)) { trk().arm = true; renderHeads(); }
-  hist.record(project); updateUndoUI();
   T.take = S.newId(); T.padRec.clear(); // ((8) a new take: no pad-recorded track yet)
-  if (T.playing) { T.rec = true; T.lastClr = curTick(); transportUI(); return; }
+  T.step = -1; T.stepE = null; // (no step of an earlier take is ever resumed, R-8)
+  if (T.playing) { T.lastClr = curTick(); recTick(); T.pass = T.pass0 = recP; T.rec = true; transportUI(); return; }
+  T.pass = T.pass0 = 0; // (play()'s anchor: pass 0)
   T.rec = true;
   play(T.pos, project.metronome.countIn | 0);
 }
@@ -2035,15 +2125,51 @@ function metroTick() {
 }
 
 /* --------------------------------------------------------- recording */
-const recLive = new Map(); // `${trackId}|${src}:${n}` -> { tr, n, t0, v }
-function recStart(tr, key, n, v, ts) { recLive.set(tr.id + '|' + key, { tr, n, t0: recTick(ts), v }); }
-function recEnd(tr, key, ts) {
-  const k = tr.id + '|' + key, r = recLive.get(k);
-  if (!r) return;
-  recLive.delete(k);
-  commitNote(r, recTick(ts));
+// (R, IMPL-R) Every loop pass of a take is one undo step (Ableton): a pass's first change — a note, an overwrite, a CC, a
+// Replace sweep — records the state before it (recStep: none for a pass that recorded nothing; a take without a loop is one
+// pass, "Record"). The pass is the heard one (recTick's recP, the frame's heardPass): when it moves on, a note still held from
+// an earlier pass ends at the loop end there — the wrap's cut — and is committed into its own pass's step (recAdv). An undo
+// while recording takes the pass in progress back to its boundary (undo: the held notes dropped, T.step −1) and recording
+// carries on.
+const recLive = new Map(); // `${trackId}|${src}:${n}` -> { tr, n, t0, v, p: its pass, u: History.seq at its key-down (R-2) }
+// (R review R-1) a note committed while its key is still down (a loop boundary, a seek, ● / arm off while playing) is in the
+// project and its pass's step at once, but kept out of the engine until the key is up: the song's copy of it would take the
+// held voice over in the next pass and its note-off silence it. recLive's key → { id: its track's, nid: the note's id, note };
+// recCutN the notes (songData leaves them out: a WeakSet — History snapshots serialise the notes). A restore (undo / redo,
+// recording or not) brings new objects: recCutMark finds each again by its id before the songs are sent — an entry whose
+// note the restore took away waits unmarked (a redo may bring it back) until its key is up
+const recCut = new Map(), recCutN = new WeakSet();
+function recCutDrop(id) { for (const [k, c] of recCut) if (id == null || c.id === id) { recCut.delete(k); if (c.note) recCutN.delete(c.note); } }
+function recCutMark(p) {
+  const same = p.uid === project.uid; // (another project's track ids repeat: nothing of it is held)
+  for (const c of recCut.values()) {
+    if (c.note) recCutN.delete(c.note);
+    const t = same ? p.tracks.find(x => x.id === c.id) : null;
+    c.note = (t && t.notes.find(x => x.id === c.nid)) || null;
+    if (c.note) recCutN.add(c.note);
+  }
 }
-function commitNote(r, t1) {
+// (the song stopped: every held note's commit to the engine now)
+function recCutEnd() {
+  const ids = new Set([...recCut.values()].map(c => c.id));
+  recCutDrop();
+  for (const t of project.tracks) if (ids.has(t.id)) sendSong(t);
+}
+// (u: History.seq when the key went down — R-2: the steps after it have a higher seq)
+function recStart(tr, key, n, v, ts) { const t0 = recTick(ts); recAdv(recP); recLive.set(tr.id + '|' + key, { tr, n, t0, v, p: recP, u: hist.seq }); }
+// a key's release (recording or not): its note committed; one committed while it was down reaches the engine now
+function recEnd(tr, key, ts) {
+  const k = tr.id + '|' + key;
+  if (recLive.has(k)) {
+    const t1 = recTick(ts); recAdv(recP); // (released in a later pass: committed at its loop end there)
+    const r = recLive.get(k);
+    if (r) { recLive.delete(k); commitNote(r, t1); }
+  }
+  const c = recCut.get(k);
+  if (c) { recCut.delete(k); if (c.note) recCutN.delete(c.note); sendSong(tr); }
+}
+// k: the recLive key of a note whose key is still down (R-1)
+function commitNote(r, t1, k) {
   const a = T.a;
   let t0 = r.t0;
   if (a && a.wrap && t1 < t0) t1 = a.le;
@@ -2051,17 +2177,72 @@ function commitNote(r, t1) {
   if (t0 < 0) t0 = 0;
   const note = { id: S.newId(), t: Math.round(t0), d: Math.max(1, Math.round(t1 - t0)), n: r.n, v: clamp(Math.round(r.v * 127), 1, 127), take: T.take };
   if (project.rec.inputQuantize) S.quantize([note], { grid: project.quantize.grid || S.PPQ / 4, strength: 100, swing: project.quantize.swing, starts: true, ends: false });
+  // (R review R-3) played inside a loop: a start snapped to the loop end wraps to its start (Ableton: the downbeat it was aimed
+  // at), one snapped before an off-grid loop start is clamped to it — never outside the loop (unheard there, overwriting the
+  // bar after it); a lead-in before the loop keeps its place
+  if (a && a.wrap && r.t0 >= a.ls && r.t0 < a.le) {
+    if (note.t >= a.le) note.t = a.ls + (note.t - a.le);
+    else if (note.t < a.ls) note.t = a.ls;
+  }
   if (!project.tracks.includes(r.tr)) return;
+  recStep();
+  overwrite(r.tr, note);
   r.tr.notes.push(note);
+  if (k != null) { recCut.set(k, { id: r.tr.id, nid: note.id, note }); recCutN.add(note); }
   changed([r.tr]);
 }
-function finishRec(t) { for (const r of recLive.values()) commitNote(r, t); recLive.clear(); }
+// (R) a recorded note overwrites its pitch on its track (Ableton; Overdub and Replace, the take's earlier passes too): one
+// starting inside its final span (after input quantize) goes, one running into it ends where it starts (gone below 1 tick);
+// other pitches untouched. ((R review R-9) a removal gives the track a new array, as the Replace sweep: the caches keyed on
+// the array and its length — the pads following the track — see a delete-one-push-one)
+function overwrite(tr, x) {
+  const s = x.t, e = x.t + x.d, L = tr.notes, keep = [];
+  for (const o of L) {
+    if (o.n === x.n && o.t < e && o.t + o.d > s) {
+      if (o.t >= s) continue;
+      o.d = s - o.t;
+      if (o.d < 1) continue;
+    }
+    keep.push(o);
+  }
+  if (keep.length !== L.length) tr.notes = keep;
+}
+// (the keys still down: their notes kept out of the engine until they are up, R-1)
+function finishRec(t) { for (const [k, r] of recLive) commitNote(r, t, k); recLive.clear(); }
+// (R) the take's undo step for the pass heard, before its first change ("Record pass N" while it loops) — again after any
+// other step came on top of it (an edit mid-pass: undo then follows what happened). (R review R-6) Never in the middle of a
+// roll gesture (beginEdit's step holds the state before it: what is recorded meanwhile joins it, as an edit; the pass's next
+// change after it records its step again); (R-8) joining the pass's step drops the redo stack, as History.record does
+function recStep() {
+  if (gesture) { T.step = -1; return; }
+  if (recIdle) return;
+  if (T.step === T.pass && hist.u[hist.u.length - 1] === T.stepE) { if (hist.r.length) { hist.dropRedo(); updateUndoUI(); } return; }
+  T.step = T.pass;
+  hist.record(project, T.pass > T.pass0 || (T.a && T.a.wrap) ? 'Record pass ' + (T.pass - T.pass0 + 1) : 'Record', true);
+  T.stepE = hist.u[hist.u.length - 1];
+  passStep.set(T.stepE, { take: T.take, pass: T.pass });
+  updateUndoUI();
+}
+// (R) the heard pass moved on to p: what is still held from an earlier one ends at the loop end (in that pass's step).
+// (R review R-4) Replace: a wrap (never a seek — its anchor is made in the next pass: seekPass) first sweeps the old pass's
+// tail [lastClr, le) into the old pass's step; the frame's sweep then covers [ls, t] in the new one. A re-anchor made just
+// before the loop end (a tempo change, an undo's restore: its anchor already in the next pass while the old line is heard)
+// is no seek: the heard wrap sweeps
+function recAdv(p) {
+  if (!T.rec || !(p > T.pass)) return;
+  const a = T.a, le = a ? a.le : 0;
+  if (project.rec.mode === 'replace' && a && a.wrap && !seekPass(p) && T.lastClr > a.ls) { sweep([[T.lastClr, a.le]]); T.lastClr = a.ls; }
+  for (const [k, r] of recLive) if (r.p < p) { recLive.delete(k); commitNote(r, le, k); }
+  T.pass = p;
+}
 function recCC(trs, k, v, ts) {
   if (!T.rec || !T.playing) return;
   const t = Math.round(recTick(ts));
   if (t < 0) return;
+  recAdv(recP);
   for (const tr of trs) {
     if (!tr.arm && !T.padRec.has(tr.id)) continue; // ((8, §4.3 review #8) a pad's target records its Pencil aftertouch, armed or not)
+    recStep();
     const last = tr.cc.length ? tr.cc[tr.cc.length - 1] : null;
     if (last && last.k === k && Math.abs(last.t - t) < 12) { last.v = v; continue; }
     tr.cc.push({ t, k, v, take: T.take });
@@ -2072,11 +2253,13 @@ function replaceSweep(t) { // replace mode: wipe what the playhead passes on arm
   if (!T.rec || project.rec.mode !== 'replace' || t < 0) { T.lastClr = Math.max(T.lastClr, t); return; }
   const a = T.a, ranges = t >= T.lastClr ? [[T.lastClr, t]] : [[T.lastClr, a.le], [a.ls, t]];
   T.lastClr = t;
+  sweep(ranges);
+}
+function sweep(ranges) { // (the ranges [s, e) of every armed / pad-recorded track, the take's notes kept)
   for (const tr of project.tracks) {
     if (!tr.arm && !T.padRec.has(tr.id)) continue; // ((8, §4.3 review #8) a pad's target, armed or not: Q5's rule in replace mode)
-    const before = tr.notes.length + tr.cc.length;
-    tr.notes = tr.notes.filter(n => n.take === T.take || !ranges.some(([s, e]) => n.t >= s && n.t < e));
-    if (tr.notes.length + tr.cc.length !== before) { sendSong(tr); arr && arr.render(); roll && roll.render(); }
+    const keep = tr.notes.filter(n => n.take === T.take || !ranges.some(([s, e]) => n.t >= s && n.t < e));
+    if (keep.length !== tr.notes.length) { recStep(); tr.notes = keep; sendSong(tr); arr && arr.render(); roll && roll.render(); } // ((R) in the pass's step)
   }
 }
 
@@ -2091,6 +2274,10 @@ function targets(src) { return midiTargets(project.tracks, project.selTrack, src
 const numSrc = src => /^\d+$/.test(String(src));
 const heldSel = (k, ids) => numSrc(k.slice(0, k.indexOf(':'))) || (Array.isArray(ids) && ids.some(x => x[0] === project.selTrack));
 const heldLit = () => new Set([...held].filter(([k, ids]) => heldSel(k, ids)).map(([k]) => +k.slice(k.indexOf(':') + 1)));
+// (R, IMPL-R §3) the held notes that reached track id — the roll's key strip (heldLit's rule on that track exactly: a MIDI
+// channel's note routed only elsewhere stays dark there); rollHeld passes the selected track's to the roll when they change
+const heldOn = id => { const L = []; for (const [k, ids] of held) if (Array.isArray(ids) && ids.some(x => x[0] === id)) L.push(+k.slice(k.indexOf(':') + 1)); return L; };
+function rollHeld() { if (roll) roll.setHeld(heldOn(project.selTrack)); }
 let padNext = null; // ((8, §7.2) the pad inspector's "Play it": the next input note, once)
 // trs: the tracks the note goes to (default: the input's targets); (8) a pad passes its target track and o.rec 'target' —
 // that track records it whenever recording runs, armed or not (Q5) and joins the take's T.padRec (§4.3)
@@ -2101,6 +2288,7 @@ function noteOn(n, v, src = 0, ts = performance.now(), trs = targets(src), o) {
   const chs = trs.map(t => noteCh(t, src));
   held.set(key, trs.map((t, i) => [t.id, chs[i]]));
   if (typeof src !== 'string' || trs.includes(trk())) keyVis(n, true); // ((8) a pad's note on another track never lights the tray)
+  rollHeld();
   const send = () => { trs.forEach((t, i) => postTo(t, noteMsg(t, { t: 'on', n, v }, src, chs[i]))); };
   if (!ctx) { powerOn().then(() => { if (held.has(key)) send(); }).catch(() => {}); }
   else { wake(); send(); } // queued while suspended; plays once the context runs
@@ -2123,6 +2311,7 @@ function noteOff(n, src = 0, ts = performance.now(), rv) {
     inputNote(t, 0, n, 0, ts, false);
   }
   if (![...held].some(([k, ids]) => k.endsWith(':' + n) && heldSel(k, ids))) keyVis(n, false); // ((8) a pad's note held on another track keeps no tray key lit)
+  rollHeld();
 }
 function heldNotes(src) { const p = src + ':'; return [...held.keys()].filter(k => k.startsWith(p)).map(k => +k.slice(p.length)); }
 // trs: the tracks (default: the input's targets); midi.js passes the non-MPE targets of an MPE expression.
@@ -2200,7 +2389,13 @@ function panic() {
   setSustain(false);
   postAll({ t: 'panic' });
   for (const t of project.tracks) for (const k of drumDevs(t)) drumSend(t, k, 'now', null, true); // ((7a) their payloads say so: not running)
-  if (T.playing) postAll(Object.assign({ t: 'transport', play: true, seek: true }, T.a)); // (not fresh: the old anchor replays nothing, R7 B1)
+  if (T.playing) {
+    // ((review R-11) the chase floor: the anchor rendered now restarts nothing before this tick of its line — a later one, not
+    // rendered yet, becomes a seek from its own tick)
+    const Fr = ctx.currentTime * ctx.sampleRate;
+    for (const a of T.as) chase.set(a, a.frame > Fr ? [passOf.get(a) || 0, a.tick] : [passAt(Fr, a), AC.tickAt(Fr, a)]);
+    postAll(Object.assign({ t: 'transport', play: true, seek: true }, T.a)); // (not fresh: the old anchor replays nothing, R7 B1)
+  }
 }
 function setSustain(on) {
   sustain = on;
@@ -2421,7 +2616,7 @@ const PADS = cvPads.padsHost({
     return () => { const L = padIns.get(tr); if (L && L.delete(fn) && !L.size) padIns.delete(tr); };
   },
   heardTick: () => curTick(), live: id => cvLive(id), drumOf: (t, dev) => drumOf(t, dev),
-  step: label => { padFoot = new Map(padMods().map(M => [M.id, cvPads.moduleSize(M).fixed.w])); hist.record(project, label); updateUndoUI(); }, changed: o => padsChanged(o), undo: () => undo(), rowsOf: src => padRowsOf(src),
+  step: label => { padFoot = new Map(padMods().map(M => [M.id, cvPads.moduleSize(M).fixed.w])); hist.record(project, label); updateUndoUI(); }, changed: o => padsChanged(o), undo: () => undo(true), rowsOf: src => padRowsOf(src),
   learnPad: () => midi.learnPad(), cancelLearn: () => midi.cancelLearn(true), midiOk: () => midiOk(),
   inputs: () => midi.inputs(), outputs: () => midi.outputs(), hwOut: (port, b) => midi.send(port, b),
   nextNote: fn => { padNext = fn; return () => { if (padNext === fn) padNext = null; }; },
@@ -4186,7 +4381,7 @@ function renderHeads() {
         t[key] = !t[key];
         b.setAttribute('aria-pressed', t[key] ? 'true' : 'false');
         if (key !== 'arm') mix();
-        if (key === 'arm' && !t.arm && T.rec) for (const [k, r] of recLive) if (r.tr === t) { commitNote(r, recTick()); recLive.delete(k); }
+        if (key === 'arm' && !t.arm && T.rec) for (const [k, r] of recLive) if (r.tr === t) { commitNote(r, recTick(), k); recLive.delete(k); } // ((R review R-1) its key still down)
         arr && arr.render(); persist();
       };
       return b;
@@ -4267,7 +4462,7 @@ function deleteTrack(t) {
   for (const k of patchDevs(t)) PATCH.lamps(t, k, null); // ((9b) its 900 Series' lamps' queue
   PADS.endTrack(t.id); // ((8, D9) every pad's notes on it end — the targets stay (an undo brings the track back)
   project.tracks.splice(i, 1);
-  seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
+  seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id); recCutDrop(t.id);
   if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); ptShow(); }
   syncNodes();
   padsRefresh(); // ((8) its pads warn, their lights and "+N" follow)
@@ -4357,6 +4552,7 @@ function initEditors() {
     // (7a, IMPL-7a §4.2) a drum track's named rows (its machine's mapped primaries, kick at the bottom) and the saved
     // "Drum rows" choice (compact rows: on by default)
     drumRows: t => drumRowsOf(instOf(t)), drumRowsOn: store.get(ROLL_DRUM, true) !== false,
+    heldNotes: () => heldOn(project.selTrack), // ((R) its key strip's held notes on a track switch)
   });
   $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; cvArea = false; }, true);
   $('#rollwrap').addEventListener('pointerdown', () => { lastArea = 'roll'; }, true);
@@ -4555,7 +4751,7 @@ function transportUI() {
   document.body.classList.toggle('recording', T.rec);
 }
 function posUI(t = curTick()) {
-  if (!T.playing) { roll && roll.setPlayhead(t); arr && arr.setPlayhead(t); }
+  if (!T.playing) { roll && roll.setPlayhead(t, false, false); arr && arr.setPlayhead(t); }
   $('#tBBT').textContent = S.fmtBBT(project, Math.round(t));
   const s = S.ticksToSec(project, Math.max(0, t));
   $('#tTime').textContent = `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`;
@@ -5468,9 +5664,10 @@ function frame() {
   requestAnimationFrame(frame);
   if (ctx && !meterT) clockSample(ctx); // (the stall meter; its 5 ms timer while the engine starts)
   if (T.playing && T.a && ctx) {
-    const t = curTick();
+    const F = outFrame(), t = AC.heardTick(F, T.as); // (curTick)
+    if (T.rec) recAdv(heardPass(F)); // ((R) a pass heard ended: its held notes into its own step, before the sweep)
     posUI(t);
-    roll && roll.setPlayhead(t, true); arr && arr.setPlayhead(t, true); // drawn in this frame, not the next
+    roll && roll.setPlayhead(t, true, audible(trk()), heardFloor(F)); arr && arr.setPlayhead(t, true); // drawn in this frame, not the next; ((R) the roll's notes lit while heard, (review R-11) from the chase floor)
     replaceSweep(t);
     cvModPlay(); // (stage 2a: the modulator modules show the selected track's lanes)
     if (!project.loop.on && !T.rec && t > S.songEnd(project) + S.barTicks(project)) stop();
@@ -5992,7 +6189,7 @@ function cvDeleteSel(ids) {
   if (!out.length) return;
   const msg = out.join(' · ') + (step ? ' · tap to undo' : '');
   for (const s of log) if (s !== msg) noticeActs.delete(s); // (the paths' own taps: their steps are folded into one)
-  if (step) noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (hist.u[hist.u.length - 1] === step) undo(); });
+  if (step) noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (hist.u[hist.u.length - 1] === step) undo(true); });
   notice(msg, step ? 8000 : 5000);
 }
 // ONE History step for a press that ran several recorded edits (cvDeleteSel: each path records its own) — History mark / fold:
@@ -6821,7 +7018,7 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
 function cvUndoNotice(msg, step, alt, ms = 8000) {
   noticeActs.set(msg, () => {
     noticeActs.delete(msg); notice('', 0);
-    if (hist.u[hist.u.length - 1] === step) { undo(); return; } // (the newest step: undo it — also when the path has no alternative)
+    if (hist.u[hist.u.length - 1] === step) { undo(true); return; } // (the newest step: undo it — also when the path has no alternative)
     const f = alt();
     if (f) f();
   });
@@ -7790,7 +7987,7 @@ const PATCH = cvPatch.patchHost({
     if (onTap) { const step = hist.u[hist.u.length - 1]; noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); if (step && hist.u[hist.u.length - 1] === step) onTap(); }); }
     notice(text, ms);
   },
-  undo: () => undo(),
+  undo: () => undo(true),
   show: key => modShow(key), // ((9c fix, review 2 F2) a module tapped in / duplicated: off the band, the camera brings it in — the modulators' rule)
   // (9b, IMPL-9b §1.5, §1.6) a face's momentary event to the node (ptEv); the lamps' heard clock (the drums')
   ev: (t, dev, mid, id) => ptEv(ptT(t), dev, mid, id),

@@ -204,8 +204,9 @@ test('M4: the meters change no sample — the 6-unit rack rendered with and with
 // G2: offline (options; transport at frame 0) vs live (warm-up, chain, zeros, the transport posted 1024 frames ahead at F);
 // heard (s): the live MASTER first plays another program from frame 0 and stops (■: the stop's silence tails; stop false:
 // it plays on through the zeros) at that quantum-aligned time — F then lies ≥ 0.5 s after it
-function g2(fx, F, { sec = 2.5, tail = 1.5, qr = null, prep, heard = 0, stop = true } = {}) {
-  const sig = program(Math.round(sec * SR)), T = Math.ceil((sec + tail) * SR / Q) * Q, fpt = SR * 60 / (120 * 960);
+// (sig: the song's input { L, R } instead of `sec` s of program)
+function g2(fx, F, { sec = 2.5, tail = 1.5, qr = null, prep, heard = 0, stop = true, sig: S = null } = {}) {
+  const sig = S || program(Math.round(sec * SR)), T = Math.ceil(((S ? S.L.length / SR : sec) + tail) * SR / Q) * Q, fpt = SR * 60 / (120 * 960);
   const cO = chain(fx, { qr: null }), cL = chain(fx, { qr });
   if (prep) prep(cO);
   const off = mk(SC, { offline: true, fxr: cO.fxr, fxrT: cO.fxrT, transport: { play: true, frame: 0, tick: 0, fpt, loop: false }, frames: T });
@@ -261,6 +262,22 @@ test('G2 (c) qr null both ways: a rack with a Convolve compiled live and offline
   t.diagnostic(`the Convolve rack after 0.5 s of zeros (aligned start): ${h.exact ? 'exact' : v.toFixed(1) + ' dB'} (its block clock n runs through the silence)`);
   assert.ok(h.exact || v <= -80, v);
   SB.dropAsset(id);
+});
+
+// (the Windows idle-DSP review #4: the rack's denormal sweep runs in a silence ≥ 1 s once idle(); its schedule must restart with
+// each silence — a live MASTER's silent history before ▶ differs from the offline pre-roll's, so a carried-over schedule swept
+// other quanta of the gap: ~10⁵ samples differed at ≈ −600 dBFS)
+test('G2 (e) a 30 s silence inside the song: a Reverb alone and the 6-unit rack, live after a silent history ≡ offline bit for bit through the gap and after it (the denormal sweep\'s schedule restarts with each silence)', () => {
+  const N1 = SR, NG = 30 * SR, N2 = SR / 2, a = program(N1, SR, 'gap a'), b = program(N2, SR, 'gap b');
+  const sig = { L: new Float32Array(N1 + NG + N2), R: new Float32Array(N1 + NG + N2) };
+  sig.L.set(a.L, 0); sig.R.set(a.R, 0); sig.L.set(b.L, N1 + NG); sig.R.set(b.R, N1 + NG);
+  for (const [name, fx] of [['the Reverb', rack([['rev', { mix: 0.25, size: 0.3, decay: 0.3 }]])], ['RACK6', RACK6]]) for (const F of [187 * Q, 250 * Q]) {
+    const r = g2(fx, F, { sig, tail: 2 });
+    assert.ok(r.ref > 0.05, 'audible');
+    let n = 0, first = -1;
+    for (let i = 0; i < r.T; i++) if (!Object.is(r.A.L[i], r.B.L[F + i]) || !Object.is(r.A.R[i], r.B.R[F + i])) { n++; if (first < 0) first = i; }
+    assert.equal(n, 0, `${name}, F ${F}: ${n} samples differ, the first at ${(first / SR).toFixed(3)} s (max |live − offline| ${r.d})`);
+  }
 });
 
 test('G2 (d) pathLat() per unit type and mode = the delay of an impulse (dry at MIX 0: an exact delayed copy; wet: its peak) — Distortion S1 / S2 15, Limit compressors La (S1 / S2, two attacks), in series the sum, a splitter its longest branch, every other type 0; a fully bypassed rack 0', (t) => {

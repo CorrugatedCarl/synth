@@ -4165,7 +4165,10 @@
             out[i] = v * OUT_K;
             if (a > pk) pk = a;
           }
-          s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3;
+          // (silent: no subnormal, as postV — the couplings stuck at ±2.65e-321, so a panel module behind never saw exact 0:
+          // never idle, the Inst never skipped, MASTER's sweep held off; review-idle #1)
+          s[b] = s0 > -1e-30 && s0 < 1e-30 ? 0 : s0; s[b + 1] = s1 > -1e-30 && s1 < 1e-30 ? 0 : s1;
+          s[b + 2] = s2 > -1e-30 && s2 < 1e-30 ? 0 : s2; s[b + 3] = s3 > -1e-30 && s3 < 1e-30 ? 0 : s3;
         }
         if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[5] = s[1]; s[6] = s[2]; s[7] = s[3]; }
         ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
@@ -4193,7 +4196,8 @@
             const a = v < 0 ? -v : v;
             if (a > pk) pk = a;
           }
-          s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3;
+          s[b] = s0 > -1e-30 && s0 < 1e-30 ? 0 : s0; s[b + 1] = s1 > -1e-30 && s1 < 1e-30 ? 0 : s1;   // (silent: no subnormal, as postV)
+          s[b + 2] = s2 > -1e-30 && s2 < 1e-30 ? 0 : s2; s[b + 3] = s3 > -1e-30 && s3 < 1e-30 ? 0 : s3;
         }
         if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[5] = s[1]; s[6] = s[2]; s[7] = s[3]; }
         ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
@@ -4216,7 +4220,7 @@
             out[i] = yj * OUT_K9;
             if (a > pk) pk = a;
           }
-          s[b] = s0; s[b + 3] = s3;
+          s[b] = s0 > -1e-30 && s0 < 1e-30 ? 0 : s0; s[b + 3] = s3 > -1e-30 && s3 < 1e-30 ? 0 : s3;   // (silent: no subnormal, as postV)
         }
         if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[7] = s[3]; }
         ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;

@@ -12,7 +12,9 @@
 // catches — at the onset, and the paths a note meets only later: grains ending, playheads reaching the region end; M4:
 // was the first 50 ms), `steady` the median quantum of the chord after 0.5 s. Rows of kind 'track' (r, IMPL-1e §7) render a
 // graph node with several instruments: {t: 'graph'}, {t: 'patch', i} per instrument, {t: 'chain', c} per shared panel, the
-// chord reaching every instrument (full key zones); classic instruments at the app's oversampling (4).
+// chord reaching every instrument (full key zones); classic instruments at the app's oversampling (4). The row of kind 'sweep'
+// (the idle-DSP review #3 d) times a reverb rack on exact zeros after the noise: its load is the slowest quantum holding a
+// denormal sweep (fresh racks, median of `runs`).
 //   const S = scenarios();                          // [{id, label, node, ipad, kind, gran?, build()}]
 //   const r = measure(S[0], env, {runs: 5});        // {load, loads, peak, worst}
 // env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms, mkMaster(processorOptions, bare) → a
@@ -528,6 +530,10 @@ export function scenarios() {
       }) },
     ...core.REV_TYPES2.map((name, t) => ({ id: 'k' + t, label: 'FX: Reverb ' + name, node: 0.05, ipad: 0.03, kind: 'fx',
       build: () => fxScn(fx => { fxInst(fx, 'rev', { type: t, mix: 0.5, size: 0.6, decay: 0.6 }); }) })),
+    // the Windows idle-DSP review #3 (d): the denormal sweep's slowest quantum — a Plate (the largest pool at 48 kHz, 64 k floats)
+    // on exact zeros after the bench noise, swept once idle() every ⅛ s until its pool is clean (MASTER / a sidechain panel)
+    { id: 'sweep', label: 'FX: Reverb Plate on silence after the noise — the denormal sweep\'s slowest quantum', node: 0.1, ipad: 0.1, jsc: 0.1, kind: 'sweep',
+      build: () => fxScn(fx => { fxInst(fx, 'rev', { type: 0, mix: 0.5, size: 0.6, decay: 0.6 }); }) },
     { id: 'l', label: 'FX: Bode with BLUR and feedback', node: 0.03, ipad: 0.02, kind: 'fx',
       build: () => fxScn(fx => { const I = fxInst(fx, 'bode', {}); I.p.blur = 0.5; I.p.feed = 0.5; I.p.shift = 0.6; I.p.mix = 0.5; }) },
     { id: 'm', label: 'FX: Splitter L/M/H with 3 EQs', node: 0.04, ipad: 0.03, kind: 'fx',
@@ -729,6 +735,36 @@ function measureSwitch(scn, env, now) {
   const worst = Math.max(...first);
   return { load: worst / Q_MS, loads: [worst / Q_MS], worst, steady: med(later), peak: pk };
 }
+// a 'sweep' row (the idle-DSP review #3 d): `runs` fresh racks, each 0.5 s of the bench noise, then 30 s of exact zeros timed
+// quantum by quantum — the rack goes idle() and its denormal sweep clears the reverb pool every ⅛ s (rack.sweep counted on the
+// instance) until the pool is clean → {load: the slowest sweep quantum / quantum time (median of the runs), loads, worst (the
+// slowest quantum of all, same unit), steady (median quantum on zeros without a sweep, ms), sweeps (per run), peak (the
+// noise's)}; throws when a run never swept (it would time nothing)
+function measureSweep(scn, env, runs, now) {
+  const loads = [], st = [], r = W.mulberry32(W.fnv1a32('bench-noise')), noise = Float64Array.from({ length: 4096 }, () => 0.25 * (2 * r() - 1));
+  let pk = 0, wq = 0, n = 0;
+  for (let k = 0; k < runs; k++) {
+    const B = scn.build(), rack = new env.FXDSP.FXRack(SR), L = new Float64Array(128), R = new Float64Array(128), s0 = rack.sweep;
+    rack.set(B.fxp, B.fxt);
+    let hit = 0, sw = 0, pos = 0;
+    rack.sweep = function () { hit = 1; return s0.call(this); };
+    for (let q = 0; q < Math.round(0.5 * SR / 128); q++) {
+      for (let i = 0; i < 128; i++) { L[i] = noise[(pos + i) & 4095]; R[i] = noise[(pos + 2048 + i) & 4095]; }
+      pos = (pos + 128) & 4095;
+      rack.process(L, R, 128);
+      for (let i = 0; i < 128; i++) { const a = L[i] < 0 ? -L[i] : L[i]; if (a > pk) pk = a; }
+    }
+    for (let q = 0; q < Math.round(30 * SR / 128); q++) {
+      L.fill(0); R.fill(0); hit = 0;
+      const t0 = now(); rack.process(L, R, 128); const dt = now() - t0;
+      if (dt > wq) wq = dt;
+      if (hit === 1) { n++; if (dt > sw) sw = dt; } else st.push(dt);
+    }
+    if (sw === 0) throw new Error(`bench ${scn.id}: run ${k + 1} never swept — it would time nothing`);
+    loads.push(sw / Q_MS);
+  }
+  return { load: med(loads), loads, worst: wq / Q_MS, steady: med(st), sweeps: n / runs, peak: pk };
+}
 // renders scenario `scn` in env: 0.25 s warm-up, then `runs` × `seconds` of audio timed (interleaved with its base when
 // the row measures an overhead); every timed run must be audible (and, for Granular rows, have grains sounding) or it
 // throws: a silent run times nothing. → {load (median), loads, peak, worst (slowest quantum / quantum time, timed runs
@@ -736,6 +772,7 @@ function measureSwitch(scn, env, now) {
 export function measure(scn, env, o = {}) {
   const runs = o.runs || 5, seconds = o.seconds || 1, now = env.now || (() => performance.now());
   if (scn.kind === 'switch') return measureSwitch(scn, env, now);
+  if (scn.kind === 'sweep') return measureSweep(scn, env, runs, now);
   const bld = () => { const B = scn.build(); if (scn.kind === 'master') B.meters = scn.meters !== false; return B; };
   const A = prepare(bld(), scn.kind, env, now), Z = scn.base ? prepare(scn.base(), scn.kind, env, now) : null;
   const check = (X, what) => {

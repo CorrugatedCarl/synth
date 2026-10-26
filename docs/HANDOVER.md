@@ -154,6 +154,14 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    the rack clipboard is not re-checked (a refused one looks normal; a paste can take over a working edge — `clipIn` → `S.ok()`, `srcState`
    warns); the master's Ducker dips ≈ 1 ms (the tracks' 47-sample look-ahead) before the kick arrives. Not yet frozen: a golden of a
    Ducker / keyed-compressor render (G2 / G3 are exact formula tests). Live Safari on the Mac is unchecked (needs the user's click).
+17. **(2026-10-26.)** **Stage R + the Windows idle-DSP fix deployed** as one squashed commit "R" on `canvas` (holding branch `wt-R`;
+   docs/canvas/IMPL-R.md, IMPL-SC §12): recording overwrites same-pitch notes (Ableton), one undo step per loop pass (Ctrl+Z while recording
+   too; held notes kept out of the engine until key-up), the piano roll lights its keys and notes for what the engine plays (live + playback).
+   The user's Windows report (DSP climbing to 100 % while stopped): float32 / float64 subnormals in never-calm racks and instruments —
+   FXRack.sweep (reverb pools after ≥ 1 s of silence), FXRack.rest (one spread pass when a track enters its idle skip), the drums' / Solina's /
+   output stage's states flushed, the Juno's hiss silent with its skip (the lead's call), the CPU safeguard arms only while something sounds
+   and never saves a lowered ⚙ Oversampling. Reviewed by ultracode workflows (6 + 5 reviewers, 3 skeptics per finding, fix → verify loops).
+   **Tell the user**: on the Windows PC check ⚙ Oversampling (the old safeguard may have saved 1×).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)
