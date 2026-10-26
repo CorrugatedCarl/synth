@@ -224,6 +224,8 @@ export function createModLayer(host) {
   const hiddenOf = (dev, pid) => { const h = call('hidden', dev, pid); return isObj(h) && typeof h.tag === 'string' ? h : null; };
   // ((milestone 3) a row of a Serum's matrix whose source is its own LFO / ENV / macro … (the parts view's Mod list): own, not "preset")
   const ownRow = (R, pre) => !!pre && !!R.own;
+  // ((WC, G13, lane H) an own row's tag and the preset's owner: the instrument's name (a rig's own name; a Serum's 'Serum')
+  const ownTag = dev => { const n = dev ? label(dev) : ''; return n && !/^i\d+$/.test(n) ? n : 'Serum'; };
 
   /* ---------------------------------------------------------------- the popover shell (inspector, parameter list) */
   let P = null; // { box, kind, offs, widgets, sync, T? }
@@ -308,7 +310,7 @@ export function createModLayer(host) {
     const p = popover('insp', 'Modulation: ' + title, x, y);
     const box = p.box, W = p.widgets;
     const own = ownRow(R, pre), hid = hiddenOf(dev, pidOfRow(R, pre)); // ((3) a Serum's own row; a hidden destination)
-    const tags = pre ? [own ? ['own', 'Serum'] : ['preset', 'preset']] : [];
+    const tags = pre ? [own ? ['own', ownTag(dev)] : ['preset', 'preset']] : [];
     if (hid) tags.push(['hidden', hid.tag]);
     const hd = head(title, tags, true);
     const leftTag = mk('span', 'cv-ml-tag', 'not compiled: matrix full');
@@ -412,7 +414,7 @@ export function createModLayer(host) {
     const move = pre
       ? button('cv-ml-btn', 'Keep on canvas', 'keep', () => moveRow())
       : button('cv-ml-btn', 'Save with preset', 'save', () => moveRow());
-    move.title = pre ? 'Move this row out of the preset onto the canvas (a cable of this track)' : 'Move this cable into the Serum\'s preset (its matrix)';
+    move.title = pre ? 'Move this row out of the preset onto the canvas (a cable of this track)' : 'Move this cable into the ' + ownTag(dev) + '\'s preset (its matrix)';
     const disc = button('cv-ml-btn', 'Disconnect', 'disconnect', () => {
       call('remove', T.key);
       closePop();
@@ -580,7 +582,7 @@ export function createModLayer(host) {
           openInspector(pre ? { preset: dev, slot: R.slot } : { id: R.id, dev }, r.left, r.bottom + 4);
         });
         el.append(mk('span', null, t));
-        if (pre) { const o = ownRow(R, pre), g = mk('span', 'cv-ml-tag', o ? 'Serum' : 'preset'); g.setAttribute('data-tag', o ? 'own' : 'preset'); el.append(g); } // ((3) parts view: its own rows)
+        if (pre) { const o = ownRow(R, pre), g = mk('span', 'cv-ml-tag', o ? ownTag(dev) : 'preset'); g.setAttribute('data-tag', o ? 'own' : 'preset'); el.append(g); } // ((3) parts view: its own rows)
         const hz = hiddenOf(dev, pidOfRow(R, pre));
         if (hz) { const g = mk('span', 'cv-ml-tag', hz.tag); g.setAttribute('data-tag', 'hidden'); el.append(g); } // ((3) no mounted view shows the knob
         if (left) { const g = mk('span', 'cv-ml-tag', leftText(B, R.id)); g.setAttribute('data-tag', 'left'); el.append(g); }

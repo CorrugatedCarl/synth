@@ -5,11 +5,14 @@
  * `conv` turns a dial position into a physical quantity.
  * Models with `custom` (Serum) bring their own panel and state ({ s } from serum-core.js) instead of sections.
  * Models with `family` ('drums', 'patch') ride their own Inst kinds; the 900 Series' sections are moog-core's controller table.
+ * (Stage WC) `rig` — our own modular on the Serum engine, rig-core RIG.NAME — is custom AND family 'rig': a Serum state under its own
+ * modules (rig-core.js). isSxModel (both Serum-engine models) / isSerumModel (the bundled panel) / isRigModel tell them apart.
  * patchFor(model, vals, fx, opts) = the complete engine patch of a track (SPEC-serum2 §12.7): the model's map + the
  * track's FX rack (FXP v2) — shared by main.js (which adds only live-session fields), bounces and the tests.
  */
 import * as SC from './serum-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
+import { RIG, rigStarter, applyPrefs } from './rig-core.js?v=9';
 
 const { defaultSerum, compileSerum, FACTORY_PRESETS } = SC;
 
@@ -705,17 +708,8 @@ const serum = {
   theme: { ctl: 'knob', knob: 'serum', panel: '#0f1216', face: '#161b21', ink: '#dfe6ee', label: '#7f8b98', accent: '#4fb3ff' },
   sections: [],
   // new tracks and Init: defaults with the GLOBAL preferences applied (default oversampling, author, 3D view, MPE enabled
-  // by default; §2.1, SPEC-serum2 §12.7, §13.10)
-  defaults(prefs) {
-    const s = defaultSerum();
-    if (prefs) {
-      if (prefs.defOs === 1 || prefs.defOs === 2 || prefs.defOs === 4) s.global.os = prefs.defOs;
-      if (typeof prefs.author === 'string') s.author = prefs.author.slice(0, 64);
-      if (prefs.view3d) s.ui.view3d = s.ui.view3d.map(() => 1);
-      if (prefs.mpeDefault && s.global.mpe) s.global.mpe.on = 1;
-    }
-    return { s };
-  },
+  // by default; §2.1, SPEC-serum2 §12.7, §13.10) — rig-core applyPrefs, shared with the rig's starter
+  defaults(prefs) { return { s: applyPrefs(defaultSerum(), prefs) }; },
   // G.fx = the track's FX state: compileSerum resolves the matrix rows that target FX parameters against its layout
   // (SPEC-serum2 §4.1; without it those rows are inactive); qr = quality-reduction caps, the rest app preferences
   map(P, v, G) {
@@ -890,9 +884,35 @@ const m900 = {
   },
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909, sdsv, m900];
-// a classic keyboard synth: not Serum (custom), not a family (drums, patch) — the Hardware / Simple views and the classic modulation list (IMPL-9 §1.2)
+/* ================================================================ 2026 (our own modular) */
+// The rig (stage WC, IMPL-WC §1.1, §2.2; its display name rig-core RIG.NAME): our modular synth on the Serum engine — custom (vals.s is a Serum state, map() is
+// Serum's compile: a rig holding S sounds exactly as a Serum holding S, W2) AND family 'rig' (its own faces, cords and tray
+// view; classicOf false). Its modules are Serum's parts under generic names (rig-core MODULES), an Amplifier with the KEYS-gated
+// LEVEL jack its hub; defaults() is the tile's starter rig (rig-core rigStarter: Oscillator → Filter → Amplifier with an Envelope on
+// LEVEL). The display name is rig-core RIG.NAME alone — the id, the family and every key say `rig` (a rename is one line). No
+// `maker`: ours (the about line and the tile omit the maker clause). Appended last, so every index into the first 18 is unchanged.
+const rig = {
+  id: RIG.ID, name: RIG.NAME, model: 'Modular synthesizer', year: 2026, custom: true, family: RIG.ID,
+  tag: 'Poly · modules patched with cords · oscillators, sub, noise, two filters, envelopes, LFOs, macros · the Serum engine underneath',
+  about: `Our own modular, built on the Serum engine: drop an oscillator and it plays through an Amplifier gated by the keys, then add a filter, envelopes, LFOs and macros and patch them with cords — each module its own face, every connection a cord you can see, pull and re-plug. Every module is one of Serum’s parts under a plain name, so a ${RIG.NAME} holding a state sounds exactly as Serum holding it; what you see is what plays, and nothing is hidden.`,
+  theme: { ctl: 'knob', knob: 'serum', panel: '#17181a', face: '#1f2023', ink: '#ebe6d8', label: '#9c978a', accent: '#e8a33d' },
+  sections: [],
+  defaults(prefs) { return rigStarter(prefs); },
+  map: serum.map, // (Serum's compile; the MODELS loop below wraps each entry's map — `controls` is empty on both, W2 by construction)
+  presets: FACTORY_PRESETS,
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909, sdsv, m900, rig];
+// a classic keyboard synth: not Serum (custom), not a family (drums, patch, rig) — the Hardware / Simple views and the classic modulation list (IMPL-9 §1.2)
 export const classicOf = m => !!m && !m.custom && !m.family;
+// (WC, IMPL-WC §2.2, §8.1) the Serum-engine models — the Serum and the rig (the engine, the state, the kit, the presets, the own FX
+// rack), the one with the bundled Serum panel, the rig; the device-level twins are main.js's isSxRec / isSxDev / sxIds (the engine) and isRigDev (the rig; no site there means the bundled Serum of a device)
+export const isSxModel = m => !!m && !!m.custom;
+export const isSerumModel = m => !!m && m.id === 'serum';
+export const isRigModel = m => !!m && m.family === RIG.ID;
+// (WC) the same question for a model ID — a device record holds `model: 'serum'`, not the model (cv-*.js, main.js's isSxRec; midi.js lists them itself, a leaf): the Serum-engine ids
+const SX_IDS = new Set(MODELS.filter(isSxModel).map(m => m.id));
+export const isSxId = id => SX_IDS.has(id);
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);
@@ -927,7 +947,7 @@ export function patchFor(model, vals, fx, opts) {
   const patch = m.map(P, v, { drift: o.drift || 0, hiss: o.hiss || 0, sr, bpm, smooth, fx: rack, qr: o.qr || null,
     ultra: pr.ultra ? 1 : 0, mpeBendX: pr.mpeBendX ? 1 : 0, mpeYBi: pr.mpeYBi ? 1 : 0, ext: o.ext ? true : undefined });
   // Serum's master volume, Bypass and output levels belong to the rack's output stage (FX-context [0…4], §4.2)
-  const s = m.custom && v.s ? v.s : null, sp = s && s.p ? s.p : null;
+  const s = isSxModel(m) && v.s ? v.s : null, sp = s && s.p ? s.p : null;
   patch.fxr = SC.compileFx(rack, {
     bpm, rate: sr,
     master: sp ? sp['g.master'] : undefined, bypass: sp ? sp['g.bypass'] : undefined,

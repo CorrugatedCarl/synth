@@ -72,9 +72,15 @@
       <!-- Panic: every note and sequence off at once (= the keyboard bar's Panic, Esc) — always in the row, a folded keyboard too -->
       <button id="tPanic" class="tb cv-panic" type="button" title="Panic: stop all sound (Esc)" aria-label="Panic (stop all sound)"><svg viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h7L18 6.5v7L13.5 18h-7L2 13.5v-7zM7.2 3.7 3.7 7.2v5.6l3.5 3.5h5.6l3.5-3.5V7.2l-3.5-3.5zM9.1 5.6h1.8v6H9.1zM9.1 12.9h1.8v1.8H9.1z"/></svg></button>
       <div class="tpos" title="Position (bar.beat.tick) and time"><span id="tBBT">1.1.000</span><span id="tTime">0:00.000</span></div>
-      <label class="tfield cv-bpm" title="Tempo (BPM)"><span class="cv-fl">BPM</span><input id="tBpm" type="number" min="20" max="300" step="0.1" aria-label="Tempo"></label>
+      <!-- the tempo: BPM, and TAP joined to it (tap tempo, main.js initTap: acts on the press; the perf zone — a key the other
+           hand plays never pairs with it, gesture.js). ≤ 900 px TAP folds into ⋯ (#tTapM) -->
+      <div class="cv-tempo">
+        <label class="tfield cv-bpm" title="Tempo (BPM)"><span class="cv-fl">BPM</span><input id="tBpm" type="number" min="20" max="300" step="0.1" aria-label="Tempo"></label>
+        <button id="tTap" class="tt cv-tap" type="button" data-gesture="perf" aria-label="Tap tempo" title="Tap tempo: tap the beat — the tempo follows from the 2nd tap">Tap</button>
+      </div>
       <button id="tMore" class="cv-ib cv-ovf" type="button" aria-haspopup="true" aria-label="More transport controls: time signature, loop, click, count-in" title="Time signature, loop, click, count-in">⋯</button>
       <div class="cv-tx" id="tMorePop">
+        <button id="tTapM" class="tt cv-tapm" type="button" data-gesture="perf" aria-label="Tap tempo" title="Tap tempo: tap the beat — the tempo follows from the 2nd tap">Tap tempo</button>
         <label class="tfield cv-sig" title="Time signature"><span class="cv-fl">Time sig</span><span class="sig"><input id="tSigN" type="number" min="1" max="16" step="1" aria-label="Beats per bar"><span>/</span><select id="tSigD" aria-label="Beat unit"><option>2</option><option>4</option><option>8</option><option>16</option></select></span></label>
         <div class="tgrp">
           <button id="tLoop" class="tt cv-tog" type="button" aria-pressed="false" title="Loop the highlighted region (drag in the ruler to set it)">Loop</button>
@@ -224,6 +230,13 @@
         <p class="cv-pmode" id="srcMode"></p>
         <div id="srcScroll" class="cv-tscroll">
           <div id="srcList" class="cv-tiles"></div>
+          <!-- stage WC: the rig view's module tiles and note tools, right after its tile (cv-tray o.parts fills them and writes their headings from the display name; hidden until a view lists them) -->
+          <section id="srcPartSec" class="cv-tsec cv-psec" hidden>
+            <div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"></div>
+          </section>
+          <section id="srcNoteSec" class="cv-tsec cv-psec" hidden>
+            <div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"></div>
+          </section>
           <section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>
             <h3 class="cv-tgrp">Modulators</h3>
             <div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"></div>
@@ -232,15 +245,6 @@
           <section id="srcCtlSec" class="cv-tsec" aria-label="Controllers" hidden>
             <h3 class="cv-tgrp">Controllers</h3>
             <div id="srcCtls" class="cv-tiles cv-mtiles" data-tray="ctls"></div>
-          </section>
-          <!-- milestone 3: the Serum view's parts and note tools (cv-tray o.parts fills them; hidden until it does) -->
-          <section id="srcPartSec" class="cv-tsec cv-psec" aria-label="Serum parts" hidden>
-            <h3 class="cv-tgrp">Serum parts</h3>
-            <div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"></div>
-          </section>
-          <section id="srcNoteSec" class="cv-tsec cv-psec" aria-label="Note tools" hidden>
-            <h3 class="cv-tgrp">Note tools</h3>
-            <div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"></div>
           </section>
         </div>
         <p class="cv-pnote" id="srcNote"></p>

@@ -131,7 +131,7 @@
 //   the 20 s cap shows a notice once per session. Cache trims never evict what the project uses now; factory records
 //   served from the main-thread LRU mark their cache entry used.
 // - farmPatch(model, preset, bpm) builds the render-farm patches (exported for the tests).
-import { MODELS, patchFor } from './models.js?v=9';
+import { MODELS, patchFor, isSxModel } from './models.js?v=9';
 
 const VERSION = '9';
 
@@ -352,7 +352,7 @@ export function farmPatch(model, preset, bpm) {
   const m = MODELS.find(x => x.id === model), p = m && m.presets.find(x => x.name === preset);
   if (!m || !p) throw new Error('render farm: unknown preset ' + model + ' / ' + preset);
   let vals;
-  if (m.custom) vals = JSON.parse(JSON.stringify(p.v));
+  if (isSxModel(m)) vals = JSON.parse(JSON.stringify(p.v)); // ((WC) the Serum and the rig: a Serum state)
   else { vals = {}; for (const c of m.controls) vals[c.id] = c.def; Object.assign(vals, JSON.parse(JSON.stringify(p.v))); }
   const patch = patchFor(m, vals, null, { sr: 48000, bpm: bpm > 0 ? bpm : 120, drift: 0, hiss: 0 });
   return { patch, wtIds: (patch.needs || []).filter(id => idKind(id) === 'wt') };

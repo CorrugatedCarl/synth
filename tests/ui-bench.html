@@ -36,6 +36,9 @@
   the app frame runs, and the table's footer warns when a switch did not reach it. Without a switch nothing changes.
   Stage 9b (IMPL-9b §5 b2): ?m9=1&s55=1 (step 1, automatic) and ?m9=1&s55=1&hand=1 (step 2) are the System 55 set's pages — scenes
   s55c / s55 / s55w / s55h in a store of their own (kind "ui-m9b" → tests/bench.json "ui-m9b"); the stage 9 session above is unchanged.
+  Stage WC (IMPL-WC §9, G7): ?wc=1 loads tests/ui-bench-wc.mjs instead — a Juno track, the Wavecraft starter and the full WC-1 rig made
+  with the app's own hooks, measured with the app's own cord layer (pan / pinch 25–200 % / the Amplifier dragged / every cord swaying /
+  a 60 s zoom sweep); &auto=1 for the CDP harness (window.__wc), &wires=lines the regret path; one JSON (kind "ui-WC-mac").
 -->
 <style>
   :root { color-scheme: dark; }
@@ -71,6 +74,9 @@
   // (stage 9, IMPL-9 §5 b / c) ?m9=1: the modules-and-cords spike's page (tests/ui-bench-m9.mjs), loaded the same way
   const M9 = !M3 && /[?&]m9=1/.test(location.search);
   if (M9) import('./ui-bench-m9.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m9.mjs did not load: ' + (e && e.message); });
+  // (stage WC, IMPL-WC G7) ?wc=1: the Wavecraft canvas's frame cost (tests/ui-bench-wc.mjs; S0's real scene, rebuilt), loaded the same way
+  const WC = !M3 && !M9 && /[?&]wc=1/.test(location.search);
+  if (WC) import('./ui-bench-wc.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-wc.mjs did not load: ' + (e && e.message); });
   const $ = s => document.querySelector(s);
   const SETS = { one: ['prophet5'], five: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'] };
   // candidate fixes, tried as extra stylesheets on the five-synth track (SPEC §2.11: nothing visible changes)
@@ -256,7 +262,7 @@
   }
   $('#run').onclick = () => run().catch(e => { status('failed: ' + e.message); $('#run').disabled = false; });
   $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
-  if (/[?&]run=1/.test(location.search) && !M3 && !M9) $('#run').click();
+  if (/[?&]run=1/.test(location.search) && !M3 && !M9 && !WC) $('#run').click();
 </script>
 </body>
 </html>

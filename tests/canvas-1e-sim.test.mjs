@@ -15,6 +15,8 @@ import { fakeStorage } from './fakes.mjs';
 import * as CG from '../cv-graph.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG as RIGW } from '../rig-core.js?v=9'; // ((WC) the display name: the Serum's ⋯ offers Make it a <NAME>)
+const RIGN = RIGW.NAME;
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 860 }; // (860: a 1i Minimoog, 736 px with its keys, fits at k 1)
 function scriptedWorld(root) {
@@ -128,7 +130,7 @@ test('1f: no ⏻ and no key-zone pill on the bars, the ⋯ menus without device 
   assert.deepEqual(labels('i1'), L);
   assert.deepEqual(labels('i2'), L.map(x => x.replace('Minimoog', 'Juno-60')));
   // (stage 2a, IMPL-2a §5: a Serum's ⋯ opens its Mod list — "Modulation list…", lane D's choice for the mod list's entry)
-  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Show parts', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((milestone 3, IMPL-3 §2.7) Show parts / Bundle on a Serum's ⋯)
+  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Make it a ' + RIGN, 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((WC §3.5, lane H) + Make it a <NAME> (Q4 (a)) // ((WC, IMPL-WC §6) no Show parts / Bundle on a Serum's ⋯: it is the whole panel)
   assert.deepEqual([labels('fx1'), labels(ID.sx + '/fx'), labels('out')], [['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold']]);
   const C = V().cables.list();
   assert.ok(C.length >= 4, C.length + ' cables');

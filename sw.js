@@ -37,7 +37,7 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = '94098687e438'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = 'f073404f034d'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'classic-panel.js', 'cv-art.js', 'cv-cables.js',
@@ -50,15 +50,17 @@ const ASSETS = [
   'panels/jupiter8.js', 'panels/m900.js', 'panels/m900b.js', 'panels/m900c.js', 'panels/minimoog.js',
   'panels/modular.js', 'panels/ms20.js', 'panels/obxa.js', 'panels/prophet5.js', 'panels/sdsv.js', 'panels/solina.js',
   'panels/tb303.js', 'panels/tr606.js', 'panels/tr808.js', 'panels/tr909.js', 'patch-core.js', 'patch-dsp.js',
-  'pwa.js', 'roll.js', 'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js',
-  'smprender.js', 'smpstore.js', 'smpwork.js', 'song.js', 'style.css', 'sx-base.js', 'sx-edges.js', 'sx-filt2.js',
-  'sx-gran.js', 'sx-host.js', 'sx-mod.js', 'sx-sample.js', 'sx-seq.js', 'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-mod.js',
-  'sx-ui-osc.js', 'sx-ui-seq.js', 'sx-warp.js', 'tuning.js', 'wk.js', 'wt.js', 'wtedit.js', 'wtstore.js', 'wtwork.js',
+  'pwa.js', 'rig-core.js', 'rig-ui.js', 'roll.js', 'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js',
+  'smp.js', 'smpgen.js', 'smprender.js', 'smpstore.js', 'smpwork.js', 'song.js', 'style.css', 'sx-base.js',
+  'sx-edges.js', 'sx-filt2.js', 'sx-gran.js', 'sx-host.js', 'sx-mod.js', 'sx-sample.js', 'sx-seq.js', 'sx-spec.js',
+  'sx-ui-mix.js', 'sx-ui-mod.js', 'sx-ui-osc.js', 'sx-ui-seq.js', 'sx-warp.js', 'tuning.js', 'wk.js', 'wt.js',
+  'wtedit.js', 'wtstore.js', 'wtwork.js',
 ];
 const STATIC = [
-  './', 'fonts/InterVariable.woff2', 'fonts/JetBrainsMono-Regular.woff2', 'fonts/JetBrainsMono-SemiBold.woff2',
-  'fonts/OFL-Inter.txt', 'fonts/OFL-JetBrainsMono.txt', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'manifest.webmanifest',
+  './', 'fonts/ArchivoNarrowVariable.woff2', 'fonts/InterVariable.woff2', 'fonts/JetBrainsMono-Regular.woff2',
+  'fonts/JetBrainsMono-SemiBold.woff2', 'fonts/OFL-ArchivoNarrow.txt', 'fonts/OFL-Inter.txt',
+  'fonts/OFL-JetBrainsMono.txt', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png', 'icons/icon-192.png',
+  'icons/icon-512.png', 'icons/icon-maskable-512.png', 'manifest.webmanifest',
 ];
 const SHELL_V = 'synth-shell-v' + VERSION, SHELL = SHELL_V + '-' + BUILD, PREFIX = 'synth-';
 const NAV_WAIT = 4000;

@@ -431,9 +431,9 @@ test('§1.4 review #25: every other way to a 900 Series gives the Model 15 set a
   api.selectTrack(ID.t1); await settle();
 });
 
-test('§1.6: Save / reload identical (schema 14 since stage M, 13 since P; the orphan knobs pruned at load, never by History); a schema-15 file opens read-only; Save as classic names the patch it loses', async () => {
+test('§1.6: Save / reload identical (schema 16 since stage WC, 15 since SC, 14 since M, 13 since P; the orphan knobs pruned at load, never by History); a schema-17 file opens read-only; Save as classic names the patch it loses', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA], [15, 15]);
+  assert.deepEqual([p2.schema, CM.SCHEMA], [16, 16]);
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id), k = CMOD.primId(t);
     if (!cv.isPatchDev(t, k)) continue;
@@ -443,8 +443,8 @@ test('§1.6: Save / reload identical (schema 14 since stage M, 13 since P; the o
   }
   assert.equal(Object.keys(vals(byId(ID.t1)).p).some(k => !rec(byId(ID.t1)).mods[k]), true, 'the session still holds its orphans (§1.5)');
   const n = JSON.parse(json);
-  n.schema = 16;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 16, 'a schema-16 file: read-only');
+  n.schema = 17;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 17, 'a schema-17 file: read-only');
   const was = globalThis.confirm;
   let asked = '';
   globalThis.confirm = m => { asked = m; return false; };

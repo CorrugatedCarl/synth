@@ -267,6 +267,21 @@ export function wheelGate(el, focusEl) {
 }
 
 /* ---------------------------------------------------------------- knob */
+/** A knob control's disc: its direct .wk-svg child (the label under it is not the knob), else null. */
+export function discOf(el) {
+  for (const c of (el && el.children) || []) if (c && typeof c.getAttribute === 'function' && /(^|\s)wk-svg(\s|$)/.test(c.getAttribute('class') || '')) return c;
+  return null;
+}
+/** A knob control's disc on the client: discOf's box when it has a size and lies inside the control's own (±0.5 px), else null (the control
+ * stands for it) — the ONE measure of the canvas's knob discs (WC, integration fixer L — review WC-int P3-18): cv-module's knob ends (a
+ * cord's rim, its badge), main's segmented rings, cv-cables' aim of a cord dragged onto a knob — so they agree. */
+export function discBox(el) {
+  const c = discOf(el);
+  if (!c || typeof c.getBoundingClientRect !== 'function' || typeof el.getBoundingClientRect !== 'function') return null;
+  let k = null, r = null;
+  try { k = c.getBoundingClientRect(); r = el.getBoundingClientRect(); } catch (err) { return null; }
+  return k && r && k.width > 0 && k.height > 0 && k.left >= r.left - 0.5 && k.top >= r.top - 0.5 && k.left + k.width <= r.left + r.width + 0.5 && k.top + k.height <= r.top + r.height + 0.5 ? k : null;
+}
 export function knob(o) {
   ensureCSS(D());
   const stepsOf = () => { const s = call(o.steps); return s > 0 ? Math.round(s) : 0; };

@@ -36,7 +36,7 @@
       "n": 9,
       "sites": [
         {
-          "has": "const sx = t.model === 'serum';",
+          "has": "const sx = isSxId(t.model);",
           "why": "trackToV2: a v1 track's own fields (the input of the v1 → v2 step)"
         },
         {
@@ -77,7 +77,7 @@
       "n": 7,
       "sites": [
         {
-          "has": "const sx = t.model === 'serum', fx = sx ? 'i1/fx' : 'fx1';",
+          "has": "const sx = isSxId(t.model), fx = sx ? 'i1/fx' : 'fx1';",
           "why": "deriveCables: the stage-1b v1 track (no dev)"
         },
         {
@@ -114,7 +114,7 @@
           "why": "estimate: a device record (x.kind 'synth')"
         },
         {
-          "has": "else if (x.model === 'serum') load = serumLoad(",
+          "has": "else if (isSxId(x.model)) load = serumLoad(",
           "why": "estimate: a device record"
         },
         {
@@ -126,7 +126,7 @@
           "why": "estimateTrack: the v1 branch (no dev)"
         },
         {
-          "has": "sx = t.model === 'serum';",
+          "has": "sx = isSxId(t.model);",
           "why": "estimateTrack: the v1 branch (no dev)"
         },
         {
@@ -143,7 +143,7 @@
       "n": 6,
       "sites": [
         {
-          "has": "return { canonical: true, shape: t.model === 'serum' ? 'serum' : 'classic', inst: null,",
+          "has": "return { canonical: true, shape: isSxId(t.model) ? 'serum' : 'classic', inst: null,",
           "why": "compileTrack: the v1 branch (!isV2)"
         },
         {
@@ -155,7 +155,7 @@
           "why": "v2View: a v1 track as devices"
         },
         {
-          "has": "if (t.model === 'serum') return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx })",
+          "has": "if (isSxId(t.model)) return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx })",
           "why": "v2View: a v1 track as devices"
         },
         {

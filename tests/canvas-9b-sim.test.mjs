@@ -430,12 +430,12 @@ test('§3.4 / §3.6: ▶ steps the sequence, ■ holds it; muted (P-1) the patch
   assert.equal(stageOf(cv.patch.lampBits(T(), d, m960)), 1, '⏻ on (undo): lit again');
 });
 
-test('§1.1 / §6: Save / reload identical (schema 15 since stage SC, 14 at M: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
+test('§1.1 / §6: Save / reload identical (schema 16 since stage WC, 15 at SC, 14 at M: the records, the knobs with their routing switches, the places); a bounce of Sequence takes it (its rows in the payload) and the clocked sequence sounds in it', async () => {
   api.selectTrack(ID.t1); await settle();
   const t = T(), d = dev(t), m993 = midOf('993');
   cv.patch.knobSet(t, d, m993, 'e1', 1); await settle();
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.equal(p2.schema, 15);
+  assert.equal(p2.schema, 16);
   for (const x of P().tracks) {
     const u = p2.tracks.find(y => y.id === x.id), k = CMOD.primId(x);
     if (!cv.isPatchDev(x, k)) continue;

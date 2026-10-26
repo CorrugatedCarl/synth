@@ -3,12 +3,14 @@
 // routeOf; the MIX page (sx-ui-mix routeOf / channelStrips / routeMenuItems) and serum-core (filterFeeds, toggleFilterRoute,
 // the normaliser's F1 / F2 loop rule) stay as they are — jackrules proves this module agrees with each of them.
 //
-// Parts (IMPL-3 §2.1): serum-core MODULE_FIELDS names + 'macros' — oscA oscB oscC sub noise filter filter2 env2 env3 env4
-// lfo1 … lfo10 macros arp clip. VOICE is the device key 'iN' itself; the own FX stays 'iN/fx'. An END is '<part>.<port>'
-// relative to one Serum (dev-free): sources '<src>.out'; filters '<f>.in' / '<f>.out'; VOICE 'voice.main' / 'voice.direct' /
-// 'voice.note' / 'voice.out' / 'voice.env1'; the own FX 'fx.in'; ARP / CLIP '<part>.out' (notes); an oscillator's read-only
-// warp / FM / RM / pitch input '<osc>.warp'. jackOf(dev, end) ↔ endOf(dev, jack) map them to canvas jacks ('i1/oscA.out',
-// 'i1.main', 'i1/fx.in').
+// Parts (IMPL-3 §2.1): serum-core MODULE_FIELDS names + 'macros' — oscA oscB oscC sub noise filter filter2 env1 env2 env3
+// env4 lfo1 … lfo10 macros arp clip (env1 since stage WC: the rig's amp slot is a module; a Serum's VOICE holds ENV 1, so
+// a Serum never lists it — IMPL-WC §2.3, §3.4). VOICE is the device key 'iN' itself; the own FX stays 'iN/fx'. An END is
+// '<part>.<port>' relative to one Serum (dev-free): sources '<src>.out'; filters '<f>.in' / '<f>.out'; VOICE 'voice.main' /
+// 'voice.direct' / 'voice.note' / 'voice.out' / 'voice.env1' (the ENV 1 output) / 'voice.level' (the rig's amp-slot INPUT: the
+// Amplifier's LEVEL jack — rig-core plugs it, setEdge refuses it); the own FX 'fx.in'; ARP / CLIP '<part>.out' (notes); an
+// oscillator's read-only warp / FM / RM / pitch input '<osc>.warp'; the amp-slot cord's source 'env1.out'. jackOf(dev, end)
+// ↔ endOf(dev, jack) map them to canvas jacks ('i1/oscA.out', 'i1.main', 'i1/fx.in', 'i1.level').
 //
 //   serumEdges(s, fx)        [{ id, a, b, kind, src?, share?, fork?, stub?, ro?, dim?, env?, field?, what?, label? }] the
 //                            Serum's internal cables: kind 'audio' (sources → filters / VOICE, filter → filter / VOICE), 'note'
@@ -25,19 +27,20 @@
 //                            matrix row (src or aux; a point-modulation bus's rows are matrix rows), or by `used` — link rows
 //                            '<dev>/lfo3.out' or slot names; MACROS when a macro row exists; ARP / CLIP when on; any part
 //                            with a lay entry '<dev>/<part>' stays). Shaped slots nothing reads get none
-//   slotsUsed(s, used)       Set of the env / lfo slots and 'macros' something reads (matrix rows with a destination)
+//   slotsUsed(s, used, env1) Set of the env / lfo slots and 'macros' something reads (matrix rows with a destination); env1
+//                            true counts ENV 1 too (the rig's amp slot — rig-core; a Serum's VOICE holds ENV 1, never a part)
 //   partOn(s, part), powerOf(part), partLabel(part), splitKey(key) → { dev, part } | null, routeLabel(s, fx)
 import { WARPS2, lawValue, destBase, filterFeeds } from './serum-core.js?v=9';
 
 /** The parts in module order (IMPL-3 §2.1). */
-export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env2', 'env3', 'env4',
+export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env1', 'env2', 'env3', 'env4',
   ...Array.from({ length: 10 }, (_, l) => 'lfo' + (l + 1)), 'macros', 'arp', 'clip']);
 /** The audio sources, the filters (in serum-core channel order: A B C, then SUB and NOISE in the tray's order). */
 export const SRC_PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise']), FILTERS = Object.freeze(['filter', 'filter2']);
 /** A part's power destination (the bar ⏻ = the panel's own toggle, `data-dest` = this id); parts without one: none. */
 export const POWER = Object.freeze({ oscA: 'a.on', oscB: 'b.on', oscC: 'c.on', sub: 's.on', noise: 'n.on', filter: 'f.on', filter2: 'f2.on', arp: 'arp.on', clip: 'clip.on' });
 const LABEL = Object.freeze({ oscA: 'OSC A', oscB: 'OSC B', oscC: 'OSC C', sub: 'SUB', noise: 'NOISE', filter: 'FILTER 1', filter2: 'FILTER 2',
-  env2: 'ENV 2', env3: 'ENV 3', env4: 'ENV 4', macros: 'MACROS', arp: 'ARP', clip: 'CLIP', voice: 'VOICE', fx: 'FX' });
+  env1: 'ENV 1', env2: 'ENV 2', env3: 'ENV 3', env4: 'ENV 4', macros: 'MACROS', arp: 'ARP', clip: 'CLIP', voice: 'VOICE', fx: 'FX' });
 /** The filters' input switches S A B C N (`f.route<X>` / `f2.route<X>`): plain switches, shown and edited as cables only —
  * never modulation destinations (cv-mods plainSwitch / destOk). */
 export const SWITCHES = Object.freeze(['A', 'B', 'C', 'N', 'S'].flatMap(X => ['f.route' + X, 'f2.route' + X]));
@@ -48,6 +51,8 @@ export const WHY = Object.freeze({
   voice: 'Serum sources play through their VOICE', ro: 'Set this in the oscillator’s warp menu', fx: 'Edited in VOICE’s outputs',
   self: 'A filter cannot feed itself', dir: 'Connect an output to an input', note: 'Only ARP and CLIP play notes into VOICE',
   notes: 'ARP and CLIP play notes into VOICE', same: 'Already connected', none: 'Not connected', bad: 'Not a cable of this Serum',
+  // (stage WC) the amp slot is rig-core's: ENV 1's output goes to LEVEL (rig-core.plug) or a knob, LEVEL takes an envelope only
+  level: 'Only an envelope shapes the level', env: 'An envelope shapes the level or modulates a knob',
 });
 
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
@@ -77,8 +82,9 @@ export function splitKey(key) {
 }
 // filter k's share of source `part` (serum-core shareOf: s1 = (1 − b) / 2, s2 = (1 + b) / 2 of the balance law, base values)
 function shareOf(s, part, k) { const b = lawValue(SRC[part].p + '.fbal', base(s, SRC[part].p + '.fbal')); return k ? (1 + b) / 2 : (1 - b) / 2; }
-// an END '<part>.<port>' → { part, port } (VOICE 'voice', the own FX 'fx'); null for anything else
-const PORTS = { voice: ['main', 'direct', 'note', 'out', 'env1'], fx: ['in'] };
+// an END '<part>.<port>' → { part, port } (VOICE 'voice', the own FX 'fx'; (WC) 'voice.level' the amp-slot input and 'env1.out'
+// its source — the cord rig-core derives from the slot); null for anything else
+const PORTS = { voice: ['main', 'direct', 'note', 'out', 'env1', 'level'], fx: ['in'], env1: ['out'] };
 function parse(end) {
   const m = typeof end === 'string' ? /^([a-z][a-zA-Z0-9]*)\.([a-z][a-z0-9]*)$/.exec(end) : null;
   if (!m) return null;
@@ -87,6 +93,8 @@ function parse(end) {
     : FK[part] ? port === 'in' || port === 'out' : part === 'arp' || part === 'clip' ? port === 'out' : false;
   return ok ? { part, port } : null;
 }
+// (WC) the amp slot's ends: never a setEdge / cutEdge write (rig-core.plug / pull move the ENV slot)
+const ampEnd = E => E.part === 'env1' || (E.part === 'voice' && E.port === 'level');
 /** A canvas jack of Serum `dev` for an END: 'voice.main' → 'i1.main', 'fx.in' → 'i1/fx.in', 'oscA.out' → 'i1/oscA.out'. */
 export function jackOf(dev, end) {
   const E = parse(end);
@@ -197,7 +205,9 @@ export function setEdge(s, fx, a, b) {
   const A = parse(a), B = parse(b);
   if (!isObj(s)) return no(WHY.bad);
   if (!A) return no(WHY.bad);
-  if (!B) return no(SRC[A.part] ? WHY.voice : A.part === 'arp' || A.part === 'clip' ? WHY.notes : WHY.bad);
+  if (!B) return no(SRC[A.part] ? WHY.voice : A.part === 'arp' || A.part === 'clip' ? WHY.notes : A.part === 'env1' ? WHY.env : WHY.bad);
+  if (ampEnd(B)) return no(WHY.level);
+  if (ampEnd(A)) return no(WHY.env);
   const ro = readOnly(A, B);
   if (ro) return no(ro);
   if (A.port !== 'out' || !(B.port === 'in' || (B.part === 'voice' && B.port !== 'out' && B.port !== 'env1'))) return no(WHY.dir);
@@ -234,6 +244,7 @@ export function cutEdge(s, fx, a, b) {
   const A = parse(a), B = b == null ? null : parse(b);
   if (!A || (b != null && !B)) return no(WHY.bad);
   if (B) { const ro = readOnly(A, B); if (ro) return no(ro); }
+  if (ampEnd(A) || (B && ampEnd(B))) return no(WHY.level);
   const has = serumEdges(s, fx).some(e => e.a === a && (b == null ? e.stub : e.b === b));
   if (!has) return no(WHY.none);
   if (A.part === 'arp' || A.part === 'clip') return writes(s, [[['p', POWER[A.part]], 0]]);
@@ -250,50 +261,55 @@ export function cutEdge(s, fx, a, b) {
 }
 
 /* ---------------------------------------------------------------- parts and slots */
-const KIND_OF = { osc: OSC, sub: ['sub'], noise: ['noise'], filter: FILTERS, env: ['env2', 'env3', 'env4'],
+const KIND_OF = { osc: OSC, sub: ['sub'], noise: ['noise'], filter: FILTERS, env: ['env1', 'env2', 'env3', 'env4'],
   lfo: Array.from({ length: 10 }, (_, l) => 'lfo' + (l + 1)), macros: ['macros'], arp: ['arp'], clip: ['clip'] };
-/** A part's kind: 'oscB' → 'osc', 'filter2' → 'filter', 'lfo7' → 'lfo', 'env3' → 'env'; null for anything else. */
+/** A part's kind: 'oscB' → 'osc', 'filter2' → 'filter', 'lfo7' → 'lfo', 'env3' → 'env' (env1 too); null for anything else. */
 export function kindOf(part) { for (const k of Object.keys(KIND_OF)) if (KIND_OF[k].includes(part)) return k; return null; }
-const SLOT = /(?:^|\/)(lfo(?:10|[1-9])|env[2-4])(?:y)?(?:\.out)?$/;
+const SLOT = /(?:^|\/)(lfo(?:10|[1-9])|env[1-4])(?:y)?(?:\.out)?$/;
 /** The env / lfo slots (and 'macros') something reads: s.matrix rows' src / aux (bypassed too; 'lfo3y' is LFO 3) — rows with a
  * destination only: one without (Serum's matrix keeps such a row) modulates nothing, so it neither gives a module (I2) nor
  * keeps a slot from being free or removable (review 1 F4; main's Remove counts by the same rule) —, plus `used` — slot names
- * or link-row sources ('i1/lfo3.out'). */
-export function slotsUsed(s, used) {
+ * or link-row sources ('i1/lfo3.out'). (WC) `env1` true counts ENV 1 as a slot too (a matrix row's env1, a link row
+ * 'i1/env1.out'): the rig's amp slot, whose module exists while something reads it (IMPL-WC §3.4); without it ENV 1 is
+ * VOICE's, as for a Serum. */
+export function slotsUsed(s, used, env1) {
   const U = new Set();
   for (const r of isObj(s) ? arr(s.matrix) : []) {
     if (!isObj(r) || !r.dst) continue;
     for (const x of [r.src, r.aux]) {
       if (typeof x !== 'string' || !x) continue;
       if (/^macro[1-8]$/.test(x)) U.add('macros');
-      const m = /^(lfo(?:10|[1-9])|env[2-4])y?$/.exec(x);
-      if (m) U.add(m[1]);
+      const m = /^(lfo(?:10|[1-9])|env[1-4])y?$/.exec(x);
+      if (m && (env1 || m[1] !== 'env1')) U.add(m[1]);
     }
   }
   for (const x of used == null ? [] : typeof used === 'string' ? [used] : used) {
     if (x === 'macros') { U.add(x); continue; }
     const m = typeof x === 'string' ? SLOT.exec(x) : null;
-    if (m) U.add(m[1]);
+    if (m && (env1 || m[1] !== 'env1')) U.add(m[1]);
   }
   return U;
 }
-/** The first free slot of `kind` (or of a part's kind) not in `skip`; null when the kind is full. */
+/** The first free slot of `kind` (or of a part's kind) not in `skip`; null when the kind is full. ENV 1 is never free: it is
+ * the amp envelope (a Serum's VOICE, the rig's gate or amp Envelope — rig-core.envFromAmp moves it). */
 export function firstFree(s, kind, skip) {
   const K = KIND_OF[kind] ? kind : kindOf(kind), L = K ? KIND_OF[K] : null;
   if (!L) return null;
   const S = new Set(skip == null ? [] : typeof skip === 'string' ? [skip] : skip);
   const U = K === 'env' || K === 'lfo' ? slotsUsed(s) : null;
   for (const part of L) {
-    if (S.has(part)) continue;
+    if (S.has(part) || part === 'env1') continue;
     if (POWER[part] && K !== 'arp' && K !== 'clip' ? !partOn(s, part) : U ? !U.has(part) : true) return part;
   }
   return null;
 }
 const okEntry = e => isObj(e) && fin(e.x) && fin(e.y);
-/** The parts of Serum `dev` that get a module (I1 / I2; a laid-out part stays, dimmed when off), in PARTS order. */
+/** The parts of Serum `dev` that get a module (I1 / I2; a laid-out part stays, dimmed when off), in PARTS order. ENV 1 is
+ * never one here (VOICE's; the rig's amp-slot rule is rig-core.partKeys, which builds on this list). */
 export function partKeys(s, lay, dev, used) {
   const U = slotsUsed(s, used), L = isObj(lay) ? lay : {}, out = [];
   for (const part of PARTS) {
+    if (part === 'env1') continue;
     const laid = typeof dev === 'string' && okEntry(L[dev + '/' + part]);
     const want = laid || (POWER[part] ? partOn(s, part) : U.has(part));
     if (want) out.push(part);

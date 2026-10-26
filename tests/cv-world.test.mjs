@@ -2323,6 +2323,70 @@ test('(9, IMPL-9 §4.5) the fit hook: the toolbar\'s fit, the 0 key frame the id
   eq(W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48 }), W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48, kMin: 0 }), 'no kMin: as before');
 });
 
+test('(WC, integration fixer L — review WC-int B3, reworked after its checks 2026-10-26: what matters first, centred) a floored fit\'s focus, in PRIORITY order: fit({ ids, kMin, focus }) / fitCam(…, { focus }) — on a side the rects no longer fit at kMin, the longest head of the focus that fits there: centred, then slid back only as far as the rects\' own edges allow (no blank band past an edge where they go on: the pad kept); centred as it is when it fits only with less air; the first one\'s start when even that does not fit (a keyboard-up band: the chain row whole, Envelope 1 dropped, not the box\'s top corner); the head BOTH floored sides hold, on each (a split view: the chain\'s start alone, after its third check); a side that fits stays centred; no focus or an empty one: as before; the world\'s fit takes its focus ids in their order', () => {
+  const R = [{ x: -800, y: 0, w: 3000, h: 400 }], o = f => ({ pad: 48, kMin: 0.5, focus: f });
+  const base = W.fitCam(R, 1000, 600, { pad: 48, kMin: 0.5 });
+  eq([base.k, base.tx, base.ty], [0.5, 448, 200], 'the start rule (the floor): its left kept, its height centred');
+  eq([W.fitCam(R, 1000, 600, o(null)), W.fitCam(R, 1000, 600, o([]))], [base, base], 'no focus, an empty one: as before');
+  // (the rects\' edges on screen: left 48 at tx 448, right 952 at tx −148 — tx stays in [−148, 448], the band covered less the pad)
+  eq(W.fitCam(R, 1000, 600, o([{ x: -700, y: 0, w: 900, h: 400 }])), base, 'centred would leave a blank band left of the rects: slid back to their left edge');
+  const c = W.fitCam(R, 1000, 600, o([{ x: 400, y: 0, w: 1000, h: 400 }]));
+  eq([c.k, c.tx, c.ty], [0.5, 500 - 900 * 0.5, 200], 'centred: the rects go on both ways');
+  const ce = W.fitCam(R, 1000, 600, o([{ x: 1800, y: 0, w: 300, h: 400 }]));
+  eq([ce.k, ce.tx], [0.5, 1000 - 48 - 2200 * 0.5], 'centred would leave a blank band right of them: slid back to their right edge');
+  const c2 = W.fitCam(R, 1000, 600, o([{ x: 0, y: 0, w: 1880, h: 400 }]));
+  eq([c2.k, c2.tx], [0.5, 500 - 940 * 0.5], 'fits only with less air: centred');
+  const c3 = W.fitCam(R, 1000, 600, o([{ x: 100, y: 0, w: 2100, h: 400 }]));
+  eq([c3.k, c3.tx], [0.5, 48 - 100 * 0.5], 'wider than the band: its start');
+  // priority: the head that fits — a third one past the band is dropped (not the box of all three: 1100 px), then the first alone
+  const p3 = W.fitCam(R, 1000, 600, o([{ x: 0, y: 0, w: 400, h: 400 }, { x: 1000, y: 0, w: 400, h: 400 }, { x: 1900, y: 0, w: 300, h: 400 }]));
+  eq([p3.k, p3.tx], [0.5, 500 - 700 * 0.5], 'the first two centred, the third dropped');
+  const p1 = W.fitCam(R, 1000, 600, o([{ x: 0, y: 0, w: 400, h: 400 }, { x: 1600, y: 0, w: 600, h: 400 }]));
+  eq([p1.k, p1.tx], [0.5, 500 - 200 * 0.5], 'the first alone, centred');
+  const p0 = W.fitCam(R, 1000, 600, o([{ x: 200, y: 0, w: 2100, h: 400 }, { x: 0, y: 0, w: 100, h: 100 }]));
+  eq([p0.k, p0.tx], [0.5, 48 - 200 * 0.5], 'the first wider than the band: its start (the rest never framed instead)');
+  // a rig under a keyboard-up band (600 tall): its modulator band (Envelope 1, −900 … −450) over its chain row (0 … 400) — the three do not fit
+  // (650 px), the chain's start and the Amplifier do: the chain row whole at the band\'s foot (the rig ends there: no blank band under it),
+  // Envelope 1\'s lower part above it; the width fits: centred
+  const K = [{ x: 0, y: 0, w: 400, h: 400 }, { x: 400, y: 0, w: 400, h: 300 }, { x: 400, y: -900, w: 400, h: 450 }], RK = [{ x: 0, y: -1200, w: 800, h: 1600 }];
+  const kb = W.fitCam(RK, 1000, 600, o(K));
+  eq([kb.k, kb.tx, kb.ty], [0.5, 500 - 400 * 0.5, 600 - 48 - 400 * 0.5], 'the chain row whole, its foot at the band\'s less the pad');
+  ok(kb.ty + 0 * 0.5 >= 48 && kb.ty + 400 * 0.5 <= 600 - 48 && kb.ty - 450 * 0.5 > 0 && kb.ty - 450 * 0.5 < 600, 'Envelope 1 partly in view above it');
+  const K3 = K.slice(0, 2).concat([{ x: 400, y: -500, w: 400, h: 450 }]);
+  eq([W.fitCam(RK, 1000, 600, o(K3)).ty], [600 - 48 - 400 * 0.5], 'the three fit (450 px): centred, slid back to the rig\'s foot');
+  eq([W.fitCam([{ x: 0, y: -1200, w: 800, h: 2000 }], 1000, 600, o(K3)).ty], [300 - (-500 + 400) / 2 * 0.5], 'the rig going on below: centred');
+  const kbs = W.fitCam(RK, 1000, 150, o(K));
+  eq([kbs.k, kbs.ty], [0.5, 48 - 0 * 0.5], 'a band shorter than the chain row: the chain\'s start\'s top (never Envelope 1\'s, nor the box\'s corner)');
+  // (after its third check) the head BOTH sides hold: a split view (500 × 600) — across only the chain's start fits (the Amplifier stands
+  // 1024 px on), down all three would (574 px, with less air): the start placed down by itself, centred (157), not by the three (Envelope 1's
+  // column is not on screen: that left the start at the band's foot under blank canvas); across centred too (the rig goes on left: an LFO)
+  const SV = [{ x: 0, y: 0, w: 352, h: 572 }, { x: 1024, y: 0, w: 288, h: 388 }, { x: 1056, y: -576, w: 352, h: 468 }];
+  const sv = W.fitCam([{ x: -800, y: -600, w: 2800, h: 2000 }], 500, 600, o(SV));
+  eq([sv.k, sv.tx, sv.ty], [0.5, 250 - 352 / 2 * 0.5, 300 - 572 / 2 * 0.5], 'the chain\'s start alone, centred both ways');
+  eq([W.fitCam([{ x: 0, y: -600, w: 2000, h: 2000 }], 500, 600, o(SV)).tx], [48], 'across: slid back to the rig\'s left edge (nothing left of it)');
+  const c4 = W.fitCam([{ x: 0, y: -1600, w: 3000, h: 2000 }], 1000, 600, o([{ x: 2000, y: 0, w: 600, h: 400 }]));
+  eq([c4.k, c4.tx, c4.ty], [0.5, 1000 - 48 - 3000 * 0.5, 600 - 48 - 400 * 0.5], 'both sides floored: each centred and slid back to the rects\' edge (right, foot)');
+  const c5 = W.fitCam([{ x: 0, y: 0, w: 640, h: 400 }], 1000, 600, o([{ x: 0, y: 0, w: 100, h: 100 }]));
+  eq(c5, W.fitCam([{ x: 0, y: 0, w: 640, h: 400 }], 1000, 600, { pad: 48, kMin: 0.5 }), 'not floored: the plain fit');
+  // the world's fit: focus names ids (their rects as the fit reads them), in the order given (not the items\')
+  const S = setup(), { world, frame, item } = S;
+  for (const it of [item('lfo', -800, 0, 600, 400), item('osc', 0, 0, 400, 400), item('amp', 1000, 0, 400, 400), item('fx', 1600, 0, 600, 400)]) world.add(it);
+  frame();
+  world.fit({ ids: ['lfo', 'osc', 'amp', 'fx'], kMin: W.READ_K, animate: false });
+  const a0 = world.toClient(1400, 0);
+  ok(world.k === W.READ_K && a0.x > 1000, 'the start rule alone leaves the Amplifier out (' + a0.x + ')');
+  world.fit({ ids: ['lfo', 'osc', 'amp', 'fx'], kMin: W.READ_K, focus: ['osc', 'amp', 'nope'], animate: false });
+  const o1 = world.toClient(0, 0), a1 = world.toClient(1400, 0);
+  eq(world.k, W.READ_K, 'at READ_K');
+  ok(o1.x >= 48 - 1e-6 && a1.x <= 1000 - 48 + 1e-6, 'the focus whole: ' + o1.x + ' … ' + a1.x);
+  ok(Math.abs((o1.x + a1.x) / 2 - 500) < 17, 'centred: ' + o1.x + ' … ' + a1.x);
+  for (const [F, k0, k1] of [[['fx', 'osc'], 1600, 2200], [['osc', 'fx'], 0, 400]]) { // (osc … fx: 1100 px — one of them, the first named)
+    world.fit({ ids: ['lfo', 'osc', 'amp', 'fx'], kMin: W.READ_K, focus: F, animate: false });
+    const l = world.toClient(k0, 0).x, r = world.toClient(k1, 0).x;
+    ok(l >= 0 && r <= 1000, F + ': ' + F[0] + ' whole (' + l + ' … ' + r + ')');
+  }
+});
+
 /* ------------------------------------------------------------------ (P) the performance preset, ?texmax, the device-ratio route */
 test('(P) the preset: o.perf at build (unknown → high), ?perf= over it for the session (never stored), the cord layer built with it, setPerf live to the cord layer (and cv-face\'s FACES.setPerf); glStats().perf; PERFS / PERF_PREF / perfOf', t => {
   eq([W.PERFS, W.PERF_PREF, ['high', 'medium', 'low', 'x', null].map(W.perfOf)], [['high', 'medium', 'low'], 'synth.cv.perf', ['high', 'medium', 'low', 'high', 'high']]);
@@ -2454,4 +2518,154 @@ test('(P) the real cv-cords through the world at each preset: medium swings at 6
   const d0 = L.stats().draws;
   S.frame(3);
   eq([L.stats().draws - d0, S.rq.length, L.wants()], [1, 0, false], 'one draw (the parabolas), then no frames');
+});
+
+/* ------------------------------------------------------------------ stage WC (IMPL-WC §3.2, §4.4; lane C) */
+test('(WC, §3.2) a rig\'s cord jack ([data-kind=cord][data-cv-awake]) stays awake at every zoom a line jack does: offered to the jack hook below READ_K, never taken as the sleeping body; a 900 Series\' cord jack (no data-cv-awake) still sleeps', () => {
+  const R = jackRig();
+  const rj = R.d.createElement('span'), pj = R.d.createElement('span');
+  rj.setAttribute('data-cv-jack', 'm.in'); rj.setAttribute('data-kind', 'cord'); rj.setAttribute('data-cv-awake', ''); R.m.body.append(rj);
+  pj.setAttribute('data-cv-jack', 'm.j-saw'); pj.setAttribute('data-kind', 'cord'); R.m.body.append(pj);
+  R.world.setJackHook((e, el) => { R.log.push(el.getAttribute('data-cv-jack')); return { cancel: () => {} }; });
+  R.world.setCamera({ tx: 0, ty: 0, k: 0.4 }); R.frame(); adv(400);
+  touch(rj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointermove', 250, 300, 1); touch(R.vp, 'pointerup', 250, 300, 1);
+  eq([R.log, R.world.cam.tx, R.world.selected], [['m.in'], 0, null], 'k 0.4: offered, no pan, nothing selected');
+  adv(500); R.log.length = 0;
+  touch(pj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointermove', 250, 300, 1); touch(R.vp, 'pointerup', 250, 300, 1);
+  eq([R.log, R.world.cam.tx], [[], 50], 'the 900 Series\' cord jack: asleep (the body pans), as before');
+  // the hook declines the awake jack: still no sleeping-body pan from it (a jack is no body)
+  R.world.setJackHook(() => false);
+  adv(500);
+  touch(rj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointermove', 260, 300, 1); touch(R.vp, 'pointerup', 260, 300, 1);
+  eq(R.world.cam.tx, 50, 'declined: never the body\'s pan');
+});
+
+test('(WC, §4.4; the lead\'s decision 2) the cord hook: a press that would pan (empty canvas, a module background, a sleeping body) asks hit(p, HIT_PX / k) at its world point; a TAP on a cord is its tap(id, e, p) — not a deselect, no double-tap fit, its click eaten; a drag on it pans; no cord: as before; the remover', () => {
+  const { vp, w, world, frame, item, d } = setup();
+  const m = item('m', 100, 100, 400, 300);
+  world.add(m);
+  frame(); adv(500);
+  const log = [];
+  eq(typeof world.setCordHook, 'function');
+  const off = world.setCordHook((p, r, e) => { log.push('hit ' + p.x + ',' + p.y + ' ' + r + ' ' + e.pointerType); return p.x > 800 ? 'x:i1:a>b' : null; }, (id, e, p) => log.push('tap ' + id + ' ' + p.x + ',' + p.y + ' ' + e.pointerType));
+  world.select('m');
+  touch(vp, 'pointerdown', 900, 650, 1); touch(vp, 'pointerup', 901, 651, 1);
+  eq([log, world.selected], [['hit 900,550 ' + CORDS.HIT_PX + ' touch', 'tap x:i1:a>b 900,550 touch'], 'm'], 'a tap on a cord: its tap — the selection stays');
+  const ck = new dom.Ev('click', { bubbles: true, cancelable: true });
+  vp.dispatchEvent(ck);
+  eq(ck.defaultPrevented, true, 'its click eaten (never the × that appeared under it)');
+  adv(100); log.length = 0;
+  touch(vp, 'pointerdown', 905, 652, 1); touch(vp, 'pointerup', 905, 652, 1); frame(30);
+  eq([log.filter(s => s.startsWith('tap')).length, cam(world.cam)], [1, { tx: 0, ty: 0, k: 1 }], 'a second tap: the cord\'s again, no double-tap fit');
+  adv(500); log.length = 0;
+  mouse(w, 'pointerdown', 900, 500); mouse(vp, 'pointermove', 950, 520, { buttons: 1 }); mouse(vp, 'pointerup', 950, 520); frame();
+  eq([log.filter(s => s.startsWith('tap')), world.cam.tx], [[], 50], 'a drag on it pans (a cord never steals a pan)');
+  adv(500); log.length = 0;
+  world.setCamera({ tx: 0, ty: 0, k: 1 }); frame(); adv(400);
+  mouse(m.body, 'pointerdown', 300, 300); mouse(vp, 'pointerup', 300, 300);
+  eq([log, world.selected], [['hit 300,200 ' + CORDS.HIT_PX + ' mouse'], 'm'], 'a module background: asked; no cord there — the tap selects the module');
+  adv(500); log.length = 0;
+  world.setCamera({ tx: 0, ty: 0, k: 0.5 }); frame(); adv(400);
+  touch(vp, 'pointerdown', 450, 300, 1); touch(vp, 'pointerup', 450, 300, 1);
+  eq(log, ['hit 900,400 ' + CORDS.HIT_PX * 2 + ' touch', 'tap x:i1:a>b 900,400 touch'], 'k 0.5: the world point, r = HIT_PX / k');
+  world.setCamera({ tx: 0, ty: 0, k: 0.4 }); frame(); adv(400); log.length = 0;
+  touch(m.body, 'pointerdown', 100, 150, 1); touch(vp, 'pointerup', 100, 150, 1);
+  eq([log.length, world.selected], [1, 'm'], 'a sleeping body: asked (no cord: the tap selects it)');
+  off();
+  adv(500); log.length = 0;
+  touch(vp, 'pointerdown', 900, 650, 1); touch(vp, 'pointerup', 900, 650, 1);
+  eq([log, world.selected], [[], null], 'removed: a tap deselects as before');
+});
+
+/* ---- (WC, integration fixer K; the skeptics of review P2-3: a face clips its jacks' hit circles, an enlarged circle steals the controls above) */
+test('(WC, fixer K; review P2-3, its skeptics) setJackNear(fn): a press on no jack asks fn(p, k, t, { empty, sleep, mod }) at its world point — the empty canvas (empty), a sleeping body (sleep, its module), anything else in a module (its module: the host keeps a control\'s press) — and a [data-cv-jack] it names is offered to the jack hook as that jack\'s press: taken in the capture phase (no pan, nothing selected); null or a non-jack: as before (a pan, a tap\'s select, a control\'s own press); a press on a jack is its own (never asked); never during a glide; the remover', () => {
+  const R = jackRig(), asks = [];
+  const ctl = R.d.createElement('button'); R.m.el.append(ctl);
+  let ctlDowns = 0; ctl.addEventListener('pointerdown', () => ctlDowns++);
+  R.world.setJackHook((e, el) => { R.log.push('jack ' + el.getAttribute('data-cv-jack') + ' ' + e.pointerType); return { cancel: () => {} }; });
+  eq(typeof R.world.setJackNear, 'function');
+  const where = t => (t === R.vp ? 'vp' : t === R.w ? 'world' : t === R.m.body ? 'body' : t === ctl ? 'ctl' : '?');
+  let give = 'jack';
+  const off = R.world.setJackNear((p, k, t, o) => {
+    asks.push([p.x, p.y, k, where(t), String(o.empty), String(o.sleep), String(o.mod)].join(' '));
+    return p.x < 950 ? null : give === 'jack' ? R.jack : give === 'body' ? R.m.body : null;
+  });
+  // the empty canvas right of the module (k 1): the near jack's press — taken, no pan
+  touch(R.vp, 'pointerdown', 960, 300, 1); touch(R.vp, 'pointermove', 1000, 360, 1); R.frame(); touch(R.vp, 'pointerup', 1000, 360, 1);
+  eq([asks.splice(0), R.log.splice(0), cam(R.world.cam), R.world.selected], [['960 200 1 vp true false null'], ['jack m.out touch'], { tx: 0, ty: 0, k: 1 }, null], 'asked at its world point; offered to the jack hook, taken (no pan)');
+  adv(500);
+  // an awake module background, nothing near: asked (its module), declined — the pan as ever
+  touch(R.m.body, 'pointerdown', 300, 300, 1); touch(R.vp, 'pointermove', 340, 300, 1); R.frame(); touch(R.vp, 'pointerup', 340, 300, 1);
+  eq([asks.splice(0), R.log.length, R.world.cam.tx], [['300 200 1 body false false m'], 0, 40], 'declined: the background pans');
+  adv(500); R.world.setCamera({ tx: 0, ty: 0, k: 1 }); R.frame(); adv(400);
+  // an awake control: asked (the host keeps it: null) — the control's own press, no pan
+  touch(ctl, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointerup', 200, 300, 1);
+  eq([asks.splice(0), R.log.length, ctlDowns], [['200 200 1 ctl false false m'], 0, 1], 'a control: its own press');
+  adv(500);
+  // a press on the jack itself: its own (never asked)
+  touch(R.jack, 'pointerdown', 900, 168, 1); touch(R.vp, 'pointerup', 900, 168, 1);
+  eq([asks.splice(0), R.log.splice(0)], [[], ['jack m.out touch']], 'a jack: the jack hook, never asked');
+  adv(500);
+  // k 0.4: a sleeping body near the jack (the host names it) — taken; far from it — the body's pan, a tap selects
+  R.world.setCamera({ tx: 0, ty: 0, k: 0.4 }); R.frame(); adv(400);
+  touch(R.m.body, 'pointerdown', 390, 300, 1); touch(R.vp, 'pointermove', 420, 330, 1); R.frame(); touch(R.vp, 'pointerup', 420, 330, 1);
+  eq([asks.splice(0), R.log.splice(0), R.world.cam.tx], [['975 500 0.4 body false true m'], ['jack m.out touch'], 0], 'k 0.4, a sleeping body: asked (sleep), taken');
+  adv(500);
+  touch(R.m.body, 'pointerdown', 100, 300, 1); touch(R.vp, 'pointerup', 100, 300, 1);
+  eq([asks.splice(0), R.log.length, R.world.selected], [['250 500 0.4 body false true m'], 0, 'm'], 'declined: the tap selects the sleeping module');
+  adv(500);
+  // a non-jack answer: as before (the body's pan)
+  give = 'body';
+  touch(R.m.body, 'pointerdown', 390, 300, 1); touch(R.vp, 'pointermove', 420, 300, 1); R.frame(); touch(R.vp, 'pointerup', 420, 300, 1);
+  eq([asks.splice(0).length, R.log.length, R.world.cam.tx], [1, 0, 30], 'a non-jack: never offered');
+  give = 'jack';
+  adv(500); R.world.setCamera({ tx: 0, ty: 0, k: 1 }); R.frame(); adv(400);
+  // a flicked pan's glide: a touch during it only stops it (never asked)
+  touch(R.vp, 'pointerdown', 500, 650, 1);
+  for (let i = 1; i <= 6; i++) { T += 16; touch(R.vp, 'pointermove', 500 - 20 * i, 650, 1); }
+  touch(R.vp, 'pointerup', 380, 650, 1); R.frame(5);
+  asks.length = 0;
+  touch(R.vp, 'pointerdown', 980, 300, 2, { isPrimary: true }); touch(R.vp, 'pointerup', 980, 300, 2);
+  eq([asks.length, R.log.length], [0, 0], 'during a glide: never asked');
+  for (let i = 0; i < 300 && R.world.busy; i++) R.frame();
+  adv(500);
+  off();
+  touch(R.vp, 'pointerdown', 980, 300, 1); touch(R.vp, 'pointerup', 980, 300, 1);
+  eq([asks.length, R.log.length], [0, 0], 'removed: never asked');
+});
+
+test('(WC, fixer K; review P3-9, its skeptics\' round 1) the drop outline\'s label in WHOLE lines, never sliced: placeGhost counts the lines its box holds (11 px at 1.2: 13.2 px a line, under the 8 px top, 3 px clear of the bottom border) — ≥ 2: data-lines and --gl-lines (style.css: a word-wrapped -webkit-line-clamp, its last line ending in …); 1: no data-lines — the base\'s one nowrap line ending in …; a box too short for two there (the iPad\'s Fit zoom: a 32 px Bend) takes them 1 px clear, centred (data-lift, its middle as the inline top; style.css translate −50 %) rather than lose the second; the lines and the width counted from the visible part of a box larger than the canvas (dx / dy: never past its outline)', () => {
+  const { world, frame, d } = setup();
+  frame();
+  const lab = () => all(d.documentElement).find(n => n.className === 'cv-ghost-label');
+  const at = (k, w, h, label, x = 500, y = 400) => {
+    world.setCamera({ tx: 0, ty: 0, k }); frame();
+    world.ghost({ x, y, w, h, label, snap: false });
+    const L = lab(), v = L.style['--gl-lines'];
+    return [L.getAttribute('data-lines'), v == null || v === '' ? null : String(v), L.hasAttribute('data-lift'), L.style.top || '', L.style.maxWidth || ''];
+  };
+  // a Modulators tile (240 × 128 world px) at the iPad's Fit zooms: the skeptic's Bend at 25 / 28 % and Aftertouch at 30 %
+  eq(at(0.25, 240, 128, '+ Bend'), ['2', '2', true, '14.5px', ''], '32 px at 25 % (the base: "+ B…"): two whole lines in its 29 px, centred');
+  eq(at(0.28, 240, 128, '+ Bend'), ['2', '2', true, '16.4px', ''], '35.84 px at 28 % (the skeptic\'s cut "BEND"): two whole lines, centred in 32.84');
+  eq(at(0.3, 240, 128, '+ Aftertouch'), ['2', '2', true, '17.7px', ''], '38.4 px: two, centred');
+  eq(at(0.25, 160, 160, '+ Note'), ['2', '2', true, '18.5px', ''], 'Note at 25 % (40 px): two, centred');
+  eq(at(0.35, 240, 128, '+ Bend'), ['2', '2', false, '', ''], '44.8 px: two lines under the 8 px top (41.8 − 11 = 30.8 → 2)');
+  eq(at(1, 240, 128, '+ Bend'), ['8', '8', false, '', ''], '128 px: eight under the 8 px top (125 − 11 = 114 → 8)');
+  eq(at(0.25, 240, 96, '+ Bend'), [null, null, true, '10.5px', ''], '24 px: one line — the base\'s nowrap … — centred in its 21 px');
+  eq(at(1, 240, 128, '+ Bend'), ['8', '8', false, '', ''], 'back: every lift mark taken off');
+  eq(at(0.25, 240, 96, '+ Bend'), [null, null, true, '10.5px', ''], 'and the lines\'');
+  // larger than the canvas (the band: x 0 … 1000, y 100 … 700): the label moved into its visible part, counted from there
+  eq(at(1, 1200, 900, 'Serum · replaces Juno-60', 50, 400), ['55', '55', false, '', '630px'], 'its left 550 px off the band: the label 550 in, as wide as the 630 px it has left (1200 − 20 − 550)');
+  eq(at(0.25, 800, 300, 'Serum · replaces Juno-60', 500, 110), ['2', '2', false, '', ''], 'its top 27.5 px over the band: two lines in the 44.5 px seen (75 − 3 − 27.5), not the four of the whole box');
+  eq(at(0.25, 800, 300, 'Serum · replaces Juno-60', 500, 400), ['4', '4', false, '', ''], 'the same box inside the band: four');
+  eq(at(0.25, 800, 160, 'Serum · replaces Juno-60', 500, 101), ['2', '2', true, '16.5px', ''], 'a 40 px box 19 px over the band (dy 4, the most: 40 − 36): two lines centred in the 33 px seen (the transform adds the dy)');
+  world.ghost(null);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const rule = sel => (css.match(new RegExp(sel.replace(/[.[\]]/g, m => '\\' + m) + ' \\{[^}]*\\}')) || [''])[0];
+  const base = rule('#overlay .cv-ghost-label'), many = rule('#overlay .cv-ghost-label[data-lines]'), lift = rule('#overlay .cv-ghost-label[data-lift]');
+  ok(/white-space: nowrap;/.test(base) && /overflow: hidden;/.test(base) && /text-overflow: ellipsis;/.test(base) && /top: 8px;/.test(base), 'one line: the base\'s nowrap under the 8 px top, ending in …: ' + base);
+  ok(!/max-height/.test(base), 'no height cut through a line\'s letters: ' + base);
+  ok(/white-space: normal;/.test(many) && /display: -webkit-box;/.test(many) && /-webkit-box-orient: vertical;/.test(many) && /-webkit-line-clamp: var\(--gl-lines/.test(many), 'several: wrapped and clamped to the lines counted, the last ending in …: ' + many);
+  ok(!/overflow-wrap: (break-word|anywhere)|word-break: break-all|max-height/.test(many), 'at words only, never a height cut: ' + many);
+  ok(/translate: 0 -50%;/.test(lift), 'a short box: its lines centred on the inline top: ' + lift);
 });

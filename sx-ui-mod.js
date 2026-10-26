@@ -672,7 +672,7 @@ export class QualityPanel {
       assetsRow.classList.toggle('sx-hidden', !t);
     });
     const s1 = pToggle(K, { label: 'S1 Compatibility Mode', kind: 'led', get: () => (s1On(s0()) ? 1 : 0), set: v => H.setS1(v) });
-    s1.el.title = 'Serum 1 renditions: OSC A/B warp slot 1 uses the 23 legacy warps, the sub its 5 shapes and level law, Filter 1 its 96 types and the gliding key-track reference, Hz LFOs ignore HOST, PHASE/RAND knob ends set the phase memory, and the bend ranges are ±24. Every other feature works in both modes. Switching back restores the S1 sound exactly.';
+    s1.el.title = (H && H.host && H.host.words && H.host.words.s1Tip) || 'Serum 1 renditions: OSC A/B warp slot 1 uses the 23 legacy warps, the sub its 5 shapes and level law, Filter 1 its 96 types and the gliding key-track reference, Hz LFOs ignore HOST, PHASE/RAND knob ends set the phase memory, and the bend ranges are ±24. Every other feature works in both modes. Switching back restores the S1 sound exactly.';
     const diff = mk(d, 'p', 'sx-note');
     K.custom(() => {
       const L = s1Diff(s0()), t = L.length ? 'S1 rendition differs: ' + L.join(', ') : '';
@@ -830,7 +830,7 @@ export class InfoPanel {
       const t = arr(s.tags).join(', ');
       if (d.activeElement !== tg && tg.value !== t) tg.value = t;
     });
-    p.body.append(la, ln, lt, mk(d, 'p', 'sx-rate', BUILD));
+    p.body.append(la, ln, lt, mk(d, 'p', 'sx-rate', (K.sx && K.sx.host && K.sx.host.words && K.sx.host.words.build) || BUILD)); // ((WC, G13) a rig's host names its own build line
     this.el = p.el;
     if (root) root.appendChild(this.el);
   }

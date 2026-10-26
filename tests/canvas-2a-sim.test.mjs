@@ -17,6 +17,8 @@ import * as core from '../serum-core.js?v=9';
 import { dropRow } from '../serum-ui.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { cpOf } from './fixtures/mods-2a.mjs';
+import { RIG as RIGW } from '../rig-core.js?v=9'; // ((WC) the display name: the Serum's ⋯ offers Make it a <NAME>)
+const RIGN = RIGW.NAME;
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
@@ -97,7 +99,7 @@ test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"),
   assert.equal(V().modules.get('wheel').kind, 'mod');
   assert.ok(M.bodies.get('wheel'), 'the wheel body');
   assert.deepEqual(cv.menu('wheel').filter(x => !x.sep).map(x => x.label), ['Delete', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
-  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Show parts', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((milestone 3, IMPL-3 §2.7) Show parts / Bundle)
+  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Make it a ' + RIGN, 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((WC §3.5, lane H) + Make it a <NAME> (Q4 (a)) // ((WC, IMPL-WC §6) no Show parts / Bundle on a Serum: it is the whole panel)
 });
 
 test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mods destOk; release → one step, a track.mods row, the cable selected; the posted patch\'s matrix equals the same row written by the Serum\'s own addMod', () => {

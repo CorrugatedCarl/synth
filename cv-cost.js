@@ -72,7 +72,7 @@
 // splitters 0.0011 (L/H) / 0.0020 (L/M/H, row m with its EQs) / 0.0004 (M/S) without their branches · Distortion 0.0039
 // · Compressor 0.0043 · Chorus 0.0024 · Filter 0.0021 · Flanger 0.0018 · Phaser 0.0018 · Delay 0.0017 · Hyper 0.0015 ·
 // EQ 0.0009 · Utility 0.0003; a panel 0.0001 (§9.1 "extra empty rack"); bypassed / disabled instances cost nothing.
-import { MODELS, patchFor } from './models.js?v=9';
+import { MODELS, patchFor, isSxId } from './models.js?v=9'; // ((WC) isSxId: the Serum and the rig cost by the Serum's terms, serumLoad)
 import * as core from './serum-core.js?v=9';
 import * as W from './wt.js?v=9';
 import { lawNorm } from './laws.js?v=9';
@@ -89,6 +89,8 @@ export const HEAVY = 0.15;
 export const CHORD = 8;
 
 const C = (row, family, poly, base, voice) => Object.freeze({ row, family, poly, base, voice });
+// the Serum engine's row and terms (COST.serum): the Serum's and (WC) the rig's — one object, the rig is a Serum underneath
+const SX = Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 });
 export const COST = Object.freeze({
   os: 4, chord: CHORD, off: 0.0005, panel: 0.0001,
   synth: Object.freeze({
@@ -101,7 +103,7 @@ export const COST = Object.freeze({
     tr808: C('d8p', 'drums', 1, 0.0175, 0.0030), tr606: C('d6p', 'drums', 1, 0.0143, 0.0030),
     tr909: C('d9p', 'drums', 1, 0.0142, 0.0030), sdsv: C('dvp', 'drums', 1, 0.0101, 0.0030),
     m900: C('m9p', 'patch', 1, 0.0055, 0),
-    serum: Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }),
+    serum: SX, rig: SX, // ((WC) estimate() costs a rig device by serumLoad once lane S's sweep routes it by isSxModel)
   }),
   serum: Object.freeze({
     base: 0.0063, voice: 0.00245, os: Object.freeze({ 1: 0.68, 2: 1, 4: 1.59 }),
@@ -213,14 +215,14 @@ export function estimate(x, factor = 1, o = {}) {
   let load = 0;
   if (typeof x === 'string') {
     if (x === 'panel') load = COST.panel;
-    else if (x === 'serum') load = serumLoad(null, n);
+    else if (isSxId(x)) load = serumLoad(null, n);
     else if (COST.synth[x] && COST.synth[x].family === 'patch') load = patchLoad(COST.synth[x], null);
     else if (COST.synth[x]) load = COST.synth[x].base + COST.synth[x].voice * classicVoices(x, null, n);
     else if (x in COST.fx) load = fxLoad({ type: x, p: {} });
   } else if (isObj(x) && x.kind === 'panel') load = panelLoad(x);
   else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) { const cs = COST.synth[x.model];
     if (x.on === false) load = COST.off;
-    else if (x.model === 'serum') load = serumLoad(isObj(x.vals) ? x.vals.s : null, n) + fxStateLoad(x.fx);
+    else if (isSxId(x.model)) load = serumLoad(isObj(x.vals) ? x.vals.s : null, n) + fxStateLoad(x.fx);
     else if (cs.family === 'patch') { const { patch, vals } = x; load = patchLoad(cs, patch, vals); } // (the device's record and switches)
     else load = COST.synth[x.model].base + COST.synth[x.model].voice * classicVoices(x.model, x.vals, n);
   }
@@ -231,7 +233,7 @@ export function estimateTrack(t, factor = 1) {
   if (!isObj(t)) return 0;
   if (!isObj(t.dev)) { // v1: a Serum's FX are its own; a classic's rack is its panel
     if (!t.model) return 0;
-    const f = Number.isFinite(+factor) && +factor > 0 ? +factor : 1, sx = t.model === 'serum';
+    const f = Number.isFinite(+factor) && +factor > 0 ? +factor : 1, sx = isSxId(t.model);
     return estimate({ kind: 'synth', model: t.model, vals: t.vals, fx: sx ? t.fx : null }, f) + (sx ? 0 : panelLoad({ fx: t.fx }) * f);
   }
   return Object.values(t.dev).reduce((a, d) => a + (isObj(d) && (d.kind === 'synth' || d.kind === 'panel') ? estimate(d, factor) : 0), 0);
@@ -245,7 +247,7 @@ export function label(load) {
 /* ------------------------------------------------------------------ soft caps (§9.2) */
 const instsOf = t => (!isObj(t) ? [] : isObj(t.dev) ? Object.values(t.dev).filter(d => isObj(d) && d.kind === 'synth')
   : t.model ? [{ kind: 'synth', model: t.model, vals: t.vals, fx: t.fx }] : []);
-const devOf = a => (typeof a === 'string' ? { kind: 'synth', model: a, vals: a === 'serum' ? { s: null } : null } : a);
+const devOf = a => (typeof a === 'string' ? { kind: 'synth', model: a, vals: isSxId(a) ? { s: null } : null } : a);
 /** {warn, confirm} for adding `adding` (a device or model id) to track t on this device (touch devices only). */
 export function softCap(t, adding, { touch = false, factor = 1 } = {}) {
   const r = { warn: null, confirm: null }, a = devOf(adding);
@@ -255,9 +257,10 @@ export function softCap(t, adding, { touch = false, factor = 1 } = {}) {
     r.warn = `This track now has ${ins.length + 1} instruments (about ${label(estimateTrack(t, f) + estimate(a, f))} of this device’s audio time). ` +
       'More can cause dropouts here: power off the ones you aren’t playing.';
   }
-  const heavy = d => d.model === 'serum' && d.on !== false && estimate(d, f) > HEAVY;
+  const heavy = d => isSxId(d.model) && d.on !== false && estimate(d, f) > HEAVY;
   if (heavy(a) && ins.some(heavy)) {
-    r.confirm = `This Serum patch is heavy (about ${label(estimate(a, f))} of this device’s audio time) and the track already has a heavy Serum. ` +
+    const nm = d => (MODELS.find(m => m.id === d.model) || { name: 'Serum' }).name, o = ins.find(heavy); // ((WC, G13) each instrument by its model's name: a rig's not 'Serum'
+    r.confirm = `This ${nm(a)} patch is heavy (about ${label(estimate(a, f))} of this device’s audio time) and the track already has a heavy ${nm(o)}. ` +
       'Two may cause dropouts on this device. Add it anyway?';
   }
   return r;

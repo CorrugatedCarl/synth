@@ -17,6 +17,12 @@ import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
 import * as cvArt from '../cv-art.js?v=9';
 import { MODULE_LAYOUTS } from '../panels/index.js?v=9';
+import { RIG, MODULES, SKINS, SKIN_DEFAULT } from '../rig-core.js?v=9';
+// (WC, IMPL-WC §7) the rig view's note (the srcNote line) and its tiles' tip, from the display constant
+const RIG_NOTE = `Drop a module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`;
+// (integration fixer L, review WC-int P3-8: our own words through RIG.NAME — the old "Arrive with the next cut." was the plan's jargon)
+const RIG_SOON = `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.`;
+const RIG_TIP = n => `${n} — tap to add it to this track's ${RIG.NAME} (or start one with it), or drag it onto the canvas`;
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 let TS = 5000; // event timestamps (dragSource / double-tap timing)
@@ -73,6 +79,116 @@ test('budget(): the canvas keeps ≥ 240 px at iPad and desktop heights; the dra
   assert.deepEqual([r.top, r.bottom, r.canvas], [48, 546, 240]);
   r = T.budget({ vh: 834, top: 0, bottom: 0 });
   assert.deepEqual([r.top, r.bottom, r.canvas], [48, 0, 786]);
+});
+
+// (WC pre-deploy [toast]) the boxes Chrome for Testing measured with a Wavecraft open (iPad portrait / landscape at dpr 2 with touch, the
+// desktop with a mouse), the Sources tray open and shut: the stage, the toolbar's row (its fold button to its ∿), its minimap, the
+// keyboard's grip, the tray, its tab — and every toolbar button's centre. The notice's one-line sizes: "Replaced Minimoog with Wavecraft ·
+// tap to undo" 296.8 × 30.8, "Added Envelope 2 · tap to undo" 200.2 × 30.8, a long one (the piano-roll write) 640 × 30.8
+const BX = (l, t, r, b) => ({ left: l, top: t, right: r, bottom: b });
+const NOTICE_GEO = {
+  'p open': { stage: BX(0, 205, 1024, 1127), bar: BX(296, 1063, 667, 1115), map: BX(296, 943, 472, 1055), grip: BX(468, 1096, 556, 1140), tray: BX(0, 205, 240, 1127), tab: BX(240, 622, 284, 710), btn: [[322, 391, 457, 503, 549, 595, 641], 1089] },
+  'p shut': { stage: BX(0, 205, 1024, 1127), bar: BX(56, 1063, 427, 1115), map: BX(56, 943, 232, 1055), grip: BX(468, 1096, 556, 1140), tray: null, tab: BX(0, 622, 44, 710), btn: [[82, 151, 217, 263, 309, 355, 401], 1089] },
+  'l open': { stage: BX(0, 205, 1366, 785), bar: BX(296, 721, 667, 773), map: BX(296, 601, 472, 713), grip: BX(639, 754, 727, 798), tray: BX(0, 205, 240, 785), tab: BX(240, 451, 284, 539), btn: [[322, 391, 457, 503, 549, 595, 641], 747] },
+  'l shut': { stage: BX(0, 205, 1366, 785), bar: BX(56, 721, 427, 773), map: BX(56, 601, 232, 713), grip: BX(639, 754, 727, 798), tray: null, tab: BX(0, 451, 44, 539), btn: [[82, 151, 217, 263, 309, 355, 401], 747] },
+  'd open': { stage: BX(0, 205, 1440, 670), bar: BX(296, 616, 599, 658), map: BX(296, 496, 472, 608), grip: BX(676, 651, 764, 683), tray: BX(0, 205, 240, 670), tab: BX(240, 393.5, 272, 481.5), btn: [[317, 377, 434, 470, 506, 542, 578], 637] },
+  'd shut': { stage: BX(0, 205, 1440, 670), bar: BX(56, 616, 359, 658), map: BX(56, 496, 232, 608), grip: BX(676, 651, 764, 683), tray: null, tab: BX(0, 393.5, 32, 481.5), btn: [[77, 137, 194, 230, 266, 302, 338], 637] },
+};
+const crosses = (a, b) => !!b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+const spotBox = (q, w, h) => { const ww = Math.min(w, q.maxW), lines = Math.ceil(w / q.maxW - 1e-9); return BX(q.x, q.bottom - h * lines, q.x + ww, q.bottom); };
+test('(WC pre-deploy [toast]) noticeSpot: the notice never lies over the canvas toolbar, its minimap, the keyboard\'s grip, the Sources tray or its tab — beside the toolbar on its row where the line fits (lifted clear of the grip), else above the row right of the minimap, else above both; no toolbar: centred over the stage, clear of the grip', () => {
+  assert.equal(typeof T.noticeSpot, 'function');
+  for (const [at, g] of Object.entries(NOTICE_GEO)) {
+    for (const [w, h] of [[296.8, 30.8], [200.2, 30.8], [640, 30.8]]) {
+      const q = T.noticeSpot(Object.assign({ w, h }, g)), r = spotBox(q, w, h), tag = `${at} ${w}`;
+      for (const k of ['bar', 'map', 'grip', 'tray', 'tab']) assert.ok(!crosses(r, g[k]), `${tag}: clear of the ${k} (${[r.left, r.top, r.right, r.bottom].map(Math.round)})`);
+      for (const x of g.btn[0]) assert.ok(!(x >= r.left && x <= r.right && g.btn[1] >= r.top && g.btn[1] <= r.bottom), `${tag}: the button at ${x} answers its own tap`);
+      assert.ok(r.left >= g.stage.left && r.right <= g.stage.right && r.top >= g.stage.top && r.bottom <= g.stage.bottom, `${tag}: inside the stage`);
+      if (w < 600) {
+        assert.ok(q.maxW >= w, `${tag}: one line`);
+        assert.equal(q.x, g.bar.right + T.NOTICE_GAP, `${tag}: beside the toolbar`);
+        assert.ok(r.bottom <= g.bar.bottom && r.top >= g.bar.top - 3, `${tag}: on its row`);
+      }
+    }
+  }
+  // portrait, tray open, the long line: no room beside (333 px) → above the row, right of the minimap, one line
+  const g = NOTICE_GEO['p open'], q = T.noticeSpot(Object.assign({ w: 520, h: 30.8 }, g));
+  assert.deepEqual([q.x, q.bottom, q.maxW >= 520], [g.map.right + T.NOTICE_GAP, g.bar.top - 8, true], 'above the row, past the minimap');
+  // longer than any room in the foot: two lines beside the row (growing upward from its foot) before one line above the minimap (the canvas)
+  const ql = T.noticeSpot(Object.assign({ w: 640, h: 30.8 }, g));
+  assert.deepEqual([ql.x, ql.bottom, ql.maxW], [g.bar.right + T.NOTICE_GAP, g.bar.bottom, 1012 - 679], 'beside, wrapped');
+  // the page-zoomed chip widens the toolbar: the same rule
+  const z = Object.assign({}, g, { bar: BX(296, 1063, 805, 1115), w: 296.8, h: 30.8 }), qz = T.noticeSpot(z);
+  assert.deepEqual([qz.x, qz.bottom], [g.map.right + T.NOTICE_GAP, 1055], 'the chip: above the row');
+  assert.ok(!crosses(spotBox(qz, 296.8, 30.8), z.bar) && !crosses(spotBox(qz, 296.8, 30.8), z.map));
+  // no minimap (hidden / a folded toolbar keeps only its button): above the row starts at the toolbar's left
+  const nm = Object.assign({}, g, { map: null, bar: BX(296, 1063, 805, 1115), w: 296.8, h: 30.8 });
+  assert.deepEqual([T.noticeSpot(nm).x, T.noticeSpot(nm).bottom], [296, 1055]);
+  // a phone (390 px, the toolbar wider than the screen): above the minimap, centred past the screen's edges
+  const ph = { stage: BX(0, 100, 390, 600), bar: BX(56, 536, 427, 588), map: BX(56, 416, 232, 528), grip: BX(151, 569, 239, 613), tray: null, tab: BX(0, 306, 44, 394), w: 296.8, h: 30.8 };
+  const qp = T.noticeSpot(ph), rp = spotBox(qp, 296.8, 30.8);
+  assert.deepEqual([qp.bottom, Math.round(rp.left + rp.right)], [408, 390], 'above both, centred');
+  for (const k of ['bar', 'map', 'grip', 'tab']) assert.ok(!crosses(rp, ph[k]), 'phone: clear of the ' + k);
+  // no toolbar (the roll): centred over the stage 24 px above its foot — lifted clear of the grip's box
+  const roll = T.noticeSpot({ stage: g.stage, bar: null, map: null, grip: g.grip, tray: null, tab: null, w: 296.8, h: 30.8 }), rr = spotBox(roll, 296.8, 30.8);
+  assert.deepEqual([Math.round(rr.left + rr.right), roll.bottom], [1024, g.grip.top - 4], 'centred, over the grip');
+  const roll2 = T.noticeSpot({ stage: g.stage, grip: BX(0, 0, 0, 0), w: 296.8, h: 30.8 });
+  assert.equal(roll2.bottom, g.stage.bottom - 24, 'no grip there: the stylesheet\'s 24 px');
+  assert.equal(T.noticeSpot({ stage: null, w: 10, h: 10 }), null, 'nothing measured: the stylesheet\'s spot');
+});
+
+// (WC pre-deploy [toast], round 2 — the skeptic) a narrow window with the Sources tray open left none of those rooms clear: the line fell back to
+// the stylesheet's spot, over the tray, the toolbar's fold button and the grips (375 Slide Over / a 1/3 split, a 390 phone, a 639 2/3 split with
+// the tray pulled to 440), or lay on the tray's tab (a 678 1/2 split, the tray at 440, the keyboard pulled taller: a tap on the tab undid). The
+// boxes Chrome for Testing measured there (touch, dpr 2), the top grip with them; the toolbar runs past the window's edge (its far buttons off it)
+const NARROW_GEO = {
+  '375 open': { stage: BX(0, 205, 375, 791), bar: BX(296, 727, 667, 779), map: BX(296, 607, 472, 719), grip: BX(144, 760, 232, 804), tray: BX(0, 205, 240, 791), tab: BX(240, 454, 284, 542), top: BX(144, 192, 232, 236), btn: [[322, 391, 457, 503, 549, 595, 641], 753] },
+  '390 open': { stage: BX(0, 205, 390, 611), bar: BX(296, 547, 667, 599), map: BX(296, 427, 472, 539), grip: BX(151, 580, 239, 624), tray: BX(0, 205, 240, 611), tab: BX(240, 364, 284, 452), top: BX(151, 192, 239, 236), btn: [[322, 391, 457, 503, 549, 595, 641], 573] },
+  '639 wide': { stage: BX(0, 205, 639, 789), bar: BX(496, 725, 867, 777), map: BX(496, 605, 672, 717), grip: BX(276, 758, 364, 802), tray: BX(0, 205, 440, 789), tab: BX(440, 453, 484, 541), top: BX(276, 192, 364, 236), btn: [[522, 591, 657, 703, 749, 795, 841], 751] },
+  '678 wide kb': { stage: BX(0, 205, 678, 679), bar: BX(496, 615, 867, 667), map: BX(496, 495, 672, 607), grip: BX(295, 648, 383, 692), tray: BX(0, 205, 440, 679), tab: BX(440, 398, 484, 486), top: BX(295, 192, 383, 236), btn: [[522, 591, 657, 703, 749, 795, 841], 641] },
+};
+const clearOf = (r, g, tag) => {
+  for (const k of ['bar', 'map', 'grip', 'tray', 'tab', 'top']) assert.ok(!crosses(r, g[k]), `${tag}: clear of the ${k} (${[r.left, r.top, r.right, r.bottom].map(Math.round)})`);
+  for (const x of g.btn[0]) assert.ok(!(x >= r.left && x <= r.right && g.btn[1] >= r.top && g.btn[1] <= r.bottom), `${tag}: the button at ${x} answers its own tap`);
+  assert.ok(r.left >= g.stage.left && r.right <= g.stage.right && r.top >= g.stage.top && r.bottom <= g.stage.bottom, `${tag}: inside the stage (${[r.left, r.top, r.right, r.bottom].map(Math.round)})`);
+};
+test('(WC pre-deploy [toast], round 2) noticeSpot in a narrow window with the Sources tray open (375, a 390 phone, 639 and 678 with the tray at 440): never over the toolbar, the minimap, a grip, the tray or its tab — a free column of the stage right of the tray, at least NOTICE_FLOOR px wide, wrapped; a measured wrap taller than the estimate (o.fit) is placed by its own height; no column at all: the minimap given up, nothing else', () => {
+  assert.equal(T.NOTICE_FLOOR, 96);
+  for (const [at, g] of Object.entries(NARROW_GEO)) {
+    for (const [w, h] of [[296.8, 30.8], [200.2, 30.8]]) {
+      const q = T.noticeSpot(Object.assign({ w, h }, g)), tag = `${at} ${w}`;
+      assert.ok(q && isFinite(q.x) && isFinite(q.bottom), `${tag}: a spot`);
+      clearOf(spotBox(q, w, h), g, tag);
+      assert.ok(q.maxW >= T.NOTICE_FLOOR, `${tag}: a readable column (${Math.round(q.maxW)} px)`);
+    }
+  }
+  // 639, the tray at 440: right of the tray over the tab (175 px, two lines) — not squeezed beside the tab under it (131 px, three)
+  const g = NARROW_GEO['639 wide'], q = T.noticeSpot(Object.assign({ w: 296.8, h: 30.8 }, g));
+  assert.deepEqual([q.x, q.bottom, q.maxW], [452, g.tab.top - 8, 639 - 12 - 452], 'over the tab, the column right of the tray');
+  // a measured wrap (a word carried to the next line each time: more lines than need / width; 16.8 px a line) — the box by its own height,
+  // still clear; the long line too (the piano-roll write for a Prophet-5, 572 px on one line: Chrome wrapped it to 7 lines at 126 px, as
+  // this model does), a readable column
+  for (const W of [296.8, 572]) {
+    const fit = mw => { const lines = Math.max(1, Math.ceil(W / (mw - 40) - 1e-9)); return { w: Math.min(W, mw), h: 30.8 + (lines - 1) * 16.8, lines }; };
+    for (const [at, G] of Object.entries(NARROW_GEO)) {
+      const qf = T.noticeSpot(Object.assign({ w: W, h: 30.8, fit }, G)), z = fit(Math.floor(qf.maxW)), tag = `${at} ${W} measured`;
+      clearOf(BX(qf.x, qf.bottom - z.h, qf.x + z.w, qf.bottom), G, tag);
+      assert.ok(qf.maxW >= T.NOTICE_FLOOR, `${tag}: a readable column (${Math.round(qf.maxW)} px)`);
+    }
+  }
+  // no column at all (a 700 × 500 window, the tray pulled to 440, the track list's rows over the stage's top: main.js gives the stage from
+  // 124): the toolbar, the minimap and the tab fill the canvas's 260 px — the line gives up the minimap only (the chrome least tapped right
+  // after a swap): clear of the toolbar, the tray, its tab and the grips, inside the stage
+  const Z = { stage: BX(0, 124, 700, 305), bar: BX(496, 241, 867, 293), map: BX(496, 121, 672, 233), grip: BX(306, 274, 394, 318), tray: BX(0, 124, 440, 305), tab: BX(440, 142, 484, 230), top: BX(306, 53, 394, 97), btn: [[522, 591, 657, 703, 749, 795, 841], 267] };
+  const qz = T.noticeSpot(Object.assign({ w: 296.8, h: 30.8 }, Z)), rz = spotBox(qz, 296.8, 30.8);
+  clearOf(rz, Object.assign({}, Z, { map: null }), 'no column');
+  assert.ok(crosses(rz, Z.map) && qz.maxW >= T.NOTICE_FLOOR, 'the minimap given up, a readable column');
+  // the iPad and desktop rooms keep their spots with a measured one-line size (the fit agrees with the estimate)
+  const one = mw => ({ w: Math.min(296.8, mw), h: 30.8 * Math.ceil(296.8 / mw - 1e-9), lines: Math.ceil(296.8 / mw - 1e-9) });
+  for (const [at, G] of Object.entries(NOTICE_GEO)) {
+    const a = T.noticeSpot(Object.assign({ w: 296.8, h: 30.8 }, G)), b = T.noticeSpot(Object.assign({ w: 296.8, h: 30.8, fit: one }, G));
+    assert.deepEqual([b.x, b.bottom, b.maxW], [a.x, a.bottom, a.maxW], at + ': the same spot measured');
+  }
 });
 
 function gripRig(o = {}) {
@@ -646,19 +762,19 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   assert.deepEqual([btn.tagName, btn.className, btn.type, btn.getAttribute('aria-haspopup'), btn.getAttribute('aria-expanded'), btn.children[0].textContent, btn.getAttribute('aria-label')],
     ['BUTTON', 'cv-vbtn', 'button', 'menu', 'false', 'Simple', 'Sources view: Simple']);
   assert.deepEqual([menu.getAttribute('role'), menu.hidden, items.map(b => [b.getAttribute('role'), b.getAttribute('data-view'), b.children[0].textContent, b.getAttribute('aria-checked')])],
-    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
-  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog'], 'flow', 'flow']);
+    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'rig', RIG.NAME, 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
+  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog'], 'flow', 'flow']);
   assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
-  assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808') && !classic.includes('tr606'));
-  assert.deepEqual([secs(), note.textContent], [['parts:hidden', 'notes:hidden'], 'Serum and its modulators: the Serum view (the menu above).']);
+  assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808') && !classic.includes('tr606') && !classic.includes('rig'));
+  assert.deepEqual([secs(), note.textContent], [['rigmods:hidden', 'rignotes:hidden'], 'Serum and its modulators: the Serum view (the menu above).'], '((WC, IMPL-WC §6, §7) no Serum parts / Note tools sections any more; the rig view\'s two (placeholders here: no o.parts) hidden');
   // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
   btn.click();
   assert.deepEqual([menu.hidden, btn.getAttribute('aria-expanded'), S.viewOpen()], [false, 'true', true]);
   items[2].click();
   assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
-    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false,false,false']);
-  assert.deepEqual([shown(), secs(), sec.children[0].children.map(c => c.textContent), sec.children[1].children[1].textContent, list.getAttribute('data-layout'), S.layout()],
-    [['serum'], ['parts', 'notes'], ['Serum parts', 'Arrive in milestone 3.'], 'Note tools: later.', 'flow', 'flow'], 'Serum: its tile, the placeholders; the classics\' layout kept');
+    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false,false,false,false']);
+  assert.deepEqual([shown(), secs(), list.getAttribute('data-layout'), S.layout()],
+    [['serum'], ['rigmods:hidden', 'rignotes:hidden'], 'flow', 'flow'], 'Serum: its tile alone ((WC) no placeholders of its own; the rig view\'s hidden); the classics\' layout kept');
   assert.equal(note.textContent, 'Drop a modulator on the canvas and cable its jack to any knob.');
   // the same view again: no call; a press outside closes it (nothing picked); the button again closes it
   btn.click(); items[2].click();
@@ -679,13 +795,16 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   fire(btn, 'click', { detail: 0 });
   assert.deepEqual([S.viewOpen(), d.activeElement === items[2]], [true, true]);
   fire(items[0], 'click', { detail: 0 });
-  assert.deepEqual([S.view(), S.layout(), got, S.viewOpen(), d.activeElement === btn, shown(), secs()], ['hw', 'hw', ['serum', 'hw'], false, true, classic, ['parts:hidden', 'notes:hidden']]);
+  assert.deepEqual([S.view(), S.layout(), got, S.viewOpen(), d.activeElement === btn, shown(), secs()], ['hw', 'hw', ['serum', 'hw'], false, true, classic, ['rigmods:hidden', 'rignotes:hidden']]);
   // restores: no call
   S.setLayout('flow');
   assert.deepEqual([S.view(), list.getAttribute('data-layout'), btn.children[0].textContent, got.length], ['flow', 'flow', 'Simple', 2], 'setLayout (a restore) does not call back');
   S.setView('serum'); S.setView('nope');
   assert.deepEqual([S.view(), S.layout(), got.length], ['hw', 'hw', 2], 'an unknown view: the first');
   assert.deepEqual([S.closeView(), (btn.click(), S.closeView()), S.viewOpen()], [false, true, false]);
+  // (WC, IMPL-WC §7) the rig view: its tile alone, its two sections (placeholders without o.parts) — the module tiles, Note tools —, its note; the classics' layout kept
+  S.setView(RIG.VIEW);
+  assert.deepEqual([S.view(), shown(), secs(), note.textContent, S.layout(), btn.children[0].textContent, list.getAttribute('data-view')], ['rig', ['rig'], ['rigmods', 'rignotes'], RIG_NOTE, 'hw', RIG.NAME, 'rig']);
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.match(css, /\.cv-tiles\[data-layout="flow"\] \.cv-tbadge \{ display: block; \}/);
   assert.match(css, /@media \(pointer: coarse\) \{ \.cv-vbtn \{ min-height: 44px;/, '44 px on a touch screen');
@@ -700,10 +819,10 @@ test('sourcesTray (views): data-driven — o.views lists the views in order (a l
   // ((7a) Drums, (8) Controllers, (9) Moog modules are entries of SRC_VIEWS now: the later family here is a fictional one, appended after the six)
   const views = [...T.SRC_VIEWS, { id: 'later', label: 'Later', tip: 'A later family', sections: [{ id: 'kits', head: 'A later family', note: 'Arrive later.' }] }];
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, viewBtn: btn, viewMenu: menu, secEl: sec, views, view: 'flow', onView: v => got.push(v) });
-  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'drums', 'ctl', 'moog', 'later'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
-  btn.click(); menu.children[6].click();
+  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog', 'later'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
+  btn.click(); menu.children[7].click();
   assert.deepEqual([S.view(), S.layout(), got, S.tiles().filter(b => !b.hidden).length, sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''))],
-    ['later', 'flow', ['later'], 0, ['parts:hidden', 'notes:hidden', 'kits']]);
+    ['later', 'flow', ['later'], 0, ['rigmods:hidden', 'rignotes:hidden', 'kits']]);
   S.destroy();
   assert.deepEqual([btn.children.length, menu.children.length, sec.children.length], [2, 0, 0], 'the given button stays; the items go');
 });
@@ -720,7 +839,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
     ['drums', 'hw', ['tr808', 'tr606', 'tr909', 'sdsv'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
   assert.equal(note.textContent, 'More machines later.');
-  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', 'Drums', 'Controllers', 'Moog modules']);
+  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Drums', 'Controllers', 'Moog modules']);
   assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
   // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
   assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
@@ -753,7 +872,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
       [12, false, false, false, false, true, true, true, true, null], v);
   }
   S.setView('serum'); assert.deepEqual(shown(), ['serum']);
-  btn.click(); menu.children[3].click();
+  btn.click(); menu.children[4].click();
   assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606', 'tr909', 'sdsv']], 'picked: layout hw (a drum machine has no Simple layout)');
   tile.click(); tile6.click(); tile9.click(); tileV.click();
   assert.deepEqual(picks, [['tr808', 'replace'], ['tr606', 'replace'], ['tr909', 'replace'], ['sdsv', 'replace']], 'a tap picks any of them as any instrument');
@@ -931,7 +1050,7 @@ test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #src
   for (const id of ['srcTray', 'srcTab', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods', 'srcView', 'srcViewMenu', 'srcNote']) assert.match(html, new RegExp('id="' + id + '"'), id);
   // (2026-10-19) the view dropdown in #srcLayout: its button (the view, ▾) and its menu (the tray fills it)
   assert.match(html, /<div id="srcLayout" class="cv-srclay"><button id="srcView" class="cv-vbtn" type="button" aria-haspopup="menu"><span class="cv-vlab">Hardware<\/span><span class="cv-vcaret" aria-hidden="true">▾<\/span><\/button><div id="srcViewMenu" class="cv-pop cv-menupop cv-vmenu" role="menu" aria-label="Sources view" hidden><\/div><\/div>/);
-  assert.match(html, /<div id="srcScroll" class="cv-tscroll">\s*<div id="srcList" class="cv-tiles"><\/div>\s*<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>\s*<div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"><\/div>/);
+  assert.match(html, /<div id="srcScroll" class="cv-tscroll">\s*<div id="srcList" class="cv-tiles"><\/div>[\s\S]*?<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>\s*<div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"><\/div>/); // ((WC) the rig view's two sections between: the milestone-3 / WC test below)
   assert.ok(!/modulators arrive here in later stages/.test(html), 'the old note went');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   for (const sel of ['.cv-tscroll', '.cv-tsec[hidden]', '.cv-mglyph', '.cv-treason', '.cv-tile.cv-placed', '.cv-tb-btn[data-cv-tb="mods"][data-mode="never"]', '.cv-jack[data-kind="mod"]',
@@ -941,6 +1060,13 @@ test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #src
   assert.match(css, /\.cv-mbadge::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the badge\'s 44 px hit area');
   assert.match(css, /\.cv-mw \{[^}]*touch-action: none/, 'the wheel takes the finger');
   assert.match(css, /\.cv-tscroll \{[^}]*overflow-y: auto/);
+});
+
+test('(WC, fixer K; review P3-14) the Sources tray scrolls as one under the mouse wheel over ANY of its tile grids — the module tiles (#srcParts) and the Modulators (#srcMods) sit in sections, not directly in #srcScroll: every .cv-tiles inside it is no scroller of its own (overflow visible) and never holds the wheel back (overscroll-behavior auto: a contained grid that cannot scroll swallowed it)', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<div id="srcScroll" class="cv-tscroll">[\s\S]*?<section id="srcPartSec"[^>]*>[\s\S]*?<div id="srcParts" class="cv-tiles/, 'the module tiles: a grid inside a section of the scroller');
+  assert.match(css, /\n\.cv-tscroll \.cv-tiles \{ overflow: visible; overscroll-behavior: auto; \}/, 'every grid inside the scroller');
+  assert.ok(!/\n\.cv-tscroll > \.cv-tiles \{/.test(css), 'not only its direct children');
 });
 
 /* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): the six new tiles */
@@ -958,60 +1084,111 @@ test('sourcesTray (2b): MOD_TILES lists every kind in MOD_ORDER (the wheel proje
   assert.deepEqual(R.picks, ['lfo:replace', 'lfo:replace'], 'picks again and again');
   R.S.destroy();
   const serum = T.SRC_VIEWS.find(v => v.id === 'serum');
-  assert.deepEqual([serum.note, serum.sections.find(s => s.id === 'notes').note], ['Drop a modulator on the canvas and cable its jack to any knob.', 'Note tools: later.']);
+  assert.deepEqual([serum.note, serum.sections.map(s => s.id)], ['Drop a modulator on the canvas and cable its jack to any knob.', ['serum', 'mods']], '((WC) the Serum view: its tile and the modulators — the part tiles are the rig view\'s, lane U)');
 });
 
-/* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.6): Serum parts and note tools */
-test('sourcesTray (milestone 3): o.parts — the Serum view\'s "Serum parts" (OSC, SUB, NOISE, FILTER, MACROS) and "Note tools" (ARP, CLIP) tiles with original glyphs in the host\'s sections (shown in the Serum view only); a tap → partPick in the tray\'s mode; a drag → partDrag with info.part and the world point; setPartPlaced greys one; without o.parts the placeholders stay', () => {
-  assert.deepEqual(T.PART_TILES.map(p => p.id + ':' + p.group), ['osc:parts', 'sub:parts', 'noise:parts', 'filter:parts', 'macros:parts', 'arp:notes', 'clip:notes']);
+/* ---------------------------------------------------------------- (WC, IMPL-WC §7; lane U) the rig view: its tile, its module tiles, Note tools */
+// (milestone 3's Serum parts / Note tools tiles became the rig's: RIG_TILES — nine kinds, two of them (ARP, CLIP) the next cut's, so WC-1's Note tools
+// section is a placeholder — in the rig view only; the machinery (o.parts, partTiles / partTile / setPartPlaced / partPlaced) is milestone 3's)
+test('sourcesTray (WC): the rig view — SRC_VIEWS\'s fourth (after Serum: RIG.NAME, its tip, note and sections); the rig tile alone in it (its own art, "2026 · modular synth", no maker word, no SIMPLE badge), hidden elsewhere; a stored "rig" view opens it', () => {
+  const V = T.SRC_VIEWS.find(v => v.id === RIG.VIEW);
+  assert.deepEqual(T.SRC_VIEWS.map(v => v.id), ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']);
+  assert.deepEqual([V.label, V.tip, V.note, V.layout, V.sections.map(s => s.id + (s.head ? ':' + s.head : '') + (s.note ? ':' + s.note : ''))],
+    [RIG.NAME, 'Our own modular synth, patched with cords', RIG_NOTE, undefined, ['rig', 'rigmods:' + RIG.NAME + ' modules', 'rignotes:Note tools:' + RIG_SOON, 'mods']]);
+  assert.deepEqual([MODELS.filter(V.sections[0].models).map(m => m.id), T.SRC_VIEWS.filter(v => v.sections.some(s => s.models && s.models(MODELS.find(m => m.id === 'rig')))).map(v => v.id)], [['rig'], ['rig']], 'the rig tile: in its view only');
+  const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), picks = [];
+  const S = T.sourcesTray(list, { models: MODELS, pick: (id, m) => picks.push(id + ':' + m), drag: {}, layoutEl: host, secEl: sec, noteEl: note, view: 'rig' });
+  const shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), tile = S.tiles().find(b => b.getAttribute('data-model') === 'rig');
+  assert.deepEqual([S.view(), shown(), host.children[0].children[0].textContent, note.textContent], ['rig', ['rig'], RIG.NAME, RIG_NOTE], 'a stored "rig" view opens it');
+  assert.deepEqual([tile.children.map(c => c.className), tile.children[1].textContent, tile.children[2].textContent, tile.getAttribute('aria-description')],
+    [['cv-tart', 'cv-tname', 'cv-tmeta'], RIG.NAME, '2026 · modular synth', null], 'no SIMPLE badge (no hardware panel), no maker');
+  assert.equal(tile.title, `${RIG.NAME} (2026) — our modular synth: modules patched with cords, a small starter rig that plays — tap to use it, or drag it onto the canvas or the track list`);
+  assert.ok(!/undefined|serum|xfer/i.test(tile.title + tile.textContent), tile.title);
+  assert.equal(tile.children[0].innerHTML, cvArt.art('rig', cvArt.TILE));
+  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog']) { S.setView(v); assert.equal(tile.hidden, true, v); }
+  S.setView('rig'); tile.click();
+  assert.deepEqual([tile.hidden, picks], [false, ['rig:replace']]);
+  S.destroy();
+});
+
+test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise, Filter, Envelope, LFO, Macros; Arpeggiator and Clip sequencer the next cut\'s) in the host\'s sections, headed from RIG.NAME, shown in the rig view only; Note tools a placeholder; a tap → partPick, a drag → partDrag (info.part, the world point); setPartPlaced greys one with rigFull\'s text', () => {
+  assert.deepEqual(T.RIG_TILES.map(p => [p.id, p.name, p.group, p.cut]), [['osc', 'Oscillator', 'rigmods', 1], ['sub', 'Sub oscillator', 'rigmods', 1], ['noise', 'Noise', 'rigmods', 1],
+    ['filter', 'Filter', 'rigmods', 1], ['env', 'Envelope', 'rigmods', 1], ['lfo', 'LFO', 'rigmods', 1], ['macros', 'Macros', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
+  assert.ok(T.RIG_TILES.every(p => p.name === MODULES[p.id].label && p.cut === MODULES[p.id].cut && Object.isFrozen(p)) && Object.isFrozen(T.RIG_TILES), 'names and cuts: rig-core MODULES');
+  assert.equal(T.RIG_CUT, 1, 'WC-1: the tiles of cut 1 are live');
+  assert.equal(T.PART_TILES, undefined, 'PART_TILES became RIG_TILES');
   const d0 = fresh(), pe = d0.createElement('div'), ps = d0.createElement('section'), ne = d0.createElement('div'), ns = d0.createElement('section');
+  ps.append(pe); ns.append(ne);
   const picks = [], log = [];
-  const R = modRig({ parts: T.PART_TILES, partsEl: pe, partsSec: ps, notesEl: ne, notesSec: ns, partPick: (id, mode) => picks.push('part ' + id + ':' + mode),
+  const R = modRig({ view: 'rig', parts: T.RIG_TILES, partsEl: pe, partsSec: ps, notesEl: ne, notesSec: ns, partPick: (id, mode) => picks.push('part ' + id + ':' + mode),
     partDrag: { begin: (id, i) => log.push('begin ' + id + (i.part ? ' part' : '')), move() {}, drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.part ? ' part' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => log.push('cancel ' + id) } });
-  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.map(b => b.getAttribute('data-part')), R.S.partTiles().length], [['osc', 'sub', 'noise', 'filter', 'macros'], ['arp', 'clip'], 7]);
-  assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the Serum view');
-  R.S.setView('hw');
-  assert.deepEqual([ps.hidden, ns.hidden], [true, true], 'Hardware: none');
-  R.S.setView('serum');
+  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.length, R.S.partTiles().length, R.S.partTile('arp')], [['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros'], 0, 7, null], 'seven live tiles; ARP / CLIP not yet');
+  // the host's sections, headed by the tray (index.html holds no name): the modules' heading from RIG.NAME; Note tools a placeholder (cv-tsoon: its heading, the note)
+  const kids = s => s.children.map(c => c.tagName + (c.className ? '.' + c.className.replace(/ /g, '.') : '') + (c.tagName === 'H3' || c.tagName === 'P' ? ':' + c.textContent : ''));
+  assert.deepEqual([kids(ps), ps.getAttribute('aria-label'), ps.className], [['H3.cv-tgrp:' + RIG.NAME + ' modules', 'DIV'], RIG.NAME + ' modules', '']);
+  assert.deepEqual([kids(ns), ns.getAttribute('aria-label'), ns.classList.contains('cv-tsoon'), ne.hidden], [['H3.cv-tgrp:Note tools', 'DIV', 'P.cv-tnote:' + RIG_SOON], 'Note tools', true, true]);
+  assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the rig view');
+  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
+  R.S.setView('rig');
   const osc = R.S.partTile('osc');
   assert.deepEqual([osc.className, osc.getAttribute('data-group'), osc.children.map(c => c.className), osc.children[1].textContent, osc.title],
-    ['cv-tile cv-ptile', 'parts', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'OSC', 'OSC — tap to add it to this track\'s Serum, or drag it onto the canvas']);
-  assert.equal(new Set(R.S.partTiles().map(b => b.children[0].innerHTML)).size, 7, 'one original glyph each');
-  assert.ok(R.S.partTiles().every(b => /<svg /.test(b.children[0].innerHTML) && !/<text|<image|href/.test(b.children[0].innerHTML)));
-  osc.click(); R.S.setMode('track'); R.S.partTile('arp').click();
-  assert.deepEqual([picks, R.picks], [['part osc:replace', 'part arp:track'], []], 'partPick, not the synth pick');
+    ['cv-tile cv-ptile', 'rigmods', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'Oscillator', RIG_TIP('Oscillator')]);
+  // glyphs: one original each; the Envelope's and the LFO's are not the Modulators' ENV / LFO (both rows show in this view)
+  const G = Object.fromEntries(R.S.partTiles().map(b => [b.getAttribute('data-part'), b.children[0].innerHTML]));
+  assert.equal(new Set(Object.values(G)).size, 7, 'one original glyph each');
+  assert.ok(Object.values(G).every(g => /<svg /.test(g) && !/<text|<image|href/.test(g)));
+  assert.match(G.env, /<path d="M4 24.5h32"\/>/, 'the Envelope: an ADSR trace on a baseline');
+  assert.equal((G.env.match(/<rect /g) || []).length + (G.lfo.match(/<rect /g) || []).length, 3 + 3, 'with the editor\'s handles (three each)');
+  osc.click(); R.S.setMode('track'); R.S.partTile('lfo').click();
+  assert.deepEqual([picks, R.picks], [['part osc:replace', 'part lfo:track'], []], 'partPick, not the synth pick');
   // a drag onto the canvas: info.part, the world point
   const f = R.S.partTile('filter'), tp = { pointerType: 'touch' };
   ptr(f, 'pointerdown', 100, 300, at(tp)); ptr(f, 'pointermove', 112, 302, at(tp)); ptr(f, 'pointermove', 400, 300, at(tp));
-  assert.equal(R.layer.children[0].children[1].textContent, '+ Add FILTER');
+  assert.equal(R.layer.children[0].children[1].textContent, '+ Add Filter');
   TS += 150;
   ptr(f, 'pointermove', 402, 301, at(tp)); ptr(f, 'pointerup', 402, 301, at(tp));
   assert.deepEqual(log, ['begin filter part', 'drop filter canvas part @804,201']);
-  // setPartPlaced: greyed with the host's reason, no pick
-  R.S.setPartPlaced('osc', 'This Serum already has 3 oscillators');
+  // (integration fixer L, review WC-int B4) onto the track list: "+ New track", the drop's info.over 'tracks' (the host makes a new track with it)
+  log.length = 0;
+  ptr(f, 'pointerdown', 100, 300, at(tp)); ptr(f, 'pointermove', 120, 300, at(tp)); ptr(f, 'pointermove', 200, 50, at(tp));
+  assert.equal(R.layer.children[0].children[1].textContent, '+ New track');
+  TS += 150;
+  ptr(f, 'pointermove', 201, 50, at(tp)); ptr(f, 'pointerup', 201, 50, at(tp));
+  assert.deepEqual(log, ['begin filter part', 'drop filter tracks part @402,-50'], 'the track list: a new track (the host\'s)');
+  // setPartPlaced: greyed with the host's reason (rigFull's texts), no pick; ARP / CLIP: no tile, nothing to grey
+  assert.deepEqual(['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip', 'nope'].map(T.rigFull), [`This ${RIG.NAME} already has 3 oscillators`, 'Sub oscillator is on the canvas',
+    'Noise is on the canvas', `This ${RIG.NAME} already has 2 filters`, `This ${RIG.NAME} already has 4 envelopes`, `This ${RIG.NAME} already has 10 LFOs`, 'Macros is on the canvas', 'Arpeggiator is on', 'Clip sequencer is on', null]);
+  R.S.setPartPlaced('osc', T.rigFull('osc')); R.S.setPartPlaced('arp', T.rigFull('arp'));
   osc.click();
-  assert.deepEqual([osc.classList.contains('cv-placed'), osc.getAttribute('aria-disabled'), osc.children[2].textContent, R.S.partPlaced('osc'), picks.length], [true, 'true', 'This Serum already has 3 oscillators', 'This Serum already has 3 oscillators', 2]);
+  assert.deepEqual([osc.classList.contains('cv-placed'), osc.getAttribute('aria-disabled'), osc.children[2].textContent, R.S.partPlaced('osc'), osc.title, picks.length, R.S.partPlaced('arp')],
+    [true, 'true', T.rigFull('osc'), T.rigFull('osc'), 'Oscillator — ' + T.rigFull('osc'), 2, null]);
   R.S.setPartPlaced('osc', null);
-  assert.deepEqual([osc.classList.contains('cv-placed'), R.S.partPlaced('osc')], [false, null]);
+  assert.deepEqual([osc.classList.contains('cv-placed'), R.S.partPlaced('osc'), osc.title], [false, null, RIG_TIP('Oscillator')]);
   R.S.destroy();
-  assert.equal(pe.children.length + ne.children.length, 0, 'destroy takes the tiles');
-  // in o.secEl when the host gives no elements (in place of the placeholders); without o.parts: the placeholders
+  assert.deepEqual([pe.children.length + ne.children.length, kids(ps), kids(ns), ns.classList.contains('cv-tsoon'), ne.hidden], [0, ['DIV'], ['DIV'], false, false], 'destroy takes the tiles and what it put in the host\'s sections');
+  // the Envelope's and the LFO's glyphs are not the Modulators' ENV / LFO (both rows show in this view)
+  const M2 = modRig({ mods: T.MOD_TILES, view: 'rig' });
+  assert.ok(G.env !== M2.S.modTile('env').children[0].innerHTML && G.lfo !== M2.S.modTile('lfo').children[0].innerHTML, 'not the Modulators\' glyphs');
+  M2.S.destroy();
+  // in o.secEl when the host gives no elements: the modules' section with its seven tiles, Note tools a placeholder; without o.parts: both placeholders
   const d = fresh(), list = d.createElement('div'), sec = d.createElement('div');
-  const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec, parts: true, view: 'serum' });
-  assert.deepEqual(sec.children.map(s => s.getAttribute('data-sec') + ':' + s.className + ':' + s.children[0].textContent + ':' + s.children[1].children.length), ['parts:cv-tsec cv-psec:Serum parts:5', 'notes:cv-tsec cv-psec:Note tools:2']);
+  const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec, parts: true, view: 'rig' });
+  assert.deepEqual(sec.children.map(s => s.getAttribute('data-sec') + ':' + s.className + ':' + s.children.map(c => (c.tagName === 'DIV' ? c.children.length : c.textContent)).join('/')),
+    ['rigmods:cv-tsec cv-psec:' + RIG.NAME + ' modules/7', 'rignotes:cv-tsec cv-tsoon:Note tools/' + RIG_SOON]);
   S2.setView('flow');
   assert.deepEqual(sec.children.map(s => s.hidden), [true, true]);
   S2.destroy();
-  const sec3 = d.createElement('div'), S3 = T.sourcesTray(d.createElement('div'), { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec3, view: 'serum' });
-  assert.deepEqual(sec3.children.map(s => s.getAttribute('data-sec') + ':' + s.className), ['parts:cv-tsec cv-tsoon', 'notes:cv-tsec cv-tsoon'], 'the placeholders');
+  const sec3 = d.createElement('div'), S3 = T.sourcesTray(d.createElement('div'), { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec3, view: 'rig' });
+  assert.deepEqual(sec3.children.map(s => s.getAttribute('data-sec') + ':' + s.className), ['rigmods:cv-tsec cv-tsoon', 'rignotes:cv-tsec cv-tsoon'], 'the placeholders');
   assert.equal(S3.partTiles().length, 0);
   S3.destroy();
 });
 
-test('index.html / style.css (milestone 3): the Serum parts and note tools sections (hidden until the tray fills them) after the Modulators; the CSS of the part modules, the internal cables, stubs, forks, hidden ends, inline jacks, the H6 hook', () => {
+test('index.html / style.css (WC, milestone 3): the rig view\'s module and Note tools sections right after the synths (hidden until a view lists them; no heading or name in the markup: the tray writes them from RIG.NAME); the CSS of the part modules, the internal cables, stubs, forks, hidden ends, inline jacks, the H6 hook', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /<section id="srcModSec"[\s\S]*?<\/section>\s*<!--[^>]*-->\s*<section id="srcPartSec" class="cv-tsec cv-psec" aria-label="Serum parts" hidden>\s*<h3 class="cv-tgrp">Serum parts<\/h3>\s*<div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"><\/div>\s*<\/section>\s*<section id="srcNoteSec" class="cv-tsec cv-psec" aria-label="Note tools" hidden>\s*<h3 class="cv-tgrp">Note tools<\/h3>\s*<div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"><\/div>/);
+  assert.match(html, /<div id="srcList" class="cv-tiles"><\/div>\s*<!--[^>]*-->\s*<section id="srcPartSec" class="cv-tsec cv-psec" hidden>\s*<div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"><\/div>\s*<\/section>\s*<section id="srcNoteSec" class="cv-tsec cv-psec" hidden>\s*<div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"><\/div>\s*<\/section>\s*<section id="srcModSec"/);
   for (const id of ['srcPartSec', 'srcParts', 'srcNoteSec', 'srcNotes']) assert.equal((html.match(new RegExp('\\sid="' + id + '"', 'g')) || []).length, 1, id);
+  assert.ok(!/Serum parts/.test(html), 'the Serum parts heading went');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   for (const sel of ['.cv-mod[data-cv-kind="part"]', '.cv-mod[data-cv-member]', '.cv-bar > .cv-pow.cv-powslot', '.cv-jack-in', '.cv-jack[data-kind="note"]', '.cv-jack[data-kind="warp"]',
     '.cv-cable-g[data-int] .cv-cable', '.cv-cable-g[data-int="note"] .cv-cable', '.cv-cable-g[data-int="warp"] .cv-cable', '.cv-cable-g[data-stub] .cv-cable', '.cv-fork', '.cv-fork::before',
@@ -1047,8 +1224,8 @@ function ctlRig(o = {}) {
 
 test('sourcesTray (8): the Controllers view — SRC_VIEWS lists it after Drums (its tip and note); one Pads tile in a row of its own (an original 3 × 3 glyph, one lit; the name, a hidden reason) in its own section, shown only in this view; tiles() stays the synths\' (all hidden here); a tap picks in the tray\'s mode (ctlPick, else modPick, else pick); the view is remembered (a stored "ctl"), an unknown one opens Hardware', () => {
   const V = T.SRC_VIEWS.map(v => v.id);
-  assert.deepEqual(V, ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog']); // ((9) the Moog modules view after it)
-  const ctl = T.SRC_VIEWS[4];
+  assert.deepEqual(V, ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']); // ((9) the Moog modules view after it; (WC) the rig view after Serum)
+  const ctl = T.SRC_VIEWS[5];
   assert.deepEqual([ctl.label, ctl.tip, ctl.note, ctl.sections, ctl.layout], ['Controllers', 'Pad grids that play and modulate any track',
     'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', [{ id: 'ctls' }], undefined], 'no layout of its own: the classics\' is kept');
   assert.deepEqual(T.CTL_TILES.map(t => [t.id, t.name]), [['pads', 'Pads']]);
@@ -1178,10 +1355,10 @@ function moogRig(o = {}) {
   return { d, tray, list, scroll, layer, S, log, picks, sec: () => scroll.children.find(c => c.getAttribute('data-sec') === 'moog') || null };
 }
 
-test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s sixth (tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
+test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s seventh ((WC) the rig view before it; tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
   const V = T.SRC_VIEWS.find(v => v.id === 'moog');
   assert.deepEqual([T.SRC_VIEWS.map(v => v.id).indexOf('moog'), V.label, V.tip, V.layout, V.sections.map(s => s.id), V.note],
-    [5, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
+    [6, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
       'Model 15, System 35, System 55 and System IIIc bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.']);
   assert.deepEqual(MODELS.filter(m => V.sections[0].models(m)).map(m => m.id), ['m900'], 'the m15 section: the 900 Series model tile only');
   assert.deepEqual(T.MOOG_TILES.map(t => [t.id, t.name, t.group]), [['921', '921 Oscillator', 'src'], ['921a', '921A Driver', 'src'], ['921b', '921B Oscillator', 'src'],
@@ -1339,7 +1516,7 @@ test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — S
   const R = moogRig({ sets: T.SET_TILES, setPick: (id, m) => sp.push(id + ':' + m), setCanvasGhost: () => false, canvasGhost: () => false, setCost: id => cost[id] || '',
     setDrag: { begin: (id, i) => sd.push('begin ' + id + (i.set ? ' set' : '')), move: (id, i) => sd.push('move ' + i.over), drop: (id, i) => { sd.push('drop ' + id + ' ' + i.over + (i.set ? ' set' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => sd.push('cancel ' + id) } });
   const ids = R.list.children.map(n => n.getAttribute('data-model') || n.getAttribute('data-set'));
-  assert.deepEqual(ids.slice(-4), ['m900', 's35', 's55', 's3c'], 'beside the Model 15 tile');
+  assert.deepEqual(ids.slice(ids.indexOf('m900'), ids.indexOf('m900') + 4), ['m900', 's35', 's55', 's3c'], 'beside the Model 15 tile'); // ((WC) the rig tile follows: no longer the list's end
   assert.deepEqual([R.S.tiles().length, R.S.tiles().some(b => b.getAttribute('data-set')), R.S.setTiles().length], [MODELS.length, false, 3], 'not model tiles');
   const b = R.S.setTile('s35'), b5 = R.S.setTile('s55'), b3 = R.S.setTile('s3c');
   assert.deepEqual([b.tagName, b.className, b.type, b.children.map(c => c.className), b.children[1].textContent, b.children[2].textContent, b.children[4].hidden, b.getAttribute('aria-label'), b5.getAttribute('aria-label'), R.S.setTile('nope')],
@@ -1418,4 +1595,71 @@ test('style.css (9): the Moog tiles\' glyph box, the target chip in #overlay, th
   for (const sel of ['.cv-gtiles', '.cv-gglyph', '.cv-gglyph svg', '.cv-gglyph svg .k', '#overlay .cv-plugchip', '#overlay .cv-plugchip[data-no]', '.cv-cmenu', '.cv-cm-c', '.cv-cm-x']) assert.ok(css.includes(sel + ' {'), sel);
   assert.match(css, /\.cv-cm-c \{ width: 44px; height: 44px;/, 'a swatch: a finger\'s target');
   assert.match(css, /#overlay \.cv-plugchip \{[^}]*pointer-events: none;/, 'the chip never takes a press');
+});
+
+/* ---------------------------------------------------------------- (WC, IMPL-WC §3.2, §5; lane U) the rig's chrome and skins in style.css */
+// WCAG relative luminance and contrast of two #rrggbb colours
+const lum = h => { const c = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+// a skin block's custom properties (IMPL-WC §5.1: the kit's --sx-* tokens, the module chrome's --text / --mute, the faces' own --rig-*); nothing else
+const SKIN_VARS = ['--sx-bg', '--sx-panel', '--sx-panel2', '--sx-line', '--sx-graph', '--sx-ink', '--sx-mute', '--sx-accent', '--sx-neg', '--text', '--mute',
+  '--rig-case', '--rig-face', '--rig-bar', '--rig-title', '--rig-line', '--rig-font', '--rig-screen', '--rig-jack-ring', '--rig-jack-nut', '--rig-jack-hole', '--rig-screw', '--rig-screw-lo'];
+test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in the face font, the face, the kit labels\' font, four corner screws in one pseudo-element, the jack look — colours only through custom properties; lane C\'s marked place; the skins last: one block per SKINS id, colour and font custom properties only, charcoal the cord lab\'s, contrast ≥ 4.5 : 1', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length)); // (comments blanked, offsets kept)
+  const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim(), at: m.index }));
+  const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
+  // the skins: one block per SKINS id, the three scopes (the module — its bar inherits —, .sx-root where the kit declares its tokens, .rig-face), last in the file
+  const skins = rules.filter(r => r.sel.includes('[data-cv-skin='));
+  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself');
+  assert.equal(SKIN_DEFAULT, 'charcoal');
+  assert.ok(skins.every(r => rules.every(q => q === r || skins.includes(q) || q.at < r.at)), 'the skin blocks are the last rules of the file');
+  const V = {};
+  for (const [i, r] of skins.entries()) {
+    const D = decls(r.body), S = SKINS[i], v = Object.fromEntries(D);
+    assert.deepEqual(D.map(d => d[0]), SKIN_VARS, S.id + ': every skin variable, in order, and nothing else (no number, no other property: a switch changes no box)');
+    for (const [k, x] of D) assert.ok(k === '--rig-font' || /^#[0-9a-f]{6}$/.test(x), S.id + ' ' + k + ': a colour (' + x + ')');
+    assert.equal(v['--rig-font'], S.font === 'narrow' ? '\'Archivo Narrow\', Inter, var(--ui)' : 'Inter, var(--ui)', S.id + ': the face font (Inter its fallback)');
+    // contrast (G11): text on its ground ≥ 4.5 : 1 (labels and values on the face, the title and the bar's text on the bar, menu text on a button), UI parts ≥ 3 : 1
+    for (const [fg, bg] of [['--sx-ink', '--rig-face'], ['--sx-mute', '--rig-face'], ['--sx-ink', '--sx-bg'], ['--sx-mute', '--sx-panel'], ['--rig-title', '--rig-bar'], ['--text', '--rig-bar'], ['--mute', '--rig-bar'], ['--sx-ink', '--sx-panel2'], ['--sx-accent', '--rig-face']])
+      assert.ok(contrast(v[fg], v[bg]) >= 4.5, `${S.id}: ${fg} on ${bg} ${contrast(v[fg], v[bg]).toFixed(2)} : 1`);
+    for (const [fg, bg] of [['--rig-jack-ring', '--rig-face'], ['--sx-graph', '--sx-line'], ['--sx-ink', '--sx-panel2'], ['--sx-neg', '--rig-face'], ['--rig-screw', '--rig-face'], ['--rig-line', '--rig-case']])
+      assert.ok(contrast(v[fg], v[bg]) >= (fg === '--rig-screw' || fg === '--rig-line' ? 1.2 : 3), `${S.id}: ${fg} against ${bg} ${contrast(v[fg], v[bg]).toFixed(2)} : 1`);
+    V[S.id] = v;
+  }
+  // charcoal = the cord lab's colours (docs/canvas/ref/cord-lab.html :root), the contract's knob, jack, screw and screen values (§5.2)
+  const lab = Object.fromEntries([...readFileSync(new URL('../docs/canvas/ref/cord-lab.html', import.meta.url), 'utf8').matchAll(/(--[a-z-]+): (#[0-9a-f]{6});/g)].map(m => [m[1], m[2]]));
+  const C = V.charcoal;
+  assert.deepEqual([C['--rig-face'], C['--sx-bg'], C['--sx-panel'], C['--rig-bar'], C['--rig-case'], C['--rig-line'], C['--sx-line'], C['--sx-ink'], C['--rig-title'], C['--text'], C['--sx-mute'], C['--mute'], C['--sx-accent']],
+    [lab['--panel'], lab['--panel'], lab['--panel'], lab['--panel'], lab['--rack'], lab['--line'], lab['--line'], lab['--ink'], lab['--ink'], lab['--ink'], lab['--muted'], lab['--muted'], lab['--accent']]);
+  assert.deepEqual([lab['--panel'], lab['--rack'], lab['--line'], lab['--ink'], lab['--muted'], lab['--accent']], ['#1f2023', '#17181a', '#2c2e32', '#ebe6d8', '#9c978a', '#e8a33d']);
+  assert.deepEqual([C['--sx-panel2'], C['--sx-graph'], C['--rig-screen'], C['--rig-jack-ring'], C['--rig-jack-nut'], C['--rig-jack-hole'], C['--rig-screw'], C['--rig-screw-lo'], C['--sx-neg']],
+    ['#141518', '#ebe6d8', '#141518', '#ebe6d8', '#7d7a72', '#0b0b0c', '#9c978a', '#55524a', '#ec6a4c'], 'black knob caps with cream pointers and arcs; cream-ringed jacks; warm grey screws');
+  // the chrome: every [data-cv-rig] rule outside the skins, colours only through custom properties (a #hex only as a var() fallback: the plain module's
+  // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
+  const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !skins.includes(r));
+  assert.deepEqual(chrome.map(r => r.sel), ['.cv-mod[data-cv-rig]', '.cv-mod[data-cv-rig] > .cv-bar', '.cv-mod[data-cv-rig][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-rig] .cv-title', '.cv-mod[data-cv-rig] > .cv-body',
+    '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', '.cv-mod[data-cv-rig] > .cv-body::after',
+    '.cv-mod[data-cv-rig] .cv-fjack', '#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no']);
+  for (const r of chrome) {
+    assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
+    assert.ok(decls(r.body).every(([k]) => !k.startsWith('--') || /^--rig-[a-z]+-g$/.test(k)), r.sel + ': no skin variable set here');
+  }
+  const body = s => chrome.find(r => r.sel === s).body;
+  assert.match(body('.cv-mod[data-cv-rig] .cv-title'), /^color: var\(--rig-title, var\(--text\)\); font: 600 13px\/1\.2 var\(--rig-font, var\(--ui\)\); letter-spacing: 0\.06em;?$/, 'the bar title: the face font, 600, 0.06 em (uppercase: the bar\'s own), 13 px (§3.8\'s least)');
+  assert.match(body('.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab'), /^font-family: var\(--rig-font, var\(--ui\)\);?$/, 'the knob and menu labels in the face font (values keep the mono)');
+  // the screws: one pseudo-element (no DOM), never a press, four 8 px discs at 5 px from the corners and four 5 px slots over them, centred on the discs
+  const sc = body('.cv-mod[data-cv-rig] > .cv-body::after');
+  assert.match(sc, /content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;/);
+  const layers = /background: ([\s\S]*?);?$/.exec(sc)[1].split(/,(?![^(]*\))/).map(s => s.trim());
+  assert.deepEqual(layers, ['left', 'right'].flatMap(x => ['top', 'bottom'].map(y => `var(--rig-slot-g) ${x} 6.5px ${y} 6.5px / 5px 5px no-repeat`))
+    .concat(['left', 'right'].flatMap(x => ['top', 'bottom'].map(y => `var(--rig-screw-g) ${x} 5px ${y} 5px / 8px 8px no-repeat`))));
+  assert.match(sc, /--rig-screw-g: radial-gradient\(circle, var\(--rig-screw, #[0-9a-f]{6}\) 0 1\.5px, var\(--rig-screw-lo, #[0-9a-f]{6}\) 3\.3px, rgba\(0, 0, 0, 0\.55\) 3\.6px, transparent 4px\)/);
+  // the jack: a cream ring round a nut and its hole inside the 28 px jack (≤ 14 px radius); dimmed, not blacked out, while a cord cannot take it
+  const jk = body('.cv-mod[data-cv-rig] .cv-fjack');
+  assert.match(jk, /--rig-jack-g: radial-gradient\(circle, var\(--rig-jack-hole, #[0-9a-f]{6}\) 0 5\.5px, var\(--rig-jack-nut, #[0-9a-f]{6}\) 6px 8\.75px, var\(--rig-jack-ring, #[0-9a-f]{6}\) 9\.25px 13\.25px, transparent 13\.75px\); background: var\(--rig-jack-g\);?$/);
+  assert.match(body('#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no'), /^background: var\(--rig-jack-g\); opacity: 0\.4;?$/);
+  // lane C's marked place, between the chrome and the skins
+  const C0 = css.indexOf('(WC, lane C)'), K0 = css.indexOf('#world[data-cv-skin="charcoal"]');
+  assert.ok(C0 > chrome[chrome.length - 1].at && C0 < K0, 'lane C\'s block goes between the chrome and the skins');
+  assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
 });

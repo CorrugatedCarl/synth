@@ -57,6 +57,13 @@
 // hold rule's frame length is the tick's, frame to frame. No frame is asked for while every rope sleeps. Below READ_K a cord jack ([data-kind=cord]) sleeps like a control: it is not offered to the jack hook
 // unless its module is in edit state, and sleeper() takes it as the module's body (a press pans). The fit (toolbar, 0, the
 // empty-canvas double-tap) asks the host's setFitHook first: { ids, kMin, kMax, foot } frames those items, never below kMin.
+// Stage WC (IMPL-WC §3.2, §4.4; lane C): a rig's cord jacks ([data-kind=cord][data-cv-awake]) stay awake at every zoom a line
+// jack does (a dedicated jack row, not a dense face: never the sleeping body's). setCordHook(hit, tap): a press that would pan (empty
+// canvas, a module background, a sleeping body) asks hit(p, HIT_PX / k) at its world point; if it names a cord and the press ends
+// as a tap, tap(id, e, p) runs instead of the world's tap (a tap on a rig cord's body selects it: parity with a line — the cord
+// layer itself takes no press); a drag on it pans as ever (a cord never steals a pan). (Integration fixer K, review P2-3)
+// setJackNear(fn): a primary press on no jack (never during a glide) asks fn(p, k, t, { empty, sleep, mod }); a jack it names is
+// offered to the jack hook as that jack's press — a rig's jack within 22 screen px, outside its face too (the host keeps a control's).
 // Stage P (IMPL-P §1, §2; lane C): the device's performance preset — visual only, nothing here reaches a worklet — o.perf at
 // build (main.js: the pref synth.cv.perf), ?perf=high|medium|low overriding it for the session (never stored); setPerf(id)
 // live → cv-face's FACES.setPerf (the texture density) + the cord layer's setPerf (its physics); glStats() + perf and
@@ -67,7 +74,7 @@ import * as wk from './wk.js?v=9';
 import { createGL } from './cv-gl.js?v=9';
 import * as FACES from './cv-face.js?v=9';
 import { PAIR_MS } from './gesture.js?v=9'; // (1i G2: a key pressed later than the two-finger layer's time rule)
-import { createCords, STUDIO, perfOf } from './cv-cords.js?v=9';
+import { createCords, STUDIO, perfOf, HIT_PX } from './cv-cords.js?v=9';
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
@@ -85,6 +92,9 @@ export const DOT = 32, MAJOR = 128;
 export const CULL_MARGIN = 256;
 /** A touch landing while the camera glides, or within MOMENTUM_GUARD_MS after it stops, only stops the glide. */
 export const MOMENTUM_GUARD_MS = 120;
+/** ((WC, fixer K; review P3-9, its skeptics' round 1) the drop outline's label in whole lines (screen px): style.css's 11 px at 1.2 a
+ * line, under its 8 px top and GL_BOT clear of the bottom border; a box too short for two there centres its lines (GL_LIFT clear). */
+export const GL_LH = 13.2, GL_TOP = 8, GL_LIFT = 1, GL_BOT = 3;
 /** The knob wheel veto window after a camera move (ms). */
 export const WHEEL_VETO_MS = 300;
 /** The DOM budget of the selected track (elements; SPEC §9.3): a soft one — past it the world emits 'budget' and warns
@@ -155,7 +165,7 @@ const micro = f => (typeof queueMicrotask === 'function' ? queueMicrotask(f) : P
  *   setCamera: (cam: Camera, o?: {animate?: boolean}) => void,
  *   panBy: (dx: number, dy: number) => void,
  *   zoomAt: (f: number, clientX: number, clientY: number, o?: {animate?: boolean}) => void,
- *   fit: (o?: {ids?: string[], animate?: boolean, kMax?: number, kMin?: number, foot?: boolean, all?: boolean}) => void,
+ *   fit: (o?: {ids?: string[], animate?: boolean, kMax?: number, kMin?: number, foot?: boolean, all?: boolean, focus?: string[]}) => void,
  *   focusItem: (id: string, o?: {k?: number, animate?: boolean, edit?: boolean}) => void,
  *   reveal: (target: Element | {left: number, top: number, right: number, bottom: number}) => void,
  *   toWorld: (clientX: number, clientY: number) => Pt,
@@ -232,8 +242,13 @@ export function zoomAbout(cam, f, lx, ly) {
 export function panCam(cam, dx, dy) { return { tx: cam.tx + (+dx || 0), ty: cam.ty + (+dy || 0), k: cam.k }; }
 /** The camera that shows every rect inside a vw × vh local box with `pad` px around, k ≤ kMax (default 1), centred. (9) kMin:
  * never below it (≤ kMax) — then a side that no longer fits keeps its start in view (left; the top, or with `foot` the bottom:
- * a rack over its controller keeps the controller) and a side that fits stays centred.
- * @param {Rect[]} rects @param {number} vw @param {number} vh @param {{pad?: number, kMax?: number, kMin?: number, foot?: boolean}} [o] @returns {Camera} */
+ * a rack over its controller keeps the controller) and a side that fits stays centred. (WC, integration fixer L — review WC-int B3)
+ * focus: what such a side holds first, in PRIORITY order — the longest head of it that fits there (and on the other side, when it is
+ * floored too: what shows whole), centred, then slid back only so far that no blank band opens where the rects go on (the pad kept);
+ * centred as it is when it fits only with less air; the first one's start when even that does not fit (a new rig's first view: the
+ * chain's start, the Amplifier, Envelope 1 — under a keyboard-up band the chain row whole and Envelope 1 dropped; a split view the
+ * chain's start alone, centred; its knobs awake).
+ * @param {Rect[]} rects @param {number} vw @param {number} vh @param {{pad?: number, kMax?: number, kMin?: number, foot?: boolean, focus?: Rect[]}} [o] @returns {Camera} */
 export function fitCam(rects, vw, vh, o) {
   const pad = o && o.pad != null ? Math.max(0, +o.pad || 0) : FIT_PAD, kMax = o && o.kMax > 0 ? +o.kMax : 1;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -245,9 +260,26 @@ export function fitCam(rects, vw, vh, o) {
   if (!(x1 >= x0)) return { tx: pad, ty: pad, k: clampK(Math.min(1, kMax)) };
   const k = clampK(Math.min(kMax, Math.max(1, vw - 2 * pad) / Math.max(1, x1 - x0), Math.max(1, vh - 2 * pad) / Math.max(1, y1 - y0)));
   const kMin = o && o.kMin > 0 ? clampK(Math.min(+o.kMin, kMax)) : 0;
-  if (k < kMin) { // (9) the floor: what fits stays centred, what does not keeps its start (or foot) in view
+  if (k < kMin) { // (9) the floor: what fits stays centred, what does not keeps its start (or foot) in view — (WC) its focus whole
     const fx = (x1 - x0) * kMin <= vw - 2 * pad, fy = (y1 - y0) * kMin <= vh - 2 * pad;
-    return { tx: fx ? vw / 2 - (x0 + x1) / 2 * kMin : pad - x0 * kMin, ty: fy ? vh / 2 - (y0 + y1) / 2 * kMin : o.foot ? vh - pad - y1 * kMin : pad - y0 * kMin, k: kMin };
+    let tx = fx ? vw / 2 - (x0 + x1) / 2 * kMin : pad - x0 * kMin, ty = fy ? vh / 2 - (y0 + y1) / 2 * kMin : o.foot ? vh - pad - y1 * kMin : pad - y0 * kMin;
+    const F = Array.isArray(o.focus) ? o.focus.filter(r => r && isFinite(r.x) && isFinite(r.y)) : [];
+    if (F.length && (!fx || !fy)) { // (the longest head BOTH floored sides hold — a split view: the first alone, not placed down by a column off screen —
+      // centred, clamped to the rects' own edges: t in [v − pad − e1·k, pad − e0·k]; neither holds one: the first alone where it fits, else its start)
+      const X0 = r => r.x, X1 = r => r.x + Math.max(0, +r.w || 0), Y0 = r => r.y, Y1 = r => r.y + Math.max(0, +r.h || 0);
+      const span = (p0, p1, n) => { let a = Infinity, b = -Infinity; for (let i = 0; i < n; i++) { a = Math.min(a, p0(F[i])); b = Math.max(b, p1(F[i])); } return [a, b]; };
+      const head = (p0, p1, v) => { for (let n = F.length; n >= 1; n--) { const [a, b] = span(p0, p1, n); if ((b - a) * kMin <= v) return n; } return 0; };
+      const N = Math.min(fx ? F.length : head(X0, X1, vw), fy ? F.length : head(Y0, Y1, vh));
+      const hold = (p0, p1, e0, e1, v) => {
+        const n = N || Math.min(1, head(p0, p1, v));
+        if (!n) return pad - p0(F[0]) * kMin;
+        const [a, b] = span(p0, p1, n), t = v / 2 - (a + b) / 2 * kMin;
+        return (b - a) * kMin <= v - 2 * pad ? Math.min(pad - e0 * kMin, Math.max(v - pad - e1 * kMin, t)) : t;
+      };
+      if (!fx) tx = hold(X0, X1, x0, x1, vw);
+      if (!fy) ty = hold(Y0, Y1, y0, y1, vh);
+    }
+    return { tx, ty, k: kMin };
   }
   return { tx: vw / 2 - (x0 + x1) / 2 * k, ty: vh / 2 - (y0 + y1) / 2 * k, k };
 }
@@ -439,6 +471,8 @@ export function createWorld(viewport, o) {
   // of those writes, its pending microtask; inside the tick; the last tick's time, the last frame's length (0: not consecutive)
   let CD = null, cdUnder = false, cdOut = -1e9, cdIv = 0, cdSoon = false, cdMoved = false, ticking = false, tickT = -1, lastFrame = 0;
   let fitHook = null; // (9) the host's fit (setFitHook)
+  let cordHook = null; // (WC) the host's cord body test and tap (setCordHook): { hit, tap }
+  let nearHook = null; // ((WC, fixer K; review P2-3) the host's jack near a press on no jack (setJackNear)
   let perf = perfOf(perfURL() || o.perf); // (P) the preset: ?perf= over o.perf (the device's pref), else high
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
@@ -838,13 +872,14 @@ export function createWorld(viewport, o) {
   // the band a fit or a focus frames into: less the floating toolbar and the minimap at its foot (a fit never lands under
   // them; the fit's own padding may reach FIT_PAD / 2 over the gap)
   function frameBand() { return cut(bandNow(), 8 - FIT_PAD / 2); }
-  function fitCamera(ids, kMax, kMin, foot) {
+  function fitCamera(ids, kMax, kMin, foot, focus) {
     const bx = bandBox(frameBand()), rs = rectsOf(ids);
-    const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1, kMin, foot });
+    const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1, kMin, foot, focus: Array.isArray(focus) && focus.length ? focus.map(id => rectsOf([String(id)])[0]).filter(Boolean) : null }); // (focus: in its order)
     return { tx: c.tx + bx.x, ty: c.ty + bx.y, k: c.k };
   }
   // the fit (the toolbar's, the 0 key, the empty-canvas double-tap): every item — or (9) what the host's hook names, never below
-  // its kMin (a patched instrument: its controller and rack at READ_K, the controller kept in view — IMPL-9 §4.5)
+  // its kMin (a patched instrument: its controller and rack at READ_K, the controller kept in view — IMPL-9 §4.5); (WC) opt.focus: the
+  // ids a floored side holds first, in priority order (fitCam's focus: a new rig's first view)
   function fit(opt) {
     opt = opt || {};
     if (!items.size) return;
@@ -855,7 +890,7 @@ export function createWorld(viewport, o) {
       if (h && typeof h === 'object') opt = Object.assign({}, opt, { ids: ids && ids.length ? ids : null, kMin: +h.kMin > 0 ? +h.kMin : 0, foot: !!h.foot }, +h.kMax > 0 ? { kMax: +h.kMax } : {});
     }
     focusBack = null;
-    const c = fitCamera(opt.ids || null, opt.kMax, opt.kMin, opt.foot);
+    const c = fitCamera(opt.ids || null, opt.kMax, opt.kMin, opt.foot, opt.focus);
     if (opt.animate === false) jump(c); else animateTo(c);
   }
   function focusItem(id, opt) {
@@ -1218,9 +1253,22 @@ export function createWorld(viewport, o) {
     glide.vx *= d; glide.vy *= d;
     if (Math.hypot(glide.vx, glide.vy) < GLIDE_STOP) { glide = null; glideEnd = T; write(); settle(); }
   }
+  // (WC) a press that starts a pan: is a cord's body under it (the host's hit at the world point, r HIT_PX screen px)?
+  function askCord(e) {
+    if (!cordHook || !G || G.kind !== 'pan' || G.mid) return;
+    const p = toWorld(cam, e.clientX - vp.left, e.clientY - vp.top);
+    let id = null;
+    try { id = cordHook.hit(p, HIT_PX / cam.k, e) || null; } catch (err) { console.error(err); id = null; }
+    if (id) G.cord = { id, p };
+  }
   function tap(g, e) {
     if (g.mid) return;
     const t = g.tgt, T = now();
+    if (g.cord && cordHook) { // ((WC) a tap on a cord's body: the cord's (its click too: never the × that appears under it)
+      clickUntil = T + 350; lastTap = null;
+      try { cordHook.tap(g.cord.id, e, g.cord.p); } catch (err) { console.error(err); }
+      return;
+    }
     if (g.sleep) { // a tap on a sleeping module selects it; a double-tap focuses it (100 % or its width: edit state)
       clickUntil = T + 350; // (its click is the world's: the control under it never sees it)
       if (lastTap && lastTap.id === g.sleep && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) {
@@ -1265,7 +1313,8 @@ export function createWorld(viewport, o) {
       return;
     }
     if (!G && !J && (e.button === 0 || e.button == null) && typeof hooks.jack === 'function') { // (under native zoom too: a control)
-      const je = jackOf(e.target);
+      let je = jackOf(e.target);
+      if (!je && nearHook && !glide && now() - glideEnd >= MOMENTUM_GUARD_MS) je = nearOf(e); // ((WC, fixer K; P2-3) a press near a rig's jack: the jack's
       let r = false;
       if (je && !cordAsleep(je)) { try { r = hooks.jack(e, je); } catch (err) { console.error(err); r = false; } } // ((9) a sleeping cord jack: the body's, below)
       if (r) {
@@ -1303,7 +1352,7 @@ export function createWorld(viewport, o) {
     // nothing changes look, so the protection is behaviour only): a press in a module body that is not in edit state
     // pans; a tap selects the module, a double-tap focuses it (edit state wakes its controls). Bars, jacks: as always
     const id = cam.k < READ_K - 1e-9 && !G && (e.button === 0 || e.button == null) ? sleeper(e.target) : null;
-    if (id) { take(e); startPan(e, false, false); G.sleep = id; }
+    if (id) { take(e); startPan(e, false, false); G.sleep = id; askCord(e); }
   }
   function jackOf(t) { // the [data-cv-jack] t lies in (inside a world item), or null
     for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
@@ -1311,6 +1360,15 @@ export function createWorld(viewport, o) {
       if (n.getAttribute('data-cv-mod') != null) return null;
     }
     return null;
+  }
+  // ((WC, fixer K; review P2-3 and its skeptics) a press on no jack: the host's nearHook(p, k, t, { empty, sleep, mod }) at its world point
+  // (empty: the canvas itself; sleep: a sleeping body's — its controls asleep; mod: the item it lies in) may name a jack — a rig's jack
+  // within 22 screen px of the press, past its face's edge too (a face clips its jacks' own circles); null keeps the press as it was
+  function nearOf(e) {
+    const t = e.target, empty = t === viewport || t === W, sl = !empty && cam.k < READ_K - 1e-9 ? sleeper(t) : null;
+    let el = null;
+    try { el = nearHook(toWorld(cam, e.clientX - vp.left, e.clientY - vp.top), cam.k, t, { empty, sleep: sl != null, mod: empty ? null : modOf(t) }) || null; } catch (err) { console.error(err); el = null; }
+    return el && typeof el.getAttribute === 'function' && el.getAttribute('data-cv-jack') != null ? el : null;
   }
   function jackStop(j) { // cancel a cable drag (the hook's answer, else hooks.jackCancel); idempotent on the hook's side
     const f = j && j.cancel ? j.cancel : typeof hooks.jackCancel === 'function' ? hooks.jackCancel : null;
@@ -1326,8 +1384,9 @@ export function createWorld(viewport, o) {
   }
   // (9, IMPL-9 §4.2) a cord jack ([data-kind=cord]: a patch module's face jack) below READ_K sleeps like a control unless its
   // module is in edit state: the jack hook is not offered it, sleeper() takes it as the module's body (a press pans; a tap
-  // selects, a double-tap wakes the module). Every other jack keeps its press at every zoom
-  const cordJack = n => typeof n.getAttribute === 'function' && n.getAttribute('data-kind') === 'cord';
+  // selects, a double-tap wakes the module). Every other jack keeps its press at every zoom — (WC, §3.2) a rig's
+  // ([data-cv-awake]: its jack row) too
+  const cordJack = n => typeof n.getAttribute === 'function' && n.getAttribute('data-kind') === 'cord' && n.getAttribute('data-cv-awake') == null;
   function cordAsleep(je) { return cordJack(je) && cam.k < READ_K - 1e-9 && (editId == null || modOf(je) !== editId); }
   function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack (a cord jack: (9) its body), or the module is in edit state
     for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
@@ -1348,6 +1407,7 @@ export function createWorld(viewport, o) {
       return;
     }
     startPan(e, mid);
+    if (!mid) askCord(e); // ((WC) a cord's body under it: its tap, if it stays one)
     if (mid || e.pointerType !== 'touch') e.preventDefault(); // no text selection, no middle-button autoscroll
     if (empty) focusVp(); // the canvas keys
   }
@@ -1526,7 +1586,7 @@ export function createWorld(viewport, o) {
       el.setAttribute('aria-hidden', 'true');
       el.append(lab);
       OV.append(el);
-      gh = { el, lab, g: null, rect: null, text: null };
+      gh = { el, lab, g: null, rect: null, text: null, n: null, top: '', mw: '' };
     }
     gh.g = g; gh.el.hidden = false;
     return placeGhost();
@@ -1542,9 +1602,25 @@ export function createWorld(viewport, o) {
     const text = g.label || '';
     if (text !== gh.text) { gh.text = text; gh.lab.textContent = text; }
     if (text) { // the label stays in the visible part of the box (a true-size outline may be taller than the canvas)
-      const b = bandNow(), ox = l.x + vp.left, oy = l.y + vp.top;
-      const dx = Math.max(0, Math.min(b.left - ox, w * cam.k - 180)), dy = Math.max(0, Math.min(b.top - oy, h * cam.k - 36));
+      const b = bandNow(), ox = l.x + vp.left, oy = l.y + vp.top, bw = w * cam.k, bh = h * cam.k;
+      const dx = Math.max(0, Math.min(b.left - ox, bw - 180)), dy = Math.max(0, Math.min(b.top - oy, bh - 36));
       gh.lab.style.transform = dx || dy ? 'translate(' + Math.round(dx) + 'px, ' + Math.round(dy) + 'px)' : '';
+      // ((WC, fixer K; P3-9, its skeptics' round 1) whole lines only — never a height cut through a line's letters: the lines the seen
+      // part of the box holds (its padding box, 1.5 px borders) under the 8 px top; a box too short for two there (an iPad's Fit zoom:
+      // a 32 px Bend) takes them GL_LIFT clear, centred in it (data-lift + its middle as top; style.css: translate −50 %: one line sits
+      // where the base's did, two fill it) rather than lose the second; ≥ 2 → data-lines / --gl-lines (style.css: word-wrapped,
+      // clamped, the last ending in …), 1 → the nowrap line ending in …; as wide as the box less the dx it moved (never past its right
+      // edge); written only on a change (a drag frame re-places it)
+      const ih = bh - 3 - dy, roomy = Math.floor((ih - GL_TOP - GL_BOT) / GL_LH + 1e-9), lift = roomy < 2;
+      const n = lift ? Math.max(1, Math.floor((ih - 2 * GL_LIFT) / GL_LH + 1e-9)) : roomy;
+      const ls = gh.lab.style, nn = n >= 2 ? n : null, tp = lift ? Math.round(ih * 5) / 10 + 'px' : '', mw = dx > 0 ? Math.max(0, Math.floor(bw - 20 - dx)) + 'px' : '';
+      if (nn !== gh.n) {
+        gh.n = nn;
+        if (nn) gh.lab.setAttribute('data-lines', String(nn)); else gh.lab.removeAttribute('data-lines');
+        ls.setProperty('--gl-lines', nn ? String(nn) : ''); // ('' takes it off)
+      }
+      if (tp !== gh.top) { gh.top = tp; ls.top = tp; if (tp) gh.lab.setAttribute('data-lift', ''); else gh.lab.removeAttribute('data-lift'); }
+      if (mw !== gh.mw) { gh.mw = mw; ls.maxWidth = mw; }
     }
     gh.rect = { x, y, w, h };
     return { x, y, w, h };
@@ -1949,6 +2025,21 @@ export function createWorld(viewport, o) {
       const f = typeof fn === 'function' ? fn : null;
       fitHook = f;
       return () => { if (fitHook === f) fitHook = null; };
+    },
+    /** (WC, IMPL-WC §4.4) the host's cords (cv-cables createCableDrag with o.cordHit): hit(p, r, e) → a cord id | null (p world px, r
+     * HIT_PX / k world px) asked by every press that would pan; tap(id, e, p) when that press ends as a tap. Returns a remover */
+    setCordHook(hit, tap) {
+      const h = typeof hit === 'function' && typeof tap === 'function' ? { hit, tap } : null;
+      cordHook = h;
+      return () => { if (cordHook === h) cordHook = null; };
+    },
+    /** (WC, fixer K; review P2-3) the host's jack near a press on no jack: fn(p, k, t, { empty, sleep, mod }) → a [data-cv-jack] element |
+     * null (p world px; empty: the canvas itself; sleep: a sleeping body; mod: the item t lies in), asked by every primary press on no
+     * jack (never during a glide); a jack it names takes the press as the jack hook's own. Returns a remover */
+    setJackNear(fn) {
+      const f = typeof fn === 'function' ? fn : null;
+      nearHook = f;
+      return () => { if (nearHook === f) nearHook = null; };
     },
     on(type, fn) {
       let s = subs.get(type);

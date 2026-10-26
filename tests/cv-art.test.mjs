@@ -43,7 +43,7 @@ test('art(): every MODELS id has its own drawing — an <svg> with the requested
 });
 
 test('rules (SPEC-canvas §3): no <text>, <image>, links, scripts, fonts or gradient ids — and no maker or wordmark in any drawing', () => {
-  const makers = [...new Set(MODELS.map(m => m.maker.toLowerCase()))];
+  const makers = [...new Set(MODELS.filter(m => m.maker).map(m => m.maker.toLowerCase()))]; // ((WC) a maker-less model — the rig is ours — names none
   for (const m of MODELS) for (const sz of [A.TILE, A.CHIP, { w: 300, h: 120 }, { w: 40, h: 40 }]) {
     const s = A.art(m.id, sz), lo = s.toLowerCase(), at = `${m.id} ${sz.w}×${sz.h}`;
     for (const bad of ['<text', '<image', '<use', '<script', '<foreignobject', 'href', 'xlink', 'url(', 'font', '<lineargradient', '<pattern', ' id="'])
@@ -249,4 +249,71 @@ test('set tiles (IMPL-9b §4.3; IMPL-9c §2): SET_ART s35 / s55 / s3c — tile a
   assert.equal(A.setArt('nope'), m15);
   assert.equal(A.setArt('m15', A.CHIP), m15c);
   assert.equal(count(m15, /fill="#2b2926"/g), 14);
+});
+
+// (WC, IMPL-WC §7; lane U) the rig's tile and chip — ours, the cord lab's look in miniature: three charcoal faces side by side on a dark rack (an
+// oscillator's with its little screen and wave, a filter's with one big knob over two, an amplifier's with four), four screws in every face's corners, a
+// cream rule where a name would be engraved (never text), black knobs with cream pointers, two cream-ringed jacks at each face's foot, and two cords —
+// yellow from the first face's OUT into the second's IN, blue from the second's OUT into the third's IN — sagging between them, a plug at each end.
+test('rig art (IMPL-WC §7): SIL.rig + its own tile and chip — three charcoal faces with screws, knobs, cream-ringed jacks and two sagging cords; no text, no name, no maker', () => {
+  assert.deepEqual([A.SIL.rig.body, A.SIL.rig.keys, A.SIL.rig.steps, Object.isFrozen(A.SIL.rig)], ['cabinet', undefined, undefined, true]);
+  const t = A.art('rig'), c = A.chip('rig');
+  assert.match(t, /data-art="rig"/);
+  assert.ok(balanced(t) && balanced(c), 'well formed');
+  assert.equal(count(t, /fill="#1f2023"/g), 3, 'three faces');
+  assert.equal(count(t, /r="0.9" fill="#9c978a"/g), 12, 'four screws on each');
+  assert.equal(count(t, /fill="#ebe6d8" opacity="0.85"/g), 3, 'a cream name rule on each face (no text)');
+  assert.equal(count(t, /<rect [^>]*fill="#141518"/g), 1, 'the oscillator face\'s screen');
+  assert.equal(count(t, /<circle [^>]*fill="#141518"/g), 2 + 3 + 4, 'nine black knob caps: two, one big and two, four');
+  assert.equal(count(t, /<circle [^>]*r="4.2" fill="#141518"/g), 1, 'the filter\'s big one');
+  assert.equal(count(t, /stroke="#ebe6d8" stroke-width="0.7"/g), 1, 'the knobs\' cream pointers (one path)');
+  assert.equal(count(t, /stroke="#ebe6d8" stroke-width="0.6"/g), 1, 'the screen\'s cream wave');
+  assert.deepEqual([count(t, /r="2.3" fill="#ebe6d8"/g), count(t, /r="0.95" fill="#0b0b0c"/g)], [6, 6], 'six cream-ringed jacks, two at each face\'s foot');
+  for (const col of ['e6b83a', '3f80d8']) {
+    assert.equal(count(t, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': one cord');
+    assert.equal(count(t, new RegExp(`r="1" fill="#${col}"`, 'g')), 2, col + ': a plug at each end');
+    assert.equal(count(c, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': kept at chip size');
+  }
+  // the cords sag: each path's two control points sit below its two ends, which are at one height (a hanging cord, not a straight line)
+  const cords = [...t.matchAll(/<path d="M([\d.]+) ([\d.]+)C([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)" fill="none" stroke="#(e6b83a|3f80d8)"/g)];
+  assert.equal(cords.length, 2);
+  for (const m of cords) assert.ok(+m[4] > +m[2] + 4 && +m[6] > +m[8] + 4 && m[2] === m[8], m[9] + ': sags between jacks at one height');
+  // the chip: the three faces and both cords kept, far fewer elements, no screws or pointers
+  assert.equal(count(c, /fill="#1f2023"/g), 3, 'the chip keeps the faces');
+  assert.ok(count(c, /<[a-z]+ /g) < count(t, /<[a-z]+ /g) / 2, 'far fewer elements');
+  assert.equal(count(c, /fill="#9c978a"/g) + count(c, /stroke-width="0.7"/g), 0, 'no screws, no pointers at chip size');
+  // ours: not the 900 Series' case, not the Serum's box; no name (the data-art id is plain), no Serum / Xfer word
+  assert.notEqual(t, A.art('m900')); assert.notEqual(t, A.art('serum'));
+  assert.notEqual(c, A.chip('m900')); assert.notEqual(c, A.chip('serum'));
+  for (const s of [t, c, A.art('rig', { w: 300, h: 120 }), A.art('rig', { w: 40, h: 40 })]) {
+    const lo = s.toLowerCase().replace('data-art="rig"', '');
+    for (const bad of ['<text', 'href', 'font', 'serum', 'xfer', 'wavecraft', 'rig']) assert.ok(!lo.includes(bad), 'no ' + bad);
+  }
+});
+
+// (WC pre-deploy [chip-art]) the rig's chip (the top bar's track chip, the track row's instrument button) was nearly invisible — its #17181a
+// rack on the chrome's #141518 (contrast 1.06), black knob caps on charcoal faces — so only the cream jacks and the two cords showed: stray
+// dots. At chip size the rack is the silhouette now: a lighter case with two rails, the three charcoal faces dark against it, light marks on
+// every face (a cream rule, cream knob discs, the screen's amber wave, the jacks), the cords drawn thick enough to read
+const lumOf = hex => { const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+const contrastOf = (a, b) => { const [x, y] = [lumOf(a), lumOf(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+test('(WC pre-deploy [chip-art]) the rig\'s chip reads on the dark chrome: its case stands out (≥ 2:1 on #141518), the three charcoal faces against it (≥ 1.8:1), light marks on every face, cords ≥ 2.2 design px — the tile as it was', () => {
+  const c = A.chip('rig'), CHROME = '#141518', FACE = '#1f2023';
+  const rects = [...c.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"(?: rx="[\d.]+")? fill="(#[0-9a-f]{6})"/g)].map(m => ({ x: +m[1], y: +m[2], w: +m[3], h: +m[4], fill: m[5] }));
+  const big = rects.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  assert.ok(big.w >= 85 && big.h >= 45, 'the case is the biggest shape');
+  assert.ok(contrastOf(big.fill, CHROME) >= 2, `the case stands out from the chrome: ${big.fill} ${contrastOf(big.fill, CHROME).toFixed(2)}:1`);
+  assert.ok(contrastOf(FACE, big.fill) >= 1.8, `the faces stand out from the case: ${contrastOf(FACE, big.fill).toFixed(2)}:1`);
+  assert.equal(rects.filter(r => r.fill === FACE).length, 3, 'three faces');
+  // light marks (≥ 0.4 luminance: cream, the amber wave) on every face, each a disc of r ≥ 2.4 or a bar ≥ 10 wide or a stroke ≥ 1.4
+  const marks = [...rects.filter(r => lumOf(r.fill) >= 0.4 && r.w >= 10).map(r => r.x + r.w / 2),
+    ...[...c.matchAll(/<circle cx="([\d.]+)" cy="[\d.]+" r="([\d.]+)" fill="(#[0-9a-f]{6})"/g)].filter(m => +m[2] >= 2.4 && lumOf(m[3]) >= 0.4).map(m => +m[1]),
+    ...[...c.matchAll(/<path d="M([\d.]+)[^"]*" fill="none" stroke="(#[0-9a-f]{6})" stroke-width="([\d.]+)"/g)].filter(m => +m[3] >= 1.4 && lumOf(m[2]) >= 0.4 && !/e6b83a|3f80d8/.test(m[2])).map(m => +m[1] + 8)];
+  for (const [l, r] of [[6, 32], [35, 61], [64, 90]]) assert.ok(marks.filter(x => x >= l && x <= r).length >= 3, `light marks on the face at ${l}: ${marks.filter(x => x >= l && x <= r).length}`);
+  for (const col of ['e6b83a', '3f80d8']) { const m = new RegExp(`stroke="#${col}" stroke-width="([\\d.]+)"`).exec(c); assert.ok(m && +m[1] >= 2.2, col + ': the cord reads (' + (m && m[1]) + ')'); }
+  // the 900 Series' chip and the Serum's: their own (unchanged by it)
+  assert.ok(A.chip('m900').includes('fill="#1e1c19"') && A.chip('serum').includes('data-art="serum"'));
+  // the tile (≥ 48 px wide) keeps its drawing: the rack th.panel, black knob caps with cream pointers
+  assert.equal(count(A.art('rig'), /fill="#17181a"/g), 1);
+  assert.equal(count(A.art('rig'), /<circle [^>]*fill="#141518"/g), 9);
 });

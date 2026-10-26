@@ -1704,3 +1704,261 @@ test('createTrackView (9): Tidy places the patch modules by host.rackLayout(inst
   assert.deepEqual(M.tidy(t, {}, [{ key: 'i1', kind: 'inst', model: 'm900' }, { key: 'i1/m3', kind: 'pm', dev: 'i1' }])['i1/m3'], { x: 0, y: -M.H_PM }, 'no rack');
   assert.deepEqual([M.kindW('pm'), M.W_PM, M.H_PM, M.COST_PM], [128, 128, 512, 90]);
 });
+
+/* ------------------------------------------------------------------ stage WC (IMPL-WC §3.2, §4.3, §4.4, §11.1; lane C) */
+test('(WC) partJacks(part, title, mode): a rig\'s jacks — every one INLINE (its jack row\'s anchor), awake, dir set; \'cords\' → kind cord + its role (audio / note / mod / warp) + sig v; \'lines\' → stage 3\'s kinds; the Amplifier (\'amp\': IN · DIRECT · LEVEL · NOTE ‖ OUT); env1 an Envelope; no mode: stage 3\'s as before', () => {
+  const J = (p, m) => M.partJacks(p, '', m).map(j => [j.id, j.side, j.kind, j.role || '', j.dir, j.sig || '', j.awake ? 'awake' : ''].join(':')).join(' ');
+  assert.equal(J('oscB', 'cords'), 'out:inline:cord:audio:out:v:awake warp:inline:cord:warp:in:v:awake');
+  assert.equal(J('filter2', 'cords'), 'in:inline:cord:audio:in:v:awake out:inline:cord:audio:out:v:awake');
+  assert.equal(J('env1', 'cords'), 'out:inline:cord:mod:out:v:awake');
+  assert.equal(J('lfo3', 'cords'), 'out:inline:cord:mod:out:v:awake');
+  assert.equal(J('macros', 'cords').split(' ').length, 8);
+  assert.equal(J('macros', 'cords').split(' ')[2], 'k3:inline:cord:mod:out:v:awake');
+  assert.equal(J('arp', 'cords'), 'out:inline:cord:note:out:v:awake');
+  assert.equal(J('amp', 'cords'), 'main:inline:cord:audio:in:v:awake direct:inline:cord:audio:in:v:awake level:inline:cord:audio:in:v:awake note:inline:cord:note:in:v:awake out:inline:cord:audio:out:v:awake');
+  assert.equal(J('oscB', 'lines'), 'out:inline:audio::out::awake warp:inline:warp::in::awake', 'lines: stage 3\'s kinds, the jack row still');
+  assert.equal(J('amp', 'lines'), 'main:inline:audio::in::awake direct:inline:audio::in::awake level:inline:audio::in::awake note:inline:note::in::awake out:inline:audio::out::awake');
+  assert.equal(J('lfo3', 'lines'), 'out:inline:mod::out::awake');
+  assert.equal(M.partJacks('env1').map(j => j.id + ':' + j.side + ':' + j.kind).join(' '), 'out:right:mod', 'no mode: env1 is an Envelope (stage 3\'s look)');
+  assert.equal(M.partJacks('oscB').map(j => j.id + ':' + j.side + ':' + j.kind).join(' '), 'out:right:audio warp:left:warp', 'no mode: unchanged');
+  assert.equal(M.partJacks('amp', 'Amplifier', 'cords')[2].label, 'Amplifier LEVEL');
+  assert.deepEqual([M.PART_W_DEF.amp, M.PART_H_DEF.amp], [288, 416], 'the Amplifier: 4 columns of the RIG grid (§3.1)');
+});
+
+// a rig (model 'rig') on the canvas: the Amplifier (its device key) and its modules from the host's entries with wires — their bodies
+// a jack row of anchors [data-jack] (rig-ui's), a Filter knob; its own LFO row onto the cutoff, a canvas LFO's row
+function rview(wires, o = {}) {
+  const doc = fresh(), W = fakeWorld(1);
+  const s = core.normalizeSerum(core.defaultSerum());
+  for (const r of s.matrix) Object.assign(r, { src: '', aux: '', dst: '' });
+  s.matrix[0] = Object.assign(s.matrix[0], { src: 'lfo1', dst: 'f.cutoff', amt: 0.5 });
+  const t = { id: 'trk_r', name: 'Rig', color: '#3b82c4', prim: 'i1', nid: 3, lay: {},
+    dev: { i1: { kind: 'synth', model: 'rig', vals: { s } }, out: { kind: 'out' }, l1: { kind: 'lfo' } }, wires: [], mods: [{ id: 'r1', src: 'l1.out', dst: 'i1:f.res', amt: 0.4 }] };
+  const parts = ['oscA', 'filter', 'env1', 'lfo1'], ROW = { i1: ['main', 'direct', 'level', 'note', 'out'], 'i1/oscA': ['warp', 'out'], 'i1/filter': ['in', 'out'], 'i1/env1': ['out'], 'i1/lfo1': ['out'] };
+  const A = {}, K = {}, recs = [];
+  const ref = { wires };
+  const R = dview(t, W, doc, Object.assign({
+    devices: tt => M.devicesOf(tt).map(d => (d.key === 'i1' ? Object.assign({}, d, { ui: 'parts', wires: ref.wires }) : d))
+      .concat(parts.map(p => ({ key: 'i1/' + p, kind: 'part', dev: 'i1', part: p, model: 'rig', wires: ref.wires }))),
+    title: k => ({ title: k === 'i1' ? 'Amplifier' : k }), size: () => null,
+    bodies: { mount: (k, b) => {
+      b.setAttribute('data-body', k);
+      for (const port of ROW[k] || []) { const a = doc.createElement('span'); a.setAttribute('data-jack', port); a.className = 'cv-jack cv-fjack'; b.append(a); A[k + '.' + port] = a; }
+      if (k === 'i1/filter') for (const id of ['f.cutoff', 'f.res']) { const e = doc.createElement('div'); e.setAttribute('data-dest', id); e.setAttribute('data-dev', 'i1'); b.append(e); K[id] = e; }
+    }, unmount() {} },
+    patch: false,
+    cables: { onSelect() {}, onAction() {}, cords: c => !!c.own, onRecords: (L, P) => recs.push([L.map(c => c.id), P]) },
+  }, o));
+  return Object.assign(R, { doc, W, t, A, K, recs, ref });
+}
+
+test('(WC) a rig\'s modules in cords mode (the entries\' wires \'cords\'): their jacks are the jack row\'s anchors — data-kind cord, data-cord (the role), data-dir, data-sig v, data-cv-awake, each a focusable button (host.patch false or not); V.jacks() lists them; ports() their measured centres; \'i1.env1\' (an ENV 1 row\'s src jack) the Envelope 1 module\'s OUT; a cords-mode knob end carries r (its radius: the tip\'s rim); the cables get the host\'s cords / onRecords', () => {
+  const R = rview('cords'), V = R.V, m = k => V.modules.get(k);
+  const F = m('i1/filter');
+  place(F.el, 600, 0, F.w, 300); place(R.A['i1/filter.in'], 620, 250, 28, 28); place(R.A['i1/filter.out'], 780, 250, 28, 28); place(R.K['f.cutoff'], 700, 100, 40, 40);
+  const E = m('i1/env1');
+  place(E.el, 1000, -400, E.w, 300); place(R.A['i1/env1.out'], 1300, -150, 28, 28);
+  V.remeasure();
+  const a = R.A['i1/filter.in'];
+  assert.equal(sj(['data-cv-jack', 'data-kind', 'data-cord', 'data-dir', 'data-sig', 'data-cv-awake', 'role', 'tabindex'].map(k => a.getAttribute(k))), sj(['i1/filter.in', 'cord', 'audio', 'in', 'v', '', 'button', '0']), 'the anchor is the jack');
+  assert.equal(sj([F.jack('in') === a, F.jackDot('in').hidden, a.classList.contains('cv-jack-in')]), sj([true, true, true]));
+  assert.equal(sj(['i1/filter.out', 'i1/env1.out', 'i1/oscA.warp', 'i1.level'].map(id => { const [k, j] = [id.slice(0, id.lastIndexOf('.')), id.slice(id.lastIndexOf('.') + 1)]; const e = m(k).jack(j); return [e.getAttribute('data-cord'), e.getAttribute('data-dir'), e.getAttribute('tabindex')]; })),
+    sj([['audio', 'out', '0'], ['mod', 'out', '0'], ['warp', 'in', '0'], ['audio', 'in', '0']]), 'roles; every jack its own tab stop');
+  assert.equal(sj(V.jacks().filter(J => J.mod === 'i1/filter').map(J => J.id + ':' + J.kind + ':' + J.dir)), sj(['i1/filter.in:cord:in', 'i1/filter.out:cord:out']));
+  const P = V.ports();
+  assert.equal(sj([P.get('i1/filter.in'), P.get('i1/env1.out'), P.get('i1.env1')]), sj([{ x: F.x + 34, y: F.y + 264 }, { x: E.x + 314, y: E.y + 264 }, { x: E.x + 314, y: E.y + 264 }]), 'the anchors\' centres; i1.env1 aliases Envelope 1\'s OUT');
+  assert.equal(sj(P.get('i1:f.cutoff')), sj({ x: F.x + 120, y: F.y + 120, r: 20 }), 'a cords-mode knob end: its radius');
+  assert.equal(sj(R.recs.at(-1)[0]), sj(['o:i1:0']), 'the host\'s predicate reached the cables');
+  assert.equal(R.recs.at(-1)[1] === V.ports() || R.recs.at(-1)[1] instanceof Map, true, 'with the ports');
+  V.destroy();
+});
+
+test('(WC) the drawing mode flips the jacks (a rebuild): \'lines\' — stage 3\'s kinds on the same jack row (data-kind audio / warp / mod, no data-cord), still awake; no knob radius; no wires on the entries: stage 3\'s jacks at the edges (a canvas-3 rig, untouched)', () => {
+  const R = rview('lines'), V = R.V, m = k => V.modules.get(k);
+  const F = m('i1/filter');
+  place(F.el, 600, 0, F.w, 300); place(R.A['i1/filter.in'], 620, 250, 28, 28); place(R.K['f.cutoff'], 700, 100, 40, 40);
+  V.remeasure();
+  const a = R.A['i1/filter.in'];
+  assert.equal(sj(['data-kind', 'data-cord', 'data-dir', 'data-cv-awake'].map(k => a.getAttribute(k))), sj(['audio', null, 'in', '']), 'lines: an audio jack on the row');
+  assert.equal(sj(m('i1/lfo1').jackDot('out').getAttribute('data-kind')), sj('mod'));
+  assert.equal(sj(V.ports().get('i1:f.cutoff')), sj({ x: F.x + 120, y: F.y + 120 }), 'no radius in lines mode');
+  R.ref.wires = 'cords'; R.sync(R.t);
+  assert.equal(sj([m('i1/filter').jackDot('in').getAttribute('data-kind'), m('i1/filter').jackDot('in').getAttribute('data-cord')]), sj(['cord', 'audio']), 'flipped to cords: rebuilt');
+  V.destroy();
+  const N = rview(null), n = k => N.V.modules.get(k);
+  assert.equal(sj(['i1/filter', 'i1/oscA', 'i1'].map(k => n(k).jackIds().map(j => j + ':' + n(k).jackDot(j).getAttribute('data-side') + ':' + n(k).jackDot(j).getAttribute('data-kind')).join(' '))),
+    sj(['in:left:audio out:right:audio', 'out:right:audio warp:left:warp', 'main:left:audio direct:left:audio note:left:note env1:right:mod out:right:audio']), 'no wires: stage 3\'s jacks (VOICE\'s inline ENV 1: its dot\'s side the right edge)');
+  N.V.destroy();
+});
+
+test('(WC, §3.6; review 2 P2-5 moved this pin — the user\'s rule) Tidy on a rig: the chain on one row (each module its own column, the Amplifier at PART_W_DEF.amp), Envelope 1 over the Amplifier (the amp slot: its target without the host\'s list), a modulator with no target at the band\'s left end, the band one grid row of sag air higher; without wires: stage 3\'s Tidy', () => {
+  const P = (part, w) => ({ key: 'i1/' + part, kind: 'part', dev: 'i1', part, model: 'rig', wires: w });
+  const devs = w => [{ key: 'i1', kind: 'inst', model: 'rig', ui: 'parts', wires: w }, P('oscA', w), P('oscB', w), P('filter', w), P('env1', w), P('lfo1', w), { key: 'i1/fx', kind: 'fx', model: 'rig', own: 'i1' }, { key: 'out', kind: 'out' }];
+  const L = M.tidy({}, {}, devs('cords')), xy = k => L[k].x + ',' + L[k].y;
+  // (the defaults: osc 288, filter 224, amp 288, FX 760 — 160 apart on the dots; ENV 320 × 256 over the Amplifier with its OUT (48 in from
+  // its right edge) RIG_AMP_AIR 48 right of the Amplifier's right edge (integration fixer L, review WC-int P3-3 moved this pin: 1568 + 48 −
+  // 272 = 1344), −gup(256 + 64 + 32) = −352; the LFO 416 × 320 with no target: 64 left of the chain, −gup(416) = −416)
+  assert.deepEqual(['i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/fx', 'out', 'i1/env1', 'i1/lfo1'].map(xy), ['0,0', '448,0', '896,0', '1280,0', '1728,0', '2656,0', '1344,-352', '-480,-416'], 'one row, the band above');
+  const L0 = M.tidy({}, {}, devs(undefined)), xy0 = k => L0[k].x + ',' + L0[k].y;
+  assert.deepEqual(['i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/fx'].map(xy0), ['0,0', '0,448', '448,0', '832,0', '1440,0'], 'no wires: stage 3\'s (VOICE 448)');
+});
+
+/* ------------------------------------------------------------------ review 2 (fixer B1) */
+test('review 2 P1-1: an inline jack whose anchor is not in the body yet (a face mounting after the module) is measured again at its next port() — the anchor found then is the jack (data-cv-jack moved onto it, the dot hidden); a hidden one without an anchor is not re-walked', () => {
+  const doc = fresh();
+  let b0 = null;
+  const { m } = mod({ id: 'i1/oscA', kind: 'part', w: 352, fixed: { w: 352 }, jacks: [{ id: 'out', side: 'inline', kind: 'cord', role: 'audio', dir: 'out', awake: true, label: 'Oscillator 1 OUT' }, { id: 'p9', side: 'inline', kind: 'mod', hide: true }],
+    body: { mount: b => { b0 = b; }, unmount() {} } }, { doc });
+  doc.body.append(m.el);
+  place(m.el, 0, 0, 352, 572);
+  assert.deepEqual(m.port('out'), { x: 352, y: M.BAR_H + M.JACK_Y }, 'no anchor yet: the right-edge dot');
+  const a = doc.createElement('span'); a.setAttribute('data-jack', 'out'); b0.append(a); place(a, 290, 504, 28, 28); // (the face mounted: no relayout told)
+  assert.deepEqual(m.port('out'), { x: 304, y: 518 }, 'measured at the next port()');
+  assert.equal(sj([a.getAttribute('data-cv-jack'), a.getAttribute('data-kind'), a.getAttribute('data-cord'), m.jack('out') === a, m.jackDot('out').hidden]), sj(['i1/oscA.out', 'cord', 'audio', true, true]));
+  let reads = 0, walks = 0;
+  const gb = a.getBoundingClientRect.bind(a), ch = b0.children;
+  a.getBoundingClientRect = () => { reads++; return gb(); };
+  Object.defineProperty(b0, 'children', { get: () => { walks++; return ch; }, configurable: true });
+  m.port('out'); m.port('out');
+  assert.deepEqual([reads, walks], [0, 0], 'found: cached until the next relayout');
+  assert.deepEqual([m.port('p9'), m.port('p9'), walks], [{ x: 352, y: M.BAR_H / 2 }, { x: 352, y: M.BAR_H / 2 }, 1], 'a hidden jack without an anchor: the bar\'s right end, looked for once');
+  m.destroy();
+});
+
+// a rig's devices for Tidy (the host's entries: wires on each) and its measured sizes (rig-ui's faces + the 40 px bar)
+const RIGD = (parts, w = 'cords', extra = []) => [{ key: 'i1', kind: 'inst', model: 'rig', ui: 'parts', wires: w }].concat(parts.map(p => ({ key: 'i1/' + p, kind: 'part', dev: 'i1', part: p, model: 'rig', wires: w })),
+  [{ key: 'i1/fx', kind: 'fx', model: 'rig', own: 'i1' }, { key: 'out', kind: 'out' }], extra);
+const RIGS = { i1: { w: 288, h: 388 }, 'i1/oscA': { w: 352, h: 572 }, 'i1/oscB': { w: 352, h: 572 }, 'i1/sub': { w: 224, h: 432 }, 'i1/filter': { w: 352, h: 512 }, 'i1/filter2': { w: 352, h: 512 },
+  'i1/env1': { w: 352, h: 468 }, 'i1/env2': { w: 352, h: 468 }, 'i1/lfo1': { w: 352, h: 440 }, 'i1/lfo2': { w: 352, h: 440 }, 'i1/macros': { w: 288, h: 276 }, 'i1/fx': { w: 760, h: 420 }, out: { w: 280, h: 260 }, l1: { w: 416, h: 256 } };
+const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+test('review 2 P2-5 (the user\'s rule) Tidy on a rig: the chain on ONE row left → right, each module its own column (sources → filters → the Amplifier → its FX → OUT), GAP apart on the dots; every modulator in one band above it, bottom-aligned VGAP + a grid row (the sag air) over the chain\'s tops, centred over what it drives (o.targets; several → its left-most), Envelope 1 over the Amplifier; one with no target at the band\'s left end; nothing overlaps; a canvas modulator keeps its column', () => {
+  const devs = RIGD(['oscA', 'oscB', 'filter', 'env1', 'env2', 'lfo1', 'macros'], 'cords', [{ key: 'l1', kind: 'mod', mod: 'lfo' }]);
+  const targets = { 'i1/env1': ['i1'], 'i1/env2': ['i1/filter'], 'i1/lfo1': ['i1/filter', 'i1/oscA'], 'i1/macros': [] };
+  const L = M.tidy({}, RIGS, devs, null, { targets }), xy = k => L[k].x + ',' + L[k].y;
+  assert.deepEqual(['i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/fx', 'out'].map(xy), ['0,0', '512,0', '1024,0', '1536,0', '1984,0', '2912,0'], 'the chain: one row');
+  // the band: LFO 1 over Oscillator 1 (its left-most target, centre 176), Envelope 2 over the Filter (1200), Envelope 1 over the Amplifier with
+  // its OUT 48 right of the Amplifier's right edge (1824 + 48 − 304 = 1568: integration fixer L, P3-3 moved this pin); Macros (no target) 64
+  // left of the band and the chain; tops −gup(h + 64 + 32)
+  assert.deepEqual(['i1/lfo1', 'i1/env2', 'i1/env1', 'i1/macros'].map(xy), ['0,-544', '1024,-576', '1568,-576', '-352,-384']);
+  const R = k => Object.assign({}, L[k], RIGS[k]), band = ['i1/lfo1', 'i1/env2', 'i1/env1', 'i1/macros'];
+  for (const k of band) assert.ok(L[k].y + RIGS[k].h <= -(M.VGAP + 32) && L[k].y + RIGS[k].h > -(M.VGAP + 64), k + ': bottom-aligned above the chain');
+  for (const k of band) assert.equal(L[k].x % 32 === 0 && L[k].y % 32 === 0, true, k + ' on the dots');
+  const keys = Object.keys(L);
+  for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) assert.equal(overlap(R(keys[i]), R(keys[j])), false, keys[i] + ' / ' + keys[j]);
+  assert.deepEqual(L.l1, { x: -512, y: 0 }, 'a canvas modulator: its column left of the chain, as before');
+  // two on one module: one cluster straddling it, 64 apart (never stacked) — and Envelope 1 (wanting 1680, closer than 64) merged in: the three
+  // centred on the mean of their wants (1200, 1200, 1680 → 1360), 768 … 1952 (Envelope 1's OUT already beside the Amplifier: it keeps its place)
+  const T2 = M.tidy({}, RIGS, devs, null, { targets: { 'i1/env1': ['i1'], 'i1/env2': ['i1/filter'], 'i1/lfo1': ['i1/filter'], 'i1/macros': ['i1/oscA'] } });
+  assert.deepEqual(['i1/env2', 'i1/lfo1', 'i1/env1'].map(k => T2[k].x + ',' + T2[k].y), ['768,-576', '1184,-544', '1600,-576'], 'merged, in their wants\' order');
+  assert.equal(T2['i1/macros'].x, 32, 'Macros over Oscillator 1 (centre 176, rounded to the dots)');
+  // no host list: Envelope 1 is the amp slot's (over the Amplifier, its OUT beside it), the rest wait at the band's left end
+  const T3 = M.tidy({}, RIGS, devs);
+  assert.equal(T3['i1/env1'].x, 1568);
+  assert.deepEqual(['i1/env2', 'i1/lfo1', 'i1/macros'].map(k => T3[k].x), [-1184, -768, -352], 'left of the chain, in their order, 64 apart');
+});
+
+test('review 2 P2-5: a narrow (portrait) canvas wraps the chain after the Amplifier — its FX panel under it, OUT beside that (a grid row of air under the tallest chain module); the band and the rest as wide; a rig\'s Tidy only — every other canvas\'s Tidy is the same with or without the options', () => {
+  const devs = RIGD(['oscA', 'filter', 'env1', 'lfo1']);
+  const W = M.tidy({}, RIGS, devs, null, { targets: { 'i1/lfo1': ['i1/filter'] } }), N = M.tidy({}, RIGS, devs, null, { targets: { 'i1/lfo1': ['i1/filter'] }, narrow: true });
+  assert.deepEqual(['i1/oscA', 'i1/filter', 'i1', 'i1/env1', 'i1/lfo1'].map(k => N[k]), ['i1/oscA', 'i1/filter', 'i1', 'i1/env1', 'i1/lfo1'].map(k => W[k]), 'the row up to the Amplifier and the band: as wide');
+  assert.deepEqual([W['i1/fx'], W.out], [{ x: 1472, y: 0 }, { x: 2400, y: 0 }], 'wide: one row');
+  assert.deepEqual([N.i1, N['i1/fx'], N.out], [{ x: 1024, y: 0 }, { x: 1024, y: 672 }, { x: 1952, y: 672 }], 'narrow: FX under the Amplifier (gup(572 + 64 + 32) = 672), OUT GAP right of it');
+  assert.equal(W.out.x - N.out.x, RIGS.i1.w + M.GAP, '(integration fixer L, review WC-int P3-11\'s check) the wrap saves the Amplifier\'s width and a GAP against one row');
+  // other canvases: a classic, a Serum, stage 3's parts (no wires), a 900 Series' rack — identical with the options
+  const cases = [
+    [{ prim: 'i1', dev: { i1: { kind: 'synth', model: 'juno60' }, fx1: { kind: 'panel' }, out: { kind: 'out' }, l1: { kind: 'lfo' } } }, {}, undefined],
+    [{ prim: 'i1', dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' } } }, {}, undefined],
+    [{}, {}, RIGD(['oscA', 'filter', 'env1', 'lfo1'], null)],
+    [{ prim: 'i1', dev: { i1: { kind: 'synth', model: 'm900' }, out: { kind: 'out' } } }, { i1: { w: 864, h: 352 } }, [{ key: 'i1', kind: 'inst', model: 'm900' }, { key: 'out', kind: 'out' }, { key: 'i1/m3', kind: 'pm', dev: 'i1' }]],
+  ];
+  for (const [t, sz, d] of cases) assert.deepEqual(M.tidy(t, sz, d, null, { targets: { 'i1/lfo1': ['i1/filter'] }, narrow: true }), M.tidy(t, sz, d), 'unchanged: ' + JSON.stringify(Object.keys(t.dev || {})));
+});
+
+/* ------------------------------------------------------------------ integration fixer L (review WC-int, 2026-10-26) */
+test('integration fixer L, review WC-int P3-3: Envelope 1 on the amp slot whose cord would come down over the Amplifier steps right in the band until its OUT (the right-most jack cell, RIG_JACK in from its right edge) stands RIG_AMP_AIR beside the Amplifier\'s right edge — its cord to LEVEL hangs beside the Amplifier, never over its bar (the ▾ fold, the ⋯) — and still over the Amplifier (its centre inside the Amplifier\'s span); wide, narrow, measured or default sizes; ampEnvCentre is the rule (main rigSpot\'s too); no room in the band there: it keeps its place', () => {
+  assert.deepEqual([M.RIG_JACK, M.RIG_AMP_AIR], [48, 48], '§3.8: a 16 px margin + half a 64 px cell; a grid step and a half of air');
+  // no room: an LFO on the Amplifier too — the two one cluster over it (800, 1216), Envelope 1's OUT over the Amplifier (1104) but the LFO where it would go
+  const N = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1']), null, { targets: { 'i1/env1': ['i1'], 'i1/lfo1': ['i1'] } });
+  assert.deepEqual(['i1/env1', 'i1/lfo1'].map(k => N[k].x), [800, 1216], 'no room: as the cluster put them');
+  const devs = RIGD(['oscA', 'filter', 'env1', 'lfo1']), T = { targets: { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/filter'] } };
+  for (const [name, sz, o] of [['wide', RIGS, T], ['narrow', RIGS, Object.assign({ narrow: true }, T)], ['no host list', RIGS, undefined], ['default sizes', {}, T]]) {
+    const L = M.tidy({}, sz, devs, null, o), w = k => (sz[k] || {}).w || (k === 'i1' ? M.PART_W_DEF.amp : M.PART_W_DEF.env);
+    const out = L['i1/env1'].x + w('i1/env1') - M.RIG_JACK, right = L.i1.x + w('i1'), c = L['i1/env1'].x + w('i1/env1') / 2;
+    assert.equal(out, right + M.RIG_AMP_AIR, name + ': Envelope 1\'s OUT beside the Amplifier');
+    assert.ok(c >= L.i1.x && c <= right, name + ': Envelope 1 still over the Amplifier (' + c + ')');
+    assert.equal(L['i1/env1'].x % 32, 0, name + ': on the dots');
+    assert.equal(M.ampEnvCentre(L.i1.x, w('i1'), w('i1/env1')), c, name + ': ampEnvCentre');
+  }
+});
+
+test('integration fixer L, review WC-int P3-11 (reworked after its check, 2026-10-26: the portrait wrap keeps its width) — the narrow wrap\'s FX row stays under the Amplifier and the Amplifier → Effects line is ROUTED round it: cv-cables wrapPath leaves the Amplifier\'s OUT rightward, runs down beside it, along the gap between the rows and into the FX panel\'s IN from the left (its corners rounded) — no sample inside the Amplifier, the FX panel (its IN\'s end excepted) or any other module (3 px in), its label point on it in the gap; the tallest chain module an Oscillator, a Filter or the Amplifier itself. The FX right of the Amplifier (one row), a module in the way, or no gap: null (the plain cablePath)', () => {
+  const pts = d => { const T = d.match(/[MLC]|-?\d+(?:\.\d+)?/g), P = []; let i = 0, cur = null, cmd = null; const n = () => +T[i++];
+    while (i < T.length) {
+      if (/[MLC]/.test(T[i])) cmd = T[i++];
+      if (cmd === 'M') { cur = { x: n(), y: n() }; P.push(cur); continue; }
+      const c = cmd === 'C' ? [{ x: n(), y: n() }, { x: n(), y: n() }] : null, q = { x: n(), y: n() };
+      for (let s = 1; s <= 24; s++) { const t = s / 24, u = 1 - t; P.push(c ? { x: u * u * u * cur.x + 3 * u * u * t * c[0].x + 3 * u * t * t * c[1].x + t * t * t * q.x, y: u * u * u * cur.y + 3 * u * u * t * c[0].y + 3 * u * t * t * c[1].y + t * t * t * q.y } : { x: cur.x + (q.x - cur.x) * t, y: cur.y + (q.y - cur.y) * t }); }
+      cur = q;
+    }
+    return P; };
+  const jy = M.BAR_H + M.JACK_Y, inn = (p, r) => p.x > r.x + 3 && p.x < r.x + r.w - 3 && p.y > r.y + 3 && p.y < r.y + r.h - 3; // (an edge jack's height: the Amplifier's OUT, the FX panel's IN)
+  for (const parts of [['oscA', 'filter', 'env1', 'lfo1'], ['filter', 'env1'], ['env1']]) {
+    const L = M.tidy({}, RIGS, RIGD(parts), null, { targets: { 'i1/env1': ['i1'] }, narrow: true }), R = k => Object.assign({}, L[k], RIGS[k]), a = R('i1'), f = R('i1/fx');
+    assert.ok(f.y >= a.y + a.h + M.VGAP && f.x === a.x, parts + ': the FX row under the chain, under the Amplifier');
+    const A = { x: a.x + a.w, y: a.y + jy }, B = { x: f.x, y: f.y + jy }, others = Object.keys(L).filter(k => RIGS[k] && k !== 'i1' && k !== 'i1/fx').map(R);
+    const r = CB.wrapPath(A, B, a, f, others);
+    assert.ok(r && typeof r.d === 'string', parts + ': routed');
+    const P = pts(r.d);
+    assert.deepEqual([P[0], P.at(-1)].map(p => [Math.round(p.x), Math.round(p.y)]), [[A.x, A.y], [B.x, B.y]], parts + ': OUT to IN');
+    assert.ok(P[1].x > A.x && Math.abs(P[1].y - A.y) < 1 && P.at(-2).x < B.x && Math.abs(P.at(-2).y - B.y) < 1, parts + ': out rightward, in from the left');
+    assert.equal(P.filter(p => inn(p, a)).length, 0, parts + ': nothing inside the Amplifier');
+    assert.equal(P.filter(p => inn(p, f) && Math.hypot(p.x - B.x, p.y - B.y) > 6).length, 0, parts + ': nothing inside the FX panel');
+    for (const o of others) assert.equal(P.filter(p => inn(p, o)).length, 0, parts + ': nothing inside ' + JSON.stringify(o));
+    assert.ok(Math.min(...P.map(p => Math.hypot(p.x - r.x, p.y - r.y))) < 1 && r.y > a.y + a.h && r.y < f.y, parts + ': its label point on it, in the gap');
+    // its run down `out` beside the Amplifier (the rig host's: 2 × RIG_AMP_AIR, beyond Envelope 1's cord): the same rules
+    const r2 = CB.wrapPath(A, B, a, f, others, 2 * M.RIG_AMP_AIR), P2 = r2 ? pts(r2.d) : [];
+    assert.ok(r2 && Math.abs(Math.max(...P2.map(p => p.x)) - (a.x + a.w + 2 * M.RIG_AMP_AIR)) < 0.5 && r2.x1 === a.x + a.w + 2 * M.RIG_AMP_AIR, parts + ': out = 96');
+    assert.equal(P2.filter(p => inn(p, a) || (inn(p, f) && Math.hypot(p.x - B.x, p.y - B.y) > 6) || others.some(o => inn(p, o))).length, 0, parts + ': out = 96, nothing inside a module');
+    // a module standing in the gap, or no gap: the plain line
+    assert.equal(CB.wrapPath(A, B, a, f, others.concat([{ x: a.x - 64, y: a.y + a.h + 8, w: a.w + 160, h: f.y - a.y - a.h - 16 }])), null, parts + ': a module in the way');
+    assert.equal(CB.wrapPath(A, B, a, Object.assign({}, f, { y: a.y + a.h + 8 }), others), null, parts + ': no gap');
+  }
+  // one row (the wide Tidy: the FX panel right of the Amplifier), an IN right of the OUT, an IN above: null
+  const W = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1']), null, { targets: { 'i1/env1': ['i1'] } }), a = Object.assign({}, W.i1, RIGS.i1), f = Object.assign({}, W['i1/fx'], RIGS['i1/fx']);
+  assert.equal(CB.wrapPath({ x: a.x + a.w, y: a.y + jy }, { x: f.x, y: f.y + jy }, a, f, []), null, 'one row');
+  assert.equal(CB.wrapPath({ x: 300, y: 68 }, { x: 400, y: 900 }, { x: 0, y: 0, w: 300, h: 400 }, { x: 400, y: 832, w: 760, h: 420 }, []), null, 'IN right of OUT: the plain line already leaves it');
+  assert.equal(CB.wrapPath({ x: 300, y: 568 }, { x: 0, y: 68 }, { x: 0, y: 500, w: 300, h: 400 }, { x: 0, y: 0, w: 760, h: 420 }, []), null, 'the FX above');
+});
+
+test('integration fixer L, review WC-int P3-11 (after its second check, 2026-10-26: the FX row under the Amplifier must not cost Envelope 1 its place) — on a narrow canvas a modulator driving the wrapped row (its FX panel: a knob on Effects) stands RIGHT of the Amplifier\'s slot — past Envelope 1 at its P3-3 place and past the Amplifier → Effects line\'s run (2 × RIG_AMP_AIR beside the Amplifier) — flowed left → right in its wants\' order, never clustering with Envelope 1: Envelope 1 keeps its OUT RIG_AMP_AIR beside the Amplifier (its cord off the Amplifier\'s face), nothing in the band overlaps, the band no wider than the rows (OUT\'s right edge); a modulator driving a chain module and the FX panel stands over the chain module (its left-most; a tie: the chain\'s); one row (wide): exactly as before', () => {
+  const amp = L => L.i1.x + RIGS.i1.w, out = L => L['i1/env1'] && L['i1/env1'].x + RIGS['i1/env1'].w - M.RIG_JACK;
+  const cases = [
+    [['oscA', 'filter', 'env1', 'lfo1'], { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/fx'] }, ['i1/lfo1']],
+    [['oscA', 'filter', 'env1', 'macros'], { 'i1/env1': ['i1'], 'i1/macros': ['i1/fx'] }, ['i1/macros']],
+    [['oscA', 'filter', 'env1', 'lfo1', 'macros'], { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/fx'], 'i1/macros': ['i1/fx'] }, ['i1/lfo1', 'i1/macros']],
+    [['oscA', 'filter', 'lfo1'], { 'i1/lfo1': ['i1/fx'] }, ['i1/lfo1']],
+    [['oscA', 'filter', 'env1', 'env2', 'lfo1'], { 'i1/env1': ['i1'], 'i1/env2': ['i1/fx'], 'i1/lfo1': ['i1/filter'] }, ['i1/env2']],
+  ];
+  for (const [parts, targets, fxm] of cases) {
+    const N = M.tidy({}, RIGS, RIGD(parts), null, { targets, narrow: true }), R = k => Object.assign({}, N[k], RIGS[k]), name = parts.join(' ') + ' ' + JSON.stringify(targets);
+    assert.deepEqual([N.i1, N['i1/fx']], [{ x: 1024, y: 0 }, { x: 1024, y: 672 }], name + ': the wrap as it was (FX under the Amplifier)');
+    if (N['i1/env1']) assert.equal(out(N), amp(N) + M.RIG_AMP_AIR, name + ': Envelope 1\'s OUT RIG_AMP_AIR beside the Amplifier (P3-3), not pushed left over it');
+    let prev = Math.max(amp(N) + 2 * M.RIG_AMP_AIR, N['i1/env1'] ? N['i1/env1'].x + RIGS['i1/env1'].w + M.BAND_GAP : -Infinity);
+    for (const k of fxm) {
+      assert.ok(N[k].x >= prev, name + ': ' + k + ' right of the Amplifier\'s slot and of the one before (' + N[k].x + ' ≥ ' + prev + ')');
+      assert.equal(N[k].x % 32, 0, name + ': ' + k + ' on the dots');
+      prev = N[k].x + RIGS[k].w + M.BAND_GAP;
+    }
+    const band = parts.filter(p => /^(env|lfo|macros)/.test(p)).map(p => 'i1/' + p);
+    for (let i = 0; i < band.length; i++) for (let j = i + 1; j < band.length; j++) assert.equal(overlap(R(band[i]), R(band[j])), false, name + ': ' + band[i] + ' / ' + band[j]);
+    assert.ok(Math.max(...band.map(k => R(k).x + R(k).w)) <= N.out.x + RIGS.out.w, name + ': the band no wider than the rows');
+    // wide: one row, exactly as before (the FX panel right of the Amplifier: its modulators over it, as review 2 laid them)
+    const W = M.tidy({}, RIGS, RIGD(parts), null, { targets });
+    assert.deepEqual(W['i1/fx'], { x: 1472, y: 0 }, name + ': wide, one row');
+  }
+  const W1 = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1', 'macros']), null, { targets: { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/fx'], 'i1/macros': ['i1/fx'] } });
+  assert.deepEqual(['i1/env1', 'i1/lfo1', 'i1/macros'].map(k => W1[k].x + ',' + W1[k].y), ['1056,-576', '1504,-544', '1920,-384'], 'wide: the band as before');
+  // a modulator on the Amplifier and the FX panel (both at the Amplifier's x upright): the chain's — over the Amplifier with Envelope 1 (no room: their cluster, §13)
+  const T = { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/fx', 'i1'] }, NB = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1']), null, { targets: T, narrow: true }), WB = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1']), null, { targets: T });
+  assert.deepEqual(['i1/env1', 'i1/lfo1'].map(k => NB[k].x), ['i1/env1', 'i1/lfo1'].map(k => WB[k].x), 'over the Amplifier, as wide');
+});

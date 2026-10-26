@@ -162,6 +162,15 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    output stage's states flushed, the Juno's hiss silent with its skip (the lead's call), the CPU safeguard arms only while something sounds
    and never saves a lowered ⚙ Oversampling. Reviewed by ultracode workflows (6 + 5 reviewers, 3 skeptics per finding, fix → verify loops).
    **Tell the user**: on the Windows PC check ⚙ Oversampling (the old safeguard may have saved 1×).
+18. **(2026-10-26.)** **Wavecraft WC-1 + the TAP tempo button deployed** as one squashed commit "WC-1" on `canvas` (holding branch
+   `wt-WC`; contract docs/canvas/IMPL-WC.md + map-wc.md): our own modular synth on the Serum engine (model `rig`, the name only in
+   `RIG.NAME`), its own faces on one grid (rig-ui.js), physics cords on the Wavecraft canvas only (lines elsewhere; `RIG.WIRES` the regret
+   switch), a mod cord ends at its knob's rim ("directly to the back of the knob"), the Amplifier's KEYS gate (3 ms), modulators above
+   what they drive (rig Tidy), Serum complete without Show parts, schema 16, charcoal skin + Archivo Narrow. TAP: beside BPM (⋯ under
+   900 px), the mean of the last 8 taps, whole BPM, one undo step per run. Built by workflows (contract + skeptic, lanes S/K/C/F/U/H,
+   2 reviews, an in-app check, fixers with skeptic loops), 145 test files green. **Next: the user's hands-on** — §12's "ask after"
+   list (the Amplifier's presence, cords vs lines, the 3 ms, auto-plug, the portrait Fit floor, first-view / Tidy zoom with the track
+   list open, the badge over the Filter's display after Tidy) — then WC-2. Browser tests use Chrome for Testing (CLAUDE.md).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

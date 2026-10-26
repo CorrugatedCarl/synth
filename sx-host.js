@@ -3039,7 +3039,10 @@ export class SerumHost {
         case 'copy': case 'copyMods':
           a.action = () => { CLIP = clipModule(this.s(), module, it.kind === 'copyMods'); this.notify(noun + ' copied' + (it.kind === 'copyMods' ? ' with modulations' : '')); }; break;
         case 'paste': a.action = () => this.pasteModuleUI(module); break;
-        case 'init': a.action = () => { this.edit(s => initModule(s, module), { label: 'Init ' + noun }); this.edDirty = true; this.oscd.forget(); }; break;
+        case 'init': a.action = () => {
+          if (module === 'env1' && typeof this.host.envInit === 'function' && this.host.envInit()) return; // ((WC, IMPL-WC §3.4) a rig's amp Envelope: Init = envFromAmp, the host's
+          this.edit(s => initModule(s, module), { label: 'Init ' + noun }); this.edDirty = true; this.oscd.forget();
+        }; break;
         case 'swap': a.sub = it.sub.map(x => ({ label: x.label, action: () => this.swapModuleUI(module, x.m) })); break;
         case 'bypass': a.action = () => this.edit(s => core.toggleModBypass(s, it.slot), { label: 'Bypass Modulator' }); break;
         case 'remove': a.action = () => this.edit(s => { s.matrix[it.slot] = emptyRow(); }, { label: 'Remove Modulator' }); break;
@@ -3077,6 +3080,8 @@ export class SerumHost {
     this.oscd.forget();
   }
   swapModuleUI(a, b) {
+    // ((WC, IMPL-WC §3.4) a rig's amp slot: a swap with ENV 1 goes through the host's rig rules — the re-law, the lay rename, the gate)
+    if ((a === 'env1' || b === 'env1') && typeof this.host.envSwap === 'function' && this.host.envSwap(a, b)) return;
     if (!this.need('swapModules')) return;
     let ok = false;
     this.edit(s => { ok = core.swapModules(s, a, b); }, { label: 'Swap ' + MOD_TITLE(a) + ' / ' + MOD_TITLE(b) });

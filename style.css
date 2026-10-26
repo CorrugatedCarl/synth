@@ -39,7 +39,7 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .cv-top.drag, .cv-top.still { transition: none; }
 @media (prefers-reduced-motion: reduce) { .cv-top { transition: none; } }
 .cv-top.collapsed .cv-arrbar, .cv-top.collapsed .studio { display: none; }
-.cv-row { flex: 0 0 48px; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 8px; min-width: 0; }
+.cv-row { flex: 0 0 48px; height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 8px; min-width: 0; } /* (gap 8 px, 6 px from 1499 px down: with the transport's 4 px, TAP's room) */
 /* round icon buttons of the row (≡, ⋯, ⚙) */
 .cv-ib { position: relative; flex: none; display: grid; grid-auto-flow: column; place-items: center; gap: 2px; height: 34px; min-width: 34px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg2); color: var(--text); -webkit-tap-highlight-color: transparent; }
 .cv-ib:hover, .cv-ib.on, .cv-ib[aria-expanded="true"] { border-color: #3a3c42; background: #1b1c21; }
@@ -48,6 +48,7 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .cv-caret { width: 10px !important; height: 10px !important; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6; }
 .cv-brand { color: var(--hot); padding: 0 5px 0 7px; }
 .cv-brand .mark { width: 22px; height: 22px; }
+.cv-brand .cv-caret { display: none; } /* (its ▾ went for TAP's room: the mark is the menu, as it was ≤ 900 px) */
 .cv-gear svg { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
 .cv-menu { position: relative; flex: none; }
 /* popovers: ≡ menu, ⚙ settings, the track list, the folded transport / Bars groups */
@@ -68,7 +69,7 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 #fullscreen[aria-pressed="true"] .i-exit { display: inline; }
 #fullscreen[aria-pressed="true"], #install { color: var(--hot); }
 /* the compact transport */
-.cv-transport { position: relative; display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: nowrap; min-width: 0; }
+.cv-transport { position: relative; display: flex; align-items: center; gap: 4px; flex: none; flex-wrap: nowrap; min-width: 0; }
 .tgrp { display: flex; align-items: center; gap: 4px; }
 .tb { width: 34px; height: 32px; display: grid; place-items: center; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 0; -webkit-tap-highlight-color: transparent; }
 .tb svg { width: 17px; height: 17px; fill: var(--text); }
@@ -99,8 +100,20 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .tfield .sig select { height: 24px; padding: 0 4px; }
 .tt { height: 30px; background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 0 10px; font-size: 12px; font-weight: 600; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
 .tt[aria-pressed="true"] { border-color: var(--hot); color: var(--hot); background: #1d1810; }
+/* the tempo: BPM and TAP (tap tempo) joined — one box under its label, TAP as tall as the number. Its room (≈ 30 px) comes from
+   the row's spacing (gaps, the ≡ button's ▾, the BPM box's 2 px), never the track chip or the readout; ≤ 900 px, with none
+   left, TAP folds into ⋯ (#tTapM). Quick taps never zoom the page (pan and pinch stay the browser's); each tap flashes —
+   main.js initTap alternates .fa / .fb: a new animation-name restarts it, no forced layout; the class goes as it ends or hides */
+.cv-tempo { display: flex; align-items: flex-end; }
+.cv-tempo #tBpm { width: 56px; padding: 3px 5px; border-radius: 6px 0 0 6px; }
+.cv-tap { height: 24px; margin-left: -1px; padding: 0 5px; border-radius: 0 6px 6px 0; font-size: 11px; touch-action: manipulation; }
+.cv-tapm { display: none; touch-action: manipulation; }
+:is(.cv-tap, .cv-tapm).fa { animation: tapfa 0.2s ease-out; }
+:is(.cv-tap, .cv-tapm).fb { animation: tapfb 0.2s ease-out; }
+@keyframes tapfa { from { border-color: var(--hot); color: var(--hot); background: #3a2a10; } }
+@keyframes tapfb { from { border-color: var(--hot); color: var(--hot); background: #3a2a10; } }
 .tgrp select { height: 30px; }
-.cv-tx { display: flex; align-items: center; gap: 6px; }
+.cv-tx { display: flex; align-items: center; gap: 4px; }
 .cv-tx .tgrp { gap: 4px; }
 .cv-tog { padding: 0 8px; font-size: 11.5px; }
 .cv-count select { height: 24px; padding: 0 2px 0 4px; font-size: 12px; }
@@ -333,7 +346,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tmeta { max-width: 100%; font-size: 10px; line-height: 1.25; color: var(--mute); text-align: center; text-wrap: balance; overflow-wrap: anywhere; } /* (year · maker: two lines rather than cut) */
 /* (2a) the Sources tray scrolls as one (the synths, then the Modulators section); its tile grids grow with their content */
 .cv-tscroll { flex: 1 1 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y pinch-zoom; }
-.cv-tscroll > .cv-tiles { overflow: visible; }
+.cv-tscroll .cv-tiles { overflow: visible; overscroll-behavior: auto; } /* ((WC, fixer K; review P3-14) every grid in it — the module tiles and the Modulators sit in sections: a contained grid that could not scroll held the wheel back) */
 .cv-tsec[hidden] { display: none; }
 .cv-tsec > .cv-tgrp { margin: 4px 12px 6px; }
 .cv-mtiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
@@ -621,8 +634,9 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .kbctl .hold { margin-left: auto; } /* Hold, Panic, Hide keyboard to the right (also with the MIDI button hidden) */
 .kbctl button.midi:disabled { cursor: default; border-color: transparent; background: transparent; }
 /* the notice line floats over the canvas's bottom edge, above the keyboard tray and clear of its grip tab: it takes no
-   layout, so a notice never resizes the canvas (nor pushes it under its 240 px, SPEC §2.1) */
-.notice { position: absolute; left: 50%; bottom: calc(100% + 24px); z-index: 2; width: max-content; max-width: min(620px, calc(100% - 112px)); margin: 0; transform: translateX(-50%); padding: 6px 10px; border-radius: 6px; background: #2a1712; border: 1px solid #6b2a1c; color: #ffb59a; font-size: 12px; line-height: 1.4; box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.7); }
+   layout, so a notice never resizes the canvas (nor pushes it under its 240 px, SPEC §2.1); (WC pre-deploy [toast]) main.js
+   noticePlace sets its spot and width, a narrow window's column breaking a word too long for it (its measured wrap) */
+.notice { position: absolute; left: 50%; bottom: calc(100% + 24px); z-index: 2; width: max-content; max-width: min(620px, calc(100% - 112px)); overflow-wrap: break-word; margin: 0; transform: translateX(-50%); padding: 6px 10px; border-radius: 6px; background: #2a1712; border: 1px solid #6b2a1c; color: #ffb59a; font-size: 12px; line-height: 1.4; box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.7); }
 .notice[hidden] { display: none; }
 .notice[data-gen], .notice[data-act] { cursor: pointer; background: #12202a; border-color: #1f4a66; color: #9fd6ff; } /* factory generation progress (tap cancels), notices with an action */
 /* Serum channel colours (SPEC-serum2 §13.1): page-level copies of the panel's tokens, for the track header and notices */
@@ -668,6 +682,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 @media (pointer: coarse) {
   .cv-ib::after, .tb::after, .cv-dot::after, .cv-tabs button::after, .power::after, .tt::after { content: ''; position: absolute; inset: -5px -2px; }
   .tb, .tt, .cv-tabs button, .power, .cv-dot { position: relative; } /* (each ::after inside its own box: never a sibling's) */
+  .cv-tap::after { inset: -12px -3px -6px 0; } /* (TAP: 24 px tall — its finger's height over the empty label row, never the number) */
   .cv-menupop > button, .cv-tpi { min-height: 44px; }
   .latf > button::after { content: ''; position: absolute; inset: -9px -10px; }
   .latpop button { min-height: 34px; } .latrow button { width: 38px; } .latrow input { height: 32px; }
@@ -681,7 +696,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .power .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .power { padding: 0 9px 0 10px; } .cv-pwr { display: block; }
   .cv-meterbox { width: 150px; }
-  .cv-row { gap: 8px; }
+  .cv-row { gap: 6px; }
 }
 @media (max-width: 1439px) {
   .cv-meterbox { width: 132px; }
@@ -714,12 +729,13 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 }
 @media (max-width: 900px) {
   .cv-row { gap: 6px; padding: 0 6px; }
-  .cv-transport { gap: 4px; }
   .tpos { width: 76px; padding: 0 6px; } .tpos #tBBT { font-size: 13px; }
   .cv-bpm .cv-fl { display: none; } .tfield input { width: 50px; }
+  /* (tap tempo) no room left for TAP: it folds into ⋯, first, a finger tall; the BPM field as before it */
+  .cv-tap { display: none; } .cv-tx .cv-tapm { display: flex; align-items: center; justify-content: center; height: 44px; }
+  .cv-tempo #tBpm { width: 50px; padding: 3px 6px; border-radius: 6px; }
   .cv-tabs button { padding: 0 8px; font-size: 10.5px; letter-spacing: 0.06em; }
   .cv-meterbox { width: 76px; }
-  .cv-brand .cv-caret { display: none; }
   .cv-trk { min-width: 120px; }
   .meter #rate { display: none; }
   .cv-tchip { max-width: 150px; padding-right: 6px; } .cv-cart { display: none; }
@@ -846,6 +862,12 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 #overlay .cv-ghost[hidden] { display: none; }
 #overlay .cv-ghost-label { position: absolute; left: 10px; top: 8px; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font: 700 11px/1.2 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--hot); }
+/* ((WC, fixer K; review P3-9, its skeptics' round 1) the label in whole lines, never a height cut through its letters: cv-world counts
+   the lines the outline holds (13.2 px a line) — one: the nowrap line above, ending in …; several (data-lines): wrapped at words only
+   (never mid-word) and clamped to them, the last ending in …, a word wider than the outline too; a box too short for two under the
+   8 px top (data-lift: its middle the inline top) centres its line or lines */
+#overlay .cv-ghost-label[data-lines] { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--gl-lines, 2); text-wrap: balance; }
+#overlay .cv-ghost-label[data-lift] { translate: 0 -50%; }
 #overlay .cv-ghost-label:empty { display: none; }
 
 /* the floating toolbar (bottom-left of the canvas): [fold] · 100% · fit · tidy · lock · map · ∿ · "page zoomed · 1:1" */
@@ -1385,6 +1407,10 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
   white-space: nowrap; text-overflow: ellipsis; pointer-events: none; will-change: transform; }
 #overlay .cv-plugchip[data-no] { border-color: #5b5e66; color: #c9c6bf; font-weight: 500; }
 #overlay .cv-plugchip[hidden] { display: none; }
+/* ((WC, fixer K; review P3-9) a rig cord's chip (cv-cables: data-wrap) wraps a long refusal, never cuts it — its box hugging its lines
+   (pretty, not balance: a balanced pair left a third of it empty; no lone last word); cv-cables stands it over the finger by its
+   height, its top kept on screen) */
+#overlay .cv-plugchip[data-wrap] { white-space: normal; max-width: min(360px, calc(100vw - 16px)); overflow-wrap: break-word; text-wrap: pretty; }
 /* the cord's menu (a tap on its plug): its two ends, eight colour swatches, Remove */
 .cv-cmenu { position: fixed; z-index: 1001; display: grid; gap: 8px; width: max-content; max-width: min(320px, calc(100vw - 8px)); padding: 10px;
   border-radius: 12px; border: 1px solid var(--line2, #30353d); background: var(--pop, #17191d); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.62);
@@ -1508,3 +1534,90 @@ button.mo-n:hover { border-color: #3a3c42; }
 .cv-tpi.cv-tpm { padding-left: 6px; }
 .dlgbody .bnorm { display: inline-flex; gap: 6px; }
 .dlgbody .bnorm select[hidden] { display: none; }
+
+/* ---------------------------------------------------------- the rig's modules (stage WC, IMPL-WC §3.2, §5; lane U). A rig module is a
+   .cv-mod marked [data-cv-rig] by the host (the Amplifier and every part; not its FX panel, which is every track's). The chrome a skin
+   colours: the case, the bar (its title in the face font — 600, 0.06 em, 13 px: §3.8's least for the bar title; uppercase is the bar's
+   own), the face, the face font on the kit's labels (values and menus keep --mono / --ui), the four corner screws, the jack row's jack.
+   Colours only through the skin's custom properties (the blocks at the end of the file; a var() fallback is the plain module's look,
+   for a world no skin was applied to); no layout number — the RIG grid is rig-ui's (§3.8), injected with the faces — and nothing here
+   changes a box between skins. rig-ui's own text (switch and jack labels, legends) reads var(--rig-font) and the same colours. */
+.cv-mod[data-cv-rig] { background: var(--rig-case, #101216); }
+.cv-mod[data-cv-rig] > .cv-bar { background: var(--rig-bar, #191c21); box-shadow: inset 0 -1px 0 var(--rig-line, #262a31); }
+.cv-mod[data-cv-rig][data-cv-fold] > .cv-bar { box-shadow: none; }
+.cv-mod[data-cv-rig] .cv-title { color: var(--rig-title, var(--text)); font: 600 13px/1.2 var(--rig-font, var(--ui)); letter-spacing: 0.06em; }
+.cv-mod[data-cv-rig] > .cv-body { background: var(--rig-case, #101216); }
+.cv-mod[data-cv-rig] .rig-face { background: var(--rig-face, #101216); color: var(--sx-ink, #dfe6ee); }
+.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab { font-family: var(--rig-font, var(--ui)); }
+.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab { color: var(--sx-ink, #dfe6ee); }
+/* the corner screws: four 8 px discs at 5 px from the body's corners (the face's padding corners, §3.8), each with a 5 px slot across
+   it — one pseudo-element of layered gradients (no DOM: nothing to mount, measure or hit), above the face's ground, never a press */
+.cv-mod[data-cv-rig] > .cv-body::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  --rig-screw-g: radial-gradient(circle, var(--rig-screw, #8d8b86) 0 1.5px, var(--rig-screw-lo, #4a4d52) 3.3px, rgba(0, 0, 0, 0.55) 3.6px, transparent 4px);
+  --rig-slot-g: linear-gradient(45deg, transparent 38%, var(--rig-jack-hole, #07080a) 38% 62%, transparent 62%);
+  background: var(--rig-slot-g) left 6.5px top 6.5px / 5px 5px no-repeat, var(--rig-slot-g) left 6.5px bottom 6.5px / 5px 5px no-repeat,
+    var(--rig-slot-g) right 6.5px top 6.5px / 5px 5px no-repeat, var(--rig-slot-g) right 6.5px bottom 6.5px / 5px 5px no-repeat,
+    var(--rig-screw-g) left 5px top 5px / 8px 8px no-repeat, var(--rig-screw-g) left 5px bottom 5px / 8px 8px no-repeat,
+    var(--rig-screw-g) right 5px top 5px / 8px 8px no-repeat, var(--rig-screw-g) right 5px bottom 5px / 8px 8px no-repeat; }
+/* the jack row's jack (span.cv-jack.cv-fjack, 28 px, §3.2): the cord lab's — a cream ring round a dark nut and its hole; the rings while
+   patching are the face jack's (box-shadow, above); a jack a cord cannot take dims (not the 900 Series' dark disc over a drawn nut) */
+.cv-mod[data-cv-rig] .cv-fjack { --rig-jack-g: radial-gradient(circle, var(--rig-jack-hole, #07080a) 0 5.5px, var(--rig-jack-nut, #2e333b) 6px 8.75px, var(--rig-jack-ring, #8d8b86) 9.25px 13.25px, transparent 13.75px); background: var(--rig-jack-g); }
+#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no { background: var(--rig-jack-g); opacity: 0.4; }
+
+/* ---------------------------------------------------------- (WC, lane C) the cords renderer's rules — the × on a cord, the badge drag's
+   cursor — go here, from lane C's notes (IMPL-WC §11.0: lane U applies them), between the rig's chrome and the skins (which stay last) */
+/* (WC, lane C) cords mode: a claimed record's tag above its b plug; the badge of a rope (no tail: it grows away from the tip — data-to r
+   its right), its per-note tag, the knob end's handle (applied by lane H, IMPL-WC §14 lane C's block) */
+svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui); }
+.cv-mbadge[data-cord] { touch-action: none; cursor: grab; }
+.cv-mbadge[data-cord][data-to="r"] { transform: translate(0, -50%); margin-left: calc(2px * var(--ik, 1)); }
+.cv-ntag { padding: 0 calc(3px * var(--ik, 1)); border-radius: calc(3px * var(--ik, 1)); background: #1b1f26; color: #7fe0d6;
+  font: 600 calc(8.5px * var(--ik, 1))/1.4 var(--ui); letter-spacing: 0.04em; }
+.cv-ntag[hidden] { display: none; }
+/* (WC, fixer B2) the badge the host places (on its cord just outside the knob's rim, off every control): centred there (data-at "c") */
+.cv-mbadge[data-cord][data-at="c"]:not(.cv-hid) { transform: translate(-50%, -50%); margin: 0; }
+/* (WC, fixer B2; review 2 P2-3) the layer above the cords (cv-cords top(), world space, after its canvas): the claimed badges, a cord's ×, a
+   fork's BAL — never under a rope; it takes no press itself, its children do (none while patching: a drag looks through them) */
+.cv-cords-top > * { pointer-events: auto; }
+#viewport[data-cv-busy] > .cv-cords-top { will-change: transform; } /* (a camera burst: its own layer, as #world's) */
+#world[data-cv-patching] ~ .cv-cords-top .cv-mbadge, #world[data-cv-patching] ~ .cv-cords-top .cv-fork { pointer-events: none; }
+/* (WC, lane H; fixer B2 — the user, 2026-10-26: a cord onto a socket-less knob goes "directly to the back of the knob that it is attached
+   to") the knob a cord goes into wears a thin ring in the cord's colour (the rope ends at its rim and the ring crosses it there: cv-cords
+   s 2) — the cord palette (cv-cords PALETTE; its black lifted to read on a dark face); main.js sets data-rig-cord="<colour index>" on the
+   knob (a rig face's, its FX panel's); several cords: data-rig-ring, a segmented ring (--rig-ring, each segment facing its cord) on the
+   knob's disc (--rig-rx / --rig-ry its centre in the control, --rig-rd its size: measured) */
+[data-rig-cord] { --rig-cc: #e9e5da; }
+[data-rig-cord="0"] { --rig-cc: #d8432f; } [data-rig-cord="1"] { --rig-cc: #e6b83a; } [data-rig-cord="2"] { --rig-cc: #3f80d8; } [data-rig-cord="3"] { --rig-cc: #41a75c; }
+[data-rig-cord="4"] { --rig-cc: #e9e5da; } [data-rig-cord="5"] { --rig-cc: #e27c2f; } [data-rig-cord="6"] { --rig-cc: #9060c9; } [data-rig-cord="7"] { --rig-cc: #8a8c90; }
+.wk-knob[data-rig-cord] > .wk-svg { border-radius: 50%; box-shadow: 0 0 0 2px var(--rig-cc); }
+[data-rig-cord]:not(.wk-knob) { border-radius: 6px; box-shadow: 0 0 0 2px var(--rig-cc); }
+.wk-knob[data-rig-ring] > .wk-svg { box-shadow: none; }
+.wk-knob[data-rig-ring]::after { content: ''; position: absolute; left: var(--rig-rx, 50%); top: var(--rig-ry, 50%); width: calc(var(--rig-rd, 40px) + 4px);
+  height: calc(var(--rig-rd, 40px) + 4px); transform: translate(-50%, -50%); border-radius: 50%; background: var(--rig-ring, var(--rig-cc)); pointer-events: none;
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); }
+/* (WC, fixer B2; review 2 P2-4: the regret path) lines mode: a rig jack a line arrives at or leaves wears a ring in the line's colour per
+   line (main.js --rig-lines): which jack a line uses reads where the line runs under the faces */
+.cv-jack.cv-fjack[data-rig-line]:not(.cv-ok):not(.cv-from):not(.cv-hot):not(:focus-visible) { box-shadow: var(--rig-lines); }
+/* (WC, integration fixer K; review P3-12) a jack's label its own cord crosses, lifted above the cords (main.js rigLabels: the layer's top,
+   world px, centred under the jack): the label's words on the face's colour (both copied from the face), a press goes through it */
+.cv-cords-top > .rig-jl-top { position: absolute; transform: translateX(-50%); height: 12px; padding: 0 3px; border-radius: 3px; background: #1f2023; color: #ebe6d8;
+  font: 600 10px/12px var(--ui); letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+.cv-cords-top > .rig-jl-top > .rig-nrm { margin-left: 0.4em; color: #9c978a; }
+.cv-cords-top > .rig-jl-top[data-plugged] > .rig-nrm { text-decoration: line-through; }
+
+/* ---------------------------------------------------------- the rig's SKINS (stage WC, IMPL-WC §5.1, §5.2; lane U) — the last section
+   of the file. One block per rig-core SKINS id and nothing but colour and font custom properties (no number, no other property: a
+   switch changes no box, only colour and font pixels), every block the same variables in the same order. Scoped by rig-ui applySkin's
+   attribute on #world to a rig module (its bar inherits), and again to the two elements that declare tokens of their own: .sx-root
+   (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face. A new skin: a SKINS entry + one block. */
+/* charcoal (WC-1, SKIN_DEFAULT): the cord lab's colours (docs/canvas/ref/cord-lab.html) — charcoal faces, cream engraving in the narrow
+   face, black knobs with cream pointers and arcs, cream-ringed jacks, warm grey screws, the app's amber; a warm red for a negative amount */
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig],
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig] .sx-root,
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig] .rig-face,
+.rig-drawer[data-cv-skin="charcoal"] {
+  --sx-bg: #1f2023; --sx-panel: #1f2023; --sx-panel2: #141518; --sx-line: #2c2e32; --sx-graph: #ebe6d8; --sx-ink: #ebe6d8; --sx-mute: #9c978a;
+  --sx-accent: #e8a33d; --sx-neg: #ec6a4c; --text: #ebe6d8; --mute: #9c978a;
+  --rig-case: #17181a; --rig-face: #1f2023; --rig-bar: #1f2023; --rig-title: #ebe6d8; --rig-line: #2c2e32; --rig-font: 'Archivo Narrow', Inter, var(--ui);
+  --rig-screen: #141518; --rig-jack-ring: #ebe6d8; --rig-jack-nut: #7d7a72; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+}

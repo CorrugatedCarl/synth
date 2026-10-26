@@ -409,3 +409,71 @@ test('a project file from a newer SYNTH Canvas: read-only while it is the curren
   api.save();
   assert.equal(stored().bpm, 137);
 });
+
+// (WC pre-deploy [toast]) the 8 s "· tap to undo" lay centred on the canvas toolbar's row: a tap meant for Fit / Tidy landed on it and undid the
+// last step. main.js noticePlace puts it where cv-tray noticeSpot says over the boxes measured now (the iPad portrait boxes Chrome measured:
+// the toolbar 56…427, its minimap, the keyboard's grip 468…556), again when the Sources tray opens (the toolbar moves past it); a tap on it
+// still undoes
+test('(WC pre-deploy [toast]) the notice line is placed off the canvas toolbar by cv-tray noticeSpot over the measured boxes: beside the toolbar\'s row (lifted clear of the keyboard\'s grip); placed again when the Sources tray opens and moves the toolbar; a tap on it still undoes; the roll (no toolbar): centred, clear of the grip', async () => {
+  const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
+  const box = (sel, l, t, r, b) => { s.$(sel).getBoundingClientRect = () => ({ left: l, top: t, right: r, bottom: b, width: r - l, height: b - t, x: l, y: t }); };
+  box('#stage', 0, 205, 1024, 1127); box('#perf', 0, 1127, 1024, 1366); box('#cvToolbar .cv-tb', 56, 1063, 427, 1115); box('#cvToolbar .cv-minimap', 56, 943, 232, 1055);
+  box('#kbGrip', 468, 1096, 556, 1140); box('#srcTab', 0, 622, 44, 710); box('#notice', 0, 0, 296.8, 30.8);
+  s.$('#srcTray').offsetWidth = 240; s.$('#srcTab').offsetWidth = 44;
+  sh.shell.src.close();
+  sh.srcPick('prophet5', 'replace');
+  const N = s.$('#notice'), spot = () => [N.style.left, N.style.bottom, N.style.maxWidth, N.style.transform];
+  assert.match(N.textContent, /^Replaced Minimoog with Prophet-5 · .*tap to undo$/);
+  const q = cvTray.noticeSpot({ stage: { left: 0, top: 205, right: 1024, bottom: 1127 }, bar: { left: 56, top: 1063, right: 427, bottom: 1115 }, map: { left: 56, top: 943, right: 232, bottom: 1055 },
+    grip: { left: 468, top: 1096, right: 556, bottom: 1140 }, tray: null, tab: { left: 0, top: 622, right: 44, bottom: 710 }, w: 296.8, h: 30.8 });
+  assert.deepEqual([q.x, q.bottom], [439, 1092], 'beside the toolbar, lifted clear of the grip');
+  assert.deepEqual(spot(), ['439px', 'calc(100% + 35px)', '573px', 'none'], 'placed: its left, its foot over the keyboard tray\'s edge, its room');
+  // the tray opens: the toolbar moves past it (style.css .cv-left-open) — the notice follows
+  box('#cvToolbar .cv-tb', 296, 1063, 667, 1115); box('#cvToolbar .cv-minimap', 296, 943, 472, 1055);
+  sh.shell.src.open();
+  assert.deepEqual(spot(), ['679px', 'calc(100% + 23px)', '333px', 'none'], 'beside the moved toolbar, on its row\'s centre line');
+  N.onclick(); s.raf();
+  assert.deepEqual([CMOD.instOf(api.project().tracks[0]).model, N.hidden], ['minimoog', true], 'a tap on it still undoes');
+  // the roll: the canvas hidden (no toolbar, minimap, tray or tab there: empty boxes) — centred over the stage, clear of the grip
+  for (const sel of ['#cvToolbar .cv-tb', '#cvToolbar .cv-minimap', '#srcTray', '#srcTab']) box(sel, 0, 0, 0, 0);
+  sh.srcPick('prophet5', 'replace');
+  assert.deepEqual(spot(), ['364px', 'calc(100% + 35px)', '620px', 'none'], 'centred (12…1012), clear of the grip');
+});
+
+// (WC pre-deploy [toast], round 2 — the skeptic) a narrow window (Slide Over / a 1/3 split, 375 px) with the Sources tray open: no room of the
+// three cleared the tray, so the line kept the stylesheet's spot — over the tiles, the toolbar's fold button and the grips. main.js measures
+// the line at the width it would take (its wrap: a word carried down makes a line more than the estimate) and passes the top grip too
+test('(WC pre-deploy [toast], round 2) a 375 px window with the Sources tray open: the notice goes in the free column right of the tray, by its measured wrap — clear of the tray, its tab, the toolbar, the minimap and both grips; a tap on it still undoes; a short window: never over the track list\'s rows that run over the stage', async () => {
+  const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
+  const box = (sel, l, t, r, b) => { s.$(sel).getBoundingClientRect = () => ({ left: l, top: t, right: r, bottom: b, width: r - l, height: b - t, x: l, y: t }); };
+  const B = { stage: [0, 205, 375, 791], perf: [0, 791, 375, 1024], bar: [296, 727, 667, 779], map: [296, 607, 472, 719], grip: [144, 760, 232, 804], tab: [240, 454, 284, 542], top: [144, 192, 232, 236] };
+  box('#stage', ...B.stage); box('#perf', ...B.perf); box('#cvToolbar .cv-tb', ...B.bar); box('#cvToolbar .cv-minimap', ...B.map); box('#kbGrip', ...B.grip); box('#srcTab', ...B.tab); box('#topGrip', ...B.top);
+  box('#srcTray', 0, 205, 240, 791); s.$('#srcTray').offsetWidth = 240; s.$('#srcTab').offsetWidth = 44;
+  // the line's size at its max width: one line of 296.8 × 30.8; narrower, a wrap that carries a word down (16.8 px a line)
+  const N = s.$('#notice'), wrap = mw => { const lines = mw > 0 && mw < 296.8 ? Math.ceil(296.8 / (mw - 40) - 1e-9) : 1; return { w: Math.min(296.8, mw > 0 ? mw : 296.8), h: 30.8 + (lines - 1) * 16.8 }; };
+  N.getBoundingClientRect = () => { const z = wrap(parseFloat(N.style.maxWidth)); return { left: 0, top: 0, right: z.w, bottom: z.h, width: z.w, height: z.h, x: 0, y: 0 }; };
+  sh.shell.src.open();
+  sh.srcPick('prophet5', 'replace');
+  assert.match(N.textContent, /^Replaced Minimoog with Prophet-5 · .*tap to undo$/);
+  assert.equal(N.style.transform, 'none', 'placed (not the stylesheet\'s centred spot)');
+  const x = parseFloat(N.style.left) + B.perf[0], foot = B.stage[3] - +/calc\(100% \+ (-?[\d.]+)px\)/.exec(N.style.bottom)[1], z = wrap(parseFloat(N.style.maxWidth));
+  const r = [x, foot - z.h, x + z.w, foot], cross = b => r[0] < b[2] && r[2] > b[0] && r[1] < b[3] && r[3] > b[1];
+  for (const k of ['bar', 'map', 'grip', 'tab', 'top']) assert.ok(!cross(B[k]), `clear of the ${k} (${r.map(Math.round)})`);
+  assert.ok(r[0] >= 240 && r[2] <= 375 && r[1] >= 205 && r[3] <= 791, `right of the tray, inside the stage (${r.map(Math.round)})`);
+  assert.ok(parseFloat(N.style.maxWidth) >= cvTray.NOTICE_FLOOR, 'a readable column');
+  N.onclick(); s.raf();
+  assert.deepEqual([CMOD.instOf(api.project().tracks[0]).model, N.hidden], ['minimoog', true], 'a tap on it still undoes');
+  // a short window (700 × 500, the tray pulled to 440): the track list's rows run over the stage's top (its Master row to 124) — the stage
+  // is taken from there: never over them; the toolbar, the minimap and the tab fill the canvas's 260 px, so the line gives up the minimap only
+  const C = { stage: [0, 66, 700, 305], perf: [0, 305, 700, 500], bar: [496, 241, 867, 293], map: [496, 121, 672, 233], grip: [306, 274, 394, 318], tab: [440, 142, 484, 230], top: [306, 53, 394, 97] };
+  box('#stage', ...C.stage); box('#perf', ...C.perf); box('#cvToolbar .cv-tb', ...C.bar); box('#cvToolbar .cv-minimap', ...C.map); box('#kbGrip', ...C.grip); box('#srcTab', ...C.tab); box('#topGrip', ...C.top);
+  box('#topRow', 0, 0, 700, 48); box('#arrbar', 0, 48, 700, 80); box('#studio', 0, 80, 700, 80); box('#mfoot', 0, 80, 700, 124);
+  box('#srcTray', 0, 66, 440, 305); s.$('#srcTray').offsetWidth = 440;
+  sh.srcPick('prophet5', 'replace');
+  assert.equal(N.style.transform, 'none', 'placed');
+  const x2 = parseFloat(N.style.left) + C.perf[0], foot2 = C.stage[3] - +/calc\(100% \+ (-?[\d.]+)px\)/.exec(N.style.bottom)[1], z2 = wrap(parseFloat(N.style.maxWidth));
+  const r2 = [x2, foot2 - z2.h, x2 + z2.w, foot2], cross2 = b => r2[0] < b[2] && r2[2] > b[0] && r2[1] < b[3] && r2[3] > b[1];
+  assert.ok(r2[1] >= 124, `under the track list's rows (${r2.map(Math.round)})`);
+  for (const k of ['bar', 'grip', 'tab', 'top']) assert.ok(!cross2(C[k]), `clear of the ${k} (${r2.map(Math.round)})`);
+  assert.ok(r2[0] >= 440 && r2[2] <= 700 && r2[3] <= 305, `right of the tray, inside the stage (${r2.map(Math.round)})`);
+});

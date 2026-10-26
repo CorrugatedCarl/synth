@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import * as C from '../cv-cables.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as wk from '../wk.js?v=9';
-import { fresh, all, ptr, fire, key, Ev, place } from './wk-dom.mjs';
+import { fresh, all, ptr, fire, key, Ev, place, layout } from './wk-dom.mjs';
 import { readFileSync } from 'node:fs';
 import * as PCX from '../pads-core.js?v=9';
 import * as DCX from '../drum-core.js?v=9';
@@ -1197,4 +1197,667 @@ test('(8) a note cable in the layers: a tap cable — a tap is onAction(id, \'ta
   L.select('n:pd1>i1');
   assert.equal(L.selected(), null, 'never selected');
   L.destroy();
+});
+
+/* ---------------------------------------------------------------- stage WC (IMPL-WC §4.1, §4.4, G8; lane C): cords mode */
+test('(WC, §4.1) cablesOf(track, { edges }): a Serum-engine device shown as its modules takes its internal records from opts.edges(id, dev) when it answers an array (the host: rig-core\'s edges()), else sx-edges\' as before (null, a throw, no hook); the rest unchanged', () => {
+  const t = { id: 'trk', color: '#3b82c4', prim: 'i1', lay: {}, dev: { i1: { kind: 'synth', model: 'rig', vals: { s: core.defaultSerum() }, fx: core.defaultFx2() }, out: { kind: 'out' } }, wires: [] };
+  const mine = { id: 'x:i1:oscA.out>voice.main', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscA.out', b: 'voice.main' }, a: 'i1/oscA.out', b: 'i1.main', c: 2, o: 1, s: 0 };
+  const asked = [], ids = L => L.map(c => c.id);
+  const L = C.cablesOf(t, { parts: () => true, edges: (id, dev) => { asked.push(id + ' ' + dev.model); return [mine, null, { no: 'id' }]; } });
+  assert.deepEqual([ids(L), asked], [['i1.out>i1/fx.in', 'x:i1:oscA.out>voice.main'], ['i1 rig']], 'its records (the invalid ones dropped)');
+  assert.equal(L[1], mine, 'as given');
+  const base = ids(C.cablesOf(t, { parts: () => true }));
+  assert.ok(base.includes('x:i1:oscA.out>filter.in'), 'no hook: sx-edges\' (a default state: OSC A → Filter 1)');
+  assert.deepEqual([ids(C.cablesOf(t, { parts: () => true, edges: () => null })), ids(C.cablesOf(t, { parts: () => true, edges: () => { throw new Error('x'); } }))], [base, base], 'null or a throw: sx-edges\'');
+  assert.deepEqual(ids(C.cablesOf(t, { parts: () => false, edges: () => [mine] })), ['i1.out>i1/fx.in'], 'not shown as its modules: none (the hook not asked)');
+});
+
+// tests/ref-WC/record.mjs's serialiser: tag, attributes in order, the style keys set, children
+function html(n) {
+  if (n.nodeType === 3) return n.textContent;
+  let s = '<' + n.localName;
+  for (const [k, v] of n._a) s += ' ' + k + '="' + String(v) + '"';
+  const st = Object.keys(n.style).filter(k => typeof n.style[k] !== 'function' && n.style[k] !== undefined);
+  if (st.length) s += ' style="' + st.map(k => k + ':' + n.style[k]).join(';') + '"';
+  s += '>';
+  for (const c of n.childNodes) s += html(c);
+  return s + '</' + n.localName + '>';
+}
+// a rig's records (cv-cables' shapes, as lane K's edges() gives them): its internal cords (one a dry source's: "dry"), a warp tap
+// cable, a stub, its own LFO row onto its filter (per note: dashed); the derived Amplifier → FX line and a canvas LFO's row
+const rigRecs = () => [
+  { id: 'i1.out>i1/fx.in', kind: 'audio', a: 'i1.out', b: 'i1/fx.in', readonly: true, src: ['i1'] },
+  { id: 'x:i1:oscA.out>filter.in', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscA.out', b: 'filter.in' }, a: 'i1/oscA.out', b: 'i1/filter.in', src: ['i1'] },
+  { id: 'x:i1:oscB.out>filter.in', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscB.out', b: 'filter.in' }, a: 'i1/oscB.out', b: 'i1/filter.in', label: 'dry', src: ['i1'] },
+  { id: 'x:i1:filter.out>voice.main', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'filter.out', b: 'voice.main' }, a: 'i1/filter.out', b: 'i1.main', src: ['i1'] },
+  { id: 'x:i1:oscA.out>oscB.warp', kind: 'audio', int: 'warp', dev: 'i1', edge: { a: 'oscA.out', b: 'oscB.warp' }, a: 'i1/oscA.out', b: 'i1/oscB.warp', tap: 'open', label: 'FM' },
+  { id: 'x:i1:oscC.out>', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscC.out', b: null }, a: 'i1/oscC.out', b: null, stub: true, label: '→ Filter (off)' },
+  { id: 'o:i1:3', kind: 'mod', a: 'i1/lfo1.out', b: 'i1:f.cutoff', amt: 0.5, bi: false, byp: false, preset: false, dashed: true, own: true, dev: 'i1', slot: 3, src: 'lfo1', color: '#e27c2f' },
+  { id: 'r1', kind: 'mod', a: 'l1.out', b: 'i1:a.level', amt: -0.25, bi: false, byp: false, preset: false, dashed: false, src: 'l1.out' },
+];
+const CLAIMED = ['x:i1:oscA.out>filter.in', 'x:i1:oscB.out>filter.in', 'x:i1:filter.out>voice.main', 'x:i1:oscA.out>oscB.warp', 'o:i1:3'];
+const RIG_P = () => new Map([['i1.out', { x: 600, y: 300 }], ['i1/fx.in', { x: 700, y: 300 }], ['i1/oscA.out', { x: 100, y: 100 }], ['i1/oscB.out', { x: 100, y: 200 }],
+  ['i1/oscC.out', { x: 100, y: 300 }], ['i1/filter.in', { x: 300, y: 150 }], ['i1/filter.out', { x: 400, y: 150 }], ['i1.main', { x: 500, y: 250 }], ['i1.level', { x: 520, y: 260 }],
+  ['i1/oscB.warp', { x: 60, y: 200 }], ['i1/lfo1.out', { x: 100, y: 500 }], ['i1/env1.out', { x: 100, y: 600 }], ['i1:f.cutoff', { x: 400, y: 500, r: 20 }], ['l1.out', { x: -200, y: 500 }],
+  ['i1:a.level', { x: 150, y: 120 }]]);
+const claimRig = c => !!c.int || !!c.own; // (the host's §4.1 table in miniature: the rig's own connections)
+const KZ = { k: 1 }; // ((fixer B2) a zoom the tests move
+function cordLayers(o = {}) {
+  const doc = fresh(), W = doc.createElement('div'), TOP = o.withTop ? doc.createElement('div') : null; // ((fixer B2) the layer above the cords)
+  doc.body.append(W);
+  if (TOP) doc.body.append(TOP);
+  const sel = [], acts = [], recs = [], csel = [];
+  const L = C.createCables(W, Object.assign({ doc, onSelect: (id, by) => sel.push(String(id) + (by ? '/' + by : '')), onAction: (id, a) => acts.push(id + ' ' + a),
+    menu: id => [{ label: 'Bypass ' + id, action() {} }], cords: claimRig, onRecords: (L2, p) => recs.push([L2.map(c => c.id + (c.fade ? '~' : '')), p ? p.size : null]),
+    cordSel: id => csel.push(id), cordPoint: () => ({ x: 250.5, y: 333.25 }) }, TOP ? { top: () => TOP } : null, o));
+  L.set(rigRecs());
+  const g = id => all(W).find(n => n.localName === 'g' && n.getAttribute('data-cable') === id) || null;
+  const xb = () => all(doc.body).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-x') || null;
+  return { doc, W, L, sel, acts, recs, csel, g, xb, TOP };
+}
+
+test('(WC) cords mode: a claimed record gets NO path (its group in the over layer, its label a tag above its b plug), keeps its badge (a per-note row\'s "∿ last note", END_PX past the knob\'s rim toward its source); the unclaimed draw as today on the same canvas; a stub is never claimed', () => {
+  const R = cordLayers(), P = RIG_P();
+  R.L.layout(P);
+  const under = all(R.L.under).filter(n => n.getAttribute && n.getAttribute('data-cable'));
+  assert.deepEqual(under.map(n => n.getAttribute('data-cable')), ['i1.out>i1/fx.in', 'x:i1:oscC.out>', 'r1'], 'the lines: Amplifier → FX, the stub, the canvas LFO\'s row');
+  assert.ok(under.every(n => n.childNodes.filter(q => q.localName === 'path').length === 2), 'each its visible + hit path');
+  assert.deepEqual(CLAIMED.map(id => all(R.W).filter(n => n.localName === 'path' && n.parentNode && n.parentNode.getAttribute('data-cable') === id).length), [0, 0, 0, 0, 0], 'no path, no tail twin');
+  assert.deepEqual(all(R.L.over).filter(n => n.getAttribute && n.getAttribute('data-cord') != null).map(n => n.getAttribute('data-cable')), CLAIMED, 'their groups: the over layer, data-cord');
+  assert.deepEqual(R.L.cordList().map(c => c.id), CLAIMED, 'cordList');
+  assert.deepEqual([R.L.claimed('o:i1:3'), R.L.claimed('r1'), R.L.claimed('x:i1:oscC.out>')], [true, false, false]);
+  const lab = id => { const t = R.g(id).childNodes.find(n => n.localName === 'text'); return [t.textContent, t.getAttribute('x'), t.getAttribute('y')]; };
+  assert.deepEqual([lab('x:i1:oscB.out>filter.in'), lab('x:i1:oscA.out>oscB.warp')], [['dry', '300', String(150 - C.CORD_TAG_DY)], ['FM', '60', String(200 - C.CORD_TAG_DY)]], 'the tag above its b plug');
+  const b = R.L.badge('o:i1:3'), nt = b.childNodes.find(n => n.getAttribute('class') === 'cv-ntag');
+  assert.deepEqual([b.hasAttribute('data-cord'), nt.hidden, nt.textContent, /∿ last note/.test(b.getAttribute('aria-label'))], [true, false, C.NOTE_TAG, true], 'a per-note row: the badge says it');
+  assert.deepEqual([b.style.left, b.style.top, b.getAttribute('data-to')], [(400 - 20 - C.END_PX) + 'px', '500px', 'l'], 'END_PX screen px past the rim (r 20), toward the source');
+  const b1 = R.L.badge('r1');
+  assert.deepEqual([b1.hasAttribute('data-cord'), b1.childNodes.some(n => n.getAttribute('class') === 'cv-ntag'), b1.getAttribute('data-to')], [false, false, null], 'a line\'s badge as today');
+  // the zoom: END_PX screen px again; a source to the right: data-to r
+  const Z = cordLayers({ k: () => 2 });
+  Z.L.layout(P);
+  assert.equal(Z.L.badge('o:i1:3').style.left, (400 - 20 - C.END_PX / 2) + 'px');
+  P.set('i1/lfo1.out', { x: 900, y: 500 }); R.L.layout(P);
+  assert.deepEqual([b.style.left, b.getAttribute('data-to')], [(400 + 20 + C.END_PX) + 'px', 'r']);
+  R.L.destroy(); Z.L.destroy();
+});
+
+test('(WC, fixer B2; the user 2026-10-26 "directly to the back of the knob"; review 2 P2-3 / P3-7) o.onRecords(records, ports, k) may answer { badges, forks }: a claimed mod row\'s badge at the host\'s place (world px, centred: data-at — the host keeps it on the cord just outside the knob\'s rim, off every control and every other badge), a claimed fork\'s BAL at its place; a record it leaves out: the rim rule as before; a zoom (rezoom, its k) asks again; o.cordEnd is gone', () => {
+  const asked = [], at = { 'o:i1:3': { x: 333.333, y: 444 } };
+  const R = cordLayers({ onRecords: (L, p, k) => { asked.push([L.length, p ? p.size : null, k]); return { badges: new Map(Object.entries(at)) }; }, k: () => KZ.k }), P = RIG_P();
+  R.L.layout(P);
+  assert.deepEqual(asked.at(-1), [5, P.size, 1], 'asked with the records, the ports and the zoom');
+  const b = R.L.badge('o:i1:3');
+  assert.deepEqual([b.style.left, b.style.top, b.getAttribute('data-at'), b.getAttribute('data-to')], ['333.33px', '444px', 'c', null], 'the host\'s place, centred');
+  delete at['o:i1:3']; R.L.layout(P);
+  assert.deepEqual([b.style.left, b.style.top, b.getAttribute('data-at'), b.getAttribute('data-to')], [(400 - 20 - C.END_PX) + 'px', '500px', null, 'l'], 'left out: the rim rule');
+  at['o:i1:3'] = { x: 10, y: 20 }; KZ.k = 2;
+  assert.equal(R.L.rezoom(), true);
+  assert.deepEqual([asked.at(-1)[2], b.style.left, b.style.top], [2, '10px', '20px'], 'a zoom: asked again at the new k');
+  KZ.k = 1;
+  const F = cordLayers({ onRecords: () => ({ forks: new Map([['i1/oscA.out', { x: 150.5, y: 100 }]]) }) });
+  F.L.set(rigRecs().concat([{ id: 'x:i1:oscA.out>filter2.in', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscA.out', b: 'filter2.in' }, a: 'i1/oscA.out', b: 'i1/filter2.in', fork: true, src: ['i1'] }]));
+  P.set('i1/filter2.in', { x: 300, y: 250 }); F.L.layout(P);
+  const fb = F.L.forkBadge('i1/oscA.out');
+  assert.deepEqual([!!fb, fb && fb.style.left, fb && fb.style.top], [true, '150.5px', '100px'], 'a claimed fork\'s BAL at the host\'s place (right of its fanned plugs)');
+  R.L.destroy(); F.L.destroy();
+});
+
+test('(WC) onRecords fires after set (no ports yet: null) and after layout (the ports) with the claimed records; the visibility filters them (Never: no mod cords, On select: those touching, Always past MOD_FADE_N: fade: true copies — the host\'s 0.3 alpha); records never mutated', () => {
+  const R = cordLayers(), P = RIG_P();
+  assert.deepEqual(R.recs, [[CLAIMED, null]], 'after set: no ports yet');
+  R.L.layout(P);
+  assert.deepEqual(R.recs.at(-1), [CLAIMED, P.size], 'after layout: the ports');
+  R.L.layout(P);
+  assert.equal(R.recs.length, 3, 'every layout (the anchors may have moved)');
+  R.L.setModsVisible('never');
+  assert.deepEqual(R.recs.at(-1)[0], CLAIMED.slice(0, 4), 'Never: no mod cord');
+  const n = R.recs.length;
+  R.L.setModsVisible('select');
+  assert.equal(R.recs.length, n, 'the same set: no call');
+  R.L.select('o:i1:3');
+  assert.deepEqual(R.recs.at(-1)[0], CLAIMED, 'On select: the selected one');
+  R.L.select(null); R.L.highlight(['o:i1:3']);
+  assert.deepEqual(R.recs.at(-1)[0], CLAIMED, 'a highlight touches it too');
+  R.L.highlight(null); R.L.setModsVisible('always');
+  const many = rigRecs().concat(Array.from({ length: 25 }, (_, i) => ({ id: 'o:i1:' + (10 + i), kind: 'mod', a: 'i1/lfo1.out', b: 'i1:f.cutoff', amt: 0.1, own: true, dev: 'i1', slot: 10 + i, src: 'lfo1' })));
+  R.L.set(many); R.L.layout(P);
+  const last = R.recs.at(-1)[0];
+  assert.deepEqual([last.filter(x => x.endsWith('~')).length, last.includes('x:i1:oscA.out>filter.in')], [26, true], 'past 24: every mod cord not touching the selection faded, the audio ones never');
+  R.L.select('o:i1:20');
+  assert.ok(R.recs.at(-1)[0].includes('o:i1:20') && !R.recs.at(-1)[0].includes('o:i1:20~'), 'the selected one unfaded');
+  assert.equal(many.some(c => 'fade' in c), false, 'a copy: the records untouched');
+  R.L.destroy();
+});
+
+test('(WC) a claimed cord\'s selection: tap(id, p, by) — the world\'s tap on its body — selects it (onSelect with the pointer, cordSel mirrors it to the layer, the × at the tap point; a new tap moves it; its ends moving drop the point); a keyboard select puts the × on its rope (cordPoint); Delete / Escape / the menu as a line\'s; a mod row: no ×, a second tap the inspector; a warp cord taps; an unclaimed id is not the cords\'', () => {
+  const R = cordLayers(), P = RIG_P();
+  R.L.layout(P);
+  assert.equal(R.L.tap('x:i1:oscA.out>filter.in', { x: 210.444, y: 140.6 }, 'touch'), true);
+  assert.deepEqual([R.sel.at(-1), R.csel.at(-1), R.L.selected(), R.g('x:i1:oscA.out>filter.in').getAttribute('class')], ['x:i1:oscA.out>filter.in/touch', 'x:i1:oscA.out>filter.in', 'x:i1:oscA.out>filter.in', 'cv-cable-g cv-sel']);
+  const x = R.xb();
+  assert.deepEqual([x.hidden, x.style.left, x.style.top], [false, '210.44px', '140.6px'], 'the × at the tap point');
+  x.click();
+  assert.deepEqual(R.acts, [], 'the touch tap\'s own click on the × under the finger never disconnects (review 2 P1-1)');
+  R.L.tap('x:i1:oscA.out>filter.in', { x: 260, y: 170 }, 'mouse');
+  assert.deepEqual([x.style.left, x.style.top, R.L.selected()], ['260px', '170px', 'x:i1:oscA.out>filter.in'], 'again: the × follows the new tap');
+  P.set('i1/filter.in', { x: 320, y: 150 }); R.L.layout(P);
+  assert.deepEqual([x.style.left, x.style.top], ['250.5px', '333.25px'], 'its end moved: the × on the rope (cordPoint)');
+  key(R.doc.body, 'Delete');
+  assert.deepEqual(R.acts, ['x:i1:oscA.out>filter.in disconnect'], 'Delete disconnects');
+  key(R.doc.body, 'Escape');
+  assert.deepEqual([R.L.selected(), R.csel.at(-1)], [null, null], 'Escape clears it — the layer too');
+  R.L.select('x:i1:filter.out>voice.main');
+  assert.deepEqual([x.style.left, x.style.top, R.csel.at(-1)], ['250.5px', '333.25px', 'x:i1:filter.out>voice.main'], 'a keyboard select: the × on the rope');
+  R.L.openMenu('x:i1:filter.out>voice.main', 5, 5);
+  assert.deepEqual(menuLabels(R.doc), ['Disconnect', 'Bypass x:i1:filter.out>voice.main'], 'its menu as a line\'s');
+  R.L.tap('o:i1:3', { x: 300, y: 500 }, 'mouse');
+  assert.deepEqual([R.L.selected(), x.hidden, R.csel.at(-1), R.sel.at(-1)], ['o:i1:3', true, 'o:i1:3', 'o:i1:3/mouse'], 'a mod row: selected, no ×');
+  const n = R.sel.length;
+  R.L.tap('o:i1:3', { x: 300, y: 500 }, 'mouse');
+  assert.deepEqual([R.sel.length, R.sel.at(-1)], [n + 1, 'o:i1:3/mouse'], 'tapped again: onSelect again (the host\'s inspector)');
+  R.L.tap('x:i1:oscA.out>oscB.warp', { x: 80, y: 150 });
+  assert.deepEqual([R.acts.at(-1), R.L.selected()], ['x:i1:oscA.out>oscB.warp tap', 'o:i1:3'], 'a warp cord: its tap (the oscillator\'s menu), never selected');
+  assert.deepEqual([R.L.tap('r1', { x: 0, y: 0 }), R.L.tap('nope', null)], [false, false], 'not claimed: not the cords\'');
+  fire(R.L.badge('o:i1:3'), 'contextmenu', { clientX: 9, clientY: 9 });
+  assert.deepEqual(menuLabels(R.doc), ['Disconnect', 'Bypass o:i1:3'], 'its badge\'s menu');
+  R.L.destroy();
+});
+
+test('(WC) a record whose claim changes is made again (a cord ↔ a line: its paths, its twin, its badge); o.cords absent, null or claiming nothing: the markup is today\'s byte for byte', () => {
+  let on = true;
+  const R = cordLayers({ cords: c => on && claimRig(c) }), P = RIG_P();
+  R.L.layout(P); R.L.select('x:i1:filter.out>voice.main');
+  on = false; R.L.set(rigRecs());
+  assert.deepEqual([all(R.L.under).filter(n => n.getAttribute && n.getAttribute('data-cable')).length, R.L.claimed('o:i1:3'), R.L.badge('o:i1:3').hasAttribute('data-cord')], [8, false, false], 'every one a line again');
+  assert.equal(R.g('x:i1:filter.out>voice.main').getAttribute('class'), 'cv-cable-g cv-sel', 'still selected: its class on the new group');
+  assert.equal(R.csel.at(-1), null, 'the layer: no cord selected');
+  on = true; R.L.set(rigRecs());
+  assert.deepEqual([R.L.claimed('o:i1:3'), R.csel.at(-1)], [true, 'x:i1:filter.out>voice.main'], 'a cord again, the layer\'s selection back');
+  R.L.destroy();
+  // the same script with no predicate, a null one and one that claims nothing: the same markup
+  const script = o => {
+    const doc = fresh(), W = doc.createElement('div');
+    doc.body.append(W);
+    const L = C.createCables(W, Object.assign({ doc, k: () => 1 }, o));
+    const out = [];
+    L.set(rigRecs()); out.push(html(W));
+    L.layout(RIG_P()); out.push(html(W));
+    L.select('x:i1:filter.out>voice.main'); out.push(html(W));
+    L.highlight(['r1']); L.setModsVisible('select'); out.push(html(W));
+    L.setModsVisible('always'); L.highlight(null); L.select('o:i1:3'); out.push(html(W));
+    L.set(rigRecs().slice(2)); L.layout(RIG_P()); out.push(html(W));
+    L.destroy();
+    return out;
+  };
+  const base = script({});
+  assert.deepEqual(script({ cords: null }), base, 'cords: null');
+  assert.deepEqual(script({ cords: () => false, onRecords() {}, cordSel() {}, cordPoint: () => ({ x: 1, y: 1 }) }), base, 'claiming nothing');
+});
+
+// the cords-mode rig: a scripted world (k 1, the viewport at client (0, 100), an overlay, the cord hook), a rig's modules with their
+// cord jacks (data-kind cord + data-cord role + data-dir), its filter's knobs, a line jack (its own FX in), a fake cord layer
+function cordRig(o = {}) {
+  const doc = fresh(), el = doc.createElement('div'), ov = doc.createElement('div');
+  doc.body.append(el, ov);
+  const subs = {}, ptrs = [], hooks = {}, log = [], timers = [];
+  const world = {
+    el, overlay: ov, k: 1, jack: null, jackCancel: null,
+    toClient: (x, y) => ({ x, y: y + 100 }), toWorld: (x, y) => ({ x, y: y - 100 }),
+    dragPointer: p => ptrs.push(p ? p.x + ',' + p.y : null),
+    on: (t, f) => { (subs[t] || (subs[t] = [])).push(f); return () => { subs[t] = subs[t].filter(g => g !== f); }; },
+    setJackHook(f, c) { world.jack = f; world.jackCancel = c; return () => { world.jack = null; }; },
+    setCordHook(h, t) { hooks.hit = h; hooks.tap = t; return () => { hooks.hit = hooks.tap = null; }; },
+  };
+  const mk = (tag, attrs, parent) => { const n = doc.createElement(tag); for (const k in attrs) n.setAttribute(k, attrs[k]); (parent || el).append(n); return n; };
+  const mod = key => mk('div', { 'data-cv-mod': key, class: 'cv-mod' });
+  const M = { oscA: mod('i1/oscA'), oscB: mod('i1/oscB'), oscC: mod('i1/oscC'), filter: mod('i1/filter'), amp: mod('i1'), lfo: mod('i1/lfo1'), env: mod('i1/env1'), fx: mod('i1/fx') };
+  const LAB = { 'i1/oscA.out': 'Oscillator 1 out', 'i1/oscB.out': 'Oscillator 2 out', 'i1/oscC.out': 'Oscillator 3 out', 'i1/oscB.warp': 'Oscillator 2 warp', 'i1/filter.in': 'Filter 1 in',
+    'i1/filter.out': 'Filter 1 out', 'i1.main': 'Amplifier in', 'i1.level': 'Amplifier level', 'i1/lfo1.out': 'LFO 1 out', 'i1/env1.out': 'Envelope 1 out' };
+  const cj = (id, role, dir, parent) => mk('span', o.lines ? { 'data-cv-jack': id, 'data-kind': role === 'mod' ? 'mod' : 'audio', 'data-dir': dir, role: 'button', 'aria-label': LAB[id], title: LAB[id] } // ((fixer B2) lines mode: stage 3's kinds
+    : { 'data-cv-jack': id, 'data-kind': 'cord', 'data-cord': role, 'data-dir': dir, 'data-cv-awake': '', role: 'button', 'aria-label': LAB[id], title: LAB[id] }, parent);
+  const J = { 'i1/oscA.out': cj('i1/oscA.out', 'audio', 'out', M.oscA), 'i1/oscB.out': cj('i1/oscB.out', 'audio', 'out', M.oscB), 'i1/oscC.out': cj('i1/oscC.out', 'audio', 'out', M.oscC),
+    'i1/oscB.warp': cj('i1/oscB.warp', 'warp', 'in', M.oscB), 'i1/filter.in': cj('i1/filter.in', 'audio', 'in', M.filter), 'i1/filter.out': cj('i1/filter.out', 'audio', 'out', M.filter),
+    'i1.main': cj('i1.main', 'audio', 'in', M.amp), 'i1.level': cj('i1.level', 'audio', 'in', M.amp), 'i1/lfo1.out': cj('i1/lfo1.out', 'mod', 'out', M.lfo), 'i1/env1.out': cj('i1/env1.out', 'mod', 'out', M.env),
+    'i1/fx.in': mk('span', { 'data-cv-jack': 'i1/fx.in', 'data-kind': 'audio', 'data-ro': '', title: 'FX in' }, M.fx) };
+  const kp = mk('div', { 'data-dev': 'i1' }, M.filter);
+  const K = { cut: mk('div', { 'data-dest': 'f.cutoff', class: 'knob', 'aria-label': 'Cutoff' }, kp), res: mk('div', { 'data-dest': 'f.res', class: 'knob', 'aria-label': 'Resonance' }, kp) };
+  place(K.cut, 380, 580, 40, 40); place(K.res, 440, 580, 40, 40); // (client rects: the world + (0, 100))
+  const zones = [[K.cut, 380, 580, 40, 40], [K.res, 440, 580, 40, 40]];
+  doc.elementFromPoint = (x, y) => { for (const [n, l, t, w, h] of zones) if (x >= l && x < l + w && y >= t && y < t + h) return n; return el; };
+  const P = RIG_P();
+  const cables = C.createCables(el, { doc, cords: o.lines ? null : claimRig, onSelect: id => log.push('select ' + id), onAction: (id, a) => log.push('act ' + id + ' ' + a), menu: id => [{ label: 'Bypass ' + id, action() {} }] });
+  cables.set(rigRecs()); cables.layout(P);
+  const layer = { live: x => log.push('live ' + (x ? [x.a.x, x.a.y, x.b.x, x.b.y, x.c, x.s].join(',') : 'null')), grab: (id, end, p) => log.push('grab ' + id + ' ' + end + ' ' + p.x + ',' + p.y),
+    move: p => log.push('move ' + p.x + ',' + p.y), drop: () => log.push('drop') };
+  const canConnect = (a, b) => (b === 'i1.level' ? (a === 'i1/env1.out' ? { ok: true } : { ok: false, why: 'An Envelope only' })
+    : b === 'i1/oscB.warp' ? { ok: false, why: 'Set in the oscillator’s warp menu' }
+    : /^i1\/osc[ABC]\.out$/.test(a) && (b === 'i1/filter.in' || b === 'i1.main') ? { ok: true } : a === 'i1/filter.out' && b === 'i1.main' ? { ok: true } : { ok: false, why: 'An oscillator feeds a Filter or the Amplifier' });
+  const D = C.createCableDrag(world, Object.assign({
+    ports: () => P, cables, doc, port: j => (j === 'i1/fx.in' ? null : j), jacks: () => Object.keys(J).map(id => ({ id, el: J[id] })), rects: () => ({ i1: { x: 450, y: 200, w: 200, h: 200 } }),
+    canConnect, canMod: (src, dst) => (dst === 'i1:f.res' || dst === 'i1:f.cutoff' ? { ok: true } : { ok: false, why: 'Not this one' }), markDests: () => [{ dev: 'i1', ids: ['f.cutoff', 'f.res'] }],
+    onConnect: (a, b) => log.push('connect ' + a + ' ' + b), onRepatch: (id, a, b) => log.push('repatch ' + id + ' ' + a + ' ' + b), onPull: id => log.push('pull ' + id),
+    onRefuse: (a, b, why) => log.push('refuse ' + a + ' ' + b + ': ' + why), onMod: (s, d) => log.push('mod ' + s + ' ' + d), onRepatchMod: (id, d) => log.push('remod ' + id + ' ' + d),
+    onJackTap: (src, je) => log.push('jacktap ' + src), onBarDrop: (s, k) => log.push('bar ' + s + ' ' + k),
+    live: layer.live, grab: layer, cordLook: j => ({ c: j === 'i1/oscB.out' ? 3 : 2 }),
+    later: (f, ms) => { timers.push({ f, ms }); return timers.length; }, unlater: id => { timers[id - 1] = null; },
+    cordHit: (p, r, ok) => { log.push('hit ' + p.x + ',' + p.y + ' ' + r); const id = p.y < 200 ? 'x:i1:oscA.out>filter.in' : p.y < 400 ? 'pc1' : null; return id && ok(id) ? id : null; },
+  }, o));
+  const press = (id, x, y, o2 = {}) => world.jack(new Ev('pointerdown', Object.assign({ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'touch', button: 0 }, o2)), J[id]);
+  const mv = (x, y, o2 = {}) => ptr(doc.body, 'pointermove', x, y, Object.assign({ pointerId: 1, pointerType: 'touch' }, o2));
+  const upAt = (x, y, o2 = {}) => ptr(doc.body, 'pointerup', x, y, Object.assign({ pointerId: 1, pointerType: 'touch' }, o2));
+  const cls = id => J[id].getAttribute('class') || '';
+  const chip = () => { const c = all(ov).find(n => n.getAttribute && n.getAttribute('class') === 'cv-plugchip'); return c ? [c.hidden, c.textContent, c.hasAttribute('data-no')] : null; };
+  const fireT = () => { for (const t of timers.splice(0)) if (t) t.f(); };
+  return { doc, el, ov, world, J, K, M, P, cables, D, log, ptrs, hooks, timers, press, mv, upAt, cls, chip, fireT };
+}
+
+test('(WC) cords-mode drag, an OUTPUT: always a new cord — the rope from the jack to the finger (o.live, o.cordLook\'s colour), compatible inputs cv-ok, the rest cv-no with the reason, #world[data-cv-patching="cord"]; the jack under the finger decides first (a refused one: its reason in the chip, no target), else the nearest compatible within SNAP_PX (the chip names it); release → o.onConnect, then the rope goes', () => {
+  const R = cordRig();
+  assert.equal(typeof R.press('i1/oscC.out', 100, 400).cancel, 'function', 'taken (o.cordPress absent)');
+  R.mv(104, 402);
+  assert.deepEqual(R.log, [], 'within the slop: nothing');
+  R.mv(200, 300);
+  assert.deepEqual(['i1/oscC.out', 'i1/filter.in', 'i1.main', 'i1.level', 'i1/oscB.warp', 'i1/oscA.out', 'i1/fx.in'].map(R.cls), ['cv-from', 'cv-ok', 'cv-ok', 'cv-no', 'cv-no', 'cv-no', 'cv-no']);
+  assert.deepEqual([R.J['i1.level'].title, R.J['i1/oscA.out'].title, R.J['i1/fx.in'].title], ['An Envelope only', 'Connect an output to an input', 'Inside its instrument: not patchable']);
+  assert.deepEqual([R.el.getAttribute('data-cv-patching'), R.log.at(-1)], ['cord', 'live 100,300,200,200,2,0'], 'the rope: the jack → the finger (world px)');
+  R.mv(310, 244); // (10 px from Filter 1 in: client (300, 250))
+  assert.deepEqual([R.cls('i1/filter.in'), R.log.at(-1), R.chip()], ['cv-ok cv-hot', 'live 100,300,300,150,2,0', [false, 'Filter 1 in', false]], 'snapped, named');
+  R.mv(521, 361); // (on LEVEL — refused — with the Amplifier's IN 23 px away: the one under the finger decides)
+  assert.deepEqual([R.cls('i1.main'), R.chip()], ['cv-ok', [false, 'Amplifier level — An Envelope only', true]], 'no target: the reason');
+  R.upAt(521, 361);
+  assert.deepEqual(R.log.slice(-2), ['refuse i1/oscC.out i1.level: An Envelope only', 'live null']);
+  assert.deepEqual([R.el.hasAttribute('data-cv-patching'), R.cls('i1.level'), R.J['i1.level'].title, R.chip()[0]], [false, '', 'Amplifier level', true], 'every trace cleared');
+  R.log.length = 0;
+  R.press('i1/oscA.out', 100, 200); R.mv(200, 250); R.mv(301, 251); R.upAt(301, 251);
+  assert.deepEqual(R.log.filter(x => !/^live 100,100,/.test(x)), ['connect i1/oscA.out i1/filter.in', 'live null'], 'an output that has cords: a new one still (never a grab)');
+  R.log.length = 0;
+  R.press('i1/oscC.out', 100, 400); R.mv(300, 600); R.upAt(300, 600);
+  assert.deepEqual(R.log.slice(-1), ['live null'], 'released on nothing: nothing');
+  R.D.destroy();
+});
+
+test('(WC) cords-mode drag, an INPUT holding cords: its most recent one grabbed (o.grab — its b end in the finger); on another compatible input → o.onRepatch(id, out, in); on its own jack or its source → nothing; away from any jack → o.onPull(id); near a refused one → o.onRefuse; Escape / a second finger → it springs back (drop, nothing written); a free input: a new cord backwards', () => {
+  const R = cordRig();
+  R.press('i1/filter.in', 300, 250); R.mv(320, 300);
+  assert.deepEqual(R.log, ['grab x:i1:oscB.out>filter.in b 320,200', 'move 320,200'], 'the last at Filter 1 IN: Oscillator 2\'s');
+  assert.deepEqual(['i1/oscB.out', 'i1/filter.in', 'i1.main', 'i1.level'].map(R.cls), ['cv-from', 'cv-ok', 'cv-ok', 'cv-no'], 'its source fixed; its own jack and the Amplifier\'s IN take it');
+  R.mv(500, 351); R.upAt(500, 351);
+  assert.deepEqual(R.log.slice(-3), ['move 500,250', 'repatch x:i1:oscB.out>filter.in i1/oscB.out i1.main', 'drop'], 're-patched, then let go (it springs to its new anchor)');
+  const run = (pts, tag) => { R.log.length = 0; R.press('i1/filter.in', 300, 250); for (const [x, y] of pts) R.mv(x, y); const [x, y] = pts.at(-1); R.upAt(x, y); return R.log.filter(s => !/^(grab|move)/.test(s)); };
+  assert.deepEqual(run([[340, 330], [301, 250]]), ['drop'], 'back on its own jack: nothing');
+  assert.deepEqual(run([[200, 300], [101, 301]]), ['drop'], 'on its own source: nothing');
+  assert.deepEqual(run([[500, 700], [800, 800]]), ['pull x:i1:oscB.out>filter.in', 'drop'], 'let go away from any jack: pulled');
+  assert.deepEqual(run([[400, 330], [521, 361]]), ['refuse i1/oscB.out i1.level: An Envelope only', 'drop'], 'near a refused one: the reason, nothing pulled');
+  R.log.length = 0;
+  R.press('i1/filter.in', 300, 250); R.mv(500, 500); key(R.doc.body, 'Escape'); R.upAt(800, 800);
+  assert.deepEqual(R.log.filter(s => !/^(grab|move)/.test(s)), ['drop'], 'Escape: it springs back');
+  R.log.length = 0;
+  R.press('i1/filter.in', 300, 250); R.mv(500, 500); R.world.jackCancel(); R.upAt(800, 800);
+  assert.deepEqual(R.log.filter(s => !/^(grab|move)/.test(s)), ['drop'], 'a second finger: the same');
+  // a free input: a new cord backwards (an Envelope's mod output is a source of LEVEL)
+  R.log.length = 0;
+  R.press('i1.level', 520, 360); R.mv(400, 500);
+  assert.deepEqual(['i1/env1.out', 'i1/lfo1.out', 'i1/oscA.out', 'i1.level'].map(R.cls), ['cv-ok', 'cv-no', 'cv-no', 'cv-from']);
+  assert.equal(R.log.at(-1), 'live 520,260,400,400,2,0', 'the rope from LEVEL to the finger');
+  R.mv(101, 701); R.upAt(101, 701);
+  assert.deepEqual(R.log.slice(-2), ['connect i1/env1.out i1.level', 'live null']);
+  R.D.destroy();
+});
+
+test('(WC) "Which cord?": a touch long-press (WHICH_MS) on an input holding several — its cords by source, the most recent first; a pick selects it and opens its menu; a mouse press arms none; a drag past the slop disarms it; a right-click on such an input too', () => {
+  const R = cordRig();
+  R.press('i1/filter.in', 300, 250);
+  assert.deepEqual([R.timers.length, R.timers[0].ms], [1, C.WHICH_MS]);
+  R.fireT();
+  assert.deepEqual(menuLabels(R.doc), ['Which cord?', 'Oscillator 2 out', 'Oscillator 1 out']);
+  assert.equal(R.D.active(), false, 'the press is over');
+  R.upAt(300, 250);
+  assert.deepEqual(R.log, [], 'its lift: nothing');
+  const pick = label => { const it = all(R.doc.body).filter(n => n.getAttribute && n.getAttribute('class') === 'wk-cl' && n.textContent === label).at(-1).parentNode; ptr(it, 'pointerdown', 0, 0, { pointerId: 7 }); it.dispatchEvent(new Ev('click', { bubbles: true })); };
+  pick('Oscillator 1 out');
+  assert.deepEqual([R.cables.selected(), menuLabels(R.doc)], ['x:i1:oscA.out>filter.in', ['Disconnect', 'Bypass x:i1:oscA.out>filter.in']], 'selected, its menu');
+  R.press('i1/filter.in', 300, 250, { pointerType: 'mouse' }); R.upAt(300, 250, { pointerType: 'mouse' });
+  assert.equal(R.timers.length, 0, 'a mouse press: none');
+  R.press('i1/filter.in', 300, 250); R.mv(400, 400);
+  assert.deepEqual(R.timers.map(t => t === null), [true], 'the drag began: disarmed');
+  R.upAt(800, 800); R.timers.length = 0;
+  R.press('i1.main', 500, 350);
+  assert.equal(R.timers.length, 0, 'one cord: no "Which cord?"');
+  R.upAt(500, 350);
+  fire(R.J['i1/filter.in'], 'contextmenu', { clientX: 300, clientY: 250 });
+  assert.deepEqual(menuLabels(R.doc)[0], 'Which cord?', 'a right-click');
+  R.D.destroy();
+});
+
+test('(WC) a tap / Enter on a cord jack: o.jackMenu(jack, el, x, y) first (the host\'s plug menu), else "Connect to…" over the cord jacks (an Envelope for LEVEL) with Pull items; a mod output\'s tap: o.onJackTap; a WARP jack: a target only — its tap the warp cord\'s (onAction tap), no drag from it', () => {
+  const asked = [];
+  const R = cordRig({ jackMenu: (j, el, x, y) => { asked.push(j + ' ' + x + ',' + y); return j === 'i1.main' ? {} : null; } });
+  R.press('i1.main', 500, 350); R.upAt(502, 351);
+  assert.deepEqual([asked, menuLabels(R.doc)], [['i1.main 502,351'], []], 'the host\'s menu took it');
+  R.press('i1/filter.in', 300, 250); R.upAt(300, 250);
+  assert.deepEqual(menuLabels(R.doc), ['Connect Filter 1 in to…', 'Oscillator 1 out', 'Oscillator 2 out', 'Oscillator 3 out', 'Pull Oscillator 1 out', 'Pull Oscillator 2 out'], 'declined: Connect to… with its Pull items');
+  const pick = label => { const it = all(R.doc.body).filter(n => n.getAttribute && n.getAttribute('class') === 'wk-cl' && n.textContent === label).at(-1).parentNode; ptr(it, 'pointerdown', 0, 0, { pointerId: 7 }); it.dispatchEvent(new Ev('click', { bubbles: true })); };
+  pick('Pull Oscillator 1 out');
+  assert.equal(R.log.at(-1), 'pull x:i1:oscA.out>filter.in');
+  key(R.J['i1.level'], 'Enter');
+  assert.deepEqual(menuLabels(R.doc), ['Connect Amplifier level to…', 'Envelope 1 out'], 'Enter: LEVEL lists the Envelope');
+  pick('Envelope 1 out');
+  assert.equal(R.log.at(-1), 'connect i1/env1.out i1.level');
+  R.press('i1/lfo1.out', 100, 600); R.upAt(100, 600);
+  assert.equal(R.log.at(-1), 'jacktap i1/lfo1.out', 'a mod output: the host\'s knob list');
+  R.press('i1/oscB.warp', 60, 300); R.mv(200, 400); R.mv(300, 500); R.upAt(300, 500);
+  assert.equal(R.log.filter(s => /^(live|grab)/.test(s)).length, 0, 'no drag from a warp jack');
+  R.press('i1/oscB.warp', 60, 300); R.upAt(60, 300);
+  assert.equal(R.log.at(-1), 'act x:i1:oscA.out>oscB.warp tap', 'its tap: the warp cord\'s (the oscillator\'s menu)');
+  R.D.destroy();
+});
+
+test('(WC) a mod output\'s cord: onto a knob (markDests glow, the rope\'s tip on its centre, o.onMod), onto a cord input that takes it (an Envelope → LEVEL: o.onConnect), a refused input (o.onRefuse); the rope has the tip (s 2)', () => {
+  const R = cordRig();
+  R.press('i1/lfo1.out', 100, 600); R.mv(200, 650);
+  assert.deepEqual([R.el.getAttribute('data-cv-patching'), R.K.res.getAttribute('class'), R.log.at(-1)], ['mod', 'knob cv-ok', 'live 100,500,200,550,2,2'], 'the knobs glow; a tip in the finger');
+  R.mv(455, 595);
+  assert.deepEqual([R.K.res.getAttribute('class'), R.log.at(-1), R.chip()], ['knob cv-ok cv-hot', 'live 100,500,460,500,2,2', [false, 'Resonance', false]], 'on the knob: its centre');
+  R.upAt(455, 595);
+  assert.deepEqual(R.log.slice(-2), ['mod i1/lfo1.out i1:f.res', 'live null']);
+  R.press('i1/env1.out', 100, 700); R.mv(300, 500); R.mv(521, 361);
+  assert.deepEqual([R.cls('i1.level'), R.log.at(-1)], ['cv-ok cv-hot', 'live 100,600,520,260,2,2'], 'LEVEL takes an Envelope');
+  R.upAt(521, 361);
+  assert.deepEqual(R.log.slice(-2), ['connect i1/env1.out i1.level', 'live null']);
+  R.press('i1/lfo1.out', 100, 600); R.mv(300, 500); R.mv(521, 361);
+  assert.deepEqual([R.cls('i1.level'), R.chip()], ['cv-no', [false, 'Amplifier level — An Envelope only', true]], 'an LFO: refused (fixer B2: the host\'s reason for a cord input)');
+  R.upAt(521, 361);
+  assert.deepEqual(R.log.slice(-2), ['refuse i1/lfo1.out i1.level: An Envelope only', 'live null']);
+  R.D.destroy();
+});
+
+test('(WC, integration fixer L — review WC-int P3-18, tightened after its checks) a mod cord onto a knob aims at its disc by the kit\'s ONE measure (wk.discBox: the control\'s .wk-svg child inside the control\'s box) — the disc over its label: the disc\'s centre; a disc spilling out of the control: the control\'s centre (the same "no disc" as cv-module\'s knob end and main\'s ring); no disc: the control\'s centre', () => {
+  const R = cordRig(), sv = R.doc.createElement('div');
+  sv.setAttribute('class', 'wk-svg'); R.K.res.append(sv);
+  place(R.K.res, 440, 572, 40, 56); place(sv, 444, 574, 32, 32); // (the control: its disc over a label; client = world + (0, 100))
+  R.press('i1/lfo1.out', 100, 600); R.mv(300, 650); R.mv(455, 595);
+  assert.deepEqual([R.K.res.getAttribute('class'), R.log.at(-1)], ['knob cv-ok cv-hot', 'live 100,500,460,490,2,2'], 'on the knob: its disc\'s centre (wk.discBox)');
+  place(sv, 420, 574, 32, 32); R.mv(300, 650); R.mv(456, 596);
+  assert.deepEqual(R.log.at(-1), 'live 100,500,460,500,2,2', 'a disc spilling out of the control: the control\'s centre');
+  sv.remove(); R.mv(300, 650); R.mv(455, 595);
+  assert.deepEqual(R.log.at(-1), 'live 100,500,460,500,2,2', 'no disc: the control\'s centre');
+  R.upAt(455, 595);
+  assert.deepEqual(R.log.slice(-2), ['mod i1/lfo1.out i1:f.res', 'live null']);
+  assert.ok(/wk\.discBox\(/.test(readFileSync(new URL('../cv-cables.js', import.meta.url), 'utf8')), 'cv-cables measures through wk.discBox');
+  R.D.destroy();
+});
+
+test('(WC) a claimed mod row\'s BADGE dragged: its knob-end tip in the finger (o.grab), never the canvas\'s pan; onto another accepted knob → o.onRepatchMod(id, dst), onto its own → nothing, away from any knob → o.onPull(id); a tap on it still selects', () => {
+  const R = cordRig(), b = R.cables.badge('o:i1:3');
+  let pans = 0;
+  R.el.addEventListener('pointerdown', () => pans++);
+  const drag = (pts, pid) => { R.log.length = 0; ptr(b, 'pointerdown', 356, 600, { pointerId: pid, pointerType: 'touch' }); for (const [x, y] of pts) ptr(R.doc.body, 'pointermove', x, y, { pointerId: pid, pointerType: 'touch' }); const [x, y] = pts.at(-1); ptr(R.doc.body, 'pointerup', x, y, { pointerId: pid, pointerType: 'touch' }); return R.log.filter(s => !/^move/.test(s)); };
+  assert.deepEqual(drag([[380, 610], [455, 595]], 5), ['grab o:i1:3 b 380,510', 'remod o:i1:3 i1:f.res', 'drop'], 'onto Resonance: re-targeted');
+  assert.equal(pans, 0, 'the press never reached the canvas');
+  assert.deepEqual(drag([[380, 610], [395, 595]], 6), ['grab o:i1:3 b 380,510', 'drop'], 'onto its own knob: nothing');
+  assert.deepEqual(drag([[380, 610], [900, 900]], 7), ['grab o:i1:3 b 380,510', 'pull o:i1:3', 'drop'], 'away: pulled');
+  R.log.length = 0;
+  ptr(b, 'pointerdown', 356, 600, { pointerId: 8, pointerType: 'mouse' }); ptr(R.doc.body, 'pointerup', 357, 600, { pointerId: 8, pointerType: 'mouse' });
+  assert.deepEqual([R.log, R.cables.selected()], [['select o:i1:3'], 'o:i1:3'], 'a tap: selected');
+  R.D.destroy();
+  // without the cords mode (no o.live): the badge pans as today
+  const N = cordRig({ live: undefined });
+  let p2 = 0;
+  N.el.addEventListener('pointerdown', () => p2++);
+  ptr(N.cables.badge('o:i1:3'), 'pointerdown', 356, 600, { pointerId: 9, pointerType: 'touch' });
+  assert.equal(p2, 1, 'no badge drag registered: the canvas\'s press');
+  N.D.destroy();
+});
+
+// (WC pre-deploy [badge-hold]) a claimed badge held before it was dragged opened its menu (the 500 ms long-press) AND the drag still ran —
+// landscape: the cord pulled under the open menu; portrait: re-targeted with the menu left open; a slow drag (the badge's own long-press
+// never told of the moves) opened the menu mid-drag. Never both: the menu first ends the gesture (no drag after it, as the jack's "Which
+// cord?"); a drag first (past TAP_PX) takes the press and its late long-press opens nothing
+test('(WC pre-deploy [badge-hold]) a claimed badge: a long-press opens its menu and the drag never runs after it; a drag that started first is never interrupted by the late long-press; a hold and release opens the menu alone', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const R = cordRig(), b = R.cables.badge('o:i1:3'), T0 = { pointerType: 'touch', isPrimary: true };
+  const moves = pid => { for (const [x, y] of [[380, 610], [420, 600], [455, 595]]) ptr(R.doc.body, 'pointermove', x, y, Object.assign({ pointerId: pid }, T0)); };
+  const acts = () => R.log.filter(s => /^(grab|remod|pull|drop|select)/.test(s));
+  // press, hold (the menu opens at 500 ms), then drag onto Resonance and lift: the menu stays, nothing patched
+  R.log.length = 0;
+  ptr(b, 'pointerdown', 356, 600, Object.assign({ pointerId: 11 }, T0));
+  t.mock.timers.tick(520);
+  assert.equal(menuLabels(R.doc)[0], 'Disconnect', 'the long-press opened the badge\'s menu');
+  moves(11); ptr(R.doc.body, 'pointerup', 455, 595, Object.assign({ pointerId: 11 }, T0));
+  assert.deepEqual([acts(), menuLabels(R.doc)[0]], [['select o:i1:3'], 'Disconnect'], 'no grab, no re-patch, no pull after the menu; the menu stays open');
+  wk.closeTransient();
+  // press and drag at once (past TAP_PX), the finger still down past 500 ms: the drag runs to its end, no menu
+  R.log.length = 0;
+  ptr(b, 'pointerdown', 356, 600, Object.assign({ pointerId: 12 }, T0));
+  ptr(R.doc.body, 'pointermove', 380, 610, Object.assign({ pointerId: 12 }, T0));
+  t.mock.timers.tick(700);
+  assert.deepEqual([menuLabels(R.doc), acts()], [[], ['grab o:i1:3 b 380,510']], 'the late long-press opens nothing (and selects nothing)');
+  ptr(R.doc.body, 'pointermove', 455, 595, Object.assign({ pointerId: 12 }, T0)); ptr(R.doc.body, 'pointerup', 455, 595, Object.assign({ pointerId: 12 }, T0));
+  assert.deepEqual([acts(), menuLabels(R.doc)], [['grab o:i1:3 b 380,510', 'remod o:i1:3 i1:f.res', 'drop'], []], 're-targeted, no menu');
+  // a later press of the same badge: its long-press opens the menu again (the drag's mark went with its lift)
+  R.cables.select(null); R.log.length = 0;
+  ptr(b, 'pointerdown', 356, 600, Object.assign({ pointerId: 13 }, T0));
+  t.mock.timers.tick(520);
+  ptr(b, 'pointerup', 356, 600, Object.assign({ pointerId: 13 }, T0));
+  assert.deepEqual([acts(), menuLabels(R.doc)[0]], [['select o:i1:3'], 'Disconnect'], 'hold and release: the menu alone (no tap, no drag)');
+  wk.closeTransient();
+  R.D.destroy();
+});
+
+test('(WC) the cord hook: o.cordHit installs the world\'s setCordHook — hit(p, r) asks it with a filter of the claimed ids (a patch cord never answers), its tap is the cables\' tap(id, p) (the × at p); with a cord selected a press on its body is no "elsewhere" (the cables ask cordHit at HIT_PX / k)', () => {
+  const R = cordRig();
+  assert.deepEqual([typeof R.hooks.hit, typeof R.hooks.tap], ['function', 'function']);
+  assert.deepEqual([R.hooks.hit({ x: 200, y: 120 }, 12), R.hooks.hit({ x: 200, y: 300 }, 12), R.hooks.hit({ x: 200, y: 600 }, 12)], ['x:i1:oscA.out>filter.in', null, null], 'a claimed one; \'pc1\' (not the cables\') filtered; none');
+  R.hooks.tap('x:i1:oscA.out>filter.in', { pointerType: 'touch' }, { x: 200, y: 120 });
+  const x = all(R.el).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-x');
+  assert.deepEqual([R.cables.selected(), x.style.left, x.style.top], ['x:i1:oscA.out>filter.in', '200px', '120px']);
+  R.log.length = 0;
+  ptr(R.el, 'pointerdown', 200, 220, { pointerId: 3 }); ptr(R.el, 'pointerup', 200, 220, { pointerId: 3 });
+  assert.deepEqual([R.cables.selected(), R.log], ['x:i1:oscA.out>filter.in', ['hit 200,120 ' + C.HIT_PX]], 'a press on its body (client y 220 = world 120): kept');
+  ptr(R.el, 'pointerdown', 200, 800, { pointerId: 4 }); ptr(R.el, 'pointerup', 200, 800, { pointerId: 4 });
+  assert.equal(R.cables.selected(), null, 'elsewhere: cleared');
+  R.D.destroy();
+  assert.deepEqual([R.hooks.hit, R.hooks.tap], [null, null], 'destroy removes it');
+  // without o.live a rig's cord jack is not this drag's (o.cordPress may answer it)
+  const N = cordRig({ live: undefined, cordHit: undefined });
+  assert.deepEqual([N.press('i1/oscA.out', 100, 200), typeof N.hooks.hit], [false, 'undefined'], 'not taken; no hook');
+  key(N.J['i1/filter.in'], 'Enter');
+  assert.deepEqual(menuLabels(N.doc), [], 'its keys: none here');
+  N.D.destroy();
+});
+
+/* ------------------------------------------------------------------ (WC) fixer B2 (review 2; the user, 2026-10-26) */
+test('(WC, fixer B2; review 2 P1-2) an Envelope\'s OUT dragged onto the Amplifier\'s LEVEL lands though the host\'s port() answers null for a mod output (the app\'s intPort): a rig cord input is asked through o.canConnect with the jacks themselves — cv-ok, the chip names it, o.onConnect(jack, port); a refused one shows the host\'s reason (an LFO: "An Envelope only"), never "Drag a modulation cable onto a knob"', () => {
+  const R = cordRig({ port: j => (j === 'i1/fx.in' || /\/(env|lfo)\d+\.out$/.test(j) ? null : j) });
+  R.press('i1/env1.out', 100, 700); R.mv(300, 500); R.mv(521, 361);
+  assert.deepEqual([R.cls('i1.level'), R.chip(), R.log.at(-1)], ['cv-ok cv-hot', [false, 'Amplifier level', false], 'live 100,600,520,260,2,2'], 'LEVEL takes the Envelope');
+  R.upAt(521, 361);
+  assert.deepEqual(R.log.slice(-2), ['connect i1/env1.out i1.level', 'live null'], 'plugged');
+  R.press('i1/lfo1.out', 100, 600); R.mv(300, 500); R.mv(521, 361);
+  assert.deepEqual([R.cls('i1.level'), R.J['i1.level'].title, R.chip()], ['cv-no', 'An Envelope only', [false, 'Amplifier level — An Envelope only', true]], 'an LFO: the host\'s reason');
+  R.upAt(521, 361);
+  assert.deepEqual(R.log.slice(-2), ['refuse i1/lfo1.out i1.level: An Envelope only', 'live null']);
+  R.D.destroy();
+});
+
+test('(WC, fixer B2; review 2 P3-3) an output dropped on another output: the jack under the finger refuses with the host\'s reason in the chip ("Two outputs — connect an output to an input"; never a silent spring-back) and the release says it (o.onRefuse); a grabbed cord let go on an output is refused there, never pulled', () => {
+  const two = 'Two outputs — connect an output to an input';
+  const R = cordRig({ canConnect: (a, b) => (/\.out$/.test(b) ? { ok: false, why: two } : b === 'i1.main' || b === 'i1/filter.in' ? { ok: true } : { ok: false, why: 'An Envelope only' }) });
+  R.press('i1/oscC.out', 100, 400); R.mv(150, 300); R.mv(101, 201);
+  assert.deepEqual([R.cls('i1/oscA.out'), R.chip()], ['cv-no', [false, 'Oscillator 1 out — ' + two, true]], 'over Oscillator 1\'s OUT: the reason');
+  R.upAt(101, 201);
+  assert.deepEqual(R.log.slice(-2), ['refuse i1/oscC.out i1/oscA.out: ' + two, 'live null'], 'released there: said');
+  R.log.length = 0;
+  R.press('i1/filter.in', 300, 250); R.mv(250, 380); R.mv(101, 401);
+  assert.deepEqual(R.chip(), [false, 'Oscillator 3 out — ' + two, true], 'a grabbed cord over an output');
+  R.upAt(101, 401);
+  assert.deepEqual(R.log.filter(s => !/^(grab|move)/.test(s)), ['refuse i1/oscB.out i1/oscC.out: ' + two, 'drop'], 'refused, not pulled');
+  R.D.destroy();
+});
+
+test('(WC, fixer B2; review 2 P2-3) o.top: a claimed mod row\'s badge, a claimed cord\'s × and a claimed fork\'s BAL go to the layer above the cords (never under a rope), its --ik the world\'s (copied at each layout / zoom); a line\'s badge and ×, and everything without o.top, stay in the world as today', () => {
+  const R = cordLayers({ withTop: true }), P = RIG_P(), T = R.TOP;
+  R.W.style.setProperty('--ik', '0.5');
+  R.L.layout(P);
+  const inT = n => !!n && n.parentNode === T, inW = n => !!n && n.parentNode === R.W;
+  assert.deepEqual([inT(R.L.badge('o:i1:3')), inW(R.L.badge('r1'))], [true, true], 'the claimed badge above the cords; a line\'s in the world');
+  assert.equal(T.style.getPropertyValue('--ik'), '0.5', 'the world\'s --ik');
+  R.L.tap('x:i1:oscA.out>filter.in', { x: 200, y: 120 }, 'mouse');
+  assert.deepEqual([inT(R.xb()), R.xb().hidden, R.xb().style.left], [true, false, '200px'], 'a cord\'s ×: above the cords, at the tap');
+  R.L.select('x:i1:oscC.out>');
+  assert.deepEqual([inW(R.xb()), R.xb().hidden], [true, false], 'a line\'s ×: back in the world');
+  R.W.style.setProperty('--ik', '0.25'); R.L.rezoom();
+  assert.equal(T.style.getPropertyValue('--ik'), '0.25', 'a zoom: copied again');
+  R.L.set(rigRecs().concat([{ id: 'x:i1:oscA.out>filter2.in', kind: 'audio', int: 'audio', dev: 'i1', edge: { a: 'oscA.out', b: 'filter2.in' }, a: 'i1/oscA.out', b: 'i1/filter2.in', fork: true, src: ['i1'] }]));
+  assert.equal(inT(R.L.forkBadge('i1/oscA.out')), true, 'a claimed fork\'s BAL above the cords');
+  R.L.destroy();
+  assert.equal(T.childNodes.length, 0, 'destroy: nothing left above');
+  const N = cordLayers();
+  N.L.layout(P);
+  assert.equal(N.L.badge('o:i1:3').parentNode === N.W, true, 'without o.top: the world');
+  N.L.destroy();
+});
+
+test('(WC, fixer B2; review 2 P2-4: the regret path) lines mode — a press on a rig input a line arrives at grabs that line\'s end (the most recent: re-patch by drag, parity with cords): its source fixed, the inputs that take it lit, dropped on one → o.onRepatch(id, out, in); let go elsewhere → nothing (a line\'s rule: its × removes it); an input with no line: a new cable backwards as today', () => {
+  const R = cordRig({ lines: true, live: undefined, grab: undefined, cordHit: undefined });
+  R.press('i1/filter.in', 300, 250); R.mv(340, 300);
+  assert.deepEqual(['i1/oscB.out', 'i1/filter.in', 'i1.main', 'i1.level'].map(R.cls), ['cv-from', 'cv-ok', 'cv-ok', 'cv-no'], 'Oscillator 2\'s line (the most recent) lifted: its source fixed');
+  assert.equal(all(R.el).find(n => n.localName === 'g' && n.getAttribute('data-cable') === 'x:i1:oscB.out>filter.in').getAttribute('class'), 'cv-cable-g cv-lift', 'the line lifted');
+  R.mv(500, 351); R.upAt(500, 351);
+  assert.deepEqual(R.log.filter(s => !/^live/.test(s)), ['repatch x:i1:oscB.out>filter.in i1/oscB.out i1.main'], 're-patched to the Amplifier\'s IN');
+  R.log.length = 0;
+  R.press('i1/filter.in', 300, 250); R.mv(500, 700); R.upAt(800, 800);
+  assert.deepEqual(R.log, [], 'let go elsewhere: nothing');
+  R.press('i1.level', 520, 360); R.mv(400, 500);
+  assert.equal(R.cls('i1.level'), 'cv-from', 'LEVEL (no line): a new cable backwards, as today');
+  R.upAt(800, 800);
+  R.D.destroy();
+});
+
+/* ---- (WC, integration fixer K; the go / no-go review's B5, P2-3, P3-7, P3-9) */
+test('(WC, fixer K; review B5 / P2-3) a cords-mode press resolves through o.jackAt(el, p, k) → { el, rec } | null (the host: the nearest jack centre or fanned plug to the press, world px): a press on a fanned plug grabs THAT plug\'s cord, not the most recent; a press the host gives to another jack (at Fit zoom the nearest centre) is that jack\'s — an output\'s new cord; null: the jack pressed, its most recent cord as before', () => {
+  const asked = [], H = {};
+  const R = cordRig({ jackAt: (el, p, k) => H.f(el, p, k) });
+  H.f = (el, p, k) => { asked.push([el.getAttribute('data-cv-jack'), p.x, p.y, k].join(' ')); return p.x < 295 ? { el: R.J['i1/filter.in'], rec: 'x:i1:oscA.out>filter.in' } : p.x > 600 ? { el: R.J['i1/oscC.out'], rec: null } : null; };
+  R.press('i1/filter.in', 290, 250); R.mv(320, 300);
+  assert.deepEqual([asked, R.log.slice(0, 1)], [['i1/filter.in 290 150 1'], ['grab x:i1:oscA.out>filter.in b 320,200']], 'Oscillator 1\'s plug pressed: its cord grabbed (the most recent is Oscillator 2\'s)');
+  R.upAt(800, 800); R.log.length = 0;
+  R.press('i1/filter.in', 700, 250); R.mv(720, 300);
+  assert.deepEqual([R.cls('i1/oscC.out'), R.log.at(-1)], ['cv-from', 'live 100,300,720,200,2,0'], 'the host gave the press to Oscillator 3\'s OUT: a new cord from there');
+  R.upAt(900, 900); R.log.length = 0;
+  R.press('i1/filter.in', 300, 250); R.mv(320, 300);
+  assert.deepEqual(R.log.slice(0, 1), ['grab x:i1:oscB.out>filter.in b 320,200'], 'null: the jack pressed, its most recent cord');
+  R.upAt(800, 800);
+  R.D.destroy();
+});
+
+test('(WC, fixer K; review P3-7) a long-press on an input holding several cords — and a right-click there — opens what a tap opens: o.jackMenu(jack, el, x, y), the host\'s plug menu ("Which cord?" ▸ each cord: Pull · Re-patch to ▸ · Colour ▸); cv-cables\' own list only without a host menu', () => {
+  const asked = [];
+  const R = cordRig({ jackMenu: (j, el, x, y) => { asked.push(j + ' ' + x + ',' + y); return {}; } });
+  R.press('i1/filter.in', 300, 250);
+  assert.equal(R.timers.length, 1, 'armed');
+  R.fireT();
+  assert.deepEqual([asked, menuLabels(R.doc)], [['i1/filter.in 300,250'], []], 'the host\'s menu, as a tap');
+  R.upAt(300, 250);
+  fire(R.J['i1/filter.in'], 'contextmenu', { clientX: 310, clientY: 255 });
+  assert.equal(asked.at(-1), 'i1/filter.in 310,255', 'a right-click: the same');
+  assert.deepEqual(R.log, [], 'nothing written');
+  R.D.destroy();
+});
+
+test('(WC, fixer K; review P3-9 and its skeptics) the target chip never cuts its words: it wraps (data-wrap; style.css: white-space normal, up to 360 px or the screen less 16, no balance — the box hugs its lines) and stands CHIP_UP px over the finger by its own height (read once per text and overlay width — a wrapped refusal\'s two lines — else estimated): its top never above the overlay\'s 4 px: where there is no room above (near the canvas top) it flips below the finger, CHIP_UP px under it, its bottom inside the overlay too — a mouse\'s below and right of the cursor, a finger\'s or a pen\'s below and LEFT of it, CHIP_CLEAR px clear (round 1: below-right is where a right hand rests), right of it only where the left has no room; kept on screen sideways by its width (left of the finger near the right edge, right of it near the left); the drop outline\'s label: whole lines (cv-world\'s test)', () => {
+  const R = cordRig({ canConnect: (a, b) => ({ ok: false, why: 'Envelope 1 already shapes the level — pull it first' }) });
+  let ov = { left: 0, top: 0, width: 1024, height: 1366 };
+  R.ov.getBoundingClientRect = () => ov;
+  const pos = c => { const m = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\)$/.exec(c.style.transform); return m ? [+m[1], +m[2]] : null; };
+  R.press('i1/oscC.out', 100, 400); R.mv(200, 300); R.mv(521, 361);
+  const c = all(R.ov).find(n => n.getAttribute && n.getAttribute('class') === 'cv-plugchip');
+  assert.deepEqual([c.hasAttribute('data-wrap'), c.textContent], [true, 'Amplifier level — Envelope 1 already shapes the level — pull it first']);
+  const p0 = pos(c);
+  assert.ok(p0 && p0[1] === 361 - 27 - 46, 'unmeasured: two estimated lines (46 px) standing 27 px over the finger: ' + c.style.transform);
+  layout(c, 330, 58); // (the browser's box: three lines, say)
+  R.mv(500, 350);
+  const p1 = pos(c);
+  assert.ok(/^Amplifier in — /.test(c.textContent) && p1 && p1[1] === 350 - 27 - 58, 'a new text: its own height read, its bottom 27 px over the finger: ' + c.style.transform);
+  R.mv(1000, 361);
+  const p2 = pos(c);
+  assert.ok(p2 && p2[0] + 330 <= 1024 && p2[0] < 1000, 'near the right edge: to the finger\'s left, on screen (its read width): ' + c.style.transform);
+  R.upAt(1000, 361);
+  R.D.destroy();
+  // every edge of the canvas (the overlay's rect moved round the finger, beside Amplifier LEVEL at client (520, 360)): the chip whole
+  // inside it, never over the finger's own row; near the top (no room above: under the top bar) it flips below the finger
+  const edge = (r, x, y, measured, pt = 'touch') => {
+    const Q = cordRig({ canConnect: (a, b) => ({ ok: false, why: 'Envelope 1 already shapes the level — pull it first' }) });
+    ov = r;
+    Q.ov.getBoundingClientRect = () => ov;
+    const P = { pointerType: pt }, M = pt === 'mouse' ? { pointerType: pt, buttons: 1 } : P;
+    Q.press('i1/oscC.out', 100, 400, P); Q.mv(200, 380, M); Q.mv(x - 1, y, M);
+    const c2 = all(Q.ov).find(n => n.getAttribute && n.getAttribute('class') === 'cv-plugchip');
+    if (measured) layout(c2, 330, 58);
+    Q.mv(x, y, M);
+    const p = c2 && !c2.hidden ? pos(c2) : null, w = measured ? 330 : null, h = measured ? 58 : 46;
+    Q.upAt(x, y, P); Q.D.destroy();
+    const fx = x - r.left, fy = y - r.top, whole = !!p && p[0] >= 4 && p[1] >= 4 && (w == null || p[0] + w <= r.width - 4) && p[1] + h <= r.height - 4;
+    return { p, fx, fy, whole, txt: c2 ? c2.style.transform : '' };
+  };
+  const full = { left: 0, top: 0, width: 1024, height: 1366 };
+  let e = edge(Object.assign({}, full, { top: 340, height: 1026 }), 521, 361, false);
+  assert.ok(e.whole && e.p[0] === e.fx - 44 - 360 && e.p[1] === e.fy + 27, 'a finger near the top (21 px under it), unmeasured (46 px, 360 wide): flipped below the finger, its top 27 px under it, LEFT of it 44 px clear (never under a right hand): ' + e.txt);
+  e = edge(Object.assign({}, full, { top: 340, height: 1026 }), 521, 361, false, 'mouse');
+  assert.ok(e.whole && e.p[0] === e.fx + 26 && e.p[1] === e.fy + 27, 'a mouse near the top: below the cursor, right of it (clear of the arrow): ' + e.txt);
+  e = edge(Object.assign({}, full, { top: 340, height: 1026 }), 521, 361, true, 'pen');
+  assert.ok(e.whole && e.p[0] === e.fx - 44 - 330 && e.p[1] === e.fy + 27, 'a pen near the top: as a finger (its hand below and right): ' + e.txt);
+  e = edge({ left: 0, top: 349, width: 530, height: 1017 }, 521, 361, true);
+  assert.ok(e.whole && e.p[1] === e.fy + 27 && e.p[0] === e.fx - 44 - 330, 'the top-right corner (12 px under the top, 9 from the right): below and left of the finger: ' + e.txt);
+  e = edge({ left: 0, top: 349, width: 530, height: 1017 }, 521, 361, true, 'mouse');
+  assert.ok(e.whole && e.p[1] === e.fy + 27 && e.p[0] === e.fx - 26 - 330, 'the top-right corner by mouse: below and left of the cursor: ' + e.txt);
+  e = edge({ left: 0, top: 0, width: 1024, height: 371 }, 521, 361, true);
+  assert.ok(e.whole && e.p[1] === e.fy - 27 - 58 && e.p[0] === e.fx + 26, 'near the bottom (10 px over it): above the finger as ever: ' + e.txt);
+  e = edge({ left: 0, top: 0, width: 530, height: 371 }, 521, 361, true);
+  assert.ok(e.whole && e.p[1] === e.fy - 27 - 58 && e.p[0] === e.fx - 26 - 330, 'the bottom-right corner: above and left of the finger: ' + e.txt);
+  e = edge({ left: 515, top: 0, width: 509, height: 1366 }, 521, 361, true);
+  assert.ok(e.whole && e.p[0] === e.fx + 26 && e.p[1] === e.fy - 27 - 58, 'near the left edge (6 px in): right of the finger, above it: ' + e.txt);
+  e = edge({ left: 515, top: 349, width: 509, height: 1017 }, 521, 361, true);
+  assert.ok(e.whole && e.p[0] === e.fx + 44 && e.p[1] === e.fy + 27, 'the top-left corner (no room on the left): below and right of the finger, 44 px clear: ' + e.txt);
+  e = edge({ left: 515, top: 349, width: 509, height: 1017 }, 521, 361, true, 'mouse');
+  assert.ok(e.whole && e.p[0] === e.fx + 26 && e.p[1] === e.fy + 27, 'the top-left corner by mouse: below and right of the cursor: ' + e.txt);
+  e = edge({ left: 0, top: 0, width: 1024, height: 1366 }, 521, 361, true);
+  assert.ok(e.whole && e.p[0] === e.fx + 26 && e.p[1] === e.fy - 27 - 58, 'mid-screen, a finger: above and right of it as ever: ' + e.txt);
+  e = edge({ left: 0, top: 320, width: 1024, height: 100 }, 521, 361, true);
+  assert.ok(e.whole, 'a canvas too short for either (100 px): whole inside it: ' + e.txt);
+  // ((round 2, the skeptic) an overlay narrower than ~816 px — the iPad mini in portrait (744), Split View / Stage Manager (694) — with
+  // a finger or a pen mid-top: neither side holds the chip 44 px clear, so it goes as far LEFT as the overlay lets it (never pinned to
+  // the right edge, under a resting right hand); a mouse keeps its own rule (right of the cursor where it fits)
+  for (const [wd, pt, m] of [[744, 'touch', true], [694, 'touch', true], [744, 'pen', true], [694, 'pen', true], [744, 'touch', false], [694, 'touch', false]]) {
+    e = edge({ left: 521 - wd / 2, top: 349, width: wd, height: 1017 }, 521, 361, m, pt);
+    assert.ok(e.whole && e.p[1] === e.fy + 27 && e.p[0] === 4, 'a ' + wd + ' px overlay, a ' + pt + (m ? '' : ' (unmeasured, 360 wide)') + ' mid-top (x ' + e.fx + '): below the finger, as far left as it goes (x 4), never pinned right: ' + e.txt);
+  }
+  e = edge({ left: 521 - 372, top: 349, width: 744, height: 1017 }, 521, 361, true, 'mouse');
+  assert.ok(e.whole && e.p[1] === e.fy + 27 && e.p[0] === e.fx + 26, 'a 744 px overlay by mouse mid-top: below and right of the cursor (it fits): ' + e.txt);
+  e = edge({ left: 521 - 347, top: 349, width: 694, height: 1017 }, 521, 361, true, 'mouse');
+  assert.ok(e.whole && e.p[1] === e.fy + 27 && e.p[0] === 4, 'a 694 px overlay by mouse mid-top: neither side fits, as far left as it goes: ' + e.txt);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const chipRule = css.match(/#overlay \.cv-plugchip\[data-wrap\] \{[^}]*\}/)[0], lab = css.match(/#overlay \.cv-ghost-label \{[^}]*\}/)[0];
+  assert.match(chipRule, /white-space: normal;[^}]*max-width: min\(360px, calc\(100vw - 16px\)\)/, 'the wrapping chip');
+  assert.doesNotMatch(chipRule, /text-wrap: balance/, 'its box hugs its lines (a balanced wrap left a third of it empty)');
+  assert.doesNotMatch(lab, /overflow-wrap: (break-word|anywhere)|word-break: break-all/, 'the drop outline\'s label: at words only, never mid-word');
+  assert.match(lab, /overflow: hidden;[^}]*text-overflow: ellipsis;/, 'never past its outline; a word too wide for it ends in …');
+  assert.doesNotMatch(lab, /max-height/, 'never a height cut through its letters (round 1: whole lines — cv-world\'s test)');
+  // ((round 1) the chip's box read again once the overlay's width changed — Slide Over narrowing the screen between two drags
+  const R2 = cordRig({ canConnect: (a, b) => ({ ok: false, why: 'Envelope 1 already shapes the level — pull it first' }) });
+  ov = { left: 0, top: 0, width: 1024, height: 1366 };
+  R2.ov.getBoundingClientRect = () => ov;
+  R2.press('i1/oscC.out', 100, 400); R2.mv(200, 380); R2.mv(520, 361);
+  const c3 = all(R2.ov).find(n => n.getAttribute && n.getAttribute('class') === 'cv-plugchip');
+  layout(c3, 330, 58); R2.mv(521, 361);
+  const q1 = pos(c3);
+  R2.upAt(521, 361);
+  ov = { left: 0, top: 0, width: 600, height: 1366 };
+  layout(c3, 300, 75); // (the browser's box at the narrower screen: three lines)
+  R2.press('i1/oscC.out', 100, 400); R2.mv(200, 380); R2.mv(520, 361); R2.mv(521, 361);
+  const q2 = pos(c3);
+  R2.upAt(521, 361); R2.D.destroy();
+  assert.deepEqual([q1 && q1[1], q2 && q2[1]], [361 - 27 - 58, 361 - 27 - 75], 'the same text, a narrower overlay: its height read again (75, not the 58 cached at 1024)');
 });

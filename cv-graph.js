@@ -139,7 +139,7 @@ import { padOfSrc } from './pads-core.js?v=9'; // (IMPL-8 §5.3: a mod pad's id 
 import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX, N_LFO, N_ENV, N_MACRO, normalizeSerum, defaultSerum, compileSerum, SRC_INDEX, vi, DESTS, DEST_INDEX,
   NOTE_ON_DESTS, normLfo, lfoUsed, extIndex } from './serum-core.js?v=9';
 import { fxLayout, fxDest } from './fx-core.js?v=9';
-import { patchFor } from './models.js?v=9';
+import { patchFor, isSxId } from './models.js?v=9'; // ((WC) isSxId: a device's model runs on the Serum engine — the Serum and the rig; the literal 'serum' stays in the payload's shape / kind tags)
 
 export const LIMITS = Object.freeze({ inst: 8, panels: 16, fxPerPanel: 48 });
 export const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc', 'chaos']);
@@ -221,7 +221,7 @@ export function validate(t) {
     if (w.g !== undefined && !gOk(w.g)) err('g', 'A cable level is a number ≥ 0', at);
     const ka = K(a.dev), kb = K(b.dev);
     if (kb === 'inst') {
-      if (dev[b.dev].model === 'serum') err('own-fx', 'A Serum’s own FX take only that Serum · Make a shared panel', at);
+      if (isSxId(dev[b.dev].model)) err('own-fx', dev[b.dev].model === 'serum' ? 'A Serum’s own FX take only that Serum · Make a shared panel' : 'Its own FX take only this instrument · Make a shared panel', at); // ((WC, G13) a rig's: no Serum word
       else err('end', 'An instrument has no audio input', at);
       continue;
     }
@@ -238,7 +238,7 @@ export function validate(t) {
   for (const r of Array.isArray(t.mods) ? t.mods.filter(isObj) : []) {
     const i = typeof r.dst === 'string' ? r.dst.indexOf(':') : -1, d = i > 0 ? dev[r.dst.slice(0, i)] : null;
     if (!d) { err('end', 'A modulation cable ends on nothing', r.id); continue; }
-    if (K(r.dst.slice(0, i)) === 'inst' && d.model !== 'serum') {
+    if (K(r.dst.slice(0, i)) === 'inst' && !isSxId(d.model)) {
       const c = classOf(d.model, r.dst.slice(i + 1));
       if (c === 'struct' || c === 'none') err('nomod', 'This knob can’t be modulated', r.id);
     }
@@ -264,7 +264,7 @@ const unity = w => w.g === undefined || w.g === 1;
 export function compileTrack(t) {
   if (!isObj(t)) throw new Error('compileTrack: not a track');
   if (!isV2(t)) {
-    return { canonical: true, shape: t.model === 'serum' ? 'serum' : 'classic', inst: null,
+    return { canonical: true, shape: isSxId(t.model) ? 'serum' : 'classic', inst: null,
       v1: { model: t.model, vals: t.vals, preset: t.preset, seq: t.seq, fx: t.fx } };
   }
   const v = validate(t), ord = order(t), on = powered(t);
@@ -279,7 +279,7 @@ export function compileTrack(t) {
   if (last.length !== 1 || !unity(last[0])) return no('shape');
   const src = port(last[0].a).dev;
   const v1 = { model: d.model, vals: d.vals, preset: d.preset, seq: d.seq };
-  if (d.model === 'serum') { // Serum → its own FX (inside the device) → OUT
+  if (isSxId(d.model)) { // a Serum-engine device (the Serum, the rig) → its own FX (inside the device) → OUT; the shape stays 'serum' (canonical-stream)
     if (src !== id) return no('shape');
     return { canonical: true, shape: 'serum', inst: id, v1: Object.assign(v1, { fx: d.fx }) };
   }
@@ -316,14 +316,14 @@ function graphOf(t, ord, on) {
   };
   graph.key = JSON.stringify([graph.insts, graph.chains, graph.edges]);
   const patches = {}, chains = {};
-  for (const id of order1) { const d = dev[id]; patches[id] = { model: d.model, vals: d.vals, preset: d.preset, seq: d.seq, fx: d.model === 'serum' ? d.fx : undefined }; }
+  for (const id of order1) { const d = dev[id]; patches[id] = { model: d.model, vals: d.vals, preset: d.preset, seq: d.seq, fx: isSxId(d.model) ? d.fx : undefined }; }
   for (const id of panels) chains[id] = fxOfPanel(dev[id]);
   return { graph, patches, chains, order: ord, powered: on };
 }
 // a v1 track as the devices stage 1c gives it (i1 → fx1 → out; a Serum i1 → out), its objects shared
 function v2View(t) {
   const i1 = { kind: 'synth', model: t.model, vals: t.vals, preset: t.preset, seq: t.seq };
-  if (t.model === 'serum') return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] };
+  if (isSxId(t.model)) return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] };
   return { prim: 'i1', dev: { i1, fx1: { kind: 'panel', fx: t.fx }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] };
 }
 export function compileGraph(t) {
@@ -335,7 +335,7 @@ export function compileGraph(t) {
 // the patch of one Inst (a classic one: no rack of its own on a graph node, IMPL-1e §2.1 sharedRack); a Serum's mod rows
 // injected: { s: merged } reaches both compileSerum and fxModded2 (patchFor)
 export function instPatch(d, opts, rows, ext, t) {
-  const sx = d.model === 'serum', inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows, ext, t) : null;
+  const sx = isSxId(d.model), inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows, ext, t) : null;
   const vals = inj && inj.s !== d.vals.s ? Object.assign({}, d.vals, { s: inj.s }) : d.vals;
   const o = inj && inj.placed.some(x => extIndex(x.src) > 0) ? Object.assign({}, opts, { ext: true }) : opts; // (ext rows: the compile accepts them, §3.2)
   const p = patchFor(d.model, vals, sx && d.fx ? d.fx : defaultFx2(), o);
@@ -539,7 +539,7 @@ function validRows(t) {
     const D = splitDst(r.dst), d = D ? t.dev[D.dev] : null, S = srcDev(t, r.src);
     if (!isObj(d) || !S) continue;
     const K = kindOf(d);
-    if (K === 'inst' && d.model === 'serum') { out.push({ r, D, d, S, kind: 'serum' }); continue; }
+    if (K === 'inst' && isSxId(d.model)) { out.push({ r, D, d, S, kind: 'serum' }); continue; }
     if (K === 'inst') {
       const c = classOf(d.model, D.param);
       if (c === 'sm' || c === 'apply' || c === 'proc') out.push({ r, D, d, S, kind: c === 'sm' ? 'cls' : 'set' });
@@ -601,7 +601,7 @@ function sigOf(t, project, o) {
     const D = splitDst(r.dst), d = D ? t.dev[D.dev] : null;
     if (!isObj(d)) continue;
     const K = kindOf(d);
-    if (K === 'inst' && d.model === 'serum') { if (!seen.has(D.dev)) { seen.add(D.dev); serumSig(d); } }
+    if (K === 'inst' && isSxId(d.model)) { if (!seen.has(D.dev)) { seen.add(D.dev); serumSig(d); } }
     else if (K === 'inst') {
       mixS(typeof d.model === 'string' ? d.model : '');
       const v = isObj(d.vals) ? d.vals : {}, T = CM.targetsOf(d.model, D.param);
@@ -775,7 +775,7 @@ export function modBudget(t, dev, project) {
   const d = id !== undefined ? D[id] : null, pay = isObj(d) ? compileMods(t, project) : null, rows = id !== undefined ? modRowsFor(t, id) : [];
   const slots = { lfo: [0, N_LFO], env: [0, N_ENV], chaos: [0, 2], macro: [0, N_MACRO], vals: [0, VAL_N], ext: [0, EXT_N] };
   if (pay) for (const k of Object.keys(slots)) slots[k][0] = pay.n[k];
-  if (isObj(d) && d.kind === 'synth' && d.model === 'serum') {
+  if (isObj(d) && d.kind === 'synth' && isSxId(d.model)) {
     const inj = injectMods(d, rows, pay ? pay.ext : [], t), left = inj.left.slice(), why = Object.assign({}, inj.why);
     if (pay) for (const x of pay.left) if (rows.some(r => r.id === x.id)) { if (!left.includes(x.id)) left.push(x.id); why[x.id] = x.why; } // (the compile's reason wins: 'slots' over the injection's 'ext' — review U4)
     return { preset: inj.used, canvas: inj.placed.length, left, why, max: N_MATRIX, slots };

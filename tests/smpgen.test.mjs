@@ -554,9 +554,9 @@ function fnSource(src, name) {
 }
 test('§10.1: patchFor — main.js buildPatch adds only live-session fields; farmPatch = patchFor(drift 0, hiss 0, default rack)', () => {
   // (stage 2a: buildPatch injects the track's canvas mod rows through modVals — with no rows the vals are handed on untouched)
-  const make = new Function('modelById', 'fxOfDev', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', 'CG', 'CM', 'CMOD', fnSource(MAIN, 'modVals') + '\n' + fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
+  const make = new Function('modelById', 'fxOfDev', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', 'CG', 'CM', 'CMOD', 'isSxModel', fnSource(MAIN, 'modVals') + '\n' + fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
   const prefs = { smooth: 1, silenceTails: 1 };
-  const buildPatch = make(id => models.MODELS.find(m => m.id === id), () => undefined /* (fxOfDev: its in-place migration only — milestone 3 R3) */, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor, CG, CM, CMOD);
+  const buildPatch = make(id => models.MODELS.find(m => m.id === id), () => undefined /* (fxOfDev: its in-place migration only — milestone 3 R3) */, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor, CG, CM, CMOD, models.isSxModel); // ((WC) main.js tests the Serum-engine models by isSxModel: the Serum and the rig)
   // (IMPL-9 §1.2, §6) a patch instrument (family 'patch', the 900 Series) is not in this loop: it has no presets (its starting
   // patches are topology — moog-core's PRESETS, loaded through patch-core) and is no farm instrument, and buildPatch never
   // builds its patch — its track is always graphed (P-1's {t: power} is a graph node's), buildInstPatch's in canvas-9-sim

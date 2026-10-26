@@ -2851,7 +2851,7 @@ export class OscPanel {
     const K = this.kit, o = this.o, P = this.P;
     let ok = true;
     K.edit(s => { ok = core.swapWarps(s, o); if (ok && typeof core.syncS1 === 'function') core.syncS1(s, P + '.w1'); }, { label: 'Swap Warps' });
-    if (!ok) K.notify('S1 mode: WARP 2’s mode has no Serum 1 equivalent for WARP 1');
+    if (!ok) K.notify((K.sx && K.sx.host && K.sx.host.words && K.sx.host.words.s1Warp) || 'S1 mode: WARP 2’s mode has no Serum 1 equivalent for WARP 1'); // ((WC, G13) a rig's host: its words
   }
   // remap curve popover (Remap 1–4 of either slot; the Phase-1 modes 13–16 in S1 mode)
   remap(anchor) {

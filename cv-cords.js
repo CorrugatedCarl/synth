@@ -3,8 +3,15 @@
 // 10-point verlet rope per cord, 1/120 s fixed steps, its ends pinned to the plugs. Generic (D5): no family's name, number or
 // constant; a cord is { id, a, b, c, s } — two jack keys, a colour index, s 1 for an S-trigger (Cinch-Jones) plug.
 // The user's rule (2026-10-21, §11): a cord's body is not interactive at all — nothing here takes a press (the layer is
-//   pointer-events: none; no hit test, no pluck by hand, no body grab); only the plug ends move, by cv-patch's drag through
+//   pointer-events: none; no pluck by hand, no body grab); only the plug ends move, by cv-patch's drag through
 //   grab / move / drop (a plugged end pulled) and live (a new cord's free plug).
+// Stage WC (docs/canvas/IMPL-WC.md §4.5, lane C): a rig's cords — o (a cord's alpha, one of ALPHAS) packed into the sel float
+//   (sel + 4·index: no new vertex attribute, the P-1 (c) stride and bytes kept), s 2 the KNOB end (fixer B2; the user, 2026-10-26: a
+//   cord onto a socket-less knob goes "directly to the back of the knob that it is attached to" — no plug at b: the rope ends at the
+//   knob's rim, the host's anchor, in a butt end that goes in behind), top() (a world-space layer above the cords for the badges and
+//   the × — never under a rope), c clamped to the eight colours, and hit(p, r) — a pure query over the drawn ropes the world asks through the
+//   host on an empty-canvas press (a tap on a rig cord's body selects it: the lead's decision 2; the 900 Series' stays plugs-only,
+//   the host leaves its ids out). Records without o and with s 0 / 1 write the bytes they always wrote.
 // Where: a second WebGL2 canvas (.cv-cords) after #world in #viewport — above every module, under #overlay / the toolbar / the
 //   trays — never transformed, drawn by cv-world in the same write() that moves #world (the faces' proven path, glued
 //   mid-pinch), with the same camera, device ratio and viewport; its drawing buffer only while it is allocated (alloc: the host's
@@ -66,6 +73,61 @@ export const PALETTE = Object.freeze(['#d8432f', '#e6b83a', '#3f80d8', '#41a75c'
 export const LOOK = Object.freeze({ W: 11.2, BODY: 7.8, HI: 2.2, HI_DX: -1.68, HI_DY: -1.96, HI_A: 0.55, RIM: -0.45, LIGHT: 0.45,
   SH_DX: 4, SH_DY: 8, SH_A: 0.32, MIN_DPX: 2.5, PLUG_R: 14, PLUG_B: 9.8, PLUG_H: 3.4, PLUG_HD: -3, PLUG_HA: 0.35, RING: -0.35,
   PSH_DX: 3, PSH_DY: 4, PSH_A: 0.35, SW: 26, SH: 20, SR: 4, SBW: 18.8, SBH: 12.8, SBR: 3, OFF_ALPHA: 0.45, SEL: 0.96 });
+/** [C] (WC, IMPL-WC §4.5; skeptic P2-12) a cord's alpha `o`, one of four — packed into the sel float a vertex / plug already
+ * carries (sel + 4·index: no new attribute, FPV / FPI and the P-1 (c) bytes kept), decoded in the shaders: 1 · 0.85 a rig's own
+ * mod cords (lighter over the panels) · OFF_ALPHA bypassed / from a module that is off · 0.3 the 24+ fade. A record without o
+ * (the 900 Series') writes index 0: the bytes it always wrote. */
+export const ALPHAS = Object.freeze([1, 0.85, LOOK.OFF_ALPHA, 0.3]);
+/** A record's o → its ALPHAS index: the nearest of the four; anything but a finite number 0 (alpha 1). */
+export const alphaOf = o => {
+  if (typeof o !== 'number' || !isFinite(o)) return 0;
+  let k = 0;
+  for (let i = 1; i < ALPHAS.length; i++) if (Math.abs(o - ALPHAS[i]) < Math.abs(o - ALPHAS[k])) k = i;
+  return k;
+};
+/** [C] (WC, fixer B2; the user, 2026-10-26, replacing the edge-entry BACK end of 2026-10-25: "the cable going from lfo to filter should
+ * be going directly to the back of the knob that it is attached to") the KNOB end (a record's s: 2): no plug, no tip, no grommet at b
+ * — b is the knob's rim point facing the cord (the host's anchor) and the rope ends exactly there, a butt end that reads as going in
+ * behind the knob: over its last SHADE px the knob's shade darkens it (black, 0 → SHADE_A at the rim) and the knob's ring crosses its
+ * end (a RIM px band in the cord's colour — the host rings the knob in it: the ring passes over the rope), and the rope's shadow
+ * fades out over its last stretch (its last point's vertices carry FLAG in the sel float: never a shadow cast onto the knob). The
+ * rope may cross its own target's face on the way (the user accepts it); nothing keeps it off a panel. In a plug instance the end is
+ * shape 3 + its heading as a fraction of a turn (endU: 0 → +x, ¼ → +y, into the knob); 0 round, 1 S-trigger, 2 the glue probe. A
+ * round plug at a. */
+export const KNOB = Object.freeze({ FLAG: 16, SHADE: 7, SHADE_A: 0.55, RIM: 2, RIM_A: 0.95 });
+/** (WC, fixer B2) A drawn polyline's end heading (P: x, y pairs, m points; its last segment, a → b) as a fraction of a turn in
+ * [0, 1): 0 → +x, 0.25 → +y (screen y down). ((fixer K) its last segment of any length: points collapsed onto the end — clip —
+ * skipped.) */
+export function endU(P, m) {
+  let k = m - 1;
+  while (k > 1 && P[2 * k] === P[2 * k - 2] && P[2 * k + 1] === P[2 * k - 1]) k--;
+  const dx = P[2 * k] - P[2 * k - 2], dy = P[2 * k + 1] - P[2 * k - 1], u = Math.atan2(dy, dx) / (2 * Math.PI);
+  const v = u < 0 ? u + 1 : u;
+  return v >= 1 ? 0 : v;
+}
+/** [C] (WC, integration fixer K; the go / no-go review's P2-2) a KNOB end's drawn rope cut where it first crosses the knob's rim
+ * (disc cx, cy, r: the host's, on the anchor): the polyline P (m points) from a toward b — the first point inside the disc (by more
+ * than 0.01 px) and every one after it move onto the rim crossing of the segment that entered, so the strip keeps its vertex count
+ * and nothing of the rope lies on the knob's face (a modulator straight above its knob: the rope's slack fold went 9 px in) →
+ * the index of the rope's end (m − 1 when it never enters). In place; pure but for P. */
+export function clip(P, m, cx, cy, r) {
+  const rr = (r - 0.01) * (r - 0.01);
+  for (let i = 1; i < m; i++) {
+    const x = P[2 * i] - cx, y = P[2 * i + 1] - cy;
+    if (x * x + y * y >= rr) continue;
+    const px = P[2 * i - 2] - cx, py = P[2 * i - 1] - cy, dx = x - px, dy = y - py, A = dx * dx + dy * dy, B = 2 * (px * dx + py * dy), Q = B * B - 4 * A * (px * px + py * py - r * r);
+    const t = A > 0 && Q >= 0 ? Math.max(0, Math.min(1, (-B - Math.sqrt(Q)) / (2 * A))) : 0, ex = P[2 * i - 2] + dx * t, ey = P[2 * i - 1] + dy * t;
+    for (let j = i; j < m; j++) { P[2 * j] = ex; P[2 * j + 1] = ey; }
+    return i;
+  }
+  return m - 1;
+}
+/** [C] (WC, §4.4) a cord body's tap target: the world asks hit(p, HIT_PX / k) — 12 screen px each side of the rope. */
+export const HIT_PX = 12;
+/** A colour index clamped to the eight colours (8 → 7, −1 → 0, NaN / a word → 0): no uniform read past the arrays (WC, map §2). */
+export const colourOf = c => { const n = c | 0; return n < 0 ? 0 : n > 7 ? 7 : n; };
+/** A record's plug type: 2 the KNOB end, any other truthy value 1 (an S-trigger), else 0. */
+const plugOf = s => (s === 2 ? 2 : s ? 1 : 0);
 
 /** A rope: its points now and a step ago, its length, the anchors of its last frame (A0 / B0) and of this one (A1 / B1), sleep. */
 export function makeRope(n = STUDIO.N) {
@@ -188,6 +250,65 @@ export function along(P, m, t) {
   }
   return { x: P[0], y: P[1] };
 }
+/** [C] (WC, integration fixer K; the go / no-go review's P2-1) the Studio rope AT REST between A and B, n points into X / Y — where a
+ * rig's cord settles, so its badge sits on it and its knob end is aimed along it (the parabola misses it by tens of px on a chord
+ * 20–30° off the vertical): the hanging chain of length (1 + SLACK)·D + EXTRA in n − 1 equal links with equal weights at its inner
+ * points — the verlet rope's equilibrium, within ≈ 3 px of a settled Studio rope (its links stretch < 1 %). Link j points along
+ * (h, c − j) (the tension's horizontal part h, its vertical part a weight less a point): Σ (c − j)/r_j fixes c for h (Newton,
+ * bracketed), Σ h/r_j fixes h (bisection on ln h). A chain whose fold must go slack (a near-vertical chord: no taut equilibrium
+ * closes within REST_TOL px) from REST_STEPS Studio steps of the seeded rope instead (300 steps settle it to < 0.1 px). Pure. */
+export const REST_STEPS = 300, REST_TOL = 0.5;
+export function rest(ax, ay, bx, by, X, Y, n = STUDIO.N) {
+  const dx = bx - ax, dy = by - ay, D = Math.hypot(dx, dy), m = n - 1, s = ((1 + STUDIO.SLACK) * D + STUDIO.EXTRA) / m;
+  const hx = Math.abs(dx) / s, vy = dy / s, sg = dx < 0 ? -1 : 1;
+  let c = m / 2;
+  const cOf = h => {
+    let lo = -(m + 4) * (h + 1) - 4, hi = m + (m + 4) * (h + 1) + 4;
+    if (!(c > lo && c < hi)) c = (lo + hi) / 2;
+    for (let it = 0; it < 80; it++) {
+      let f = -vy, df = 0;
+      for (let j = 0; j < m; j++) { const q = c - j, r = Math.sqrt(h * h + q * q) || 1e-300; f += q / r; df += h * h / (r * r * r); }
+      if (f > 0) hi = c; else lo = c;
+      if (Math.abs(f) < 1e-11 || hi - lo < 1e-12) break;
+      const nc = df > 0 ? c - f / df : NaN;
+      c = nc > lo && nc < hi ? nc : (lo + hi) / 2;
+    }
+    return c;
+  };
+  let lo = -18, hi = 10;
+  for (let it = 0; it < 36; it++) { // (ln h to 28 / 2^36: far below a px)
+    const t = (lo + hi) / 2, h = Math.exp(t), cc = cOf(h);
+    let g = -hx;
+    for (let j = 0; j < m; j++) g += h / Math.sqrt(h * h + (cc - j) * (cc - j));
+    if (g > 0) hi = t; else lo = t;
+  }
+  const h = Math.exp((lo + hi) / 2), cc = cOf(h);
+  X[0] = ax; Y[0] = ay;
+  for (let j = 0; j < m; j++) { const q = cc - j, r = Math.sqrt(h * h + q * q); X[j + 1] = X[j] + sg * s * h / r; Y[j + 1] = Y[j] + s * q / r; }
+  const ex = bx - X[m], ey = by - Y[m];
+  if (Math.hypot(ex, ey) > REST_TOL) {
+    const r = seed(makeRope(n), ax, ay, bx, by, true);
+    for (let i = 0; i < REST_STEPS; i++) step(r, ax, ay, bx, by, STUDIO.DT);
+    for (let i = 0; i < n; i++) { X[i] = r.X[i]; Y[i] = r.Y[i]; }
+  } else for (let j = 1; j < m; j++) { X[j] += ex * j / m; Y[j] += ey * j / m; }
+  X[0] = ax; Y[0] = ay; X[m] = bx; Y[m] = by;
+}
+/** (fixer K) r seeded asleep AT REST (rest): a rig's cord that opens still hangs where it would settle — seed's length, ends and
+ * sleep, rest's points. */
+export function seedRest(r, ax, ay, bx, by) {
+  seed(r, ax, ay, bx, by, false);
+  rest(ax, ay, bx, by, r.X, r.Y, r.n);
+  r.PX.set(r.X); r.PY.set(r.Y);
+  return r;
+}
+const RX = new Float64Array(STUDIO.N), RY = new Float64Array(STUDIO.N), SVG_Q = Object.freeze({ N: STUDIO.N, SUB: STUDIO.SUB, still: true });
+/** (fixer K) the drawn polyline of a cord AT REST between A and B at quality q ({ N, SUB, still }: a CORD_Q entry) into out → its
+ * point count: smooth(rest) with motion, smooth(shown) still (the parabola the still / reduced / SVG layers draw). */
+export function restPath(ax, ay, bx, by, out, q = CORD_Q.high) {
+  const n = q && q.N > 1 ? q.N : STUDIO.N, sub = q && q.SUB > 0 ? q.SUB : STUDIO.SUB;
+  if (q && q.still) shown(n, ax, ay, bx, by, RX, RY); else rest(ax, ay, bx, by, RX, RY, n);
+  return smooth(RX, RY, n, sub, out);
+}
 /** (diagnostics: a test's or a bench's way to set cords swinging — no input reaches it, the user's rule) an impulse of `amp` px /
  * step at point i0 with a sine falloff to both ends (the lab's Pluck without its randomness), the rope woken. */
 export function pluck(r, i0, amp = 9) {
@@ -204,42 +325,55 @@ export function shade(hex, f) {
 /* ---------------------------------------------------------------- the GL programs (GLSL ES 3.00; premultiplied, ONE / ONE_MINUS_SRC_ALPHA) */
 const f1 = v => (Number.isInteger(v) ? v.toFixed(1) : String(v));
 const HW = LOOK.W / 2;
+// ((fixer B2) the knob ring's black, lifted to read on a dark face: style.css's [data-rig-cord="7"] #8a8c90 — the KNOB end's ring band)
+const KRING7 = [0x8a / 255, 0x8c / 255, 0x90 / 255].map(v => Math.round(v * 1000) / 1000);
 // the strip: a vertex = the smoothed polyline's point p, its normal n, a = (side ±1, colour, selected); widened by the half width
 // (≥ MIN_DPX / 2 device px) + one device px of ramp; v runs −1…1 across the cord (|v| > 1: the ramp), the bands by |v|: the
 // body inside BODY / W, the rim outside; the highlight a band of HI / W around hc (the lab's offset stroke's normal part);
-// pass 0 = the shadow (offset, black SH_A), pass 1 = the cord; vp.w the layer's alpha
+// pass 0 = the shadow (offset, black SH_A), pass 1 = the cord; vp.w the layer's alpha; (WC) a.z = selected + 4·(ALPHAS index): the
+// cord's own alpha al (ALPHA_Q); (fixer B2) + KNOB.FLAG on a knob end's last point: ke 1 there, 0 elsewhere (smooth) — its shadow fades out
+// over its last stretch (no shadow cast onto the knob it goes behind)
+const ALPHA_Q = q => q + '<0.5?' + f1(ALPHAS[0]) + ':' + q + '<1.5?' + f1(ALPHAS[1]) + ':' + q + '<2.5?' + f1(ALPHAS[2]) + ':' + f1(ALPHAS[3]);
 const STRIP_VS = '#version 300 es\nlayout(location=0) in vec2 p;layout(location=1) in vec2 n;layout(location=2) in vec3 a;\n'
   + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 rim[8];uniform vec3 hi[8];\n'
-  + 'out float v;out float hc;flat out vec3 cb;flat out vec3 cr;flat out vec3 ch;flat out float sl;flat out float wpx;\n'
+  + 'out float v;out float hc;out float ke;flat out vec3 cb;flat out vec3 cr;flat out vec3 ch;flat out float sl;flat out float wpx;flat out float al;\n'
   + 'void main(){float kd=cam.z*cam.w;float hw=max(' + f1(HW) + ',' + f1(LOOK.MIN_DPX / 2) + '/kd);float pad=1.0/kd;'
   + 'vec2 w=p+n*a.x*(hw+pad);if(vp.z<0.5)w+=vec2(' + f1(LOOK.SH_DX) + ',' + f1(LOOK.SH_DY) + ');'
   + 'v=a.x*(hw+pad)/hw;hc=dot(vec2(' + f1(LOOK.HI_DX) + ',' + f1(LOOK.HI_DY) + '),n)/' + f1(HW) + ';'
-  + 'int i=int(a.y+0.5);cb=body[i];cr=rim[i];ch=hi[i];sl=a.z;wpx=hw*kd;'
+  + 'int i=int(a.y+0.5);cb=body[i];cr=rim[i];ch=hi[i];float e=floor(a.z/' + f1(KNOB.FLAG) + '+0.01);float z=a.z-' + f1(KNOB.FLAG) + '*e;ke=e;'
+  + 'float q=floor(z/4.0+0.01);sl=z-4.0*q;al=' + ALPHA_Q('q') + ';wpx=hw*kd;'
   + 'vec2 dv=(w*cam.z+cam.xy)*cam.w;gl_Position=vec4(dv.x/vp.x*2.0-1.0,1.0-dv.y/vp.y*2.0,0.0,1.0);}';
 const STRIP_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
-  + 'in float v;in float hc;flat in vec3 cb;flat in vec3 cr;flat in vec3 ch;flat in float sl;flat in float wpx;out vec4 o;\n'
-  + 'void main(){float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w;'
-  + 'if(vp.z<0.5){o=vec4(0.0,0.0,0.0,' + f1(LOOK.SH_A) + '*cov);return;}'
+  + 'in float v;in float hc;in float ke;flat in vec3 cb;flat in vec3 cr;flat in vec3 ch;flat in float sl;flat in float wpx;flat in float al;out vec4 o;\n'
+  + 'void main(){float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w*al;'
+  + 'if(vp.z<0.5){o=vec4(0.0,0.0,0.0,' + f1(LOOK.SH_A) + '*cov*(1.0-ke));return;}'
   + 'vec3 c=mix(cr,cb,clamp((' + (LOOK.BODY / LOOK.W).toFixed(6) + '-a)/aa+0.5,0.0,1.0));'
   + 'c=mix(c,ch,clamp((' + (LOOK.HI / LOOK.W).toFixed(6) + '-abs(v-hc))/aa+0.5,0.0,1.0)*' + f1(LOOK.HI_A) + ');'
   + 'if(sl>0.5)c=mix(c,vec3(' + f1(LOOK.SEL) + '),clamp((a-(1.0-2.0/max(wpx,1.0)))/aa+0.5,0.0,1.0)*0.9);'
   + 'o=vec4(c*cov,cov);}';
-// the plugs: one instanced quad an end (ins = x, y, colour, shape: 0 round, 1 S-trigger, 2 the glue probe; fl = selected), an
-// SDF in world px with a one-device-px ramp; layers composited front to back over: shadow, ring, body, the S plug's parting
-// line, highlight, the selected ring
+// the plugs: one instanced quad an end (ins = x, y, colour, shape: 0 round, 1 S-trigger, 2 the glue probe, (WC, fixer B2) 3 + u the KNOB
+// end heading u turns; fl = selected + 4·(ALPHAS index)), an SDF in world px with a one-device-px ramp; layers composited front to back
+// over: shadow, ring, body, the S plug's parting line, highlight, the selected ring
 const PLUG_EXT = 22;
 const PLUG_VS = '#version 300 es\nlayout(location=0) in vec2 q;layout(location=1) in vec4 ins;layout(location=2) in float fl;\n'
   + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 ring[8];\n'
-  + 'out vec2 lp;flat out vec3 cb;flat out vec3 cr;flat out float shp;flat out float px;flat out float sl;\n'
+  + 'out vec2 lp;flat out vec3 cb;flat out vec3 cr;flat out vec3 ck;flat out float shp;flat out float px;flat out float sl;flat out float al;\n'
   + 'void main(){float kd=cam.z*cam.w;float R=' + f1(PLUG_EXT) + '+2.0/kd;vec2 w=ins.xy+q*R;lp=q*R;int i=int(ins.z+0.5);'
-  + 'cb=body[i];cr=ring[i];shp=ins.w;px=1.0/kd;sl=fl;'
+  + 'cb=body[i];cr=ring[i];ck=i==7?vec3(' + KRING7.map(f1).join(',') + '):cb;shp=ins.w;px=1.0/kd;float g=floor(fl/4.0+0.01);sl=fl-4.0*g;'
+  + 'al=ins.w<2.5&&g>0.5&&g<1.5?1.0:(' + ALPHA_Q('g') + ');' // ((fixer K, review P3-13) a rig's own row (0.85): its plug opaque, its rope and knob end lighter
   + 'vec2 dv=(w*cam.z+cam.xy)*cam.w;gl_Position=vec4(dv.x/vp.x*2.0-1.0,1.0-dv.y/vp.y*2.0,0.0,1.0);}';
 const PLUG_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
-  + 'in vec2 lp;flat in vec3 cb;flat in vec3 cr;flat in float shp;flat in float px;flat in float sl;out vec4 o;\n'
+  + 'in vec2 lp;flat in vec3 cb;flat in vec3 cr;flat in vec3 ck;flat in float shp;flat in float px;flat in float sl;flat in float al;out vec4 o;\n'
   + 'float cv(float sd){return clamp(0.5-sd/px,0.0,1.0);}\n'
   + 'float rb(vec2 p,vec2 b,float r){vec2 d=abs(p)-b+r;return length(max(d,0.0))+min(max(d.x,d.y),0.0)-r;}\n'
   + 'vec4 ov(vec4 s,vec4 d){return s+d*(1.0-s.a);}\n'
   + 'void main(){'
+  // ((WC, fixer B2) the KNOB end: no plug — at the rim the rope goes in behind the knob: the knob's shade on its last SHADE px (black,
+  // 0 → SHADE_A, nothing past the rim), the knob's ring (its colour ck: the cord's, black lifted as the ring's CSS) across its end)
+  + 'if(shp>2.5){float an=(shp-3.0)*6.2831853;vec2 d=vec2(cos(an),sin(an));float a=dot(lp,d),cw=abs(dot(lp,vec2(-d.y,d.x)));'
+  + 'float sh=' + f1(KNOB.SHADE_A) + '*clamp((a+' + f1(KNOB.SHADE) + ')/' + f1(KNOB.SHADE) + ',0.0,1.0)*cv(a)*cv(cw-' + f1(HW) + ');'
+  + 'float rm=cv(abs(a+' + f1(KNOB.RIM / 2) + ')-' + f1(KNOB.RIM / 2) + ')*cv(cw-' + f1(HW + 0.5) + ');'
+  + 'vec4 c=vec4(0.0,0.0,0.0,sh);c=ov(vec4(ck,1.0)*' + f1(KNOB.RIM_A) + '*rm,c);o=c*vp.w*al;return;}'
   + 'if(shp>1.5){o=vec4(1.0,0.0,1.0,1.0)*cv(length(lp)-4.0*px);return;}' // (the glue probe: a magenta disc of 4 device px)
   + 'bool s=shp>0.5;vec2 SH=vec2(' + f1(LOOK.PSH_DX) + ',' + f1(LOOK.PSH_DY) + ');'
   + 'vec2 SB=vec2(' + f1(LOOK.SW / 2) + ',' + f1(LOOK.SH / 2) + '),BB=vec2(' + f1(LOOK.SBW / 2) + ',' + f1(LOOK.SBH / 2) + ');'
@@ -252,7 +386,7 @@ const PLUG_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
   + 'if(s)c=ov(vec4(cr,1.0)*cv(max(abs(lp.y)-0.6,sB)),c);'
   + 'c=ov(vec4(1.0)*' + f1(LOOK.PLUG_HA) + '*cv(sH),c);'
   + 'if(sl>0.5)c=ov(vec4(vec3(' + f1(LOOK.SEL) + '),1.0)*0.9*cv(abs(sR-2.0*px)-px),c);'
-  + 'o=c*vp.w;}';
+  + 'o=c*vp.w*al;}';
 // floats a strip vertex / a plug instance; points a smoothed Studio cord (the most of any quality: the scratch arrays, the SVG's)
 const FPV = 7, FPI = 5, PTS_S = 2 + (STUDIO.N - 2) * STUDIO.SUB;
 const ptsOf = Q => 2 + (Q.N - 2) * Q.SUB;
@@ -280,8 +414,8 @@ const fin = v => typeof v === 'number' && isFinite(v);
  * every upload whole — the pre-P path, for the equality tests and the bench) }.
  * @returns {{set: Function, anchors: Function, live: Function, grab: Function, move: Function, drop: Function, sel: Function,
  *   alloc: Function, dim: Function, resize: Function, step: Function, owed: Function, wants: Function, draw: Function,
- *   pointAt: Function, pluck: Function, probe: Function, reset: Function, svg: Function, setPerf: Function, stats: Function,
- *   destroy: Function, readonly mode: string, readonly perf: string}}
+ *   pointAt: Function, hit: Function, pluck: Function, probe: Function, reset: Function, svg: Function, setPerf: Function, stats: Function,
+ *   top: Function, destroy: Function, readonly mode: string, readonly perf: string}}
  */
 export function createCords(viewport, o) {
   o = o || {};
@@ -309,6 +443,12 @@ export function createCords(viewport, o) {
   const st = { frames: 0, ropeSteps: 0, stepMs: 0, stepMax: 0, awakeMax: 0, holds: 0, draws: 0, drawMs: 0, drawMax: 0, uploads: 0, uploadBytes: 0,
     builds: 0, lost: 0, restored: 0, svgPaths: 0, fulls: 0, writes: 0, runs: 0, buildMs: 0, buildMax: 0 };
   let VW = 0, VH = 0, VD = 1, lastCam = null;
+  // ((WC, fixer B2) the top layer (top()): its element, the transform written, a camera still owed to it
+  let TP = null, tpT = '', topOwed = false;
+  function placeTop(cam) {
+    const t = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
+    try { if (t !== tpT) { tpT = t; TP.style.transform = t; } if (topOwed) { topOwed = false; TP.style.visibility = ''; } } catch (err) { /* inert */ }
+  }
   const E4 = new Float64Array(4);
   // (P-1 (c)) the strip's layout: lay = the drawn cords in draw order (the cords' Map order, the live rope last: one strip's
   // order), cord j at vertex off(j) — its lead join (j > 0: its first vertex again), its 2·PTS, its trail join (not the last:
@@ -340,6 +480,14 @@ export function createCords(viewport, o) {
     return anchorIn(anch, c[which]);
   }
   function endsOf(c, E) { const a = endOf(c, 'a'), b = endOf(c, 'b'); if (!a || !b) return false; E[0] = a.x; E[1] = a.y; E[2] = b.x; E[3] = b.y; return true; }
+  // ((fixer K, P2-2) a KNOB end on its anchor whose host gave its disc (kx, ky, kr): the rope is cut at the rim (clip) — not the live
+  // rope, not an end in the finger
+  function discOf(c) {
+    if (c.s !== 2 || c === LV || (GB && GB.id === c.id && GB.end === 'b')) return null;
+    const K = anchorIn(anch, c.b);
+    return K && fin(K.kx) && fin(K.ky) && fin(K.kr) && K.kr > 0 ? K : null;
+  }
+  const cut = (c, P, m) => { const K = discOf(c); return K ? clip(P, m, K.kx, K.ky, K.kr) : m - 1; };
   const ropeEnds = (r, E) => endsOf(r.cd, E);
   // a cord placed once both its ends are known: seeded asleep from the parabola — or, a new cord the live one just became (a
   // commit's set: its fixed end on the live rope's), that rope taken over awake, so it swings into place
@@ -356,7 +504,8 @@ export function createCords(viewport, o) {
       const A = same ? [q.A0x, q.A0y, q.B0x, q.B0y] : [q.B0x, q.B0y, q.A0x, q.A0y];
       r.A0x = r.A1x = A[0]; r.A0y = r.A1y = A[1]; r.B0x = r.B1x = A[2]; r.B0y = r.B1y = A[3];
       L.taken = true; relist();
-    } else seed(r, E4[0], E4[1], E4[2], E4[3], false);
+    } else if (c.rest) seedRest(r, E4[0], E4[1], E4[2], E4[3]); // ((fixer K, P2-1) a rig's cord: asleep where it would settle
+    else seed(r, E4[0], E4[1], E4[2], E4[3], false);
     c.seeded = true;
     return true;
   }
@@ -385,6 +534,7 @@ export function createCords(viewport, o) {
   let cv = null, gl = null, P = null, ready = false, loss = [];
   let cap = 0, capP = 0, strip = new Float32Array(0), plugs = new Float32Array(0), nStrip = 0, nPlug = 0, builtV = 0, upV = -1, BW = 0, BH = 0, blank = true;
   const pts = new Float64Array(PTS_S * 2), sX = new Float64Array(STUDIO.N), sY = new Float64Array(STUDIO.N);
+  const hP = new Float64Array(PTS_S * 2), hX = new Float64Array(STUDIO.N), hY = new Float64Array(STUDIO.N); // ((WC) hit's own scratch)
   const U = { cam: new Float32Array(4), vp: new Float32Array(4) }, CT = colourTables();
   const ctxOf = () => (mode === 'under' ? (typeof o.under === 'function' ? (() => { try { return o.under() || null; } catch (err) { return null; } })() : null) : gl);
   function glBuild(g) { // the two programs, the strip's VAO / buffer, the plugs' quad + instance buffer (once, after a restore / reset)
@@ -426,7 +576,7 @@ export function createCords(viewport, o) {
     try {
       cv.setAttribute('aria-hidden', 'true');
       cv.style.cssText = 'position:absolute;left:0;top:0;display:block;pointer-events:none;';
-      if (WL && WL.parentNode === viewport && typeof viewport.insertBefore === 'function') viewport.insertBefore(cv, WL.nextSibling || null); else viewport.append(cv);
+      if (WL && WL.parentNode === viewport && typeof viewport.insertBefore === 'function') viewport.insertBefore(cv, TP && TP.parentNode === viewport ? TP : WL.nextSibling || null); else viewport.append(cv); // ((fixer B2) under the top layer
     } catch (err) { console.error(err); }
     if (typeof cv.addEventListener === 'function') {
       cv.addEventListener('webglcontextlost', onLost, false);
@@ -486,18 +636,23 @@ export function createCords(viewport, o) {
   function put(c, j, still, trail) {
     let X = c.r.X, Y = c.r.Y;
     if (still) { shown(CQ.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
-    const m = smooth(X, Y, CQ.N, CQ.SUB, pts), s = c.id != null && c.id === sel ? 1 : 0, col = c.c | 0;
+    const m = smooth(X, Y, CQ.N, CQ.SUB, pts), s = (c.id != null && c.id === sel ? 1 : 0) + 4 * (c.oi | 0), col = c.c | 0; // ((WC) the alpha rides in sel)
+    const kn = c.s === 2; // ((WC, fixer B2) the KNOB end: its last point flagged (the shadow fades), its end instance turned along it
+    const ke = kn ? cut(c, pts, m) : m - 1; // ((fixer K, P2-2) cut at the knob's rim: the end there, the points after it collapsed onto it
     let k = off(j) * FPV, kp = 2 * j * FPI;
     for (let i = 0; i < m; i++) {
-      const i0 = i > 0 ? i - 1 : 0, i1 = i < m - 1 ? i + 1 : m - 1;
+      const i0 = i > 0 ? i - 1 : 0, i1 = i < m - 1 ? i + 1 : m - 1, f = kn && i >= ke ? s + KNOB.FLAG : s;
       let tx = pts[2 * i1] - pts[2 * i0], ty = pts[2 * i1 + 1] - pts[2 * i0 + 1];
       const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = -1; strip[k++] = col; strip[k++] = s;
+      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = -1; strip[k++] = col; strip[k++] = f;
       if (j && i === 0) { strip.copyWithin(k, k - FPV, k); k += FPV; } // (the lead join: this vertex twice)
-      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = 1; strip[k++] = col; strip[k++] = s;
+      strip[k++] = pts[2 * i]; strip[k++] = pts[2 * i + 1]; strip[k++] = -ty; strip[k++] = tx; strip[k++] = 1; strip[k++] = col; strip[k++] = f;
     }
     if (trail) strip.copyWithin(k, k - FPV, k);
-    for (let e = 0; e < 4; e += 2) { plugs[kp++] = E4[e]; plugs[kp++] = E4[e + 1]; plugs[kp++] = col; plugs[kp++] = c.s ? 1 : 0; plugs[kp++] = s; }
+    for (let e = 0; e < 4; e += 2) { // ((WC) s 2: a plug at a, the knob end where the drawn rope ends (b)
+      const bk = kn && e, x = bk ? pts[2 * m - 2] : E4[e], y = bk ? pts[2 * m - 1] : E4[e + 1];
+      plugs[kp++] = x; plugs[kp++] = y; plugs[kp++] = col; plugs[kp++] = kn ? (e ? 3 + endU(pts, m) : 0) : c.s ? 1 : 0; plugs[kp++] = s;
+    }
     const w = c.e || (c.e = new Float64Array(4));
     w[0] = E4[0]; w[1] = E4[1]; w[2] = E4[2]; w[3] = E4[3];
     c.j = j; c.lv = layV; st.writes++;
@@ -658,18 +813,24 @@ export function createCords(viewport, o) {
         mk('rect', { x: -8.1, y: -5.1, width: 9.2, height: 2.6, rx: 1.3, fill: 'rgba(255,255,255,' + LOOK.PLUG_HA + ')' })]
       : [mk('circle', { cx: LOOK.PSH_DX, cy: LOOK.PSH_DY, r: LOOK.PLUG_R, fill: 'rgba(0,0,0,' + LOOK.PSH_A + ')' }), mk('circle', { r: LOOK.PLUG_R, fill: rgb(shade(col, LOOK.RING)) }),
         mk('circle', { r: LOOK.PLUG_B, fill: col }), mk('circle', { cx: LOOK.PLUG_HD, cy: LOOK.PLUG_HD, r: LOOK.PLUG_H, fill: 'rgba(255,255,255,' + LOOK.PLUG_HA + ')' })]);
+    // ((WC, fixer B2) the KNOB end, in the end's own frame (x along its heading, into the knob; the group translated to b and turned): the
+    // knob's shade on the rope's last SHADE px, the knob's ring across its end (the GL instance's two bands, flat)
+    const knobEnd = col => [mk('path', { d: 'M' + -KNOB.SHADE + ' ' + -HW + 'H0V' + HW + 'H' + -KNOB.SHADE + 'Z', fill: 'rgba(0,0,0,' + (KNOB.SHADE_A / 2) + ')' }),
+      mk('path', { d: 'M' + -KNOB.RIM + ' ' + -(HW + 0.5) + 'H0V' + (HW + 0.5) + 'H' + -KNOB.RIM + 'Z', fill: col === PALETTE[7] ? '#8a8c90' : col, 'fill-opacity': KNOB.RIM_A })];
     SV = {
       root, els, dirty: true,
-      // one cord's group: shadow, rim, body, highlight (the lab's strokes ×1.4), its two plugs (a <g> each, translated)
+      // one cord's group: shadow, rim, body, highlight (the lab's strokes ×1.4), its two plugs (a <g> each, translated); (WC) s 2:
+      // a round plug at a, the grommet at b (its orientation by the box); o (an ALPHAS index > 0): the group's opacity (none
+      // otherwise: the 900 Series' bytes)
       add(c) {
-        const col = PALETTE[c.c | 0] || PALETTE[0], g = mk('g', {}), ln = { fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+        const col = PALETTE[c.c | 0] || PALETTE[0], g = mk('g', {}), ln = { fill: 'none', 'stroke-linecap': c.s === 2 ? 'butt' : 'round', 'stroke-linejoin': 'round' }; // ((fixer B2) a knob end: butt
         const p = [mk('path', Object.assign({ stroke: 'rgba(0,0,0,' + LOOK.SH_A + ')', 'stroke-width': LOOK.W, transform: 'translate(' + LOOK.SH_DX + ' ' + LOOK.SH_DY + ')' }, ln)),
           mk('path', Object.assign({ stroke: rgb(shade(col, LOOK.RIM)), 'stroke-width': LOOK.W }, ln)), mk('path', Object.assign({ stroke: col, 'stroke-width': LOOK.BODY }, ln)),
           mk('path', Object.assign({ stroke: rgb(shade(col, LOOK.LIGHT)), 'stroke-opacity': LOOK.HI_A, 'stroke-width': LOOK.HI, transform: 'translate(' + LOOK.HI_DX + ' ' + LOOK.HI_DY + ')' }, ln))];
         const ga = mk('g', {}), gb = mk('g', {});
-        ga.append(...plug(col, c.s)); gb.append(...plug(col, c.s));
+        ga.append(...plug(col, c.s === 1)); gb.append(...(c.s === 2 ? knobEnd(col) : plug(col, c.s === 1))); // ((fixer B2) a knob end: no plug at b
         g.append(...p, ga, gb); root.append(g);
-        const e = { g, p, ga, gb, c: c.c | 0, s: !!c.s, d: '', sel: false };
+        const e = { g, p, ga, gb, c: c.c | 0, s: c.s | 0, o: 0, d: '', sel: false };
         els.set(c, e);
         return e;
       },
@@ -677,20 +838,28 @@ export function createCords(viewport, o) {
         if (!endsOf(c, E4)) { if (e.d !== '') { e.d = ''; for (const q of e.p) q.setAttribute('d', ''); e.ga.setAttribute('transform', 'translate(-99999 -99999)'); e.gb.setAttribute('transform', 'translate(-99999 -99999)'); } return; }
         shown(STUDIO.N, E4[0], E4[1], E4[2], E4[3], X, Y);
         const m = smooth(X, Y, STUDIO.N, STUDIO.SUB, Pp);
+        if (c.s === 2) cut(c, Pp, m); // ((fixer K, P2-2) cut at the knob's rim
         let d = 'M' + Pp[0].toFixed(1) + ' ' + Pp[1].toFixed(1);
         for (let i = 1; i < m; i++) d += 'L' + Pp[2 * i].toFixed(1) + ' ' + Pp[2 * i + 1].toFixed(1);
         if (d !== e.d) { e.d = d; for (const q of e.p) q.setAttribute('d', d); st.svgPaths++; }
         e.ga.setAttribute('transform', 'translate(' + E4[0].toFixed(1) + ' ' + E4[1].toFixed(1) + ')');
-        e.gb.setAttribute('transform', 'translate(' + E4[2].toFixed(1) + ' ' + E4[3].toFixed(1) + ')');
+        e.gb.setAttribute('transform', c.s === 2 ? 'translate(' + Pp[2 * m - 2].toFixed(1) + ' ' + Pp[2 * m - 1].toFixed(1) + ') rotate(' + (endU(Pp, m) * 360).toFixed(1) + ')'
+          : 'translate(' + E4[2].toFixed(1) + ' ' + E4[3].toFixed(1) + ')');
         const s = c.id != null && c.id === sel;
         if (s !== e.sel) { e.sel = s; e.p[1].setAttribute('stroke', s ? '#f5f5f5' : rgb(shade(PALETTE[c.c | 0] || PALETTE[0], LOOK.RIM))); }
+        const oi = c.oi | 0;
+        if (oi !== e.o) { // ((fixer K, P3-13) a rig's own row (index 1, 0.85): its strokes and its knob end lighter, its plug opaque
+          e.o = oi;
+          if (oi && oi !== 1) e.g.setAttribute('opacity', String(ALPHAS[oi])); else e.g.removeAttribute('opacity');
+          for (const q of c.s === 2 ? e.p.concat([e.gb]) : e.p) { if (oi === 1) q.setAttribute('opacity', String(ALPHAS[1])); else q.removeAttribute('opacity'); }
+        }
       },
       // the shown set: groups for new cords (a recolour or a plug change makes it again), gone ones removed, every path fresh
       paint() {
         SV.dirty = false;
         const want = new Set(cords.values());
         if (LV && !LV.taken) want.add(LV);
-        for (const [c, e] of els) if (!want.has(c) || e.c !== (c.c | 0) || e.s !== !!c.s) { e.g.remove(); els.delete(c); }
+        for (const [c, e] of els) if (!want.has(c) || e.c !== (c.c | 0) || e.s !== (c.s | 0)) { e.g.remove(); els.delete(c); }
         for (const c of want) SV.path(c, els.get(c) || SV.add(c));
         try { root.style.opacity = dimOn ? String(LOOK.OFF_ALPHA) : ''; } catch (err) { /* inert */ }
       },
@@ -700,8 +869,9 @@ export function createCords(viewport, o) {
   /* ---- the API */
   const api = {
     get mode() { return mode; },
-    /** The cords [{ id, a, b, c, s }] (a / b jack keys): diffed by id — a new one placed (seeded asleep) once its ends are known,
-     * a gone one removed, a changed end woken (its anchor's jump swept), a colour / plug change redrawn. */
+    /** The cords [{ id, a, b, c, s, o }] (a / b jack keys; c a colour index, clamped 0…7; s 0 a round plug, 1 S-trigger, (WC, fixer B2)
+     * 2 the KNOB end at b (b the knob's rim); (WC) o the alpha, one of ALPHAS — absent 1): diffed by id — a new one placed (seeded asleep)
+     * once its ends are known, a gone one removed, a changed end woken (its anchor's jump swept), a colour / plug / alpha change redrawn. */
     set(list) {
       if (dead) return;
       const seen = new Set();
@@ -712,8 +882,9 @@ export function createCords(viewport, o) {
         if (seen.has(id)) continue;
         seen.add(id); n++;
         let c = cords.get(id);
-        if (!c) { c = { id, a: x.a, b: x.b, c: x.c | 0, s: x.s ? 1 : 0, r: null, seeded: false }; cords.set(id, c); }
-        else { if (c.c !== (x.c | 0) || c.s !== (x.s ? 1 : 0)) mark(c); c.a = x.a; c.b = x.b; c.c = x.c | 0; c.s = x.s ? 1 : 0; } // ((P-1) a recolour: its range again; new ends: changed()'s)
+        const col = colourOf(x.c), s = plugOf(x.s), oi = alphaOf(x.o); // ((WC) c clamped; s 2 the KNOB end; o an ALPHAS index
+        if (!c) { c = { id, a: x.a, b: x.b, c: col, s, oi, r: null, seeded: false, rest: x.rest === true }; cords.set(id, c); } // ((fixer K) rest: seeded at rest
+        else { if (c.c !== col || c.s !== s || c.oi !== oi) mark(c); c.a = x.a; c.b = x.b; c.c = col; c.s = s; c.oi = oi; c.rest = x.rest === true; } // ((P-1) a recolour: its range again; new ends: changed()'s)
         place(c);
       }
       for (const id of [...cords.keys()]) if (!seen.has(id)) { cords.delete(id); if (GB && GB.id === id) GB = null; if (sel === id) sel = null; }
@@ -741,12 +912,16 @@ export function createCords(viewport, o) {
       if (!x || !x.a || !x.b || !fin(x.a.x) || !fin(x.a.y) || !fin(x.b.x) || !fin(x.b.y)) { if (LV) { LV = null; relist(); dirty(); wakeW(); if (SV) SV.paint(); } return; }
       if (LV && LV.taken) LV = null; // (the last one became a cord: a new drag)
       if (!LV) {
-        LV = { id: null, a: { x: x.a.x, y: x.a.y }, b: { x: x.b.x, y: x.b.y }, c: x.c | 0, s: x.s ? 1 : 0, r: makeRope(CQ.N), taken: false };
+        LV = { id: null, a: { x: x.a.x, y: x.a.y }, b: { x: x.b.x, y: x.b.y }, c: colourOf(x.c), s: plugOf(x.s), oi: alphaOf(x.o), r: makeRope(CQ.N), taken: false };
         LV.r.cd = LV;
         seed(LV.r, x.a.x, x.a.y, x.b.x, x.b.y, true);
         if (mode === 'gl') ensure();
         relist(); dirty(); kick();
-      } else { LV.a.x = x.a.x; LV.a.y = x.a.y; LV.b.x = x.b.x; LV.b.y = x.b.y; LV.c = x.c | 0; LV.s = x.s ? 1 : 0; dirty(); changed(); }
+      } else {
+        const col = colourOf(x.c), s = plugOf(x.s), oi = alphaOf(x.o);
+        if (col !== LV.c || s !== LV.s || oi !== LV.oi) mark(LV); // ((WC) a look change alone: its range again)
+        LV.a.x = x.a.x; LV.a.y = x.a.y; LV.b.x = x.b.x; LV.b.y = x.b.y; LV.c = col; LV.s = s; LV.oi = oi; dirty(); changed();
+      }
       if (SV) SV.paint();
     },
     /** A plugged end pulled: cord `id`'s end ('a' | 'b') follows p (world px) until drop(). */
@@ -795,7 +970,7 @@ export function createCords(viewport, o) {
       const ms = now() - t0; st.stepMs += ms; if (ms > st.stepMax) st.stepMax = ms;
       return owedF;
     },
-    owed: () => owedF && !dead && mode !== 'svg' && mode !== 'none',
+    owed: () => !dead && ((owedF && mode !== 'svg' && mode !== 'none') || topOwed), // ((fixer B2) the top layer waits for its first camera too
     /** Frames wanted: a rope awake, or a draw owed. */
     wants: () => !dead && (running || api.owed()),
     /** One frame at the camera (the world's: from its write(), or after a step) over a vw × vh viewport at device ratio d. */
@@ -803,10 +978,31 @@ export function createCords(viewport, o) {
       if (dead || !cam) return false;
       if (vw != null) { VW = Math.max(0, +vw || 0); VH = Math.max(0, +vh || 0); VD = +d > 0 ? +d : 1; }
       lastCam = cam;
+      if (TP) placeTop(cam); // ((fixer B2) the top layer at this camera, every mode
       if (mode === 'svg' || mode === 'none') { owedF = false; return false; }
       const ok = glFrame(cam, VW, VH, VD);
       owedF = false;
       return ok;
+    },
+    /** (WC, fixer B2; review 2 P2-3) The top layer: a world-space div.cv-cords-top after the canvas (after #world without one) in the
+     * viewport, ABOVE the cords — what must never lie under a rope goes there (the host's claimed badges, a cord's ×, a fork's BAL:
+     * cv-cables o.top); pointer-events none (its children take their own); moved with the camera at every draw (#world's transform),
+     * hidden until a camera is known (a draw asked). Made at the first call only; null without a DOM. */
+    top() {
+      if (dead) return null;
+      if (TP) return TP;
+      let e = null;
+      try { e = doc && typeof doc.createElement === 'function' ? doc.createElement('div') : null; } catch (err) { e = null; }
+      if (!e || typeof e.setAttribute !== 'function') return null;
+      TP = e; tpT = '';
+      try {
+        e.className = 'cv-cords-top';
+        e.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0;pointer-events:none;';
+        const after = cv && cv.parentNode === viewport ? cv : WL && WL.parentNode === viewport ? WL : null;
+        if (after && typeof viewport.insertBefore === 'function') viewport.insertBefore(e, after.nextSibling || null); else viewport.append(e);
+      } catch (err) { console.error(err); }
+      if (lastCam) placeTop(lastCam); else { topOwed = true; try { e.style.visibility = 'hidden'; } catch (err) { /* inert */ } wakeW(); }
+      return TP;
     },
     /** (tests, the harness) a point at fraction t of cord id's drawn path (world px), null unknown. */
     pointAt(id, t) {
@@ -814,7 +1010,41 @@ export function createCords(viewport, o) {
       if (!c || !c.seeded || !endsOf(c, E4)) return null;
       let X = c.r.X, Y = c.r.Y;
       if (!motion()) { shown(CQ.N, E4[0], E4[1], E4[2], E4[3], sX, sY); X = sX; Y = sY; }
-      return along(pts, smooth(X, Y, CQ.N, CQ.SUB, pts), t);
+      const m = smooth(X, Y, CQ.N, CQ.SUB, pts), e = c.s === 2 ? cut(c, pts, m) : m - 1; // ((fixer K) a knob end's rope as drawn: cut at the rim
+      return along(pts, e + 1, t);
+    },
+    /** (WC, integration fixer K; review P2-1) the drawn rope AT REST between ends a and b ({x, y} world px) into out (x, y pairs) → its
+     * point count: what this layer shows once a cord there has settled — the settled Studio rope (restPath) with motion at its
+     * quality, the parabola still (Low, reduced motion) and in the SVG fallback. The host places badges on it and aims knob ends
+     * along it. Pure (scratch arrays only). */
+    shape(a, b, out) {
+      if (!a || !b || !out || !fin(a.x) || !fin(a.y) || !fin(b.x) || !fin(b.y)) return 0;
+      const q = mode === 'svg' || mode === 'none' ? SVG_Q : motion() ? CQ : CQ.still ? CQ : { N: CQ.N, SUB: CQ.SUB, still: true };
+      return restPath(a.x, a.y, b.x, b.y, out, q);
+    },
+    /** (WC, IMPL-WC §4.4; the lead's decision 2) the cord whose drawn rope passes nearest p (world px), within r (world px — the
+     * host's 12 screen px / k), else null: a pure distance over each placed cord's drawn polyline as it is now (the rope swinging or
+     * settled, motion off its parabola, the SVG's 10 / 4 one), never the live rope, never a cord with an end unknown; ok(id) →
+     * false skips one (the host leaves patch cords out). The layer still takes no press — the world asks this on an empty-canvas
+     * press (a tap there selects the cord: parity with a line). Allocates nothing. */
+    hit(p, r, ok) {
+      if (dead || !p || !fin(p.x) || !fin(p.y) || !fin(r) || !(r > 0)) return null;
+      const svgM = mode === 'svg' || mode === 'none', still = svgM || !motion(), N = svgM ? STUDIO.N : CQ.N, SUB = svgM ? STUDIO.SUB : CQ.SUB, px = p.x, py = p.y;
+      let best = null, bd = r * r;
+      for (const c of cords.values()) {
+        if (!c.seeded || !c.r || !endsOf(c, E4)) continue;
+        if (typeof ok === 'function') { let y = false; try { y = !!ok(c.id); } catch (err) { y = false; } if (!y) continue; }
+        let X = c.r.X, Y = c.r.Y;
+        if (still || c.r.n !== N) { shown(N, E4[0], E4[1], E4[2], E4[3], hX, hY); X = hX; Y = hY; }
+        const m = smooth(X, Y, N, SUB, hP);
+        if (c.s === 2) cut(c, hP, m); // ((fixer K) a knob end's rope as drawn: cut at the rim
+        for (let i = 0; i < m - 1; i++) {
+          const ax = hP[2 * i], ay = hP[2 * i + 1], dx = hP[2 * i + 2] - ax, dy = hP[2 * i + 3] - ay, L = dx * dx + dy * dy;
+          const u = L > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0, ex = ax + dx * u - px, ey = ay + dy * u - py, d = ex * ex + ey * ey;
+          if (d <= bd) { bd = d; best = c.id; }
+        }
+      }
+      return best;
     },
     /** (diagnostics: the bench / the harness set cords swinging — no input reaches it) pluck cord id, or every cord. */
     pluck(id) {
@@ -840,7 +1070,7 @@ export function createCords(viewport, o) {
       for (const c of cords.values()) {
         if (!c.r) continue;
         c.r = makeRope(CQ.N); c.r.cd = c;
-        if (c.seeded) { if (endsOf(c, E4)) seed(c.r, E4[0], E4[1], E4[2], E4[3], false); else c.seeded = false; } // (ends unknown: placed when known)
+        if (c.seeded) { if (!endsOf(c, E4)) c.seeded = false; else if (c.rest) seedRest(c.r, E4[0], E4[1], E4[2], E4[3]); else seed(c.r, E4[0], E4[1], E4[2], E4[3], false); } // (ends unknown: placed when known; (fixer K) a rig's cord at rest)
       }
       if (LV && !LV.taken) { LV.r = makeRope(CQ.N); LV.r.cd = LV; seed(LV.r, LV.a.x, LV.a.y, LV.b.x, LV.b.y, true); }
       running = false; sim.acc = 0;
@@ -872,7 +1102,8 @@ export function createCords(viewport, o) {
         try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ }
       }
       if (SV) { try { SV.root.remove(); } catch (err) { /* gone */ } }
-      cv = null; gl = null; P = null; SV = null; cords.clear(); ropes = []; LV = null; GB = null;
+      if (TP) { try { TP.remove(); } catch (err) { /* gone */ } }
+      cv = null; gl = null; P = null; SV = null; TP = null; cords.clear(); ropes = []; LV = null; GB = null;
     },
   };
   if (mode === 'svg') buildSvg();

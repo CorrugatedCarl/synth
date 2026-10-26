@@ -104,6 +104,7 @@ export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER,
 import { normModDev, DEV_MAX } from './song.js?v=9';
 import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
+import { isSxId } from './models.js?v=9'; // ((WC) a Serum-engine device — the Serum and the rig — has its own FX rack, its matrix, its link rows)
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 // (IMPL-P §3.1) a track holds DEV_MAX devices (song.normDev's bound: a device past it would be dropped silently at the next load); every add path
@@ -124,7 +125,7 @@ const outId = t => Object.keys(t.dev).find(k => isObj(t.dev[k]) && t.dev[k].kind
 export function fxDevOf(t) {
   const id = primId(t), d = id && t.dev[id];
   if (!d) return null;
-  if (d.model === 'serum') return { id, dev: d, own: true };
+  if (isSxId(d.model)) return { id, dev: d, own: true };
   const pid = panelOf(t, id);
   return pid ? { id: pid, dev: t.dev[pid], own: false } : null;
 }
@@ -149,9 +150,10 @@ export function dropLay(t, id) {
   if (!isObj(t) || !isObj(t.lay) || typeof id !== 'string' || !id) return;
   for (const k of Object.keys(t.lay)) if (k === id || k.startsWith(id + '/')) delete t.lay[k];
 }
-// (milestone 3, IMPL-3 §2.1) the parts of a Serum that are modules in its parts view, keyed 'iN/<part>' (serum-core module
-// names; MACROS new): VOICE is the device key iN itself, its own FX stays 'iN/fx' (not a part)
-export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env2', 'env3', 'env4',
+// (milestone 3, IMPL-3 §2.1) the parts of a Serum-engine device that are modules, keyed 'iN/<part>' (serum-core module names;
+// MACROS new): VOICE / the Amplifier is the device key iN itself, its own FX stays 'iN/fx' (not a part). (WC, IMPL-WC §2.1) env1 —
+// a rig's Envelope 1, the amp slot — is a module key too (VOICE held ENV 1; a parts-view Serum never wrote one)
+export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env1', 'env2', 'env3', 'env4',
   ...Array.from({ length: 10 }, (_, i) => 'lfo' + (i + 1)), 'macros', 'arp', 'clip']);
 /** a module key 'iN/<part>' → { dev, part } | null (a device, its own FX, anything else) */
 export function partOf(key) {
@@ -236,7 +238,7 @@ const panels = t => Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'panel')
 export function addInst(t, modelId, o = {}) {
   if (synths(t).length >= LIMITS.inst || devFull(t)) return null;
   const id = nextId(t, 'i'), d = { kind: 'synth', model: modelId, vals: isObj(o.vals) ? o.vals : {}, preset: o.preset === undefined ? null : o.preset };
-  if (modelId === 'serum') d.fx = isObj(o.fx) ? o.fx : defaultFx2();
+  if (isSxId(modelId)) d.fx = isObj(o.fx) ? o.fx : defaultFx2();
   if (typeof o.name === 'string' && o.name) d.name = o.name;
   t.dev[id] = d;
   // auto-patch: the panel most instruments share, else OUT
@@ -323,12 +325,12 @@ export function makePrimary(t, id) {
 export function setModel(t, id, modelId, o = {}) {
   const d = instOf(t, id);
   if (!d) return NO('No such instrument');
-  if (d.model === 'serum' && modelId !== 'serum' && devFull(t)) return NO(devFull(t)); // (a Serum's own FX unfold into a panel: one more device)
+  if (isSxId(d.model) && !isSxId(modelId) && devFull(t)) return NO(devFull(t)); // (a Serum's own FX unfold into a panel: one more device)
   const was = d.model;
   d.model = modelId;
   if (o.vals !== undefined) d.vals = o.vals;
   d.preset = o.preset === undefined ? null : o.preset;
-  if ((modelId === 'serum') !== (was === 'serum') && reshape(t, id, modelId === 'serum') !== 'moved' && modelId === 'serum' && isObj(o.fx)) d.fx = o.fx; // (no panel state moved in: the caller's rack)
+  if (isSxId(modelId) !== isSxId(was) && reshape(t, id, isSxId(modelId)) !== 'moved' && isSxId(modelId) && isObj(o.fx)) d.fx = o.fx; // (no panel state moved in: the caller's rack)
   const rows = dropGone(t, id);
   const notice = rows.length ? `${rows.length} modulation cable${rows.length > 1 ? 's' : ''} to ${d.name || (was === 'serum' ? 'the Serum' : 'the instrument')} removed: the new model has no such knob${rows.length > 1 ? 's' : ''}` : '';
   return Object.assign({ rows, notice }, OK);
@@ -504,7 +506,7 @@ export function addMod(t, src, dst, o = {}) {
     const pay = compileMods(t, o.project);
     if (pay && pay.n.vals >= VAL_N && !pay.vals.some(v => v.id === src)) return no(VALS_FULL, 'slots');
   }
-  const sx = d.kind === 'synth' && d.model === 'serum', f = {};
+  const sx = d.kind === 'synth' && isSxId(d.model), f = {};
   if (sx) {
     const b = modBudget(t, D.dev, o.project);
     if (b.preset + b.canvas >= N_MATRIX || Object.values(b.why).includes('full')) return no(fullWhy(o, d), 'full');
@@ -542,7 +544,7 @@ export function setMod(t, rowId, fields) {
   const f = {};
   for (const k of ROW_F) if (isObj(fields) && fields[k] !== undefined) f[k] = fields[k];
   // (normRow's rules by proxy: a native source / a Serum destination as they are, anything else as a wheel → cutoff row)
-  const D = splitDst(r.dst), d = D && t.dev[D.dev], sx = isObj(d) && d.kind === 'synth' && d.model === 'serum';
+  const D = splitDst(r.dst), d = D && t.dev[D.dev], sx = isObj(d) && d.kind === 'synth' && isSxId(d.model);
   if (!sx) { f.aux = ''; f.inv = 0; } // (C7: no aux on a canvas row)
   const n = nativeRow(Object.assign({}, r, f, sx ? null : { dst: D.dev + ':f.cutoff' }), MOD_SRC[r.src] || 'wheel');
   if (!n) return NO('Unknown aux source');
@@ -556,7 +558,7 @@ export function removeMod(t, rowId) {
   return OK;
 }
 export function presetRows(dev) {
-  const s = isObj(dev) && dev.model === 'serum' && isObj(dev.vals) ? dev.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], out = [];
+  const s = isObj(dev) && isSxId(dev.model) && isObj(dev.vals) ? dev.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], out = [];
   for (let slot = 0; slot < M.length && slot < N_MATRIX; slot++) {
     const r = M[slot];
     if (isObj(r) && SRC_MOD[r.src] && typeof r.dst === 'string' && r.dst) out.push(Object.assign({ slot, from: SRC_MOD[r.src] }, r));

@@ -18,6 +18,7 @@ import { fakeStorage } from './fakes.mjs';
 import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
 import * as cvModule from '../cv-module.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
@@ -515,7 +516,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   // Simple button, aria-pressed; now the item's aria-checked and the button's label)
   const vb = sim.$('#srcView'), vm = sim.$('#srcViewMenu'), simple = vm.children[1], serum = vm.children[2];
   const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
-  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum', 'Drums', 'Controllers', 'Moog modules'], 'false']); // ((7a) Drums: the drum machines; (8) Controllers: the Pads module; (9) Moog modules: the 900 Series)
+  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Drums', 'Controllers', 'Moog modules'], 'false']); // ((WC) the rig's view after Serum; (7a) Drums: the drum machines; (8) Controllers: the Pads module; (9) Moog modules: the 900 Series)
   tap(vb);
   assert.deepEqual([tiles.viewOpen(), vb.getAttribute('aria-expanded')], [true, 'true']);
   tap(simple); // (a pick closes it)

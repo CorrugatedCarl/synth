@@ -39,6 +39,7 @@ export const SIL = Object.freeze({
   tr909: Object.freeze({ body: 'box', steps: 16 }), // (7c) the 808's body family: a wide low light case, nine blocks of dark knobs, a red display, 16 cream step keys
   sdsv: Object.freeze({ body: 'box' }), // (8) a dark rack box (no sequencer: no steps): five knob columns with cream memory keys, two blank plates, the mixer, hexagonal pads in front
   m900: Object.freeze({ body: 'cabinet' }), // (9) the 900 Series: a small dark case of narrow module faces in two tiers over a console strip, coloured cords hanging; no keys, no steps
+  rig: Object.freeze({ body: 'cabinet' }), // (WC) the rig: three charcoal faces on a dark rack (screws, knobs, cream-ringed jacks), two cords sagging between them
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -115,6 +116,27 @@ function buttonRow(x, y, w, h, n, colors, o = {}) {
 const shadow = (x0 = 6, x1 = 90, y = 53.2) => `<ellipse cx="${f((x0 + x1) / 2)}" cy="${f(y)}" rx="${f((x1 - x0) / 2)}" ry="1.9" fill="#000" opacity="0.4"/>`;
 // two pitch / mod wheel slots
 const wheels = (x, y, h) => R(x, y, 2.4, h, '#050505') + R(x + 3.4, y, 2.4, h, '#050505') + R(x + 0.3, y + h * 0.45, 1.8, h * 0.2, '#3a3b40') + R(x + 3.7, y + h * 0.7, 1.8, h * 0.2, '#3a3b40');
+
+// (WC pre-deploy [chip-art]) the rig at chip size (DRAW.rig below 48 px): a #55585e case (2.6:1 on the chrome's #141518) with two pale rails, the
+// three #1f2023 faces (2.3:1 against the case) between them, the tile's layout in light marks — a cream rule on each, the oscillator's screen
+// and its amber wave, cream knob discs (two; one big over two; four), two cream jacks at each foot — and the two cords at 2.6
+function rigChip(th) {
+  const INK = th.ink || '#ebe6d8', KN = '#d6d1c4', A = th.accent || '#e8a33d', X = [6, 35, 64], J = [];
+  const knobs = [[[7.5, 32, 2.8], [18.5, 32, 2.8]], [[13, 22, 5], [7.5, 33, 2.8], [18.5, 33, 2.8]], [[7.5, 20, 3], [18.5, 20, 3], [7.5, 31, 3], [18.5, 31, 3]]];
+  let s = shadow(4, 92, 53.4) + RR(3, 3, 90, 49, 2.5, '#55585e') + R(5, 4, 86, 2.6, '#aeb2b8') + R(5, 48.4, 86, 2.6, '#aeb2b8');
+  X.forEach((x, i) => {
+    s += RR(x, 8, 26, 39, 1.4, th.face || '#1f2023') + R(x + 6, 10.8, 14, 2.6, INK);
+    if (i === 0) {
+      let d = '';
+      for (let k = 0; k <= 12; k++) { const t = k / 12; d += (k ? 'L' : 'M') + f(x + 5 + t * 16) + ' ' + f(21 - 3 * Math.sin(t * Math.PI * 4) * (0.55 + 0.45 * Math.cos(t * Math.PI))); }
+      s += RR(x + 3, 15.2, 20, 11.4, 1, '#0d0e10') + S(d, A, 1.6);
+    }
+    for (const [kx, ky, r] of knobs[i]) s += C(x + kx, ky, r, KN);
+    for (const jx of [7.5, 18.5]) { s += C(x + jx, 41.6, 2.6, INK); J.push([x + jx, 41.6]); }
+  });
+  for (const [p, q, sag, col] of [[J[1], J[2], 7, '#e6b83a'], [J[3], J[4], 8, '#3f80d8']]) s += S(`M${f(p[0])} ${f(p[1])}C${f(p[0])} ${f(p[1] + sag)} ${f(q[0])} ${f(q[1] + sag)} ${f(q[0])} ${f(q[1])}`, col, 2.6);
+  return s;
+}
 
 /* ---------------------------------------------------------------- the instruments (96 × 56 design box) */
 const DRAW = {
@@ -479,6 +501,48 @@ const DRAW = {
       }
       s += S('M62 44C70 44 74 44 77 38.6C79 35 81 42 86 46', '#ff8a5b', 0.9) + R(62, 46, 26, 0.5, '#2a333d');
     } else s += C(70, 22, 3, A, OP(0.6)) + C(80, 22, 3, A, OP(0.6));
+    return s;
+  },
+  // (WC, IMPL-WC §7; lane U) the rig — ours, the cord lab's look in miniature: three charcoal faces side by side on a dark rack, each
+  // with four screws, a cream rule where the name would be engraved (no text) over a hairline, black knobs with cream pointers and two
+  // cream-ringed jacks at its foot — an oscillator's (a little screen with its wave, two knobs), a filter's (one big knob over two), an
+  // amplifier's (four) — and two cords sagging between them, yellow out of the first into the second, blue out of the second into the
+  // third, a plug at each end. Chip size (pre-deploy [chip-art]: the tile's dark rack and black caps vanished on the chrome's #141518 and
+  // left stray dots): the rack is the silhouette — a mid-grey case with two pale rails, the three charcoal faces dark against it — and every
+  // face carries light marks: its cream rule, cream knob discs where the tile has black caps (the oscillator's screen with an amber wave, the
+  // filter's big one over two, the amplifier's four), its two cream jacks; the cords drawn thick.
+  rig(th, lo) {
+    if (lo) return rigChip(th);
+    const INK = th.ink || '#ebe6d8', MUTE = th.label || '#9c978a', CAP = '#141518', LINE = '#2c2e32', X = [6, 35, 64], J = [];
+    let s = shadow(4, 92, 53.4) + RR(3, 3, 90, 49, 2.5, th.panel || '#17181a') + (lo ? '' : R(5.5, 3.6, 85, 0.5, '#fff', OP(0.06)));
+    const knobs = [[[7.5, 31, 3], [18.5, 31, 3]], [[13, 21.5, 4.2], [7.5, 32.5, 3], [18.5, 32.5, 3]], [[7.5, 19.5, 3], [18.5, 19.5, 3], [7.5, 31, 3], [18.5, 31, 3]]];
+    let ptr = '', slot = '';
+    X.forEach((x, i) => {
+      s += RR(x, 6, 26, 43, 1.6, th.face || '#1f2023', ` stroke="${LINE}" stroke-width="0.5"`);
+      if (!lo) {
+        for (const [sx, sy] of [[2.4, 8.4], [23.6, 8.4], [2.4, 46.6], [23.6, 46.6]]) { s += C(x + sx, sy, 0.9, MUTE); slot += `M${f(x + sx - 0.55)} ${f(sy - 0.55)}l1.1 1.1`; }
+        s += R(x + 7, 10.4, 12, 1.3, INK, OP(0.85)) + R(x + 2.5, 13.4, 21, 0.4, LINE);
+      }
+      if (i === 0) {
+        s += RR(x + 3, 15.5, 20, 9, 0.8, CAP);
+        if (!lo) { let d = ''; for (let k = 0; k <= 24; k++) { const t = k / 24; d += (k ? 'L' : 'M') + f(x + 4.5 + t * 17) + ' ' + f(20 - 2.8 * Math.sin(t * Math.PI * 4) * (0.55 + 0.45 * Math.cos(t * Math.PI))); } s += S(d, INK, 0.6); }
+      }
+      knobs[i].forEach(([kx, ky, r], k) => {
+        s += C(x + kx, ky, r, CAP, lo ? '' : ` stroke="#3b3d41" stroke-width="0.5"`);
+        const a = -2.3 + 4.6 * rnd(i * 5 + k, 41);
+        ptr += `M${f(x + kx)} ${f(ky)}L${f(x + kx + Math.sin(a) * r * 0.78)} ${f(ky - Math.cos(a) * r * 0.78)}`;
+      });
+      for (const jx of [7.5, 18.5]) {
+        s += C(x + jx, 42, 2.3, INK) + (lo ? '' : C(x + jx, 42, 1.5, '#7d7a72') + C(x + jx, 42, 0.95, '#0b0b0c') + R(x + jx - 2, 45.2, 4, 0.6, MUTE, OP(0.7)));
+        J.push([x + jx, 42]);
+      }
+    });
+    if (!lo) s += S(slot, '#55524a', 0.35) + S(ptr, INK, 0.7);
+    // the cords: OUT of a face (its right jack) into IN of the next (its left jack), hanging; the plug's cap over each jack's ring
+    [[J[1], J[2], 8, '#e6b83a'], [J[3], J[4], 10, '#3f80d8']].forEach(([p, q, sag, col]) => {
+      s += S(`M${f(p[0])} ${f(p[1])}C${f(p[0])} ${f(p[1] + sag)} ${f(q[0])} ${f(q[1] + sag)} ${f(q[0])} ${f(q[1])}`, col, lo ? 1.8 : 1.1);
+      if (!lo) for (const e of [p, q]) s += C(e[0], e[1], 1.5, '#0c0b0a') + C(e[0], e[1], 1, col);
+    });
     return s;
   },
 };

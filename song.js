@@ -11,6 +11,7 @@ import { normLfoMod, normEnvMod, normChaosMod } from './serum-core.js?v=9';
 import { normDrum, mapTable, DEFAULT_MAP, PERS } from './drum-core.js?v=9'; // (7a: a drum machine's record, its channel 10)
 import { normPads } from './pads-core.js?v=9'; // (stage 8, schema 11: project.pads — a leaf, as drum-core: it imports only drum-core)
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9, schema 12: a 900 Series device's `patch` — a leaf: it imports only the family's table, moog-core)
+import { RIG, normRig, pruneRig } from './rig-core.js?v=9'; // (stage WC, schema 16: a rig device's `rig` record — a leaf too: it imports serum-core and sx-edges)
 
 export const PPQ = 960;
 export const TRACK_COLORS = ['#f2a33a', '#3b82c4', '#e2402f', '#3fae5a', '#b06ad9', '#2bb3a3', '#f5d22e', '#ff6a13', '#58b2ff', '#e86aa8', '#9bd16a', '#c9a227'];
@@ -451,8 +452,9 @@ export class History {
       else break;
     }
   }
-  // force: a step of its own even when the top holds this state (main's loop-pass steps, IMPL-R: named, and the top they
-  // would share is another action's — undo skips it as a no-op once this one is undone)
+  // force: a step of its own even when the top holds this state — main's loop-pass steps (IMPL-R: named; the top they would share is
+  // another action's — undo skips it as a no-op once this one is undone) and an edit whose step will carry meta after a no-op step
+  // (folded onto it, it would take that step's label and lend it its meta: WC review 1 P3-2)
   record(project, label = '', force = false) {
     const sn = this._snap(project), top = this.u[this.u.length - 1];
     this.dropRedo();
@@ -601,6 +603,7 @@ export function normDev(r) {
       if (typeof d.fxId === 'string' && /^fx\d{1,6}$/.test(d.fxId)) o.fxId = d.fxId; // (a Serum's folded-in panel id, cv-model reshape)
       if (isDrum(o.model) && d.drum != null) o.drum = normDrum(d.drum, o.model); // (7a: a drum machine's memory, map, slots — IMPL-7a §6; another model's is dropped; 7b: by the model's own record shape)
       if (isPatchModel(o.model) && d.patch != null) o.patch = normPatch(d.patch, familyOf(o.model)); // (9, schema 12: a patchable instrument's modules and cords — IMPL-9 §1.2, §1.6; another model's is dropped. vals.p's orphans are pruned at load by the host, never here: an undo restores snapshots through this reader and must find them, §1.5)
+      if (o.model === RIG.ID && d.rig != null) o.rig = pruneRig(normRig(d.rig), o.vals.s, normLay(r.lay) || {}, k); // (WC, schema 16: a rig's cord colours and module ordinals — cosmetics, never a sound, IMPL-WC §2.1; another model's is dropped; pruneRig (lane K) drops entries naming nothing that exists)
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
       if (isObj(d.fx)) o.fx = d.fx;

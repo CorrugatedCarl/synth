@@ -1,13 +1,16 @@
 import './v8-guard.mjs';
-// Milestone 3 lane D (docs/canvas/IMPL-3.md §2.1–2.7, §7 "UI") in the page simulation: a Serum taken apart on the canvas.
-// Show parts / Bundle are one History step each (lay only: vals.s and fx byte-identical, N2) and they, their undo and redo
-// keep the Serum's one host (its panel undo); the part modules follow the state (I1 / I2) — a preset load adds modules,
-// a part off dims; add / remove a part (a tile on a Serum, a bundled Serum, a classic track) with the ⏻ written back on
-// undo / redo; the cable drag resolver's three destinations (an internal cable through sx-edges, a mod-out onto a knob, a
-// refusal); an internal cable edit then Cmd-Z undoes the cable, not an earlier Show parts; the Mod list in parts view lists
-// every matrix row; a row into a part with no module ends at VOICE with its tag; link rows from the parts' jacks; the slot
-// hosts' gestures (one step, rollback, N.modsHold, mval, menu edits, view edits); the bar ⏻ is an x.on cable end; the
-// modulator column grows leftwards (modX / modW); the track-level ModCore meters and mcx; D-R5's pref.
+// Milestone 3 lane D (docs/canvas/IMPL-3.md §2.1–2.7, §7 "UI") in the page simulation: a Serum's parts as canvas modules.
+// (Stage WC, IMPL-WC §6, §11.3: "Show parts" is gone — the Serum is the whole panel; the parts view is the rig's (the Serum-engine
+// model `rig`). This file runs the same assertions on a rig in parts view, made by `rigParts` below — lane H's conversion is not in
+// yet, so the sim sets what it will write. The Show parts / Bundle, D-R5 pref, Serum-tray-offer and Replace-with-Serum cases are
+// retired here; lane H rewrites them as rig cases in tests/canvas-WC-sim.test.mjs.)
+// The view follows the lay flag and keeps the one host (its panel undo); the part modules follow the state (I1 / I2) — a preset
+// load adds modules, a part off dims; add / remove a part (a tile on a rig) with the ⏻ written back on undo / redo; the cable
+// drag resolver's three destinations (an internal cable through sx-edges, a mod-out onto a knob, a refusal); an internal cable
+// edit then Cmd-Z undoes the cable, not an earlier step; the Mod list in parts view lists every matrix row; a row into a part
+// with no module ends at VOICE with its tag; link rows from the parts' jacks; the slot hosts' gestures (one step, rollback,
+// N.modsHold, mval, menu edits, view edits); the bar ⏻ is an x.on cable end; the modulator column grows leftwards (modX / modW);
+// the track-level ModCore meters and mcx; the S0 notice.
 // The real Serum panels (serum-ui / sx-host / sx-ui-mod) in main-sim's DOM stub; the FX rack a stand-in. The world is
 // canvas-sim's scripted one. Accessor-free (instruments read as devices). One boot per file; strings, numbers and booleans
 // only into assert (never a stub DOM node).
@@ -22,6 +25,8 @@ import * as SE from '../sx-edges.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as CVM from '../cv-module.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
+import * as RC from '../rig-core.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once — a pending one would hold each
 // destroyed host for wk.js's give-up timer (the fixture check's lesson)
@@ -72,6 +77,9 @@ const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTes
 // the real Serum panels (the page's own modules); a stand-in FX rack (its UI is not under test here)
 class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
 acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
+// ((WC, lane H) the parts machinery with stage 3's panel views standing in for the rig's faces (rig-ui; the faces, the jack rows and the cords
+// are tests/canvas-WC-sim's): no rig-ui host — whichever loader resolves first — so a rig's modules mount stage 3's views)
+globalThis.__synthTest.cv.rig.setUi(false);
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 
@@ -89,11 +97,20 @@ const settle = async () => { sim.raf(); await sim.settle(5); sim.raf(); };
 const walk = (n, f, out = []) => { for (const c of n.children || []) { if (f(c)) out.push(c); walk(c, f, out); } return out; };
 const base = (id, t = T(), dev = 'i1') => C.destBase(t.dev[dev].vals.s, null, id);
 const ID = {};
-const uiOf = (dev = 'i1', t = T()) => ((t.lay || {})[dev] || {}).ui;
+// ((WC, lane H) a rig is always its modules: no lay flag is written for it (IMPL-WC §2.1) — 'parts' for a rig, else the stored flag)
+const uiOf = (dev = 'i1', t = T()) => (t.dev && t.dev[dev] && t.dev[dev].model === 'rig' ? 'parts' : ((t.lay || {})[dev] || {}).ui);
+// (WC) the selected track's instrument as a rig shown as its modules, holding the Serum's state (W2: the same sound): the model 'rig' and
+// the lay flag, then the view re-renders — what lane H's conversion / drop will write (its first layout is the placing rule's, I1)
+async function rigParts(dev = 'i1') {
+  const t = T();
+  t.dev[dev].model = 'rig';
+  t.lay = Object.assign({}, t.lay || {}, { [dev]: Object.assign({}, (t.lay || {})[dev] || { x: 0, y: 0 }, { ui: 'parts' }) });
+  cv.renderViews(); await settle(); await settle();
+}
 
-test('boot: the Serum is up as the whole panel (a real SerumUI host in its module); D-R5\'s shipped default is the whole panel', () => {
+test('boot: the Serum is up as the whole panel (a real SerumUI host in its module); a Serum is never in parts view — a stored flag on one is ignored (WC §6); no Show parts hooks', () => {
   assert.equal(I(T()).model, 'serum');
-  assert.deepEqual([!!host(), host().bundled, rec().mode, PT.isParts('i1'), PT.VIEW_DEFAULT, PT.newView()], [true, true, 'bundled', false, 'bundled', 'bundled']);
+  assert.deepEqual([!!host(), host().bundled, rec().mode, PT.isParts('i1'), PT.show, PT.newView, PT.VIEW_DEFAULT, PT.VIEW_PREF, PT.replace], [true, true, 'bundled', false, undefined, undefined, undefined, undefined, undefined]);
   assert.equal(keys(), 'i1,i1/fx,out');
   ID.a = T().id;
 });
@@ -108,28 +125,22 @@ test('the sim\'s null DSP globals cover main.js\'s whole DSP list (IMPL-9 §3.7\
   assert.deepEqual([list.length, Object.keys(r).length, Object.values(r).every(v => v === null)], [17, 17, true]); // ((M) master-dsp.js: MASTERDSP
 });
 
-test('Show parts / Bundle: one History step each, lay only (vals.s and fx byte-identical, N2); the host — its panel undo — survives both, their undo and their redo', async () => {
+test('a rig in parts view (WC: the sim\'s stand-in for the conversion — model and lay only, no step): the state is byte-identical (N2), the one host — its panel undo — survives it, each module\'s panel is a view of it; a Serum carrying the same flag stays the whole panel', async () => {
   const t = T(), H0 = host(), s0 = state(), n0 = hsteps();
+  t.lay = Object.assign({}, t.lay || {}, { i1: Object.assign({}, (t.lay || {}).i1 || { x: 0, y: 0 }, { ui: 'parts' }) });
+  cv.renderViews(); await settle();
+  assert.deepEqual([rec().mode, host() === H0, H0.bundled, PT.isParts('i1'), partKeys(), state() === s0], ['bundled', true, true, false, '', true], 'a Serum with the parts flag: still the whole panel (the flag is ignored, WC §6)');
   H0.edit(s => { s.p['f.res'] = 0.31; }, { label: 'RES' }); sim.raf(); // (a panel edit: the host's own undo step)
   assert.equal(H0.undo.canUndo(), true);
   const s1 = state();
   assert.notEqual(s1, s0);
-  assert.equal(PT.show('i1'), true);
-  await settle();
-  assert.deepEqual([hsteps(), cv.hist.undoLabel, uiOf(), host() === H0, rec().mode, H0.bundled, H0.undo.canUndo(), state() === s1], [n0 + 1, 'Show parts', 'parts', true, 'parts', false, true, true]);
-  assert.deepEqual([partKeys(), V().modules.has('i1/fx'), base('a.on') >= 0.5, base('f.on') >= 0.5], ['i1/oscA', true, true, false], 'VOICE (i1), OSC A and the own FX: the default Serum\'s parts that are on (FILTER 1 is off there)');
-  assert.deepEqual([...rec().views.keys()].sort().join(','), 'i1,i1/oscA', 'each module\'s panel is a view of the one host');
+  await rigParts();
+  assert.deepEqual([hsteps(), uiOf(), host() === H0, rec().mode, H0.bundled, H0.undo.canUndo(), state() === s1, I(T()).model], [n0, 'parts', true, 'parts', false, true, true, 'rig']);
+  // ((WC, lane H) rig-core partKeys: + Filter 1 — OSC A routes into it, off (I1') — and Envelope 1 — a Serum's ENV 1 is no key gate (the amp slot)
+  assert.deepEqual([partKeys(), V().modules.has('i1/fx'), base('a.on') >= 0.5, base('f.on') >= 0.5], ['i1/env1,i1/filter,i1/oscA', true, true, false], 'the Amplifier (i1), OSC A, the Filter it feeds (off: I1\'), ENV 1 (the amp slot) and the own FX');
+  assert.deepEqual([...rec().views.keys()].sort().join(','), 'i1,i1/env1,i1/filter,i1/oscA', 'each module\'s panel is a view of the one host');
   ID.lay1 = JSON.stringify(T().lay);
-  assert.equal(PT.show('i1', false), true);
-  await settle();
-  assert.deepEqual([cv.hist.undoLabel, uiOf(), host() === H0, rec().mode, H0.bundled, state() === s1, partKeys()], ['Bundle', undefined, true, 'bundled', true, true, '']);
-  cv.undo(); await settle();
-  assert.deepEqual([uiOf(), host() === H0, rec().mode, partKeys(), state() === s1], ['parts', true, 'parts', 'i1/oscA', true], 'undo of Bundle: parts again, the same host');
-  cv.undo(); await settle();
-  assert.deepEqual([uiOf(), host() === H0, rec().mode, state() === s1], [undefined, true, 'bundled', true], 'undo of Show parts');
-  cv.redo(); await settle();
-  assert.deepEqual([uiOf(), host() === H0, rec().mode, JSON.stringify(T().lay) === ID.lay1], ['parts', true, 'parts', true], 'redo: the stored places');
-  // the panel undo survived every switch: it still undoes the RES edit
+  // the panel undo survived the switch: it still undoes the RES edit
   H0.undoRedo(false); sim.raf();
   assert.equal(+base('f.res').toFixed(4) !== 0.31, true);
   H0.undoRedo(true); sim.raf();
@@ -143,7 +154,7 @@ test('the part modules follow the state (I1 / I2): a preset load adds the parts 
   const n0 = hsteps();
   assert.equal(api.sxLoad(cv.view1e('i1'), 'f:Sub Foundation'), true);
   await settle();
-  assert.deepEqual([partKeys(), hsteps()], ['i1/env2,i1/filter,i1/macros,i1/oscA,i1/oscB,i1/oscC', n0], 'OSC A–C and FILTER 1 are on in that preset (I1), its rows read ENV 2 and the macros (I2): modules, no step');
+  assert.deepEqual([partKeys(), hsteps()], ['i1/env1,i1/env2,i1/filter,i1/macros,i1/oscA,i1/oscB,i1/oscC', n0], 'OSC A–C and FILTER 1 are on in that preset (I1), its rows read ENV 2 and the macros (I2), its ENV 1 no gate (the amp slot): modules, no step');
   for (const k of ['i1/oscB', 'i1/oscC', 'i1/filter', 'i1/env2', 'i1/macros']) assert.equal(!!(T().lay[k] && Number.isFinite(T().lay[k].x)), true, k + ' laid out');
   const m = V().modules.get('i1/oscC'), pw = walk(m.bar, c => !!c.attrs && c.attrs['data-dest'] === 'c.on');
   assert.deepEqual([pw.length, m.el.hasAttribute('data-off')], [1, false], 'the bar holds OSC C\'s own power toggle');
@@ -158,7 +169,7 @@ test('add / remove a part: one step each with the ⏻ written back on undo / red
   assert.equal(base('c.on'), 0);
   assert.equal(PT.add('i1', 'osc'), 'oscC', 'the first free oscillator: C (off, laid out)');
   await settle();
-  assert.deepEqual([base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [1, n0 + 1, 'Add OSC C', false]);
+  assert.deepEqual([base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [1, n0 + 1, 'Add Oscillator 3', false]);
   assert.deepEqual(cv.hist.u[cv.hist.u.length - 1].meta, { trackId: T().id, dev: 'i1', part: 'oscC', on: [0, 1], f: [[['p', 'c.on'], 0, 1]] });
   cv.undo(); await settle();
   assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC')], [0, true], 'undo: off again (its place stays: it was laid out before)');
@@ -166,10 +177,10 @@ test('add / remove a part: one step each with the ⏻ written back on undo / red
   assert.equal(base('c.on'), 1);
   const n1 = hsteps();
   assert.equal(PT.add('i1', 'osc'), null);
-  assert.deepEqual([note(), hsteps()], ['This Serum already has 3 oscillators', n1], 'Q3: a 4th oscillator is refused with the count');
+  assert.deepEqual([note(), hsteps()], ['This ' + RIG.NAME + ' already has 3 oscillators', n1], 'Q3: a 4th oscillator is refused with the count ((WC, G13) the rig\'s words)');
   assert.equal(PT.remove('i1/oscC'), true);
   await settle();
-  assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC'), cv.hist.undoLabel], [0, false, 'Remove OSC C']);
+  assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC'), cv.hist.undoLabel], [0, false, 'Remove Oscillator 3']);
   cv.undo(); await settle();
   assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC')], [1, true], 'undo of Remove: on, its module back');
   // an own LFO a matrix row reads (I2): a module; Remove refuses with the count
@@ -180,59 +191,53 @@ test('add / remove a part: one step each with the ⏻ written back on undo / red
   assert.deepEqual([/LFO 2 modulates 1 knob/.test(note()), hsteps(), partKeys().includes('i1/lfo2')], [true, n2, true]);
 });
 
-test('Sources tray: a part tile on a parts Serum (its first free slot), on a bundled Serum (it shows its parts first — the same step), on a classic track (the offer, then Replace with Serum: one step, undone at once)', async () => {
+test('Sources tray: a part tile on a rig in parts view (its first free slot, one step); greyed tiles (Q3); on any other track a tile does nothing (the first drop is lane H\'s, WC §3.5)', async () => {
   let n = hsteps();
   PT.pick('filter'); await settle();
-  assert.deepEqual([base('f2.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/filter2')], [1, n + 1, 'Add FILTER 2', true]);
-  assert.equal(PT.show('i1', false), true); await settle();
+  assert.deepEqual([base('f2.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/filter2')], [1, n + 1, 'Add Filter 2', true]);
   n = hsteps();
   PT.pick('noise'); await settle();
-  assert.deepEqual([uiOf(), base('n.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/noise'), rec().mode], ['parts', 1, n + 1, 'Add NOISE', true, 'parts'], 'a bundled Serum: parts first, in the same step');
-  cv.undo(); await settle();
-  assert.deepEqual([uiOf(), base('n.on'), rec().mode], [undefined, 0, 'bundled'], 'one undo: the part and the view');
-  cv.redo(); await settle();
-  // greyed tiles (Q3): every oscillator on
+  assert.deepEqual([base('n.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/noise')], [1, n + 1, 'Add Noise', true]);
+  // greyed tiles (Q3): every oscillator on (the preset of the I1 test turned A–C on)
   M.decor();
   const tiles = sh.shell.tiles;
   assert.deepEqual([tiles.partTile('osc').getAttribute('aria-disabled'), tiles.partTile('osc').classList.contains('cv-placed'), tiles.partTile('sub').getAttribute('aria-disabled')], ['true', true, null]);
-  // a classic track: the offer, then its tap
+  // a classic track: no offer, no Replace with Serum (WC §6); ((WC §3.5, lane H) the first drop REPLACES it with a rig holding the module
+  // — one step, its notice; canvas-WC-sim tests it whole) — undone here
   const j = api.addTrack(MOD('juno60')); sim.raf(); cv.renderViews(); await settle();
   ID.j = j.id;
   n = hsteps();
-  PT.pick('osc');
-  assert.deepEqual([note(), hsteps(), I(T()).model], ['Serum parts belong to a Serum · Replace with Serum', n, 'juno60']);
-  sim.$('#notice').click(); await settle(); await settle();
-  assert.deepEqual([I(T()).model, uiOf(), base('b.on'), hsteps(), cv.hist.undoLabel], ['serum', 'parts', 1, n + 1, 'Replace Juno-60 with Serum'], 'Serum in parts view, OSC B added: one step');
-  assert.deepEqual(partKeys(), 'i1/oscA,i1/oscB');
+  api.notice('', 0);
+  PT.pick('osc'); await settle();
+  assert.deepEqual([note(), hsteps(), I(T()).model], ['Replaced Juno-60 with ' + RIG.NAME + ' · Oscillator 1 · tap to undo', n + 1, 'rig']);
   cv.undo(); await settle();
-  assert.deepEqual([I(T()).model, uiOf()], ['juno60', undefined]);
+  assert.deepEqual([hsteps(), I(T()).model], [n, 'juno60']);
+  M.decor();
+  assert.equal(tiles.partTile('osc').classList.contains('cv-placed'), false, 'no rig here: no tile greyed');
 });
 
-test('the cable drag resolver (§2.5): an internal cable through sx-edges (one History step + meta), a mod-out onto a knob (a row), anything else refused with its reason; Cmd-Z after a canvas cable edit undoes the cable — not the earlier Show parts —, the fields written back; a panel edit since: they stay, said', async () => {
+test('the cable drag resolver (§2.5): an internal cable through sx-edges (one History step + meta), a mod-out onto a knob (a row), anything else refused with its reason; Cmd-Z after a canvas cable edit undoes the cable — not the earlier step —, the fields written back; a panel edit since: they stay, said', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  assert.deepEqual([I(T()).model, uiOf(), rec().mode], ['serum', 'parts', 'parts']);
-  PT.show('i1', false); await settle();
-  PT.show('i1'); await settle();
-  const n0 = hsteps(), O = M.opts;
-  assert.equal(cv.hist.undoLabel, 'Show parts');
+  assert.deepEqual([I(T()).model, uiOf(), rec().mode], ['rig', 'parts', 'parts']);
+  const n0 = hsteps(), O = M.opts, L0 = cv.hist.undoLabel; // (L0: the step before the cable's — a tile\'s Add FILTER 2 here; it must stay)
   assert.deepEqual([O.port('i1/oscB.out'), O.port('i1/filter2.in'), O.port('i1.main'), O.port('i1/oscB.warp')], ['i1/oscB.out', 'i1/filter2.in', 'i1.main', null], 'internal ends are ports (a warp input is not)');
   assert.deepEqual(O.canConnect('i1/oscB.out', 'i1/filter2.in'), { ok: true, why: '' });
-  assert.deepEqual(O.canConnect('i1/oscB.out', 'out.in'), { ok: false, why: 'Serum sources play through their VOICE' }, 'a source → OUT: refused with its reason');
-  assert.deepEqual(O.canConnect('i1/filter.out', 'i1/filter.in'), { ok: false, why: 'A filter cannot feed itself' });
+  assert.deepEqual(O.canConnect('i1/oscB.out', 'out.in'), { ok: false, why: RC.WORDS.other }, 'a source → OUT: refused with its reason ((WC, G13) the rig\'s words)');
+  assert.deepEqual(O.canConnect('i1/filter.out', 'i1/filter.in'), { ok: false, why: RC.WORDS.self });
   const route = () => SE.serumEdges(T().dev.i1.vals.s, T().dev.i1.fx).filter(e => e.a === 'oscB.out').map(e => e.b).sort().join();
   const F = () => [T().dev.i1.vals.s.osc[1].route, base('b.fbal'), base('f2.routeB')];
-  const r0 = route(), f0 = F(), E = SE.setEdge(T().dev.i1.vals.s, T().dev.i1.fx, 'oscB.out', 'filter2.in');
+  const r0 = route(), f0 = F(), E = RC.plug(T().dev.i1.vals.s, T().dev.i1.fx, 'oscB.out', 'filter2.in'); // ((WC, lane H) rig-core's plug — ≡ setEdge but a fork's other switch
   O.onConnect('i1/oscB.out', 'i1/filter2.in'); await settle();
   const f1 = F();
-  assert.deepEqual([hsteps(), cv.hist.undoLabel, route().includes('filter2.in'), f1[0]], [n0 + 1, 'OSC B → FILTER 2', true, 0]);
-  assert.deepEqual(cv.hist.u[cv.hist.u.length - 1].meta, { trackId: T().id, dev: 'i1', f: E.f }, 'the step\'s meta: sx-edges\' f as it stands');
-  assert.equal(note(), 'OSC B → FILTER 2 · Undo');
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, route().includes('filter2.in'), f1[0]], [n0 + 1, 'Plug Oscillator 2 · OUT → Filter 2 · IN', true, 0]);
+  assert.deepEqual(cv.hist.u[cv.hist.u.length - 1].meta, { trackId: T().id, dev: 'i1', f: E.f }, 'the step\'s meta: rig-core\'s f as it stands');
+  assert.equal(note(), 'Plug Oscillator 2 · OUT → Filter 2 · IN · tap to undo');
   assert.equal(V().cables.list().some(c => c.int && c.a === 'i1/oscB.out' && c.b === 'i1/filter2.in'), true, 'drawn as an internal cable');
   // Cmd-Z with the focus on the canvas: History undoes the cable, the parts view stays
   sim.key('KeyZ', true, { key: 'z', metaKey: true }); await settle();
-  assert.deepEqual([F(), route(), uiOf(), cv.hist.undoLabel], [f0, r0, 'parts', 'Show parts']);
+  assert.deepEqual([F(), route(), uiOf(), cv.hist.undoLabel], [f0, r0, 'parts', L0]);
   sim.key('KeyZ', true, { key: 'z', metaKey: true, shiftKey: true }); await settle();
-  assert.deepEqual([F(), cv.hist.undoLabel], [f1, 'OSC B → FILTER 2'], 'redo: written again');
+  assert.deepEqual([F(), cv.hist.undoLabel], [f1, 'Plug Oscillator 2 · OUT → Filter 2 · IN'], 'redo: written again');
   // changed since (a panel edit of the balance): the undo leaves the fields as they are and says so
   host().edit(st => { st.p['b.fbal'] = 0.3; }, { label: 'BALANCE' }); await settle();
   cv.undo(); await settle();
@@ -244,7 +249,7 @@ test('the cable drag resolver (§2.5): an internal cable through sx-edges (one H
   assert.equal(!!c, true);
   const n1 = hsteps();
   M.act(c.id, 'disconnect'); await settle();
-  assert.deepEqual([hsteps(), /^Disconnect OSC B/.test(cv.hist.undoLabel), route().includes('filter2.in')], [n1 + 1, true, false]);
+  assert.deepEqual([hsteps(), /^Pull Oscillator 2/.test(cv.hist.undoLabel), route().includes('filter2.in')], [n1 + 1, true, false]); // ((WC) rig-core pull
   // the third destination: a mod-out onto a knob (a row of track.mods, its own step)
   M.add('lfo'); await settle();
   const n2 = hsteps();
@@ -258,7 +263,7 @@ test('a Serum\'s own sources: an own LFO onto its own knob is a native matrix ro
   assert.deepEqual(O.canMod('i1/lfo2.out', 'i1:f.res'), { ok: true, why: '' });
   assert.deepEqual(O.canMod('i1/macros.k1', 'i1:f.res'), { ok: true, why: '' });
   O.onMod('i1/lfo2.out', 'i1:f.res'); await settle();
-  assert.deepEqual([slots(), hsteps()], [k0 + 1, n0], 'a native row: no History step (the panel\'s)');
+  assert.deepEqual([slots(), hsteps(), /^Modulate .+ with LFO 2$/.test(cv.hist.undoLabel)], [k0 + 1, n0 + 1, true], 'a native row — (WC review 2 P2-1, this pin moved) on a rig a cord edit: one History step (a Serum complete keeps its panel\'s undo)');
   const own = V().cables.list().filter(c => c.own && c.a === 'i1/lfo2.out').map(c => c.b);
   assert.equal(own.includes('i1:f.res'), true, 'drawn from LFO 2\'s jack');
   const L = PT.presetRows('i1');
@@ -284,10 +289,10 @@ test('a row into a knob no mounted view shows ends at VOICE\'s bar, tagged "OSC 
   const q = V().destPort('i1', 'c.fine'), tag = 'OSC C · FINE · hidden';
   assert.deepEqual([!!q.hid, q.tag], [true, tag]);
   const h = PT.hidden('i1', 'c.fine');
-  assert.deepEqual([h.tag, h.show.label, PT.hidden('i1', 'a.level')], [tag, 'Show OSC C', null], 'OSC A LEVEL: on screen');
+  assert.deepEqual([h.tag, h.show.label, PT.hidden('i1', 'a.level')], [tag, 'Show Oscillator 3', null], 'OSC A LEVEL: on screen ((WC) the rig\'s names)');
   const n0 = hsteps(), on0 = base('c.on');
   h.show.action(); await settle();
-  assert.deepEqual([partKeys().includes('i1/oscC'), base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [true, on0, n0 + 1, 'Show OSC C', true]);
+  assert.deepEqual([partKeys().includes('i1/oscC'), base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [true, on0, n0 + 1, 'Show Oscillator 3', true]);
   const t = T();
   assert.equal(CMOD.addMod(t, 'i1/lfo3.out', 'i1:f.cutoff', { project: P() }).ok, true);
   assert.equal(CMOD.addMod(t, 'i1/env1.out', 'i1:a.pan', { project: P() }).ok, true);
@@ -359,21 +364,19 @@ test('the ModCore meters are track-level (role none, no part: lane E\'s \'mods\'
   assert.deepEqual([+H.snap.lfoPh[0].toFixed(2), +H.snap.lfoY[0].toFixed(2), +H.liveV.toFixed(2)], [0.25, 0.7, 0.4]);
 });
 
-test('D-R5: ⚙ "New Serums open as" (a device pref, the shipped default the whole panel): Parts — a new Serum track opens taken apart (VOICE, its parts, its own FX laid out by Tidy\'s rule); Tidy keeps the flag; a track switch away and back makes the host again in parts view', async () => {
-  const sel = sh.shell.sxView;
-  assert.deepEqual([!!sel, sel.value], [true, 'bundled']);
-  sel.value = 'parts'; sel.onchange();
-  assert.equal(PT.newView(), 'parts');
+test('WC §6 (D-R5 retired): no ⚙ "New Serums open as" line and no pref — a new Serum track opens as the whole panel; Tidy carries a rig\'s parts flag and lays the group out by its rule; a track switch away and back makes the host again in parts view', async () => {
+  assert.equal(sh.shell.sxView, undefined);
   const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
-  assert.deepEqual([uiOf('i1', t), rec().mode, partKeys()], ['parts', 'parts', 'i1/oscA']);
-  const L = t.lay;
-  assert.equal(L['i1/oscA'].x < L.i1.x && L.i1.x < L['i1/fx'].x, true, 'sources → VOICE → own FX');
+  assert.deepEqual([uiOf('i1', t), rec().mode, partKeys()], [undefined, 'bundled', '']);
+  await rigParts();
+  assert.deepEqual([uiOf('i1', T()), rec().mode, partKeys()], ['parts', 'parts', 'i1/env1,i1/filter,i1/oscA']); // ((WC) rig-core's parts: I1' and the amp slot
   cv.tidy(); await settle();
   assert.equal(uiOf('i1', T()), 'parts', 'Tidy carries the parts flag');
-  sel.value = 'bundled'; sel.onchange();
+  const L = T().lay;
+  assert.equal(L['i1/oscA'].x < L.i1.x && L.i1.x < L['i1/fx'].x, true, 'sources → VOICE → own FX');
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   api.selectTrack(t.id); cv.renderViews(); await settle(); await settle();
-  assert.deepEqual([rec().mode, [...rec().views.keys()].sort().join(',')], ['parts', 'i1,i1/oscA']);
+  assert.deepEqual([rec().mode, [...rec().views.keys()].sort().join(',')], ['parts', 'i1,i1/env1,i1/filter,i1/oscA']);
 });
 
 /* ---- review 1 (fixer A): F1 – F5 */
@@ -383,23 +386,14 @@ const pe = (el, type, x, y) => el.dispatchEvent({ type, target: el, currentTarge
   preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
 const dragBar = (m, dx, dy) => { pid++; pe(m.bar, 'pointerdown', 500, 70); pe(m.bar, 'pointermove', 500 + dx / 2, 70 + dy / 2); pe(m.bar, 'pointermove', 500 + dx, 70 + dy); pe(m.bar, 'pointerup', 500 + dx, 70 + dy); };
 const usedOf = (t = T(), dev = 'i1') => (t.mods || []).map(r => r && r.src).filter(x => typeof x === 'string' && x.startsWith(dev + '/'));
-const wantOf = (t = T()) => SE.partKeys(t.dev.i1.vals.s, null, 'i1', usedOf(t));
+const wantOf = (t = T()) => RC.partKeys(t.dev.i1.vals.s, null, 'i1', usedOf(t), t.dev.i1.rig); // ((WC, lane H) a rig's modules: rig-core's rule
 const keysOf = L => [...new Set(L)].map(p => 'i1/' + p).sort().join(',');
 
-test('review 1 F1: Show parts / Bundle cycles release each discarded view set — the one host\'s disposers (offs) and adopted satellites (sats) stay level', async () => {
-  const H = host();
-  H.edit(s => { Object.assign(s.p, { 'b.on': 1, 'f.on': 1 }); }, { label: 'on' }); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
-  PT.show('i1', false); await settle(); await settle();
-  const cyc = async () => { PT.show('i1', true); await settle(); await settle(); PT.show('i1', false); await settle(); await settle(); };
-  await cyc();
-  const o0 = H.offs.length, s0 = H.sats ? H.sats.size : 0;
-  for (let i = 0; i < 4; i++) await cyc();
-  assert.deepEqual([host() === H, rec().mode, H.offs.length, H.sats ? H.sats.size : 0], [true, 'bundled', o0, s0]);
-});
+// (WC §6) review 1 F1 — Show parts / Bundle cycles release each discarded view set — is retired with the cycles: a Serum is never taken apart, a rig never bundled
 
 test('review 1 F2 (the lead\'s rule): browsing every factory preset in parts view leaves the last preset\'s parts only — places the rule wrote are automatic and a load prunes those now neither on nor read; a part the user moved stays; no History step; the panel undo of the last load prunes likewise', async () => {
-  PT.show('i1', true); await settle(); await settle();
+  host().edit(s => { Object.assign(s.p, { 'b.on': 1, 'f.on': 1 }); }, { label: 'on' }); await settle(); // (OSC B and FILTER 1 on: what the retired F1 set up)
+  if (!PT.isParts('i1')) await rigParts();
   assert.equal(partKeys().includes('i1/oscB'), true);
   assert.deepEqual([T().lay['i1/oscB'].auto, T().lay['i1/filter'].auto], [1, 1], 'placed by the rule (I1): automatic');
   const n0 = hsteps();
@@ -409,32 +403,31 @@ test('review 1 F2 (the lead\'s rule): browsing every factory preset in parts vie
   for (const nm of names) { assert.equal(api.sxLoad(cv.view1e('i1'), 'f:' + nm), true); await settle(); }
   await settle(); await settle();
   const last = wantOf();
-  assert.deepEqual([names[names.length - 1], last.length, last.includes('oscB')], ['Laser Drop', 2, false]);
+  assert.deepEqual([names[names.length - 1], last.length, last.includes('oscB')], ['Laser Drop', 4, false]); // ((WC) rig-core's rule: + Filter 1 (I1') and Envelope 1 (the amp slot)
   assert.deepEqual([partKeys(), hsteps()], [keysOf(last.concat('oscB')), n1], 'the last preset\'s parts, the moved OSC B (dimmed), nothing else; no step');
   assert.equal(V().modules.get('i1/oscB').el.hasAttribute('data-off'), true);
   host().undoRedo(false); await settle(); await settle();   // (the panel undo of the last load: the preset before it)
   assert.deepEqual([partKeys(), hsteps()], [keysOf(wantOf().concat('oscB')), n1]);
 });
 
-test('review 1 F3: a canvas cable undone inside the Serum (its panel undo), then the top ↶ named for the cable: it consumes the cable step alone (said: already undone) — never the Show parts before it —; ↷ writes the cable again', async () => {
+test('review 1 F3: a canvas cable undone inside the Serum (its panel undo), then the top ↶ named for the cable: it consumes the cable step alone (said: already undone) — never the step before it —; ↷ writes the cable again', async () => {
   host().edit(s => { s.p['b.on'] = 1; s.p['f2.on'] = 1; s.osc[1].route = 1; }, { label: 'on' }); await settle();
-  PT.show('i1', false); await settle(); await settle();
-  PT.show('i1', true); await settle(); await settle();
+  if (!PT.isParts('i1')) await rigParts();
   const F = () => [T().dev.i1.vals.s.osc[1].route, base('b.fbal'), base('f2.routeB')];
-  const f0 = F(), n0 = hsteps();
-  assert.equal(cv.hist.undoLabel, 'Show parts');
+  const f0 = F(), n0 = hsteps(), L0 = cv.hist.undoLabel; // (L0: the step before the cable's — it must stay)
   assert.equal(PT.connect('i1/oscB.out', 'i1/filter2.in'), true); await settle(); await settle();
   const f1 = F();
-  assert.deepEqual([hsteps(), cv.hist.undoLabel, f1[0]], [n0 + 1, 'OSC B → FILTER 2', 0]);
+  const LB = 'Plug Oscillator 2 · OUT → Filter 2 · IN'; // ((WC) the rig's label
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, f1[0]], [n0 + 1, LB, 0]);
   host().undoRedo(false); await settle(); await settle();   // (Cmd-Z with the focus in OSC B's part)
-  assert.deepEqual([F(), cv.hist.undoLabel], [f0, 'OSC B → FILTER 2'], 'the panel undid the cable; History\'s top still names it');
+  assert.deepEqual([F(), cv.hist.undoLabel], [f0, LB], 'the panel undid the cable; History\'s top still names it');
   cv.undo(); await settle(); await settle();               // (the top ↶)
-  assert.deepEqual([uiOf(), rec().mode, F(), cv.hist.undoLabel, cv.hist.redoLabel, hsteps()], ['parts', 'parts', f0, 'Show parts', 'OSC B → FILTER 2', n0]);
-  assert.equal(/OSC B → FILTER 2.*already undone/.test(note()), true, note());
+  assert.deepEqual([uiOf(), rec().mode, F(), cv.hist.undoLabel, cv.hist.redoLabel, hsteps()], ['parts', 'parts', f0, L0, LB, n0]);
+  assert.equal(new RegExp(LB + '.*already undone').test(note()), true, note());
   cv.redo(); await settle(); await settle();
-  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f1, 'OSC B → FILTER 2', 'parts'], '↷: the cable again');
+  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f1, LB, 'parts'], '↷: the cable again');
   cv.undo(); await settle(); await settle();
-  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f0, 'Show parts', 'parts'], 'a plain ↶ of it: written back');
+  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f0, L0, 'parts'], 'a plain ↶ of it: written back');
 });
 
 test('review 1 F4: a matrix row without a destination reads nothing — its LFO gets no module (I2), and Add / Remove agree with what is shown (one step each, the module gone after Remove)', async () => {
@@ -452,27 +445,11 @@ test('review 1 F4: a matrix row without a destination reads nothing — its LFO 
   host().edit(st => { st.matrix[k] = C.normRow(null); }, { label: 'row' }); await settle();
 });
 
-test('review 1 F5: "Replace with Serum" acts on the track it was offered for — tapped after another track was selected, it replaces nothing', async () => {
-  const j = api.addTrack(MOD('juno60')); sim.raf(); cv.renderViews(); await settle();
-  const p = api.addTrack(MOD('prophet5')); sim.raf(); cv.renderViews(); await settle();
-  api.selectTrack(j.id); cv.renderViews(); await settle();
-  const n0 = hsteps(), model = id => I(P().tracks.find(t => t.id === id)).model;
-  PT.pick('osc');
-  assert.equal(note(), 'Serum parts belong to a Serum · Replace with Serum');
-  api.selectTrack(p.id); cv.renderViews(); await settle();
-  sim.$('#notice').click(); await settle(); await settle();
-  assert.deepEqual([model(j.id), model(p.id), hsteps()], ['juno60', 'prophet5', n0], 'nothing replaced');
-  // offered and tapped on the same track: replaced (one step)
-  PT.pick('osc');
-  sim.$('#notice').click(); await settle(); await settle();
-  assert.deepEqual([model(p.id), model(j.id), hsteps(), cv.hist.undoLabel], ['serum', 'juno60', n0 + 1, 'Replace Prophet-5 with Serum']);
-  cv.undo(); await settle();
-  assert.equal(model(p.id), 'prophet5');
-});
+// (WC §6) review 1 F5 — "Replace with Serum" acts on the track it was offered for — is retired: a part tile no longer offers a Serum (lane H's first drop is tested in canvas-WC-sim)
 
 test('review 2 P1-5: a stub\'s tap opens the source\'s routing popover after the tap\'s click — never inside it (the world takes a click while its gesture lasts); a selection without a tap opens it at once', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   host().edit(s => { s.p['b.on'] = 1; s.osc[1].route = 0; s.p['f.routeB'] = 0; s.p['f2.routeB'] = 0; }, { label: 'stub' }); await settle(); await settle();
   const c = V().cables.list().find(x => x.int && x.stub && x.a === 'i1/oscB.out');
   assert.equal(!!c, true, 'OSC B\'s stub');
@@ -492,7 +469,7 @@ test('review 2 P1-5: a stub\'s tap opens the source\'s routing popover after the
 
 test('review 2 P1-2: a part view a paint skipped while its module was off screen is painted when the module comes back on screen — engine off (the module\'s on-screen change → the host\'s reshow)', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   if (!V().modules.has('i1/macros')) { PT.add('i1', 'macros'); await settle(); await settle(); }
   const m = V().modules.get('i1/macros');
   const name1 = () => (walk(m.el, q => /\bsx-tl\b/.test(String(q.className || '')))[0] || {}).textContent;
@@ -505,34 +482,23 @@ test('review 2 P1-2: a part view a paint skipped while its module was off screen
   host().edit(s => { s.macros[0].name = 'Macro 1'; }, { label: 'name' }); await settle();
 });
 
-test('review 2 P1-6 (the lead\'s decision): OSC A routed into an off FILTER 1 with no module (the default Serum as parts) is a dimmed stub "→ Filter 1 (off)"; its tap opens OSC A\'s routing and offers turning FILTER 1 on (one step: the module, the ⏻, the cable to it)', async () => {
+test('review 2 P1-6 → (WC, skeptic P1-2, I1\'): OSC A routed into an off Filter 1 — the default Serum\'s routing — is no stub any more: the Filter stands as a module, ⏻ off, and the cable goes into it (it passes its input); Remove re-plugs OSC A where the Filter\'s OUT went', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
-  if (V().modules.has('i1/filter')) { PT.remove('i1/filter'); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   host().edit(s => { s.p['f.on'] = 0; s.p['a.on'] = 1; s.osc[0].route = 0; s.p['f.routeA'] = 1; s.p['a.fbal'] = 0; }, { label: 'default routing' }); await settle(); await settle();
-  assert.equal(partKeys().split(',').includes('i1/filter'), false);
+  assert.equal(partKeys().split(',').includes('i1/filter'), true, 'I1\': a powered source routes into it');
   const c = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
-  assert.deepEqual([!!c, c && c.b, c && !!c.stub, c && c.off, c && c.label, c && !!c.dim], [true, null, true, 'filter', '→ Filter 1 (off)', true]);
-  const Va = rec().views.get('i1/oscA').V, b = (Va.panel.panel || Va.panel).route.btn; // (the stub DOM's click() runs onclick only)
-  b.click = () => b.dispatchEvent({ type: 'click', target: b, currentTarget: b, preventDefault() {}, stopPropagation() {} });
-  if (host().pop) host().pop.close();
+  assert.deepEqual([!!c, c && c.b, c && !!c.stub, V().modules.get('i1/filter').el.hasAttribute('data-off')], [true, 'i1/filter.in', false, true], 'the cable into the off Filter; the module dimmed');
   const n0 = hsteps();
-  M.sel(c.id); await settle(); await settle();
-  assert.deepEqual([host().pop ? host().pop.o : null, note()], ['route0', 'FILTER 1 is off · tap to turn it on']);
-  host().pop.close();
-  sim.$('#notice').click(); await settle(); await settle();
-  assert.deepEqual([hsteps(), cv.hist.undoLabel, partKeys().split(',').includes('i1/filter'), base('f.on') >= 0.5], [n0 + 1, 'Add FILTER 1', true, true]);
-  const c2 = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
-  assert.deepEqual([c2.b, !!c2.stub], ['i1/filter.in', false], 'the cable into FILTER 1 now');
-  assert.deepEqual(M.cmenu(c.id).map(i => i.label), [], 'not a stub any more: no stub menu');
+  PT.remove('i1/filter'); await settle(); await settle();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, T().dev.i1.vals.s.osc[0].route], [n0 + 1, 'Remove Filter 1', 1], 'OSC A now into the Amplifier: nothing silenced');
   cv.undo(); await settle(); await settle();
-  const c3 = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
-  assert.deepEqual([c3.off, M.cmenu(c3.id).map(i => i.label)], ['filter', ['Routing…', 'Turn FILTER 1 on']], 'undone: the stub again; its menu');
+  assert.deepEqual([T().dev.i1.vals.s.osc[0].route, partKeys().split(',').includes('i1/filter')], [0, true]);
 });
 
 test('review 2 P1-7: a row into a knob no mounted view shows ends at VOICE\'s top-left corner (its tagged badge right of it, above the bar: never over FILTER 1\'s bar left of VOICE)', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   if (V().modules.has('i1/oscC')) { PT.remove('i1/oscC'); await settle(); await settle(); }
   const q = V().destPort('i1', 'c.pan'), v = V().modules.get('i1').rect();
   assert.deepEqual([!!q.hid, q.x, q.y], [true, v.x, v.y]);
@@ -568,7 +534,7 @@ test('review 2 P2: a canvas ENV cabled to a Serum knob (injected into that Serum
 
 test('review 2 P2 places: a preset load that turns OSC B / C and both filters on lays them out in order once settled (OSC A · B · C, FILTER 1 · 2 top to bottom, whatever Tidy\'s guessed heights); a part tile dropped on VOICE lands clear of it', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   for (const k of ['i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2']) if (T().lay[k]) { PT.remove(k); await settle(); await settle(); }
   const ks = ['i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2'], H = { 'i1/oscB': 700, 'i1/oscC': 700, 'i1/filter': 520, 'i1/filter2': 520 };
   assert.equal(api.sxLoad(cv.view1e('i1'), 'f:Drift Machine'), true);
@@ -589,7 +555,7 @@ test('review 2 P2 places: a preset load that turns OSC B / C and both filters on
 
 test('review 2 P2 (§2.2): an LFO\'s bar carries its GLOBAL / PER NOTE badge (its MONO) — a canvas LFO and a Serum\'s own LFO part; a mode badge, not a warning', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!PT.isParts('i1')) await rigParts();
   const t = T(), l = [...V().modules.keys()].find(q => /^l\d+$/.test(q)) || M.add('lfo'); await settle();
   const badge = k => { const m = V().modules.get(k), b = walk(m.bar, q => /\bcv-badge\b/.test(String(q.className || '')))[0]; return [m.badge, b && b.attrs ? b.attrs['data-tone'] || null : null]; };
   globalThis.__synthTest.modUI.editState(l, { lfo: Object.assign({}, t.dev[l].lfo, { mono: 1 }) }); await settle(); await settle();
@@ -615,32 +581,32 @@ test('review 2 P1-4: a modulator dropped near an instrument is cleared by its ki
     const p = PT.modClear(t, 'lfo', at), R = V().rects();
     assert.equal(hit({ x: p.x, y: p.y, w: 416, h: 451 }, I1), false, 'clear of VOICE by 451 px, not 256');
     assert.deepEqual(Object.keys(R).filter(k => hit({ x: p.x, y: p.y, w: 416, h: 451 }, R[k])), [], 'clear of every module');
-    // onto VOICE at the column's height: left of VOICE, then below the LFO standing there (the column stays one column)
-    const q = PT.modClear(t, 'lfo', { x: I1.x + 20, y: R[l0].y + 8 });
+    // onto VOICE at the column's height: left of VOICE, then below the LFO standing there (the column stays one column) — (WC: VOICE's row, the rig's group is laid out by the placing rule, not Show parts' re-layout, so the LFO is not on it)
+    const q = PT.modClear(t, 'lfo', { x: I1.x + 20, y: I1.y + 8 });
     assert.deepEqual(Object.keys(R).filter(k => hit({ x: q.x, y: q.y, w: 416, h: 451 }, R[k])), [], 'never on another modulator');
     assert.equal(q.x + 416 <= I1.x - CVM.MOD_GAP, true, 'left of VOICE');
     // a tile dropped there: clear once settled
     const n0 = hsteps();
-    assert.equal(M.drag.drop('lfo', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 220, y: R[l0].y + 200 } }), true); await settle(); await settle();
+    assert.equal(M.drag.drop('lfo', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 220, y: I1.y + 200 } }), true); await settle(); await settle();
     const k = [...V().modules.keys()].filter(z => /^l\d+$/.test(z)).pop(), R2 = V().rects();
     assert.deepEqual([hsteps(), Object.keys(R2).filter(z => z !== k && hit(R2[k], R2[z]))], [n0 + 1, []]);
     cv.undo(); await settle();
   } finally { m0.rect = r0; }
 });
 
-test('S0 notice (IMPL-3 §9.9): on a touch device a track whose painted elements pass sx1\'s 1866 (the iPad session) says so once, at rest — after Show parts, Add part, a tray drop or a load; never on a desktop, under the count, mid-gesture or a second time; no History step', async () => {
-  const HEAVY = 'This many Serum parts may stutter when zooming on this device — Bundle (⋯) puts it back together.';
+test('S0 notice (IMPL-3 §9.9; WC: the rig\'s modules, its words): on a touch device a rig whose painted elements pass sx1\'s 1866 (the iPad session) says so once, at rest — after Add part, a tray drop or a load; never on a desktop, under the count, mid-gesture or a second time; no History step', async () => {
+  const HEAVY = `This many ${RIG.NAME} modules may stutter when zooming on this device.`;
   const WAIT = (PT.HEAVY_MS || 600) + 250, W = cv.world();
   assert.equal(PT.HEAVY, 1866, 'sx1\'s painted count (bench.json "ui-m3")');
   const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
-  assert.deepEqual([PT.newView(), uiOf('i1', t)], ['bundled', undefined]);
+  assert.deepEqual([uiOf('i1', t), rec().mode], [undefined, 'bundled'], 'a new Serum: the whole panel, and the whole panel never says it');
   api.notice('', 0);
-  // touch, under the count (VOICE, OSC A and the own FX): nothing
+  // touch, a rig under the count (VOICE, OSC A and the own FX): nothing
   cv.touch(true);
-  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  await rigParts();
   await sim.settle(WAIT);
   assert.deepEqual([PT.painted() <= PT.HEAVY, note() === HEAVY], [true, false]);
-  // a desktop: every part opened (a fully opened Serum is far past the count), nothing said
+  // a desktop: every part opened (a fully opened rig is far past the count), nothing said
   cv.touch(false);
   const NS = { step: false }; // (no step, so no "Added … · tap to undo" notice either)
   for (const k of ['osc', 'osc', 'sub', 'noise', 'filter', 'filter']) { assert.notEqual(PT.add('i1', k, null, undefined, NS), null, k); await settle(); }
@@ -650,27 +616,22 @@ test('S0 notice (IMPL-3 §9.9): on a touch device a track whose painted elements
   await settle();
   assert.equal(PT.painted() > PT.HEAVY, true, 'painted ' + PT.painted());
   api.notice('', 0);
-  assert.equal(PT.show('i1', false), true); await settle(); await settle();
-  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  cv.renderViews(); await settle(); await settle();
   await sim.settle(WAIT);
   assert.equal(note() === HEAVY, false, 'a desktop never');
-  // touch: Bundle says nothing; Show parts opens it again — while the camera moves, nothing; at rest, the notice, once, no step
+  // touch: while the camera moves, nothing; at rest, the notice, once, no step
   cv.touch(true);
-  assert.equal(PT.show('i1', false), true); await settle(); await settle();
-  await sim.settle(WAIT);
-  assert.equal(note() === HEAVY, false, 'bundled: no parts to bundle');
   const n0 = hsteps();
   W.busy = true;
-  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  cv.renderViews(); await settle(); await settle();
   await sim.settle(WAIT);
   assert.equal(note() === HEAVY, false, 'a gesture is under way');
   W.busy = false;
   await sim.settle(WAIT);
-  assert.deepEqual([note() === HEAVY, hsteps()], [true, n0 + 1], 'at rest: the notice; the one step is Show parts\'');
-  // once per session: the same again (Bundle, Show parts) says nothing more
+  assert.deepEqual([note() === HEAVY, hsteps()], [true, n0], 'at rest: the notice; no step');
+  // once per session: the same again says nothing more
   api.notice('', 0);
-  assert.equal(PT.show('i1', false), true); await settle(); await settle();
-  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  cv.renderViews(); await settle(); await settle();
   await sim.settle(WAIT);
   assert.equal(note(), '', 'a second time: nothing');
   // Add part (the session's flag reset): the "Added … · tap to undo" notice is not overwritten — the stutter notice waits for it

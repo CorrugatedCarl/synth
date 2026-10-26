@@ -7,7 +7,7 @@ import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as G from '../cv-graph.js?v=9';
-import { MODELS, patchFor } from '../models.js?v=9';
+import { MODELS, patchFor, isSerumModel } from '../models.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as F2 from './fixtures/mods-2a.mjs';
 
@@ -18,8 +18,8 @@ const OPTS = { sr: 48000, bpm: 120 };
 function v1Tracks() {
   const out = [];
   for (const m of MODELS) {
-    if (m.custom) {
-      for (const p of C.FACTORY_PRESETS) {
+    if (m.custom) { // ((WC) the Serum's 86 once: the rig (custom too) holds the same presets — its compile is G2's, tests/rig-sound)
+      if (isSerumModel(m)) for (const p of C.FACTORY_PRESETS) {
         const s = C.normalizeSerum(clone(p.v.s));
         out.push({ id: 'trk_' + out.length, model: 'serum', vals: { s }, preset: p.name, fx: p.fx ? C.normalizeFx(clone(p.fx), s) : C.defaultFx2() });
       }

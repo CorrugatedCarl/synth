@@ -1,4 +1,4 @@
-import { MODELS, DX_ALGS, patchFor, groupSong, classicOf as isClassicModel } from './models.js?v=9'; // ((9) classicOf as isClassicModel: main's classicOf is the classic-panel lookup)
+import { MODELS, DX_ALGS, patchFor, groupSong, classicOf as isClassicModel, isSxModel, isSerumModel, isRigModel, isSxId } from './models.js?v=9'; // ((9) classicOf as isClassicModel: main's classicOf is the classic-panel lookup)
 import * as S from './song.js?v=9';
 import { PianoRoll, drumRowsOf } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
@@ -20,6 +20,7 @@ import * as cvArt from './cv-art.js?v=9';
 import * as cvWorld from './cv-world.js?v=9';
 import * as cvModule from './cv-module.js?v=9';
 import * as cvCables from './cv-cables.js?v=9';
+import * as cvCordsMod from './cv-cords.js?v=9'; // ((WC, fixer K) the rope at rest (restPath) and the knob rim's cut (clip): the rig's badges and aims
 // stage 1e (IMPL-1e §4.6): per-device load estimates, soft caps and "Measure this device"
 import * as COSTM from './cv-cost.js?v=9';
 // the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Simple
@@ -28,7 +29,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas, menuOpen as wkMenuOpen } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key)
+import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -36,6 +37,9 @@ import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-
 // milestone 3 (IMPL-3 §2.4–2.7, lane D): a Serum taken apart — its parts as modules of one host (sx-host / sx-ui-mod, loaded
 // with the panels), its internal cables as views of its state (sx-edges)
 import * as SE from './sx-edges.js?v=9';
+// (stage WC, IMPL-WC §2.3; lane H) the rig's rules (rig-core: the display name RIG.NAME — every word with the synth's name reads it —, the
+// gate, the named states, the catalogue, the cord rules, the words); its faces (rig-ui) load with the panels (uiMods)
+import * as RC from './rig-core.js?v=9';
 // stage 7a (IMPL-7a §10): the drum machines — drum-core's pure model (memory, the panel's state machine, the {t: 'seq'}
 // payload, → Piano roll) and cv-drum's host (the panels' sessions, heard-time LEDs, pads), wired below (DRUM); 7b (IMPL-7b
 // §10): the TR-606 beside the 808 — every record by its machine (normDrum(·, model)), SYNC 303s (link303 / n303)
@@ -56,6 +60,7 @@ import * as cvPatch from './cv-patch.js?v=9';
 import * as MUI from './master-ui.js?v=9';
 
 const VERSION = '9';
+const RIG = RC.RIG;
 // The iPad app (IMPL-A §3): its WKWebView injects the marker window.SYNTH_SHELL (an object: os, app, build, sha, site,
 // restarted, post(m) → a promise of the native reply) and serves the site as synth://app/. SHELL is that marker there, null
 // in every browser — where each shell seam below is dormant (A1). shellEng: the engine's on / off as last told to native
@@ -156,17 +161,23 @@ function defaults(m) {
 // Preset, synth.sx.default, §13.12) or Init with the preferences (§2.1)
 function sxDefault() { const d = store.get('synth.sx.default', null); return d && d.v && d.v.s && typeof d.v.s === 'object' ? d : null; }
 function loadVals(m) {
-  if (m.custom) { const d = sxDefault(); return d ? { s: core.normalizeSerum(clone(d.v.s)) } : defaults(m); }
+  if (isSxModel(m)) { const d = isSerumModel(m) ? sxDefault() : null; return d ? { s: core.normalizeSerum(clone(d.v.s)) } : defaults(m); } // ((WC) Save as Default Preset is the Serum's: a rig starts from its own defaults, rigStarter)
   if (m.family === 'patch') return defaults(m); // ((9) no last-used values: a patch's knobs belong to its record — save() keeps none)
   return Object.assign(defaults(m), store.get('synth.v.' + m.id, {}));
 }
 // (milestone 3, R2) a track's instruments are read as devices — instOf(t, dev) (cv-model: the primary by default), a device
-// view (instView) — never through a track's v1 fields: isSerum(x) for a device or a view, isSerumDev(t, dev), the track's
-// Serum ids (serumIds, the primary first)
+// view (instView) — never through a track's v1 fields: isSxRec(x) for a device or a view, isSxDev(t, dev), the track's Serum-engine
+// ids (sxIds, the primary first)
+// (stage WC, IMPL-WC §8.1) two questions the literal 'serum' / m.custom answered at once. "Runs on the Serum engine" — the Serum AND the
+// rig (the compile, payload, voices, OS caps, quality steps, own FX rack, presets machinery, modulation): isSxRec(d) for a device or a view,
+// isSxDev(t, dev), sxIds(t), models.js isSxModel / isSxId. "Is the bundled Serum" — its complete panel, its menus, Info, naming:
+// models.js isSerumModel (no site here means it of a device: the panel code tests the model). "Is the rig" (its parts view, its
+// faces): isRigDev(t, dev), models.js isRigModel
 const instOf = (t, dev) => CMOD.instOf(t, dev);
-const isSerum = d => !!d && d.model === 'serum';
-const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
-const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)) : []);
+const isSxRec = d => !!d && isSxId(d.model);
+const isSxDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && isSxId(d.model); };
+const sxIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSxDev(t, k)) : []);
+const isRigDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === RIG.ID; };
 // (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808, 7b the TR-606, 7c the TR-909) is a device
 // too: its record dev.drum (the pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on
 // first read when missing — (7b §3.1, review #4) always by the device's model: a machine never gets (or keeps) another's
@@ -204,7 +215,7 @@ function drumOf(t, dev) {
 // (§5) the sample slots that are on, of every drum machine of the track, each id once: the worklet entries its payloads
 // name — ensured (levels 2: TUNING's ± 1 octave plays level 0 or 1) with the patch's own needs, never instead of them;
 // (7c §1.2) by the machine's own sound keys (PERS[model].sounds: the 909's ride and crash are rd / cr on ids 7 / 8)
-const drumLv = t => (drumDevs(t).length && !serumIds(t).length ? 2 : 0); // (the playback levels a drum track's samples ask; 0: the default, full)
+const drumLv = t => (drumDevs(t).length && !sxIds(t).length ? 2 : 0); // (the playback levels a drum track's samples ask; 0: the default, full)
 const drumSnds = (t, dev) => DC.PERS[t.dev[dev].model].sounds;
 function drumNeeds(t) {
   const out = [];
@@ -222,7 +233,8 @@ function drumNeeds(t) {
 const isV2Fx = fx => !!fx && typeof fx === 'object' && fx.v >= 2 && Array.isArray(fx.racks);
 const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && typeof fx.p === 'object'));
 // the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
-function newFx(m) { const d = m && m.custom ? sxDefault() : null; return d && fxOk(d.fx) ? fxLoad(clone(d.fx), d.v.s) : core.defaultFx2(); }
+// ((WC) the default preset is the Serum's: a rig's rack is the plain default one)
+function newFx(m) { const d = isSerumModel(m) ? sxDefault() : null; return d && fxOk(d.fx) ? fxLoad(clone(d.fx), d.v.s) : core.defaultFx2(); }
 // the base value n of FX destination `id` (static g.* ids live in the Serum state) in a track's FX state: the instance's
 // parameter (§3.16.4 fxDest; v1 ids of Hyper's Dimension rows resolve through RENAME1) — MIDI-learned controllers (midi.js writeCC)
 function fxSet(t, id, n, dev) { // (dev: the instrument whose FX — null: the primary's)
@@ -237,10 +249,10 @@ const clone = x => JSON.parse(JSON.stringify(x));
 function fxOfDev(t, id) {
   if (id == null && t && t.dev) id = CMOD.primId(t);
   let d = t && t.dev ? t.dev[id] : null;
-  if (d && d.kind === 'synth' && d.model !== 'serum') { const p = CMOD.destOf(t, id); d = p && t.dev[p].kind === 'panel' ? t.dev[p] : null; }
+  if (d && d.kind === 'synth' && !isSxRec(d)) { const p = CMOD.destOf(t, id); d = p && t.dev[p].kind === 'panel' ? t.dev[p] : null; }
   if (!d) return core.defaultFx2();
   if (isV2Fx(d.fx)) return d.fx;
-  d.fx = fxOk(d.fx) ? fxLoad(d.fx, d.model === 'serum' && d.vals ? d.vals.s : undefined) : core.defaultFx2();
+  d.fx = fxOk(d.fx) ? fxLoad(d.fx, isSxRec(d) && d.vals ? d.vals.s : undefined) : core.defaultFx2();
   return d.fx;
 }
 // every device of a track as it enters (a load: autosave, file, History's restore keeps the live states): Serum states
@@ -256,7 +268,7 @@ function normDevs(t) {
     if (d.kind === 'synth') {
       const m = modelById(d.model);
       d.model = m.id;
-      if (m.custom) { d.vals = { s: core.normalizeSerum(d.vals && d.vals.s) }; d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx, d.vals.s) : core.defaultFx2(); }
+      if (isSxModel(m)) { d.vals = { s: core.normalizeSerum(d.vals && d.vals.s) }; d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx, d.vals.s) : core.defaultFx2(); }
       else d.vals = Object.assign(defaults(m), d.vals);
       if (S.isDrum(m.id) && !(d.drum && typeof d.drum === 'object')) d.drum = DC.normDrum(undefined, m.id); // (7a: a drum machine without its record — an empty memory, the defaults; 7b: its machine's)
     } else if (d.kind === 'panel') d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx) : core.defaultFx2();
@@ -279,11 +291,12 @@ function loadProject(json, lo = {}) {
   if (typeof json === 'string') { try { o = JSON.parse(json); } catch { throw new Error('Not a valid project file'); } }
   const up = CM.upgrade(o);
   o = up.p;
+  const say = L => { if (!L.length) return; const txt = L.join(' · '); if (booted) notice(txt, 30000); else early.push([txt, 30000]); };
   if (!up.readOnly) {
     const sp = CM.splitTracks(o, { name: id => modelById(id).name });
     if (sp.p !== o) splitFrom = json;
     o = sp.p;
-    if (sp.notices.length) { const txt = sp.notices.join(' · '); if (booted) notice(txt, 30000); else early.push([txt, 30000]); }
+    say(sp.notices.concat(Array.isArray(up.notes) ? up.notes : [])); // ((WC, §2.4) upgrade()'s notes: a Serum shown as parts opens whole — its notice, the 1f idiom)
   }
   const p = S.deserialize(o);
   CM.stamp(p, o);
@@ -359,7 +372,7 @@ const VIEW = {
   get preset() { return this.d.preset; }, set preset(v) { this.d.preset = v; },
   get seq() { return this.d.seq; }, set seq(v) { if (v === undefined) delete this.d.seq; else this.d.seq = v; },
   get fx() { return fxOfDev(this.track, this.devId); },
-  set fx(v) { const d = this.d; if (d.model === 'serum') d.fx = v; else { const p = CMOD.destOf(this.track, this.devId); if (p && this.track.dev[p].kind === 'panel') this.track.dev[p].fx = v; } },
+  set fx(v) { const d = this.d; if (isSxRec(d)) d.fx = v; else { const p = CMOD.destOf(this.track, this.devId); if (p && this.track.dev[p].kind === 'panel') this.track.dev[p].fx = v; } },
 };
 const views = new WeakMap(); // track → Map(dev → its view)
 function instView(t, dev) {
@@ -392,7 +405,7 @@ function save(now) {
   // the per-model value memory (R6: the current instrument's view, written per model as before — a new instrument of the
   // model starts there, loadVals)
   const iv = curView(), m = modelById(iv.model);
-  if (!m.custom && m.family !== 'patch' && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals); // ((9) a patch's knobs belong to its record: none kept)
+  if (!isSxModel(m) && m.family !== 'patch' && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals); // ((9) a patch's knobs belong to its record: none kept)
   // = song.serialize; never carries embedded wavetables (only saved files do, §7.10). Read-only (schema gate: the store
   // locked, or a newer file's project current): no project autosave — saveNow still writes the pending keys
   const ro = roNow();
@@ -476,7 +489,7 @@ function postMods(tr, N) {
 // 2b: with the track's ext slots and modules (ext rows, PER NOTE slot injection); a merged vals holding ext rows carries a
 // non-enumerable `ext` mark so buildPatch compiles it with the ext flag (IMPL-2b §3.2; the merged copy is transient)
 function modVals(tr, id, vals, m) {
-  if (!m.custom || !tr.dev || !id || !vals || !vals.s) return vals;
+  if (!isSxModel(m) || !tr.dev || !id || !vals || !vals.s) return vals;
   const rows = CG.modRowsFor(tr, id);
   if (!rows.length) return vals; // (no rows: nothing compiled — the track's payload is not even built)
   const inj = CG.injectMods({ vals }, rows, modsExt(tr), tr);
@@ -488,7 +501,7 @@ function modVals(tr, id, vals, m) {
 function buildPatch(tr, sr, offline = false) {
   fxOfDev(tr, null); // (a v1 rack reaching the primary's FX device is migrated in place first, as before)
   const c = CG.compileTrack(tr), v1 = c.canonical ? c.v1 : CM.primV1(tr); // (the compile's plain v1 view of the primary)
-  const m = modelById(v1.model), s = m.custom && v1.vals.s ? v1.vals.s : null;
+  const m = modelById(v1.model), s = isSxModel(m) && v1.vals.s ? v1.vals.s : null;
   const mv = modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), v1.vals, m);
   const patch = patchFor(m, mv, v1.fx, {
     sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1, ext: mv.ext === true, // (2b: ext rows injected)
@@ -510,8 +523,8 @@ const liveOpts = (tr, sr, offline) => ({ sr: sr || (ctx ? ctx.sampleRate : 48000
   qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id) });
 function buildInstPatch(tr, id, sr, offline = false) {
   const d = tr.dev[id], m = modelById(d.model);
-  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline), m.custom ? CG.modRowsFor(tr, id) : null, m.custom ? modsExt(tr) : null, tr); // (2a / 2b: its mod rows, the track's ext slots)
-  if (m.custom) {
+  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: isSxModel(m) ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline), isSxModel(m) ? CG.modRowsFor(tr, id) : null, isSxModel(m) ? modsExt(tr) : null, tr); // (2a / 2b: its mod rows, the track's ext slots)
+  if (isSxModel(m)) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
   }
@@ -548,7 +561,7 @@ function ptPower(tr, graph, offline) {
 function learnStates(tr) {
   for (const id of Object.keys(tr.dev || {})) {
     const d = tr.dev[id];
-    if (d && d.kind === 'synth' && d.model === 'serum') tables.learn({ s: d.vals && d.vals.s, fx: d.fx });
+    if (d && d.kind === 'synth' && isSxRec(d)) tables.learn({ s: d.vals && d.vals.s, fx: d.fx });
     else if (d && d.kind === 'panel' && d.fx) tables.learn({ fx: d.fx });
   }
 }
@@ -584,7 +597,7 @@ function voiceInfo(patch, s = null) {
 // a track's: instOf(t))
 function trackVoice(d) {
   const m = modelById(d.model), v = d.vals || {};
-  if (m.custom) {
+  if (isSxModel(m)) {
     const s = v.s && typeof v.s === 'object' ? v.s : null, vo = (s && s.voicing) || {}, mono = +vo.mono >= 0.5;
     const n = Number.isFinite(+vo.poly) ? clamp(Math.round(+vo.poly), 1, 32) : 8;
     return voiceInfo(capQ4({ engine: 'serum', mode: mono ? 'mono' : 'poly', poly: mono ? 1 : n, prio: 'last' }), s);
@@ -595,7 +608,7 @@ function trackVoice(d) {
 }
 const voiceDef = new Map(); // model id → its default voice mode (the instrument menu's other entries; the chord notice)
 function modelVoice(m) {
-  if (!voiceDef.has(m.id)) voiceDef.set(m.id, m.custom ? voiceInfo({ engine: 'serum', mode: 'poly', poly: 8 }) : trackVoice({ model: m.id, vals: defaults(m) }));
+  if (!voiceDef.has(m.id)) voiceDef.set(m.id, isSxModel(m) ? voiceInfo({ engine: 'serum', mode: 'poly', poly: 8 }) : trackVoice({ model: m.id, vals: defaults(m) }));
   return voiceDef.get(m.id);
 }
 // what the instrument menu entry of each instrument's model and the track tab show ('trackId/dev' → label, option; the
@@ -604,7 +617,7 @@ function modelVoice(m) {
 const voiceShown = new Map(), voiceOpt = new Map();
 const vkey = (t, dev = CMOD.primId(t)) => t.id + '/' + dev;
 function voiceSeen(tr, dev, patch) {
-  const d = instOf(tr, dev), k = vkey(tr, dev), l = voiceInfo(patch, isSerum(d) ? d.vals.s : null).label;
+  const d = instOf(tr, dev), k = vkey(tr, dev), l = voiceInfo(patch, isSxRec(d) ? d.vals.s : null).label;
   if (!voiceShown.has(k) || voiceShown.get(k) === l) return;
   voiceShown.set(k, l);
   const o = voiceOpt.get(k), sp = o && o.lastChild, b = o && o.parentNode;
@@ -684,7 +697,7 @@ function sendPatch(tr = trk()) {
   const dn = drumNeeds(tr), needs = dn.length ? [...new Set([...(p.needs || []), ...dn])] : p.needs;
   N.drIds = dn.join();
   if (!needs || !needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
-  const d = instOf(tr), at = { trackId: tr.id, s: isSerum(d) ? d.vals.s : null, fx: fxOfDev(tr, null), convMax: p.fxr && p.fxr.convMax };
+  const d = instOf(tr), at = { trackId: tr.id, s: isSxRec(d) ? d.vals.s : null, fx: fxOfDev(tr, null), convMax: p.fxr && p.fxr.convMax };
   if (drumLv(tr)) at.levels = drumLv(tr);
   const done = tables.ensure(needs, at);
   if (tables.ready(needs)) { N.waitP = null; postPatch(N, p); return; }
@@ -862,7 +875,7 @@ function liftCaps() {
   if (ctx) rateText();
   cvRelabel(); // (the modules' safeguard badges go)
 }
-const trackOS = (tr, sr) => { const d = instOf(tr); return isSerum(d) ? sxOSFor(d, sr) : osFor(sr); }; // (a node's OS: its primary's)
+const trackOS = (tr, sr) => { const d = instOf(tr); return isSxRec(d) ? sxOSFor(d, sr) : osFor(sr); }; // (a node's OS: its primary's)
 // DSP scripts (classic scripts, one global scope per context; SPEC-serum2 §0.3, §12.1) load before the engine, all
 // requested at once (none reads another's global at load, so their evaluation order does not matter); a missing or
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
@@ -1129,7 +1142,7 @@ function makeNode(tr) {
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
   const lv = drumLv(tr) ? { levels: drumLv(tr) } : null, dn = drumNeeds(tr); // ((7a §5) a drum machine's slots that are on: 2 levels)
   if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, Object.assign({ trackId: tr.id, node, convMax: convOf(G) }, lv)); } }
-  else if (patch.needs || dn.length) tables.ensure(dn.length ? [...new Set([...(patch.needs || []), ...dn])] : patch.needs, Object.assign({ trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax }, lv));
+  else if (patch.needs || dn.length) tables.ensure(dn.length ? [...new Set([...(patch.needs || []), ...dn])] : patch.needs, Object.assign({ trackId: tr.id, node, s: isSxRec(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax }, lv));
   const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
@@ -1162,11 +1175,11 @@ function cvCpu(id, N, per) {
 function rackKey(t, N, d) {
   if (!N.graphed || (d.i === undefined && d.c === undefined)) { const f = CMOD.fxDevOf(t); return f ? f.id : null; }
   if (typeof d.c === 'string') return d.c.replace(/\/fx$/, '');
-  return typeof d.i === 'string' && isSerumDev(t, d.i) ? d.i : null;
+  return typeof d.i === 'string' && isSxDev(t, d.i) ? d.i : null;
 }
 function rackKeys(t, N) {
   if (!N.graphed) { const f = CMOD.fxDevOf(t); return f ? [f.id] : []; }
-  return [...serumIds(t), ...Object.keys(t.dev).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
+  return [...sxIds(t), ...Object.keys(t.dev).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
 }
 // ask rack k of track t's node for its phases (the engine answers per part: a legacy node's one rack, else {i} / {c}); f gets them
 function askPhases(t, N, k, f) {
@@ -1230,7 +1243,7 @@ function scUnitsOf(fx, out) {
   return out;
 }
 // a track's: every rack it holds (each panel's, each Serum's own — racks 0–2), device order; the master's
-const scUnits = t => { const out = []; if (t && t.dev) for (const id of Object.keys(t.dev)) { const d = t.dev[id]; if (d && (d.kind === 'panel' || isSerumDev(t, id))) scUnitsOf(d.fx, out); } return out; };
+const scUnits = t => { const out = []; if (t && t.dev) for (const id of Object.keys(t.dev)) { const d = t.dev[id]; if (d && (d.kind === 'panel' || isSxDev(t, id))) scUnitsOf(d.fx, out); } return out; };
 const scMasterUnits = () => (hasMasterFx() ? scUnitsOf(project.master.fx, []) : []);
 // b is upstream of a over the edges E (a's sources, theirs …)
 function scReach(E, a, b) {
@@ -1526,11 +1539,46 @@ const noticeActs = new Map(); // notice text → its tap action (attached only w
 function showNotice(txt) {
   const el = $('#notice');
   el.textContent = txt; el.hidden = !txt;
+  if (txt) noticePlace();
   if (txt && txt === genTxt) { el.dataset.gen = '1'; el.onclick = genCancel; return; }
   if (el.dataset.gen) delete el.dataset.gen;
   const act = txt ? noticeActs.get(txt) : null;
   el.onclick = act || null;
   if (act) el.dataset.act = '1'; else if (el.dataset.act) delete el.dataset.act;
+}
+// ((WC pre-deploy [toast]) the 8 s "· tap to undo" lay centred on the canvas toolbar's row: a tap meant for Fit / Tidy landed on it and
+// undid the last step) the line goes where cv-tray noticeSpot says over the boxes measured now — beside the toolbar's row, else above it
+// past the minimap, else above both; with no toolbar (the roll) centred, clear of the keyboard's grip —, placed again while it shows
+// when one of them moves: the stage's size (a window, a tray's height), the toolbar's (folded, the page-zoom chip, the canvas hidden), the
+// minimap shown or hidden, the Sources tray opened, shut or sized (sideChanged; it moves the toolbar). (round 2 — the skeptic: a narrow
+// window with the tray open left no room clear, the line kept the stylesheet's spot over the tray, the fold button, the tab) the top
+// grip too, the line measured at each width a room offers (fit: its real wrap — whole words carried down — never an estimate), the
+// stage taken from where it shows (a short window's track list runs over its top)
+let noticeRO = null;
+const noticeSeen = new WeakSet();
+function noticePlace() {
+  const el = $('#notice');
+  if (!el || el.hidden || typeof el.getBoundingClientRect !== 'function') return;
+  const box = n => { const r = n && typeof n.getBoundingClientRect === 'function' ? n.getBoundingClientRect() : null; return r && r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null; };
+  const st = el.style, map = $('#cvToolbar .cv-minimap'), st0 = box($('#stage')), perf = box($('#perf'));
+  // (round 2) the stage's top where it shows: under the track list's rows where a short window lets them run over it (its Master row)
+  let headB = -Infinity; for (const s of ['#topRow', '#arrbar', '#studio', '#mfoot']) { const r = box($(s)); if (r && r.bottom > headB) headB = r.bottom; }
+  const stage = st0 && headB > st0.top ? Object.assign({}, st0, { top: Math.min(headB, st0.bottom - 1) }) : st0;
+  if (noticeRO === null && typeof ResizeObserver === 'function') { try { noticeRO = new ResizeObserver(() => noticePlace()); for (const s of ['#stage', '#cvToolbar', '#srcTray']) noticeRO.observe($(s)); } catch (err) { noticeRO = false; } }
+  if (noticeRO && map && !noticeSeen.has(map)) { noticeSeen.add(map); try { noticeRO.observe(map); } catch (err) { /* gone */ } }
+  st.left = '0px'; st.transform = 'none'; st.maxWidth = 'none'; // (its one-line size)
+  const n = el.getBoundingClientRect(), tray = $('#srcTray'), tab = $('#srcTab'), tb = box(tab);
+  const open = !!stage && tray.classList.contains('open') && !!box(tray), L = stage ? stage.left + (open ? +tray.offsetWidth || 0 : 0) : 0; // (the tray's place when its glide ends)
+  const g = box($('#kbGrip')), dy = stage && perf ? stage.bottom - perf.top : 0; // (the grip rides the keyboard tray's edge: where it rests, a fold still gliding)
+  let lh = 0; try { lh = typeof getComputedStyle === 'function' ? parseFloat(getComputedStyle(el).lineHeight) || 0 : 0; } catch (err) { lh = 0; }
+  const fit = mw => { st.maxWidth = mw + 'px'; const r = el.getBoundingClientRect(); return { w: r.width, h: r.height, lines: lh > 0 ? 1 + Math.max(0, Math.round((r.height - n.height) / lh)) : 0 }; };
+  const q = stage && perf ? cvTray.noticeSpot({ stage, bar: box($('#cvToolbar .cv-tb')), map: box(map), grip: g && { left: g.left, top: g.top + dy, right: g.right, bottom: g.bottom + dy },
+    tray: open ? { left: stage.left, top: stage.top, right: L, bottom: stage.bottom } : null,
+    tab: tb ? { left: L, top: tb.top, right: L + (+tab.offsetWidth || tb.right - tb.left), bottom: tb.bottom } : null, top: box($('#topGrip')), w: n.width, h: n.height, fit }) : null;
+  if (!q) { st.left = st.transform = st.maxWidth = st.bottom = ''; return; } // (the stylesheet's spot)
+  // (its foot over the keyboard tray's top edge — the stage's foot at rest, folded too (translateY(100%)): measured from the stage, never
+  // from a tray still gliding)
+  st.left = Math.round(q.x - perf.left) + 'px'; st.bottom = 'calc(100% + ' + Math.round(stage.bottom - q.bottom) + 'px)'; st.maxWidth = Math.floor(q.maxW) + 'px';
 }
 const idleNotice = () => sticky || genTxt;
 let noticeLog = null; // (cvDeleteSel, while its paths run: what they say, in order — a refusal's reason joins the press's notice)
@@ -1562,7 +1610,7 @@ function rateText() {
   if (os < settings.os) s += os < Math.min(settings.os, osCap(sr)) ? ` (${settings.os}× · CPU cap)` : ` (${settings.os}× capped)`;
   if (devRate && sr !== devRate) s += ` · resampled to ${kHz(devRate)} kHz`;
   // Serum instruments run at their own oversampling (Global quality, CPU cap) — (R2) every Serum of every track
-  const sxs = project.tracks.flatMap(t => serumIds(t).map(id => t.dev[id]));
+  const sxs = project.tracks.flatMap(t => sxIds(t).map(id => t.dev[id]));
   const sx = [...new Set(sxs.map(d => sxOSFor(d, sr)))].sort((a, b) => a - b);
   const capped = sxs.some(d => sxOSFor(d, sr) < Math.min(sxQuality(d), osCap(sr)));
   // (Q4 / Q6 cap Serum's polyphony: shown here and on the capped tracks' labels until a Quality choice lifts it, R7)
@@ -1607,16 +1655,16 @@ function statsText() {
 // highest oversampling in use: the app setting (instruments of the other models) and Serum instruments (their own; a
 // device has the track's `vals` shape: sxOSFor reads it). Stage 1e: every instrument of a track, not only its primary
 const devsOf = t => (t.dev ? CMOD.instIds(t).map(id => t.dev[id]) : [t]);
-const hasSx = t => devsOf(t).some(d => d.model === 'serum'), hasPlain = t => devsOf(t).some(d => d.model !== 'serum');
+const hasSx = t => devsOf(t).some(isSxRec), hasPlain = t => devsOf(t).some(d => !isSxRec(d));
 function plainOS() { return project.tracks.some(hasPlain) ? osFor(ctx.sampleRate) : 0; }
-function sxMaxOS() { let m = 0; for (const t of project.tracks) for (const d of devsOf(t)) if (d.model === 'serum') m = Math.max(m, sxOSFor(d, ctx.sampleRate)); return m; }
+function sxMaxOS() { let m = 0; for (const t of project.tracks) for (const d of devsOf(t)) if (isSxRec(d)) m = Math.max(m, sxOSFor(d, ctx.sampleRate)); return m; }
 function maxOS() { return Math.max(plainOS(), sxMaxOS()); }
 const qrLever = () => qrStep < QR_STEPS && project.tracks.some(hasSx);
 // a graphed node's load by group (its parts' smoothed loads, N.cpu); a legacy node's by its model
 function groupLoads(t, N) {
-  if (!N.graphed || !N.cpu) return isSerum(instOf(t)) ? [0, N.load] : [N.load, 0]; // (a legacy node: its one instrument)
+  if (!N.graphed || !N.cpu) return isSxRec(instOf(t)) ? [0, N.load] : [N.load, 0]; // (a legacy node: its one instrument)
   let lp = 0, ls = 0;
-  for (const k of Object.keys(N.cpu)) { const d = t.dev[k.replace(/\/fx$/, '')]; if (d && d.model === 'serum') ls += N.cpu[k]; else lp += N.cpu[k]; }
+  for (const k of Object.keys(N.cpu)) { const d = t.dev[k.replace(/\/fx$/, '')]; if (isSxRec(d)) ls += N.cpu[k]; else lp += N.cpu[k]; }
   return [lp, ls];
 }
 // stage 1e: the heaviest classic Inst of the busiest track, when that track's node is graphed (it is lowered alone,
@@ -1629,7 +1677,7 @@ function heavyInst() {
   let h = null;
   for (const id of Object.keys(N.cpu)) {
     const d = t.dev[id], os = N.osI.has(id) ? N.osI.get(id) : base;
-    if (d && d.kind === 'synth' && d.model !== 'serum' && os > 1 && (!h || N.cpu[id] > h.load)) h = { t, N, id, os, load: N.cpu[id] };
+    if (d && d.kind === 'synth' && !isSxRec(d) && os > 1 && (!h || N.cpu[id] > h.load)) h = { t, N, id, os, load: N.cpu[id] };
   }
   return h;
 }
@@ -1638,7 +1686,7 @@ function capsOf(t, dev) {
   const id = dev || curOf(t), d = t && t.dev ? t.dev[id] : null, N = t && nodes.get(t.id);
   if (!d || d.kind !== 'synth' || !ctx) return null;
   const sr = ctx.sampleRate;
-  if (d.model === 'serum') {
+  if (isSxRec(d)) {
     const own = Math.min(sxQuality(d), osCap(sr)), os = sxOSFor(d, sr);
     return os < own ? `OS ${own}→${os}` : qrStep ? 'Q' + qrStep : null;
   }
@@ -1751,7 +1799,7 @@ function chordCheck(t) {
   // the voices a switch would really give: setTrackModel loads the model's last-used values (loadVals) — a saved Unison /
   // Solo plays one note
   const voiceTo = x => trackVoice({ model: x.id, vals: loadVals(x) });
-  const m = modelById(instOf(t).model), to = m.custom || m.family === 'patch' ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k); // ((9) a 900 Series is mono by design: its instrument, never a switch)
+  const m = modelById(instOf(t).model), to = isSxModel(m) || m.family === 'patch' ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k); // ((9) a 900 Series is mono by design: its instrument, never a switch)
   const what = vi.mode !== 'poly' ? `is ${vi.mode === 'unison' ? 'in unison mode' : 'monophonic'} — its chords play one note`
     : `has ${vi.n} voices${vi.cap ? ' (CPU cap)' : ''} — a chord of ${k} notes drops some`;
   const txt = `“${t.name}” ${what}. Tap to ${to ? `switch it to the ${to.name} (${voiceTo(to).n} voices; Undo restores it)` : 'open its instrument'}`;
@@ -1793,7 +1841,7 @@ const MOD_MOVE = /^(Save with preset|Keep on canvas)$/;
 let modMove = null; // { mv: the step's meta, put: the row goes back into its slot }
 function modMoveBack(p, { mv, put }) {
   const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null;
-  const s = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null, M = s && Array.isArray(s.matrix) ? s.matrix : null;
+  const s = d && d.kind === 'synth' && isSxRec(d) && d.vals ? d.vals.s : null, M = s && Array.isArray(s.matrix) ? s.matrix : null;
   if (!M || !(mv.slot >= 0 && mv.slot < M.length)) return;
   const r = M[mv.slot], free = !r || !r.src, same = JSON.stringify(r) === JSON.stringify(mv.row);
   if (put ? same : free) return; // (already so)
@@ -2419,14 +2467,16 @@ function renderNav() {
 }
 // o.ui 'flow' | 'hw': the synth in that layout (the Sources tray's Simple | Hardware), inside this step — the same model
 // switches its layout (its own step), so the tray's switch goes both ways. Stage 1e: tr0 a device view — that instrument
-// is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape)
+// is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape).
+// (WC, IMPL-WC §3.5) a rig: o.module — a module tile's first drop: the blank (rigBlank: every source off) and that module in this
+// step (rigFirst); o.keepLay — Make it a <NAME>: o.vals / o.preset kept, the parts' old places kept (sxModelLay's purge skipped)
 function setTrackModel(tr0, id, o = null) {
   const tr = trOf(tr0), dev = dvOf(tr0), iv = instView(tr, dev), prim = dev === CMOD.primId(tr);
-  const ui = S.isDrum(id) || PT.isPatchModel(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null; // ((7a §8) a drum machine: Hardware only; (9) a 900 Series too)
+  const ui = S.isDrum(id) || PT.isPatchModel(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !isSxModel(modelById(id)) ? o.ui : null; // ((7a §8) a drum machine: Hardware only; (9) a 900 Series too)
   if (id === iv.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
   // (P, §3.1) a Serum replaced by a classic unfolds its own FX into a panel — one more device: at CMOD.DEV_MAX cv-model setModel
   // refuses ({ ok: false, why }, nothing touched) — its rule asked here before the step, said; its why if it refuses after all
-  const full = iv.model === 'serum' && id !== 'serum' ? CMOD.devFull(tr) : '';
+  const full = isSxRec(iv) && !isSxId(id) ? CMOD.devFull(tr) : '';
   if (full) { notice(full, 4000); return full; }
   flush(); // a pending save of the outgoing model's values must not be dropped
   const old = modelById(iv.model), m = modelById(id), name0 = tr.name;
@@ -2434,10 +2484,11 @@ function setTrackModel(tr0, id, o = null) {
   seqToggle(tr, false, true, dev);
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
-  const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'Serum'); // ((U10) the device being replaced, by its name)
-  const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev);
+  const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'instrument'); // ((U10) the device being replaced, by its name)
+  const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev), wasRig = isRigDev(tr, dev);
   if (wasPatch) { PATCH.cancel(); PATCH.lamps(tr, dev, null); } // ((9b) its lamps' queue goes with it)
-  const sm = CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
+  const rigM = isRigModel(m), keep = rigM && !!o && !!o.keepLay && !!o.vals;
+  const sm = CMOD.setModel(tr, dev, id, keep ? { vals: o.vals, preset: o.preset == null ? null : o.preset } : { vals: rigM && o && o.module ? { s: RC.rigBlank() } : loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   if (sm && sm.ok === false) { tr.name = name0; hist.prune(project); notice(sm.why, 4000); updateUndoUI(); renderHeads(); return sm.why; } // ((P) refused: nothing changed, no step)
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
   // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
@@ -2456,12 +2507,14 @@ function setTrackModel(tr0, id, o = null) {
   if (why) notice(why, 6000);
   if (n0) cpHalos(tr); // ((U11) the rows went or changed: the classic halos and the eff subscription follow, not the next edit)
   if (ui === 'flow' || (ui === 'hw' && layFlow(tr, dev))) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
-  sxModelLay(tr, dev, m, o); // ((3) the old Serum's part places go; a new Serum opens in the view D-R5 names (o.parts: the caller's))
+  if (!keep) sxModelLay(tr, dev); // ((3) the old Serum's part places go; (WC) Make it a <NAME> keeps them)
+  if (rigM && o && o.module) rigFirst(tr, dev, o.module); // ((WC) the dropped module, its auto-plug, the group's first layout
+  else if (keep && !Object.keys(tr.lay || {}).some(k => k.startsWith(dev + '/') && k !== dev + '/fx')) tr.lay = sxLayParts(tr, dev); // ((WC) no old places: Tidy's group
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
     renderPanel(tr, dev);
     if (PT.isPatchModel(id) && cvView && cvView.trackId === tr.id) cvCamRestore(tr); // ((9, §4.5) its rack framed — unless the user's camera is stored for the track)
-    if (wasPatch || PT.isPatchModel(id)) ptShow(); // ((9) its cords, or none)
+    if (wasPatch || PT.isPatchModel(id) || wasRig || isRigModel(m)) ptShow(); // ((9) its cords, or none; (WC) a rig's buffer, or none)
   }
   sendPatch(tr);
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
@@ -2510,10 +2563,10 @@ function setCur(t, dev) {
 // A classic instrument shows its Hardware layout (cv-panel: the real front panel, fixed size) unless the track chose the
 // Simple one (track.lay.<dev>.ui === 'flow': today's flowing sections at its model's fixed width, cvModule.FLOW_W). A model
 // whose hardware panel is not drawn yet (or fails validation) shows today's panel in either (IMPL-panels §7).
-const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
+const hwLayoutOf = m => (m && !isSxModel(m) ? cvPanel.usable(m.id, m) : null);
 function instUi(t, dev) { // (stage 1e: instrument dev, default the current one; its lay key is its device id)
   const d = dev == null && t ? curOf(t) : dev;
-  if (!t || isSerumDev(t, d)) return 'flow';
+  if (!t || isSxDev(t, d)) return 'flow';
   if (isDrumDev(t, d) || isPatchDev(t, d)) return 'hw'; // ((7a §8) a drum machine: its real front panel only — no Simple layout; (9) a 900 Series' console too)
   return layFlow(t, d || cvModule.ID.inst) ? 'flow' : 'hw';
 }
@@ -2663,7 +2716,7 @@ function padsRefresh() { padLitAll(); PADS.resync(); for (const B of modBodies.v
 function perfLetGo() { PERF.release(); for (const n of heldLit()) PERF.lit(n, true); } // ((8) the notes that reached the selected track)
 const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + dvOf(v) : ''; };
 const classicOf = v => { const P = v && classicPanels.get(panelKey(v)); return P && !P.dead && P.track === v ? P : null; };
-function aboutUI(m) { $('#about-title').textContent = `${m.maker} ${m.name} (${m.year})`; $('#about').textContent = m.about; }
+function aboutUI(m) { $('#about-title').textContent = `${m.maker ? m.maker + ' ' : ''}${m.name} (${m.year})`; $('#about').textContent = m.about; } // ((WC, §2.2) a maker-less model (the rig): no maker clause
 // the element instrument dev of t renders into: its module body's own element (cvBodyEl — R6: the primary's too); none
 // without the canvas DOM
 const instEl = (t, dev) => (cvOn() ? cvBodyEl(t, dev) : null);
@@ -2676,7 +2729,7 @@ function renderPanel(t = trk(), dev = curOf(t)) {
   for (const a of ['style', 'data-hw', 'data-ptr', 'data-knurl', 'data-cap']) el.removeAttribute(a); // (a hardware panel's size and --hw-* go)
   cvBuilt.set(key, el);
   const cur = t === trk() && dev === curOf(t);
-  if (m.custom) { renderCustom(el, t, dev); cvPanelDone(); return; }
+  if (isSxModel(m)) { renderCustom(el, t, dev); cvPanelDone(); return; }
   sxDropEl(el);
   const L = instUi(t, dev) === 'hw' ? hwLayoutOf(m) : null;
   classicPanels.set(key, new ClassicPanel(el, { track: iv, model: m, layout: L, host: classicHost })); // (Hardware: presets through the chip and the ⋯ menu)
@@ -2842,8 +2895,8 @@ const hostStore = { get: (k, d) => store.get(k, d), set: (k, v) => store.set(k, 
 let uiLoad = null;
 function uiMods() {
   if (!uiLoad) {
-    uiLoad = Promise.all([import('./serum-ui.js?v=' + VERSION), import('./fx-ui.js?v=' + VERSION), import('./wk.js?v=' + VERSION), wtMod(), import('./sx-ui-mod.js?v=' + VERSION)])
-      .then(([sx, fxui, wk, , mod]) => wk.loadDSP(DSP_URLS).then(() => { kitPrefs(wk); return { sx, fxui, wk, mod }; })); // ((3) mod: the part views, PART_W)
+    uiLoad = Promise.all([import('./serum-ui.js?v=' + VERSION), import('./fx-ui.js?v=' + VERSION), import('./wk.js?v=' + VERSION), wtMod(), import('./sx-ui-mod.js?v=' + VERSION), import('./rig-ui.js?v=' + VERSION)])
+      .then(([sx, fxui, wk, , mod, rig]) => wk.loadDSP(DSP_URLS).then(() => { kitPrefs(wk); return { sx, fxui, wk, mod, rig }; })); // ((3) mod: the part views, PART_W; (WC) rig: the rig's faces, rig-ui)
     uiLoad.catch(err => { console.error('Serum panel modules failed to load', err); uiLoad = null; });
   }
   return uiLoad;
@@ -2862,9 +2915,9 @@ const tables = createAssetManager({
   post: portPoster(nodes),
   // (R4) the sound states it reads and edits: every Serum instrument (its state, its own FX) and every FX panel of every
   // track — another Serum's samples and IRs are in use too
-  states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSerumDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel') || isDrumDev(t, k))
+  states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSxDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel') || isDrumDev(t, k))
     .map(k => (isDrumDev(t, k) ? { track: t, dev: k, s: null, fx: null, drum: drumOf(t, k) } // ((7a §5) a drum machine: its sample slots)
-      : { track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx })))
+      : { track: t, dev: k, s: isSxDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx })))
     .concat(hasMasterFx() ? [{ track: { id: MASTER, name: MASTER_NAME }, dev: 'mfx', s: null, fx: project.master.fx }] : []), // ((M, §2.2) the master rack: its IRs' users, relinks, learn, gc)
   edit: (x, fn, o) => sxEdit(instView(x.track, x.dev), fn, o),
   editFx: (x, fn, o) => (x.track && x.track.id === MASTER ? masterEdit(fn, o) : fxEditDev(x.track, x.dev, fn, o)),
@@ -2923,12 +2976,12 @@ function partsOf(t, N, dev, role) {
   if (!N || !N.graphed || !t || !t.dev) return [...(inst ? ['i0'] : []), ...(fx ? ['c0'] : [])];
   if (typeof dev !== 'string') return [];
   const own = /\/fx$/.test(dev), d = t.dev[own ? dev.slice(0, -3) : dev];
-  if (own) return fx ? (d && d.model === 'serum' ? [dev.slice(0, -3)] : [dev]) : [];
+  if (own) return fx ? (isSxRec(d) ? [dev.slice(0, -3)] : [dev]) : [];
   if (!d) return [];
   if (d.kind === 'panel') return fx ? [dev] : [];
   // a Serum: its Inst part alone, whatever the role — its message carries its own FX's meters and phases ({i, s, gr, fxph,
   // ftap}); its 'iN/fx' part as well would post a second message without the snapshot (blanking the panel's) and tap twice
-  if (d.model === 'serum') return [dev];
+  if (isSxRec(d)) return [dev];
   const out = inst ? [dev] : [];
   if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
   return out;
@@ -2997,7 +3050,7 @@ function sxMonitor(t, on, dev = curOf(t)) { // (R6: dev default the current inst
 const msRecs = new Map();
 function zoneWarm(id, dev, sn) { // (R2: Serum dev of track id, the snapshot its panel got)
   const t = project.tracks.find(x => x.id === id), d = t ? instOf(t, dev) : null;
-  if (!sn || !sn.zone || !isSerum(d)) return;
+  if (!sn || !sn.zone || !isSxRec(d)) return;
   for (let o = 0; o < 3; o++) {
     const O = d.vals.s.osc[o], m = O && O.type === 'multi' ? O.multi : '';
     if (!m || sn.zone[o] < 0 || msRecs.has(m)) continue;
@@ -3007,7 +3060,7 @@ function zoneWarm(id, dev, sn) { // (R2: Serum dev of track id, the snapshot its
 }
 function zoneOf(o, dev) { // (R6: Serum dev of the selected track — default its current instrument —, its panel record's snapshot)
   const t = trk(), k = dev || curOf(t), rec = sxRecOf(t.id, k), d = instOf(t, k), sn = rec && rec.ui && rec.trackId === t.id && rec.ui.snap;
-  if (!isSerum(d) || !sn || !sn.zone || !(o >= 0 && o < 3)) return null;
+  if (!isSxRec(d) || !sn || !sn.zone || !(o >= 0 && o < 3)) return null;
   const O = d.vals.s.osc[o], r = O && O.multi ? msRecs.get(O.multi) : null, z = sn.zone[o];
   return r && Array.isArray(r.zones) && z >= 0 && z < r.zones.length && r.zones[z] ? r.zones[z].smp || null : null;
 }
@@ -3024,7 +3077,7 @@ function fxEditDev(t, dev, fn, o) {
   fxPrune(t, dev);
   if (o && o.seed) seedPend.add(t.id);
   const d = dev && t.dev ? t.dev[dev] : null;
-  if (isSerum(d)) sxDirty.add(instView(t, dev).id); // (a Serum's own FX: that Serum edited since its preset)
+  if (isSxRec(d)) sxDirty.add(instView(t, dev).id); // (a Serum's own FX: that Serum edited since its preset)
   queuePatch(t); persist();
 }
 // (2b, fixer C ← fixer B) an effect instance removed from a rack takes the canvas cables on its knobs with it
@@ -3103,7 +3156,7 @@ async function projectFile() {
   const ids = new Set(), sm = new Set();
   for (const t of project.tracks) {
     for (const k of Object.keys(t.dev || {})) { // (every Serum and panel of the track, the primary's among them — R2)
-      const d = t.dev[k], x = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null, dr = isDrumDev(t, k) ? drumOf(t, k) : null; // ((7a) a drum machine's slots)
+      const d = t.dev[k], x = d && d.kind === 'synth' && isSxRec(d) && d.vals ? d.vals.s : null, dr = isDrumDev(t, k) ? drumOf(t, k) : null; // ((7a) a drum machine's slots)
       if (!d || (d.kind !== 'panel' && !x && !dr)) continue;
       for (const id of userTables(x)) ids.add(id);
       for (const id of userSmps(x, d.fx, dr)) sm.add(id);
@@ -3165,7 +3218,7 @@ function sxCurrent(iv) { // (iv: a Serum's device view)
 // follow renamed instances, locked parameters keep their values, §11.2)
 function sxLoad(x, key) { // (x: a device view, stage 1e; a bare track: its primary)
   const p = sxPreset(key), iv = x && instView(trOf(x), dvOf(x));
-  if (!p || !isSerum(iv)) return false;
+  if (!p || !isSxRec(iv)) return false;
   const s = core.applyPreset(iv.vals.s, p, { midiFromPreset: prefs.midiFromPreset });
   const cur = iv.fx, pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
   iv.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
@@ -3183,7 +3236,7 @@ function sxSaveUser(up) { store.set('synth.user.serum', up); }
 function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; R3: its own rack's phase memory, N.fxph by rack)
   name = String(name || '').trim().slice(0, 64);
   const iv = x && instView(trOf(x), dvOf(x));
-  if (!name || !isSerum(iv)) return null;
+  if (!name || !isSxRec(iv)) return null;
   const t = trOf(iv), dev = dvOf(iv), N = nodes.get(t.id), fx = fxOfDev(t, dev);
   if (N && N.fxph.get(dev)) setPhases(fx, N.fxph.get(dev)); // the rack's current LFO phases (phase memory)
   const up = sxUser(), i = up.findIndex(p => p.name === name);
@@ -3283,7 +3336,7 @@ async function sxImport(file) {
 // MIDI program change n → the n-th entry of the browser's current filtered, sorted list (§9.10, §11.8): each target track's
 // primary instrument (named: CMOD.primId — R2), when it is a Serum; the confirm through that device's panel when it is up
 function programChange(trs, n) {
-  const sx = trs.filter(t => isSerumDev(t, CMOD.primId(t)));
+  const sx = trs.filter(t => isSxDev(t, CMOD.primId(t)));
   if (!sx.length) return;
   uiMods().then(M => {
     const list = M.sx.browserList(sxPresetList(), store.get(M.sx.BROWSER_KEY, null)), p = list[n];
@@ -3316,7 +3369,7 @@ const midi = createMidi({
   },
   post: (t, m) => postTo(t, m),
   // stage 1e: the Serum instruments of a track ([{id, s, fx, prim}], the primary first): each has its own learn map
-  instsOf: t => (t.dev ? CMOD.instIds(t).filter(id => t.dev[id].model === 'serum').map(id => ({ id, s: t.dev[id].vals.s, fx: fxOfDev(t, id), prim: id === CMOD.primId(t) })) : []),
+  instsOf: t => (t.dev ? CMOD.instIds(t).filter(id => isSxRec(t.dev[id])).map(id => ({ id, s: t.dev[id].vals.s, fx: fxOfDev(t, id), prim: id === CMOD.primId(t) })) : []),
   heldNotes: src => heldNotes(src),
   programChange: (trs, n) => programChange(trs, n),
   modUI: v => { if (setModUI) setModUI(v, false); },
@@ -3324,7 +3377,7 @@ const midi = createMidi({
   track: id => project.tracks.find(x => x.id === id),
   fxSet: (t, id, n, dev) => fxSet(t, id, n, dev),
   // (R4: the Serum learned / forgotten — dev —, else every Serum of the track a mapped controller may have written)
-  changed: (t, patch, refresh, dev) => { for (const k of dev ? [dev] : serumIds(t)) sxDirty.add(vkey(t, k)); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
+  changed: (t, patch, refresh, dev) => { for (const k of dev ? [dev] : sxIds(t)) sxDirty.add(vkey(t, k)); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
   modCC: (ch, cc, v) => (midiSeen.n++, modCC(ch, cc, v)), // (2b: the canvas CC modules, CC learn)
@@ -3340,7 +3393,7 @@ let wtEdit = null; // { id: track id, dev: its Serum (U7: the one whose editor i
 function wheelToWt(v) {
   if (!prefs.wheelWt || !wtEdit) return;
   const t = project.tracks.find(x => x.id === wtEdit.id), iv = t && (!t.dev || CMOD.instOf(t, wtEdit.dev)) ? instView(t, wtEdit.dev) : null;
-  if (!iv || !isSerum(iv)) return;
+  if (!iv || !isSxRec(iv)) return;
   iv.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
   sxDirty.add(iv.id);
   queuePatch(t); persist(); sxRefresh();
@@ -3453,7 +3506,7 @@ const noteName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1
 // sample options (only the trim of the previous sample is dropped); a Multisample oscillator becomes a Sample oscillator.
 async function resampleTo(x, target) { // (x: a device view — a Serum besides the primary renders alone, buildInstPatch; a bare track: its primary)
   const iv = x && instView(trOf(x), dvOf(x));
-  if (!isSerum(iv)) return;
+  if (!isSxRec(iv)) return;
   const W = await wtMod(), sr = 44100, s = iv.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
   const gate = Math.round(bt * fpt), patch = isPrim(iv) ? buildPatch(trOf(iv), sr, true) : buildInstPatch(trOf(iv), dvOf(iv), sr, true); // (R1: the primary through buildPatch, its bytes)
   const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(iv, sr, true), hostOS: osCap(sr),
@@ -3504,7 +3557,7 @@ async function resampleTo(x, target) { // (x: a device view — a Serum besides 
 // renders as before (buildPatch).
 async function renderLast(t, o) {
   const dev = (o && o.dev) || curOf(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && legacyOk(t); // (legacy: the primary of a one-instrument node)
-  if (!isSerumDev(t, dev)) throw new Error('Rendering needs a Serum track');
+  if (!isSxDev(t, dev)) throw new Error('Rendering needs a Serum-engine track'); // ((WC, G13) a rig renders too: no word of one model
   const s = d.vals.s, fx = fxOfDev(t, dev), pn = d.preset; // (the primary's FX device is its own: fxOf's rack — R2)
   const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
   if (o && o.shift) {
@@ -3685,7 +3738,7 @@ const modLeftN = new Map(); // '<track id>/<dev>' → rows not compiled
 function modCount(t, dev = t && curOf(t)) {
   const d = t && t.dev && t.dev[dev];
   if (!d || (d.kind !== 'synth' && d.kind !== 'panel') || !CG.modRowsFor(t, dev).length) return null;
-  const b = modBudgetOf(t, dev), n = b.left.length, sx = d.kind === 'synth' && d.model === 'serum';
+  const b = modBudgetOf(t, dev), n = b.left.length, sx = d.kind === 'synth' && isSxRec(d);
   modLeftN.set(t.id + '/' + dev, n);
   return Object.assign(b, { text: 'mods ' + (sx ? Math.min(b.max, b.preset + b.canvas) + '/' + b.max : b.canvas + n) + (n ? ' · ' + n + ' not compiled' : '') }); // (2b: a classic / panel "mods n")
 }
@@ -3693,7 +3746,7 @@ function modCount(t, dev = t && curOf(t)) {
 // several things — a Juno Env A, a selector — compiles into several payload rows; the badge and the Mod list count cables)
 function modBudgetOf(t, dev) {
   const b = CG.modBudget(t, dev, project);
-  if (!isSerumDev(t, dev)) { const p = buildMods(t); if (!p.off) { const mine = new Set(CG.modRowsFor(t, dev).map(r => r.id)); b.canvas = new Set(p.rows.filter(r => mine.has(r.id)).map(r => r.id)).size; } }
+  if (!isSxDev(t, dev)) { const p = buildMods(t); if (!p.off) { const mine = new Set(CG.modRowsFor(t, dev).map(r => r.id)); b.canvas = new Set(p.rows.filter(r => mine.has(r.id)).map(r => r.id)).size; } }
   return b;
 }
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
@@ -3763,13 +3816,16 @@ function sxHost(t0, dv) {
     editorOpen: o => { wtEdit = o === 0 || o === 1 || o === 2 ? { id, dev, osc: o } : wtEdit && (wtEdit.id !== id || wtEdit.dev !== dev) ? wtEdit : null; }, // (another one's open editor stays)
     prefsChanged,
     scSources: () => scSources(id), // ((SC §6.1, the lead's (d)) the Serum panel's FX page: serum-ui's adapter forwards it to its rack's source menus
+    envSwap: (a, b) => rigEnvSwap(T(), dev, a, b), // ((WC, §3.4) the kit's Swap / label drag with ENV 1 a party on a rig: rig-core's slot move, one step
+    envInit: () => (isRigDev(T(), dev) ? (rigEnvInit(T(), dev), true) : false), // ((WC, §3.4; review 1 P3-1) the kit's Init Module on ENV 1 of a rig (a knob's menu too): envFromAmp
+    get words() { return isRigDev(T(), dev) ? RIG_KIT_WORDS : null; }, // ((WC, G13) the kit's own texts a rig's dialogs show: rig-core's words
   };
 }
 // the FX rack host: any track's FX (Serum's parameter locks hold, §9.6); a Serum's own FX show the three racks. Stage 1e:
 // the rack of rec.dev — a Serum instrument (its own FX), a shared panel, or null (the primary's FX: fxOf)
 function fxHost(t0, rec = fxRecOf(t0.id, fxKeyOf(t0)) || fxPanelRec()) { // (R6: default the current instrument's FX record, else a detached one)
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
-  const sx = () => { const t = T(), d = rec.dev && t.dev ? t.dev[rec.dev] : null; return d ? (d.kind === 'synth' && d.model === 'serum' ? rec.dev : null) : isSerumDev(t, curOf(t)) ? curOf(t) : null; }; // (no device named: the current instrument's FX)
+  const sx = () => { const t = T(), d = rec.dev && t.dev ? t.dev[rec.dev] : null; return d ? (d.kind === 'synth' && isSxRec(d) ? rec.dev : null) : isSxDev(t, curOf(t)) ? curOf(t) : null; }; // (no device named: the current instrument's FX)
   const own = () => { const k = sx(); return k ? instView(T(), k) : null; }; // (the Serum whose own FX this rack is)
   return {
     fx: () => fxOfDev(T(), rec.dev),
@@ -3797,7 +3853,7 @@ function fxHost(t0, rec = fxRecOf(t0.id, fxKeyOf(t0)) || fxPanelRec()) { // (R6:
 // { ui, el, box, gen … }), each in its module body — (milestone 3, R6) the primary's too: no singleton, no #inst.
 // Milestone 3 (IMPL-3 §2.4, lane D): the record is the Serum's host and its views, { host (= ui: the SerumUI), views, mode }:
 // mode 'bundled' (the host's shell in box) or 'parts' (VOICE in box, each part module's panel in its body: views, module key
-// → { V, el }); a view switch (lay[dev].ui, Show parts / Bundle and their undo) changes the views, never the host — its
+// → { V, el }); a view switch (lay[dev].ui: (WC) a rig's, and its undo) changes the views, never the host — its
 // panel undo, dirty and view state survive (sxViews)
 const sxRecMk = () => ({ ui: null, trackId: null, dev: null, vals: null, box: null, el: null, gen: 0, views: null, mode: null, drop() { sxDrop(this); }, get host() { return this.ui; } });
 const serumPanels = new Map();
@@ -3838,7 +3894,8 @@ function renderCustom(el, t = trk(), dev = curOf(t)) {
     box.innerHTML = '';
     try {
       if (M.mod) { SXMOD = M.mod; SXW = M.mod.PART_W || null; }
-      const tr = project.tracks.find(x => x.id === t.id) || t, parts = !!SXMOD && sxParts(tr, dev); // ((3) built in the view its flag names)
+      rigUiOf(M); // ((WC) the rig's faces and its jack menu: rig-ui's host, once
+      const tr = project.tracks.find(x => x.id === t.id) || t, parts = !isSerumModel(m) && !!SXMOD && sxParts(tr, dev); // ((3) built in the view its flag names; (WC) the bundled Serum is always whole: sxParts is the rig's)
       rec.trackId = t.id; rec.dev = dev; rec.vals = iv.vals; rec.views = new Map();
       rec.ui = new M.sx.SerumUI(box, sxHost(t, dev), parts ? { parts: true } : undefined);
       rec.mode = parts && rec.ui.bundled === false ? 'parts' : 'bundled';
@@ -3870,7 +3927,7 @@ function fxRecOf(id, key) { return fxPanels.get(id + '/' + key) || null; }
 // the FX module key of instrument dev of t (default the current one): a Serum's own 'iN/fx', a classic's panel; null: none
 function fxKeyOf(t, dev = curOf(t)) {
   if (!t || !t.dev) return null;
-  if (isSerumDev(t, dev)) return dev + '/fx';
+  if (isSxDev(t, dev)) return dev + '/fx';
   const p = CMOD.destOf(t, dev);
   return p && t.dev[p] && t.dev[p].kind === 'panel' ? p : null;
 }
@@ -3891,7 +3948,7 @@ function renderFxTab(t = trk(), key = fxKeyOf(t)) {
   if (!box) return;
   const own = key && /\/fx$/.test(key) ? key.slice(0, -3) : null, dev = own || key || null, rec = fxRec(t, key);
   cvBuilt.set(t.id + '/' + key, box);
-  const fx = fxOfDev(t, dev), sx = own ? true : !dev && isSerumDev(t, curOf(t));
+  const fx = fxOfDev(t, dev), sx = own ? true : !dev && isSxDev(t, curOf(t));
   if (rec.ui && rec.trackId === t.id && rec.fx === fx && rec.sx === sx) { rec.ui.refresh(); if (key) fxHalos(t, key); return; } // (halos: the rows of the track as it is now, after an undo too)
   fxDrop(rec);
   box.innerHTML = '';
@@ -3899,6 +3956,7 @@ function renderFxTab(t = trk(), key = fxKeyOf(t)) {
   rec.el = box;
   const gen = rec.gen;
   cvBuild(uiMods()).then(M => {
+    rigUiOf(M); // ((WC) the panels are in: rig-ui's host with them (an FX rack loads them first on a classic track)
     if (gen !== rec.gen) return;
     box.innerHTML = '';
     try {
@@ -4168,6 +4226,67 @@ function drumSetBpm(v, ph) {
   setProjectBpm(v);
   updateUndoUI();
 }
+// TAP (the header, joined to BPM; ≤ 900 px in ⋯, #tTapM — the user, 2026-10-26: "a tap button for tapping in the tempo"): from
+// the 2nd tap the tempo is 60 / the mean of the last ≤ TAP_N intervals, a whole BPM (20–300), set through setProjectBpm (the
+// tempo box's path: a playing song re-anchors, synced machines follow). A gap ≥ TAP_GAP ms or an interval > 2× the running
+// mean starts a new sequence (that tap its first). One History step "Tempo" a sequence, recorded at its first change — again
+// only when another step came on top of it (an undo, an edit), never with a drum TEMPO drag's (drBpmG) — and always its own
+// (forced: a top step that holds this state already is another action's, maybe with meta: one ↶ would take back both): ts
+// the tap's time (ms, an event's timeStamp)
+const TAP_GAP = 2000, TAP_N = 8;
+let tapTs = [], tapStep = null;
+function tapTempo(ts) {
+  const L = tapTs, n = L.length, dt = ts - L[n - 1];
+  if (!n || !(dt > 0) || dt >= TAP_GAP || (n > 1 && dt > 2 * (L[n - 1] - L[0]) / (n - 1))) { L.length = 0; tapStep = null; }
+  L.push(ts);
+  if (L.length > TAP_N + 1) L.shift();
+  if (L.length < 2) return;
+  const v = clamp(Math.round(60000 * (L.length - 1) / (L[L.length - 1] - L[0])), 20, 300);
+  if (v === project.bpm) return;
+  if (!tapStep || hist.u[hist.u.length - 1] !== tapStep) { hist.record(project, 'Tempo', true); tapStep = hist.u[hist.u.length - 1]; }
+  setProjectBpm(v);
+  updateUndoUI();
+}
+// the press taps at once (pointerdown: no click delay on a touch screen; not a right / middle button) and its click is no
+// second tap; a click with no pointer before it (detail 0: VoiceOver, Switch Control) is one. Enter, and Space when focused
+// from the keyboard (focused by a press, Space stays Play / stop, as for every button), tap on their keydown — taken, so no
+// click of their own (a held key's repeats taken, no taps). No letter shortcut: the computer keyboard's letters play notes.
+// A two-finger gesture landing on it (gesture.js: a pointercancel flagged 'two-finger' before the lift) takes its tap back —
+// the tempo, the step it opened (that one only), the sequence as it was. b: #tTap or ⋯'s #tTapM — one sequence for both
+function initTap(b) {
+  let back = null, downAt = -Infinity, odd = false; // back: { id, L, step, bpm } — the state before the press still down
+  const hit = ts => {
+    tapTempo(ts > 0 ? ts : performance.now());
+    odd = !odd; b.classList.toggle('fa', odd); b.classList.toggle('fb', !odd); // (the flash: a new animation-name restarts it, no forced layout)
+  };
+  // the flash's class goes when it ends, or is cancelled as the button hides (⋯ closed, ≤ 900 px): an animation left on it
+  // would play again each time it shows. Only the current one's (a tap mid-flash cancels the old one; its end may come late)
+  const off = e => { if (e.animationName === (odd ? 'tapfa' : 'tapfb')) b.classList.remove('fa', 'fb'); };
+  b.addEventListener('animationend', off); b.addEventListener('animationcancel', off);
+  b.addEventListener('pointerdown', e => {
+    if (e.button > 0) return;
+    e.preventDefault(); // (no compatibility mouse events: a press takes no focus — Space after tapping still plays / stops)
+    back = { id: e.pointerId, L: tapTs.slice(), step: tapStep, bpm: project.bpm };
+    downAt = e.timeStamp;
+    hit(e.timeStamp);
+  });
+  b.addEventListener('pointerup', e => { if (back && back.id === e.pointerId) back = null; });
+  b.addEventListener('pointercancel', e => {
+    if (e.gesture !== 'two-finger' || !back || back.id !== e.pointerId) return;
+    const o = back, own = tapStep !== o.step && hist.u[hist.u.length - 1] === tapStep; // (own: this tap opened the top step)
+    back = null;
+    tapTs = o.L; tapStep = o.step;
+    if (project.bpm !== o.bpm) setProjectBpm(o.bpm);
+    if (own) hist._drop(hist.u.pop());
+    updateUndoUI();
+  });
+  b.addEventListener('click', e => { if (!e.detail && !(e.timeStamp - downAt < 1000)) hit(e.timeStamp); });
+  b.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && !(e.key === ' ' && kbFocus(b))) return;
+    e.preventDefault(); // (the page's keys skip it: main initKeys reads defaultPrevented)
+    if (!e.repeat) hit(e.timeStamp);
+  });
+}
 // "→ Piano roll" (§4.3): what the plan plays for `bars` bars from the playhead floored to a bar, as notes (v 100 / 127,
 // the sounds' primaries, the sequencer's own whole-tick swung positions) — one History step "Pattern to notes" whose meta
 // puts SYNC back on its undo (keepDevs keeps the record with SYNC off: drBack) — then SYNC off and the machine stopped, so
@@ -4427,7 +4546,7 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   adopt(project);
   if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults; 7b: its machine's)
   if (m.family === 'patch') patchNew(t, CMOD.primId(t), o && o.pm, o && o.set); // ((9, §1.4) the Model 15 set as Classic bass, or (a module tile) the controller and that module; (9b) a set tile's set
-  if (m.custom && (o && o.parts !== undefined ? o.parts : sxNewView() === 'parts')) { const id = CMOD.primId(t); if (id) t.lay = sxLayParts(t, id); } // ((3) D-R5: a new Serum in parts view)
+  if (isRigModel(m) && o && o.module) rigFirst(t, CMOD.primId(t), o.module); // ((WC, integration fixer L — review WC-int B4) a module tile's new track: the blank and that module, as its Replace (setTrackModel o.module)
   newRack(t, m);
   syncNodes();
   selectTrack(t.id);
@@ -4778,6 +4897,7 @@ function initTransport() {
   $('#tRecMode').onchange = e => { project.rec.mode = e.target.value; persist(); };
   const numIn = (id, fn) => { const el = $('#' + id); el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') el.blur(); }); el.onchange = () => fn(el); };
   numIn('tBpm', el => setProjectBpm(+el.value || 120)); // ((7a) the same path as a synced drum machine's TEMPO)
+  initTap($('#tTap')); initTap($('#tTapM')); // (TAP joined to it, ⋯'s ≤ 900 px: tap tempo)
   numIn('tSigN', el => { project.sig = [clamp(Math.round(+el.value) || 4, 1, 16), project.sig[1]]; el.value = project.sig[0]; reanchor(false); arr.render(); roll.render(); persist(); });
   $('#tSigD').onchange = e => { project.sig = [project.sig[0], +e.target.value]; reanchor(false); arr.render(); roll.render(); persist(); };
   numIn('tBars', el => { project.bars = clamp(Math.round(+el.value) || 1, 1, 999); el.value = project.bars; arr.fit(); persist(); });
@@ -5117,7 +5237,7 @@ async function bounce() {
       const { tr, patch, gain } = x, d = instOf(tr), synced = d.model === 'tb303' && d.seq && d.seq.sync, pd = CMOD.primId(tr), dr = patch && isDrumDev(tr, pd); // ((7a) a drum machine: its payload — synced or not: the notes play through its map, mutes and slots, as live —, its slots)
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
-      items.push(Object.assign({ tr, patch, os: isSerum(d) ? sxOSFor(d, sr, true) : os, hostOS: os, song: songData(tr, start, end),
+      items.push(Object.assign({ tr, patch, os: isSxRec(d) ? sxOSFor(d, sr, true) : os, hostOS: os, song: songData(tr, start, end),
         transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : dr ? drumPayload(tr, pd, true) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
       x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null,
       x.sc ? { sc: x.sc } : null)); // ((SC §7.2) its key edges: renderOffline builds them as live)
@@ -5853,6 +5973,7 @@ function instChip(t) {
 function srcModeUI(mode) {
   if (!shell.tiles) return;
   shell.tiles.setMode(mode);
+  sxPartsDecor(); // ((WC, integration fixer L — B4) the module tiles greyed for the track a tap would change
   { const tr = $('#srcTray'); if (tr && tr.classList) tr.classList.toggle('cv-mside', cvMaster && mode !== 'track'); } // ((M, §5.2) no tiles on the master canvas
   if (cvMaster && mode !== 'track') { const p = $('#srcMode'); p.innerHTML = ''; p.append(MASTER_SRC); return; }
   const p = $('#srcMode'), v = shell.tiles.view(), one = v === 'serum' ? 'Serum' : 'one'; // (the intro follows the view)
@@ -5864,6 +5985,10 @@ function srcModeUI(mode) {
     const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”');
     if (ptShown()) p.append(tx('Tap a module to add it to '), nm, tx(', or drag it where you want it. '), h('b', null, 'Model 15'), tx(' loads Classic bass over the patch; '), h('b', null, 'System 35'), tx(', '), h('b', null, 'System 55'), tx(' and '), h('b', null, 'System IIIc'), tx(' bring their whole set, patched and laid out (tap to undo). Drag a tile onto the track list for a new track.'));
     else p.append(tx('Tap a module to replace the '), h('b', null, curModel().name), tx(' on '), nm, tx(' with a 900 Series holding it — '), h('b', null, 'Model 15'), tx(', '), h('b', null, 'System 35'), tx(', '), h('b', null, 'System 55'), tx(' or '), h('b', null, 'System IIIc'), tx(' for a whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.'));
+  } else if (v === RIG.VIEW) { // ((WC, integration fixer L — review WC-int P3-8) the <NAME> view: what a tap really does — on a <NAME> a module tile adds it and the <NAME> tile loads the starter; on any other instrument a tile replaces it
+    const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”'), rn = () => h('b', null, RIG.NAME);
+    if (isRigDev(trk(), curOf(trk()))) p.append(tx('Tap a module to add it to '), nm, tx(', plugged in, or drag it where you want it. '), rn(), tx(' loads the starter rig (tap to undo). Drag a tile onto the track list for a new track.'));
+    else p.append(tx('Tap a module to replace the '), h('b', null, curModel().name), tx(' on '), nm, tx(' with a '), rn(), tx(' holding it, or '), rn(), tx(' for a starter rig that plays — or drag one onto the canvas. Drag a tile onto the track list for a new track.'));
   } else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, curModel().name), ' on ',
     h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
 }
@@ -5879,7 +6004,7 @@ function srcOver(t) {
 // / replace's own undo step; a tap on the current model's tile switches its layout to the tray's (both ways). The pref
 // holds the view ('hw' | 'flow' | 'serum')
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
-const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || modelById(id).family === 'patch' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always; (9) a 900 Series too)
+const srcUi = id => (!shell.tiles || isSxModel(modelById(id)) ? null : modelById(id).family === 'drums' || modelById(id).family === 'patch' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always; (9) a 900 Series too)
 function srcPick(id, mode) {
   if (cvMaster && mode !== 'track') { notice(MASTER_SRC, 4000); return; } // ((M, §5.2) nothing replaces an instrument from the master canvas
   const ui = srcUi(id), v = curView();
@@ -5887,6 +6012,7 @@ function srcPick(id, mode) {
   // replacing the (new) selected track's instrument
   if (mode === 'track') { addTrack(modelById(id), null, { ui }); srcModeUI('replace'); return; }
   if (PT.isPatchModel(id) && ptSet()) return; // ((9, §1.4) the Model 15 tile on a 900 Series: Classic bass as a preset, never a same-model Replace)
+  if (rigTile(id)) return; // ((WC, §3.5) the rig tile on a rig: its starter as a preset-style load
   if (!cvDropInstrument(id, null, { ui }, v)) setTrackModel(v, id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
@@ -5920,12 +6046,14 @@ const srcDrag = {
     if (i.over !== 'canvas') return false;
     if (cvMaster) { notice(MASTER_SRC, 4000); return true; } // ((M, §5.2) refused, said
     if (PT.isPatchModel(id) && ptSet()) return true; // ((9) the Model 15 tile dropped on a 900 Series: as its tap)
+    if (rigTile(id)) return true; // ((WC) the rig tile dropped on a rig: as its tap
     if (!cvDropInstrument(id, rect, { ui })) setTrackModel(curView(), id, { ui }); // (the same model: only the layout, if asked)
     return true;
   },
   cancel() { srcDragEnd(); },
 };
 function sideChanged(which, on) {
+  noticePlace(); // ((WC pre-deploy [toast]) the toolbar moved with the tray)
   if (!on) { if (which === 'src' && shell.tiles) shell.tiles.closeView(); return; } // (no dropdown left over a closed tray)
   if (which === 'src') { if (!shell.srcAsk) srcModeUI('replace'); shell.srcAsk = false; }
 }
@@ -6005,7 +6133,7 @@ function initShell() {
     ctls: cvTray.CTL_TILES, ctlsEl: $('#srcCtls'), ctlsSec: $('#srcCtlSec'), ctlPick: id => modAdd(id, null), ctlDrag: modTileDrag,
     ctlCanvasGhost: () => !!world && !$('#tab-inst').hidden,
     // (milestone 3, §2.6) the Serum parts and note tools: a tap onto the track's Serum (or the Replace with Serum offer), a drop where it lands
-    parts: true, partsEl: $('#srcParts'), partsSec: $('#srcPartSec'), notesEl: $('#srcNotes'), notesSec: $('#srcNoteSec'), partPick: id => sxPartPick(id), partDrag: sxPartDrag,
+    parts: true, partsEl: $('#srcParts'), partsSec: $('#srcPartSec'), notesEl: $('#srcNotes'), notesSec: $('#srcNoteSec'), partPick: (id, mode) => sxPartPick(id, mode), partDrag: sxPartDrag,
     partCanvasGhost: () => !!world && !$('#tab-inst').hidden,
     // (9, IMPL-9 §4.6) the Moog modules view's tile row: a tap / a drop adds the module to the shown 900 Series, else makes one
     moog: cvTray.MOOG_TILES, moogPick: (id, mode) => moogPick(id, mode), moogDrag, moogCanvasGhost: () => !!world && !$('#tab-inst').hidden, moogCost: id => moogCost(id),
@@ -6037,15 +6165,6 @@ function initShell() {
     f.append(h('span', null, 'Load estimates'), b, st);
     gp.append(f);
     shell.measure = { btn: b, st };
-    // (milestone 3, D-R5) "New Serums open as: Parts · Whole panel" — a device pref (the shipped default SX_VIEW_DEFAULT)
-    const vf = h('label', 'field'), vs = h('select');
-    vs.id = 'sxView'; vs.title = 'How a Serum you add opens on the canvas: taken apart into its parts (VOICE, oscillators, filters …) or as the whole panel. Either is one tap away in its ⋯ menu';
-    for (const [v, lab] of [['parts', 'Parts'], ['bundled', 'Whole panel']]) { const op = h('option', null, lab); op.value = v; vs.append(op); }
-    vs.value = sxNewView();
-    vs.onchange = () => { store.set(SX_VIEW, vs.value === 'parts' ? 'parts' : 'bundled'); };
-    vf.append('New Serums open as ', vs);
-    gp.append(vf);
-    shell.sxView = vs;
     // (IMPL-A, Q2) the app only — "Sound in background": on (the default), a held note or a playing song keeps sounding
     // when the app leaves the screen (its audio background mode, §5.2); off, the sound pauses until the app is back.
     // Native is told ({ t: 'bg', on }) at boot and on each change
@@ -6248,6 +6367,7 @@ function initModules() {
     W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
     W.on('resize', e => cvCamResized(e)); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
     if (typeof W.setFitHook === 'function') W.setFitHook(cvFitHook);
+    if (typeof W.setJackNear === 'function') W.setJackNear(rigNearJack); // ((WC, fixer K; P2-3) a press near a rig's jack is the jack's
     W.on('mods', m => { if (cvView) cvView.setModsVisible(m); }); // (stage 2a: the toolbar ∿ — Always / On select / Never)
     let slept = false; // (1i §4.3) a tap on sleeping keys / a controller: the hint, once per session
     W.on('sleeptap', d => { const pd = !!d && PC.PAD_ID.test(d.id); if (slept !== true && slept !== (pd ? 'p' : 's')) { slept = slept ? true : pd ? 'p' : 's'; notice(pd ? 'Zoom in, or double-tap the module, to play it' : 'Zoom in, or double-tap the synth, to play it', 2500); } }); // ((8, §2.3) a Pads module's own words, once each)
@@ -6267,7 +6387,7 @@ const kindOfKey = (t, key) => {
   if (PC.PAD_ID.test(key)) return padMod(key) ? 'mod' : null; // ((8, §1.1) a Pads module: the project's, a modulator-kind module on every track)
   if (pmOf(t, key)) return 'pm'; // ((9, §4.1) a 900 Series' module 'iN/m<k>': a part of its instrument, no device of its own)
   const q = CMOD.partOf(key);
-  if (q) return isSerumDev(t, q.dev) ? 'part' : null; // ((3) a Serum part 'iN/oscB': a module of its Serum's host, no device)
+  if (q) return isSxDev(t, q.dev) ? 'part' : null; // ((3) a Serum part 'iN/oscB': a module of its Serum's host, no device)
   const d = t && t.dev ? t.dev[key] : null;
   if (key === 'wheel' ? CMOD.hasWheel(project) : !!d && cvModule.MOD_ORDER.includes(d.kind) && CMOD.kindOfId(key) === d.kind) return 'mod'; // (stage 2a: a modulator; 2b: any kind, its id by prefix)
   return /\/fx$/.test(key) || (d && d.kind === 'panel') ? 'fx' : d && d.kind === 'out' ? 'out' : d && d.kind === 'synth' ? 'inst' : null;
@@ -6299,7 +6419,7 @@ function cvMountBody(key, b) {
   cvMounted.set(key, { el, tid: t.id });
   if (kind === 'part') { sxViews(t, CMOD.partOf(key).dev); return; } // ((3) its panel: a view of its Serum's host, once that is built)
   if (kind === 'inst') b.addEventListener('pointerdown', () => { const x = trk(); if (cvView && cvView.trackId === x.id) setCur(x, key); }, { passive: true });
-  if (kind === 'inst' && isSerumDev(t, key) && cvBuilt.get(t.id + '/' + key) === el) sxViews(t, key); // ((3) a module made again for a view switch: the same host, the other views)
+  if (kind === 'inst' && isSxDev(t, key) && cvBuilt.get(t.id + '/' + key) === el) sxViews(t, key); // ((3) a module made again for a view switch: the same host, the other views)
   if (kind !== 'out' && cvBuilt.get(t.id + '/' + key) !== el) cvDue.add(key);
   // (1h) a built panel re-homed (the same track's view rebuilt, a track switched back) without a camera move: its GL face
   // finds its new module now, not at the next zoom end (rest-time: a layout read of the decos' offsets)
@@ -6318,7 +6438,7 @@ function cvUnmountBody(key) {
   if (q) { sxPartGone(M.tid, key, M.el); return; } // ((3) a part module went: its view (the host stays)
   // (3) a Serum's module made again in the same sync (its view switched: VOICE ↔ the whole panel, another set of jacks) keeps
   // its element and host — the new module takes them (cvMountBody); a removed device or another track drops them
-  if (M.tid === t.id && isSerumDev(t, key) && (sxRecOf(t.id, key) || {}).el === el) { if (typeof el.remove === 'function') el.remove(); return; }
+  if (M.tid === t.id && isSxDev(t, key) && (sxRecOf(t.id, key) || {}).el === el) { if (typeof el.remove === 'function') el.remove(); return; }
   cvDropBody(key, M);
 }
 function cvDropBody(key, M) { // a device's own element and its panel go
@@ -6362,6 +6482,9 @@ function cvRender() {
     monitors.sync();
   }
   if (cvBodiesDue() && cvView) { cvView.sync(trk()); cvRoom(false); }
+  rigRects.clear(); rigMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again
+  rigCtls.clear(); rigDestC.clear(); rigBadgeC.clear(); rigLabInfoC.clear(); // ((fixer K) the jacks' labels: measured once a render
+  if (rigLaid && rigView() && !cvMaster && isRigDev(trk(), curOf(trk())) && typeof cvView.ports === 'function') cvView.cables.layout(cvView.ports()); // ((WC) the knob ends, rings and badges over the view as it now stands (its ports)
   cvModDecor();
   sxLabels(); // ((3) the part modules' titles carry their panels' label drags)
   cvPartsSig = sxPartsSig(trk()); // ((3) cvRelabel: a part set changed by an edit makes the modules again)
@@ -6372,15 +6495,15 @@ function cvRender() {
 // (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
 // Serum, a model without hardware keys). The default camera keeps it on screen
 function cvBedBox(t, dev = curOf(t)) {
-  const m = modelById(instView(t, dev).model), L = m.custom || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m), g = L && cvPanel.geometry(L, m), o = g && g.controls.find(c => c.bed && c.live);
+  const m = modelById(instView(t, dev).model), L = isSxModel(m) || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m), g = L && cvPanel.geometry(L, m), o = g && g.controls.find(c => c.bed && c.live);
   return o ? o.bed.box : null;
 }
 // an instrument's size — always fixed, nothing is resizable (the user's rule, 2026-10-18): a classic one in its Hardware
 // layout its panel's (cv-panel sizeOf), in its Simple layout (or a model whose panel is not drawn yet) its model's
 // width (cvModule.FLOW_W: everything fits; the height measured), a Serum W_SERUM
 function cvInstSize(t, dev = curOf(t)) {
-  if (isSerumDev(t, dev) && sxParts(t, dev)) return { fixed: { w: sxPartW('voice') } }; // ((3) VOICE: its panel's width, the height measured)
-  const m = modelById(instView(t, dev).model), L = m.custom || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m);
+  if (sxParts(t, dev)) return { fixed: { w: RIGUI === false ? sxPartW('voice') : rigW('amp') } }; // ((3) VOICE: its panel's width, the height measured; (WC) the Amplifier's face)
+  const m = modelById(instView(t, dev).model), L = isSxModel(m) || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m);
   return { fixed: L ? cvPanel.sizeOf(L, m) : { w: cvModule.defaultW(cvModule.ID.inst, m.id) } };
 }
 // a fixed-size instrument makes room (IMPL-panels §7.3): the modules right of it that it now overlaps move right
@@ -6429,7 +6552,7 @@ function layUi(t, ui, dev = curOf(t)) {
 }
 function cvSetLayout(want, dev) {
   const t = trk(), K = dev || curOf(t);
-  if (isSerumDev(t, K) || isDrumDev(t, K) || isPatchDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return; // ((7a) a drum machine: Hardware only; (9) a 900 Series too)
+  if (isSxDev(t, K) || isDrumDev(t, K) || isPatchDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return; // ((7a) a drum machine: Hardware only; (9) a 900 Series too)
   hist.record(project, want === 'flow' ? 'Simple layout' : 'Hardware layout');
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
   const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
@@ -6456,15 +6579,23 @@ function cvHost() {
     // (stage 2a) the project wheel and the preset rows for the mod cables, their visibility (the toolbar ∿), the badges' taps
     project: () => project, presetRows: true, mods: (W => (W && typeof W.modsMode === 'function' ? W.modsMode() : undefined))(cvW()),
     cables: { onSelect: modCableSel, onAction: modCableAct, menu: modCableMenu, onHint: modHint, ignore: modAside,
-      dashedSet: () => dashedOf(trk()) }, // (2b: a per-note source following the last note — compileMods' derived list; (C4) one build per refresh, not per cable)
+      dashedSet: () => dashedOf(trk()), // (2b: a per-note source following the last note — compileMods' derived list; (C4) one build per refresh, not per cable)
+      // ((WC, IMPL-WC §4.1, §4.3) a rig canvas in cords mode: the records the cord layer draws (cordOf), the layer's list and anchors from
+      // them (rigRecords: fanned jacks, the knob ends) and the claimed badges' places (its answer), the selection mirrored, a point on a
+      // rope, (fixer B2) the layer above the cords for the claimed badges and the × (cv-cords top); its internal records rig-core's edges)
+      cords: cordOf, onRecords: rigRecords, cordSel: id => { const C = cvCords(); if (C && rigCordsOn) C.sel(id); }, cordPoint: (id, f) => { const C = cvCords(); return C && rigCordsOn ? C.pointAt(id, f) : null; },
+      top: () => { const C = rigCordsOn || drawMode(trk()) === 'cords' ? cvCords() : null; return C && typeof C.top === 'function' ? C.top() : null; },
+      edges: (id, dev) => { const t = trk(); return !isRigDev(t, id) || RIGUI === false ? null : rigEdges(t, id); },
+      route: (c, A, B) => rigRoute(c, A, B) }, // ((WC, integration fixer L — P3-11) a rig's Amplifier → Effects line round the Amplifier on the upright wrap
     title: cvTitle,
     menu: cvMenu,
-    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), pm = pmOf(t, key); if (pm) return PATCH.size(t, pm.dev, key); const q = CMOD.partOf(key); return q ? { fixed: { w: sxPartW(SE.kindOf(q.part)) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint; (9) a patch module: its type's MU)
+    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), pm = pmOf(t, key); if (pm) return PATCH.size(t, pm.dev, key); const q = CMOD.partOf(key); return q ? { fixed: { w: RIGUI === false ? sxPartW(SE.kindOf(q.part)) : rigW(q.part) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint; (9) a patch module: its type's MU; (WC) a rig module: its face's (rig-ui, the RIG grid)
     // (9, IMPL-9 §4.4–§4.5) a 900 Series' rack (Tidy: patch-core rackLayout above its controller), a driver's driven modules
     // outlined with it, every relayout's ports to the cord layer (its plugs' anchors)
     rackLayout: key => PATCH.rack(trk(), key),
+    tidyOpts: t => rigTidyOpts(t), // ((WC, review 2 P2-5) a rig's Tidy: its modulators' targets, the canvas's shape
     members: key => { const t = trk(), q = pmOf(t, key); return q ? PATCH.members(t, q.dev, key) : []; },
-    onRelay: ports => { const C = cvCords(); if (C && typeof C.anchors === 'function') C.anchors(ports); },
+    onRelay: ports => { const C = ptShown() ? cvCords() : null; if (C && typeof C.anchors === 'function') C.anchors(ports); }, // ((WC) the patch canvas's only: a rig's anchors are its records' (rigRecords, after cables.layout)
     powerEl: key => sxPowerEl(key), // ((3) a part's own ⏻ (its panel's power toggle) in its bar's power slot
     // (stage 1f: no ⏻, no key-zone pill — host.power / host.zone not given —, read-only cables)
     badge: key => cvBadge(key),
@@ -6483,15 +6614,15 @@ function sxReshow() {
 const cvDevName = (t, key) => { const d = t.dev && t.dev[key]; return d && d.kind === 'synth' ? d.name || modelById(d.model).name : cvTitle(key).title; };
 function cvTitle(key) {
   const t = trk(), kind = kindOfKey(t, key), d = t.dev && t.dev[key];
-  if (kind === 'part') { const q = CMOD.partOf(key); return { title: SE.partLabel(q.part), sub: cvDevName(t, q.dev) }; } // ((3) 'OSC B' of Serum …; the chip S<n> cv-module's)
-  if (kind === 'inst' && isSerumDev(t, key) && sxParts(t, key)) return { title: (d.name || modelById(d.model).name) + ' · VOICE', sub: t.name, chip: cvChip(t, key) }; // ((3) VOICE: the Serum's hub)
+  if (kind === 'part') { const q = CMOD.partOf(key), rig = isRigDev(t, q.dev); return { title: rig ? RC.barOf(q.part, t.dev[q.dev].rig) : rigLabel(t, q.dev, q.part), sub: rig ? '' : cvDevName(t, q.dev), chip: null }; } // ((3) a part of …; (WC) the rig's own names, the ordinals of dev.rig.n — "Envelope 2"; (review 2 P3-2) no "<NAME>" under each — the Amplifier says it once — and a title the bar holds ("Sub osc"))
+  if (kind === 'inst' && sxParts(t, key)) return { title: RC.MODULES.amp.label, sub: cvDevName(t, key), chip: null }; // ((WC) the Amplifier: the rig's hub (no preset strip in WC-1, §3.7)
   if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; } // ((9) a 900 Series' controller: its chip the patch's name)
   if (kind === 'pm') { const q = pmOf(t, key); return PATCH.title(t, q.dev, q.mid); } // ((9) "921B 2", a driven one's "on 921A 1")
   if (kind === 'mod' && PC.PAD_ID.test(key)) { const M = padMod(key); return { title: M ? M.name : key, sub: 'every track', chip: cvPads.chipText(M) }; } // ((8) "Pads 1", its grid "4 × 4")
   if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d) : key, sub: key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say)
   if (kind === 'fx') {
     const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, fx = fxOfDev(t, own || key);
-    if (own) { const s = t.dev[own]; return { title: 'Serum FX (own)', sub: cvCables.routeLabel(s && s.vals && s.vals.s, fx) || 'no effects' }; }
+    if (own) { const s = t.dev[own]; return { title: isRigDev(t, own) ? RC.labelOf('fx') : 'Serum FX (own)', sub: cvCables.routeLabel(s && s.vals && s.vals.s, fx) || 'no effects' }; } // ((WC, G13) a rig's: "Effects")
     const n = fx && Array.isArray(fx.racks) ? fx.racks.reduce((a, r) => a + (r && Array.isArray(r.mods) ? r.mods.length : 0), 0) : 0, N = CG.devNum(key);
     return { title: (d && d.name) || (N > 1 ? 'FX Panel ' + N : 'FX Panel'), sub: n ? n + (n === 1 ? ' effect' : ' effects') : 'empty' };
   }
@@ -6505,7 +6636,7 @@ function cvChip(t, dev = curOf(t)) {
   if (!C || C.key !== key) {
     let el, sel;
     const here = () => { const iv = instView(trk(), dev); return iv.model === m.id ? iv : null; };
-    if (m.custom) { el = sel = h('span', 'cv-pname'); el.title = 'Preset (change it in the panel’s browser)'; }
+    if (isSxModel(m)) { el = sel = h('span', 'cv-pname'); el.title = 'Preset (change it in the panel’s browser)'; }
     else if (m.family === 'patch') { el = sel = h('span', 'cv-pname'); el.title = 'Patch (⋯ → Patches)'; } // ((9) a preset is topology: no ◀ ▶
     else {
       sel = h('select', 'cv-psel');
@@ -6523,7 +6654,7 @@ function cvChip(t, dev = curOf(t)) {
 function cvChipFill(t, dev = curOf(t)) {
   const iv = instView(t, dev), m = modelById(iv.model), C = cvChips.get(t.id + '/' + dev);
   if (!C || C.key !== t.id + '/' + dev + '/' + m.id) return;
-  if (m.custom) { const s = iv.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
+  if (isSxModel(m)) { const s = iv.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
   if (m.family === 'patch') { const s = PATCH.chip(t, dev) || 'Patch'; if (C.el.textContent !== s) C.el.textContent = s; return; } // ((9) the patch's name: the last preset loaded)
   const list = presetList(m), sig = list.length + ':' + iv.preset;
   if (sig === C.sig) return;
@@ -6559,10 +6690,13 @@ function cvMenu(a, b) {
     // ((9, §6) a 900 Series' controller: Patches ▸ (the starting patches, Init patch) and Tidy patch — no classic sound or layout
     // items (they would save the controller's knobs alone), no fold)
     if (isPatchDev(t, key)) return [...head, { sep: true }, ...PATCH.items(t, key, PT.CTL), { sep: true }, front, { sep: true }, tidyI];
-    if (mdl.custom) { // (Serum: its own browser saves; 2a: its mod rows; (3) its view — the whole panel or its parts — and VOICE's own items)
-      const P = sxParts(t, key), own = P ? sxViewItems(t, key) : [];
-      const view = P ? [{ label: 'Bundle', action: () => sxSetView(key, false) }, { label: 'Add', sub: sxAddItems(t, key) }] : [{ label: 'Show parts', action: () => sxSetView(key, true) }];
-      return [...head, { sep: true }, ...view, { label: 'Modulation list…', action: () => modList() }, ...(own.length ? [{ sep: true }, ...own] : []), { sep: true }, fold, front, { sep: true }, tidyI];
+    if (isRigDev(t, key)) { // ((WC, §8.2) the Amplifier: About, Replace with…, Init (the raw oscillator), its panel's items (Preferences…, Info…); no Remove
+      const own = sxViewItems(t, key);
+      return [...head, { sep: true }, { label: 'Init', action: () => rigInitDev(key) }, { label: 'Modulation list…', action: () => modList() },
+        ...(own.length ? [{ sep: true }, ...own] : []), { sep: true }, fold, front, { sep: true }, tidyI];
+    }
+    if (isSxModel(mdl)) { // (Serum: its own browser saves; 2a: its mod rows; (WC) the Serum is the whole panel — no Show parts / Bundle / Add (§6) —, Make it a <NAME> (Q4 (a))
+      return [...head, { sep: true }, { label: 'Make it a ' + RIG.NAME, action: () => rigConvert(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
     }
     // a classic synth: its real front panel (default) or today's simple panel; the sound actions of its preset plate
     const u = instUi(t, key), hw = !!hwLayoutOf(mdl);
@@ -6580,9 +6714,9 @@ function cvMenu(a, b) {
   }
   if (kind === 'mod') return [{ label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
   if (kind === 'pm') { const q = pmOf(t, key); return [...PATCH.items(t, q.dev, q.mid), { sep: true }, front, { sep: true }, tidyI]; } // ((9, §4.5) Duplicate, Driver ▸, Delete; no fold
-  if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove, Bundle
-    const q = CMOD.partOf(key), own = sxViewItems(t, key);
-    return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Remove', action: () => sxRemovePart(key) }, { label: 'Bundle', action: () => sxSetView(q.dev, false) }, { sep: true }, fold, front, { sep: true }, tidyI];
+  if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove ((WC) no Bundle: §6; the amp Envelope's Init: envFromAmp, rigEnvInit)
+    const q = CMOD.partOf(key), own = sxViewItems(t, key).map(it => (q.part === 'env1' && /^Init\b/.test(it.label || '') && isRigDev(t, q.dev) ? Object.assign({}, it, { action: () => rigEnvInit(trk(), q.dev) }) : it));
+    return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Remove', action: () => sxRemovePart(key) }, { sep: true }, fold, front, { sep: true }, tidyI];
   }
   return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
 }
@@ -6964,6 +7098,7 @@ function cvCamRestore(t) {
   }
   cvCamLast = { key, cam: d }; // (the default is not stored until the user moves away from it)
   W.setCamera(d, { animate: false });
+  if (isRigDev(t, curOf(t))) rigFrame(t, curOf(t), { def: true }); // ((WC, integration fixer L — review WC-int B3) a rig's default: the whole rig, once its faces are up (+ Track's starter, a track never shown)
 }
 // Serum panel ↔ its own FX module: both edit the same FX (and Serum state); an edit in one refreshes the other on the next
 // frame (never the one that made it). A peer that is not showing its body is refreshed when it shows again
@@ -7012,6 +7147,7 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
     const tr = project.tracks.find(x => x.id === id), d = tr && CMOD.instOf(tr, dev);
     return d && d.model === m.id ? () => setTrackModel(instView(tr, dev), old.id) : null; // (null: already undone, or replaced again)
   });
+  if (isRigModel(m)) rigFrame(t, dev); // ((WC, integration fixer L — review WC-int B3) the <NAME> tile's starter framed whole once its faces are up
   return true;
 }
 // a notice whose tap undoes `step` while it is the newest History step, else runs what alt() gives (null: nothing left)
@@ -7040,11 +7176,12 @@ function cvModuleSize(modelId) {
   if (m && instView(t, cur).model === modelId && !(m.fixed && m.fixed.h) && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
   return cvSeen.get(modelId) || cvModule.sizeFor(modelId);
 }
+const RIG_TIDIED = 'Canvas tidied · tap to undo';
 function cvTidy() {
   if (cvMaster) { mTidy(); return; } // ((M, §5.2) the master's lay, the same History step
   const t = trk();
   if (!cvView) return;
-  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => PATCH.rack(t, k)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5)
+  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => PATCH.rack(t, k), rigTidyOpts(t)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5; (WC) a rig's band, review 2 P2-5)
   const other = cvOtherFx;
   for (const k in td) {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
@@ -7055,12 +7192,16 @@ function cvTidy() {
     if (ox) delete lay[ox]; // one FX entry at most (cvLay)
   }
   // already tidy: no step (a recorded no-op would still drop the redo stack); cvModule.tidy is pure, so the step is
-  // taken here, before the write
-  if (t.lay && typeof t.lay === 'object' && JSON.stringify(lay) === JSON.stringify(t.lay)) { cvView.sync(t); return; }
+  // taken here, before the write. ((WC, integration fixer L — review WC-int P3-5) a rig's canvas: framed whole once laid, and its Tidy says
+  // "· tap to undo" as every structural edit of a rig does)
+  const rd = isRigDev(t, curOf(t)) ? curOf(t) : null;
+  if (t.lay && typeof t.lay === 'object' && JSON.stringify(lay) === JSON.stringify(t.lay)) { cvView.sync(t); if (rd) rigFrame(t, rd, { all: true }); return; }
   hist.record(project, 'Tidy'); updateUndoUI();
+  const step = hist.u[hist.u.length - 1];
   t.lay = lay;
   persist();
   cvView.sync(t);
+  if (rd) { cvUndoNotice(RIG_TIDIED, step, () => null); rigFrame(t, rd, { all: true }); }
 }
 
 /* ---------------------------------------------- cv DEVICES (stage 1e, IMPL-1e §4.5; 1f: hooks; the effects' list and estimates) */
@@ -7101,7 +7242,7 @@ function cvAddInstrument(modelId, at, o = null) {
   flush();
   hist.record(project, 'Add ' + m.name);
   const lay = cvPinned(t), ui = o && o.ui === 'flow' && isClassicModel(m) ? 'flow' : null;
-  const id = CMOD.addInst(t, m.id, { vals, fx: m.custom ? newFx(m) : undefined });
+  const id = CMOD.addInst(t, m.id, { vals, fx: isSxModel(m) ? newFx(m) : undefined });
   if (!id) { hist.prune(project); updateUndoUI(); return null; } // (refused after all: no step, nothing placed)
   if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) lay[id] = Object.assign({ x: cvDot(at.x), y: cvDot(at.y) }, ui ? { ui } : null);
   else if (ui) lay[id] = { x: 0, y: 0, ui };
@@ -7153,7 +7294,7 @@ function cvBadge(key) {
   // ((review 2, §2.2) an LFO's GLOBAL / PER NOTE — its MONO: a canvas LFO's record, a Serum's own LFO part's slot)
   const mode = on => ({ text: on ? 'GLOBAL' : 'PER NOTE', tone: 'mode' }), q = CMOD.partOf(key), ln = q && /^lfo(\d+)$/.exec(q.part);
   if (d && d.kind === 'lfo' && d.lfo && typeof d.lfo === 'object') return mode(!!d.lfo.mono);
-  if (ln && isSerumDev(t, q.dev)) { const L = (t.dev[q.dev].vals.s.lfo || [])[+ln[1] - 1]; return mode(!!(L && L.mono)); }
+  if (ln && isSxDev(t, q.dev)) { const L = (t.dev[q.dev].vals.s.lfo || [])[+ln[1] - 1]; return mode(!!(L && L.mono)); }
   if (!d || (d.kind !== 'synth' && d.kind !== 'panel')) return null;
   const m = modCount(t, key);
   return m ? m.text : capsOf(t, key);
@@ -7221,30 +7362,28 @@ function cvMeasure(btn, st) {
 }
 
 /* ---------------------------------------------- cv SERUM PARTS (milestone 3, IMPL-3 §2.1–2.7, lane D) */
-// A Serum in parts view (lay[iN].ui === 'parts') is VOICE — its own module iN — plus one module per part ('iN/oscB' …: sx-edges
-// partKeys, I1 / I2) and its own FX 'iN/fx'. Every part module's panel is a view of the Serum's one host (its record's
-// SerumUI without the shell: sxViews), its ⏻ the panel's own power toggle in the bar's power slot (sxPowerEl), the panel's
-// label drag on the bar's title (sxLabels), its ⋯ the panel's module items + Remove, Bundle. Show parts / Bundle: one
-// History step each, lay only (N2: vals.s and fx untouched); the first Show parts lays the group out by Tidy's rule where
-// the bundled module stood (sxLayParts). Add / remove a part: one step whose meta {trackId, dev, part, on, f} writes the ⏻
-// back on undo / redo (sxBack); an internal cable edited on the canvas (sx-edges setEdge / cutEdge): one step, meta {trackId,
-// dev, f}, the same write-back — the fields go through the host, so the Serum's panel undo has the edit as its own step.
-// D-R5: a new Serum opens in the view the device pref synth.cv.sxView names ('parts' | 'bundled'; ⚙ → "New Serums open
-// as"), SX_VIEW_DEFAULT until the user picks one
+// A rig in parts view (lay[iN].ui === 'parts'; (WC) it was a Serum's until Show parts went, IMPL-WC §6) is VOICE — its own module iN —
+// plus one module per part ('iN/oscB' …: sx-edges partKeys, I1 / I2) and its own FX 'iN/fx'. Every part module's panel is a view of
+// the device's one host (its record's SerumUI without the shell: sxViews), its ⏻ the panel's own power toggle in the bar's power slot
+// (sxPowerEl), the panel's label drag on the bar's title (sxLabels), its ⋯ the panel's module items + Remove. The first layout lays the
+// group out by Tidy's rule where the instrument's module stood (sxLayParts). Add / remove a part: one step whose meta {trackId, dev,
+// part, on, f} writes the ⏻ back on undo / redo (sxBack); an internal cable edited on the canvas (sx-edges setEdge / cutEdge): one
+// step, meta {trackId, dev, f}, the same write-back — the fields go through the host, so the panel undo has the edit as its own step.
+// (WC, IMPL-WC §6) Show parts / Bundle and D-R5's "New Serums open as" are gone: the Serum is always the whole panel; this machinery is
+// the rig's now (the rig's modules are these part views — lane H writes its first layout, rig-ui its faces)
 let SXMOD = null, SXW = null; // the sx-ui-mod module once the panels loaded (mountPart), its PART_W (each part panel's width)
-const SX_VIEW = 'synth.cv.sxView';
-const SX_VIEW_DEFAULT = 'bundled'; // (D-R5's one constant: the lead sets it after the user's iPad S0 session and Q2)
-const sxNewView = () => { const v = store.get(SX_VIEW, null); return v === 'parts' || v === 'bundled' ? v : SX_VIEW_DEFAULT; };
-const sxParts = (t, dev) => !!t && !!t.lay && typeof t.lay === 'object' && !!t.lay[dev] && t.lay[dev].ui === 'parts' && isSerumDev(t, dev);
-// a part module's width by part kind (or 'voice'): its panel's width in the 1200 px bundled Serum (PART_W) on the dots
-const sxPartW = kind => (SXW && SXW[kind] > 0 ? cvModule.roundW(SXW[kind]) : cvModule.PART_W_DEF[kind] || cvModule.W_MOD);
-const sxPartH = kind => cvModule.PART_H_DEF[kind] || 256; // (Tidy's guess until measured)
+// ((WC, IMPL-WC §2.1) a rig is always its modules: no lay flag (a stored ui on one is ignored); a Serum never — the whole panel)
+const sxParts = (t, dev) => isRigDev(t, dev);
+// a part module's width by part kind (or 'voice'): (WC) its face's on the RIG grid (rig-ui); while the stage-3 views stand in (a
+// loader without rig-ui: tests) its panel's width in the 1200 px bundled Serum (PART_W) on the dots
+const sxPartW = kind => (RIGUI !== false ? rigW(kind) : SXW && SXW[kind] > 0 ? cvModule.roundW(SXW[kind]) : cvModule.PART_W_DEF[kind] || cvModule.W_MOD);
+const sxPartH = kind => (RIGUI !== false ? rigHt(kind) : cvModule.PART_H_DEF[kind] || 256); // (Tidy's guess until measured)
 // the canvas link rows reading Serum dev ('iN/lfo3.out': I2's `used`)
 const sxUsed = (t, dev) => (Array.isArray(t.mods) ? t.mods.map(r => r && r.src).filter(x => typeof x === 'string' && x.startsWith(dev + '/')) : []);
-const sxPartList = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return d && d.vals && d.vals.s ? SE.partKeys(d.vals.s, t.lay, dev, sxUsed(t, dev)) : []; };
+const sxPartList = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return d && d.vals && d.vals.s ? RC.partKeys(d.vals.s, t.lay, dev, sxUsed(t, dev), d.rig) : []; }; // ((WC) rig-core's: I1 / I2 + I1' + the amp slot
 // the parts every Serum in parts view shows (cvRelabel: an edit that changes them makes the modules again)
 let cvPartsSig = '';
-const sxPartsSig = t => (t && t.dev ? serumIds(t).filter(d => sxParts(t, d)).map(d => d + ':' + sxPartList(t, d).join()).join(';') : '');
+const sxPartsSig = t => (t && t.dev ? sxIds(t).filter(d => sxParts(t, d)).map(d => d + ':' + sxPartList(t, d).join()).join(';') : '');
 const sxHits = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const sxAbove = part => /^(env|lfo|macros)$/.test(SE.kindOf(part) || ''); // (own ENV / LFO / MACROS stack upwards above VOICE)
 
@@ -7269,12 +7408,23 @@ function sxViews(t, dev) {
   }
   if (want !== 'parts') return;
   for (const [k, v] of rec.views) if (k !== dev && (cvMounted.get(k) || {}).el !== v.el) { try { v.V.destroy(); } catch (err) { console.warn(err); } rec.views.delete(k); }
+  // ((WC, §8.2) a rig's modules are rig-ui's faces on the RIG grid (the Amplifier for VOICE); a part with no WC-1 face (the Arpeggiator, the
+  // Clip sequencer: WC-2) and a loader without rig-ui (the stage-3 views stand in) keep stage 3's panel view
+  let n = 0;
   const mount = (k, part, el) => {
-    try { rec.views.set(k, { V: SXMOD.mountPart(H, part, el, { shown: () => cvLive(k), dev, opts: part === 'macros' ? { tiles: 'jack' } : undefined }), el, lab: null }); } // ((§2.5) MACROS' name tiles: its jacks k1…k8)
-    catch (err) { console.error(err); }
+    const kind = part === 'voice' ? 'amp' : SE.kindOf(part), rigF = !!RIGUI && !!RIGUI.FACE && !!RIGUI.FACE[kind];
+    try {
+      const V = rigF ? RIGUI.face(kind, el, { host: H, part, shown: () => cvLive(k), dev, n: RC.ordinalOf(t.dev[dev].rig, part) })
+        : SXMOD.mountPart(H, part, el, { shown: () => cvLive(k), dev, opts: part === 'macros' ? { tiles: 'jack' } : undefined }); // ((§2.5) MACROS' name tiles: its jacks k1…k8)
+      rec.views.set(k, { V, el, lab: null });
+      n++;
+    } catch (err) { console.error(err); }
   };
   if (!rec.views.has(dev) && rec.box) mount(dev, 'voice', rec.box);
   for (const [k, M] of cvMounted) { const q = CMOD.partOf(k); if (q && q.dev === dev && M.tid === t.id && !rec.views.has(k)) mount(k, q.part, M.el); }
+  // ((WC, review 2 P1-1) faces just mounted — the first drop's (renderCustom's async build set the mode itself, so the branch above never
+  // ran), a module added later —: their jack rows' anchors and knobs measured again, next frame (the cords' ends, the jacks pressable)
+  if (n) cvRemeasure(t.id, dev);
 }
 // a part module went (removed, the view rebuilt, its Serum bundled): its view goes, the host stays
 function sxPartGone(tid, key, el) {
@@ -7293,7 +7443,7 @@ function sxViewItems(t, key) { const V = sxViewOf(t, key); let L = []; try { L =
 function sxLabels() {
   const t = trk();
   if (!cvView || cvView.trackId !== t.id) return;
-  for (const dev of serumIds(t)) {
+  for (const dev of sxIds(t)) {
     const rec = sxRecOf(t.id, dev);
     if (!rec || !rec.views || rec.mode !== 'parts') continue;
     for (const [k, v] of rec.views) {
@@ -7305,35 +7455,25 @@ function sxLabels() {
   }
 }
 
-/* ---- Show parts / Bundle */
-// ⋯ → Show parts / Bundle: one History step (lay only); the host keeps its panel undo through the switch (sxViews), so do
-// the step's undo / redo (applyRestore → renderPanels → renderCustom: the same state container, the other views)
-function sxSetView(dev, on) {
-  const t = trk();
-  if (!isSerumDev(t, dev) || sxParts(t, dev) === !!on) return false;
-  flush();
-  hist.record(project, on ? 'Show parts' : 'Bundle');
-  t.lay = on ? sxLayParts(t, dev) : sxLayBundle(t, dev);
-  persist();
-  cvRender();
-  updateUndoUI();
-  return true;
-}
-// the lay of Serum dev shown as parts (a copy, the modules Tidy still places pinned where they stand): the flag on its
-// entry; the first time (no part of it laid out yet) the group — VOICE, its parts, its own FX — by Tidy's rule (cv-module
-// tidy: note tools → sources → filters → VOICE with its own ENV / LFO / MACROS above → own FX), its left edge where the
-// bundled module stood and VOICE on its row; the modules it now covers on the right make room (cv-module makeRoom)
+/* ---- the rig's first layout */
+// the lay of rig dev shown as its modules (a copy, the modules Tidy still places pinned where they stand): the flag on its
+// entry; the first time (no part of it laid out yet) the group — the Amplifier (VOICE here), its parts, its own FX — by Tidy's rule
+// (cv-module tidy: note tools → sources → filters → VOICE with its own ENV / LFO / MACROS above → own FX), its left edge where the
+// instrument's module stood and VOICE on its row; the modules it now covers on the right make room (cv-module makeRoom).
+// (WC) No caller here any more (Show parts was the one): lane H's drop / convert paths are
 function sxLayParts(t, dev, extra) {
   const lay = cvPinned(t), V = cvView && cvView.trackId === t.id ? cvView : null, m = V ? V.modules.get(dev) : null;
-  const e = Object.assign({}, lay[dev] || (m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 }), { ui: 'parts' });
+  const e = Object.assign({}, lay[dev] || (m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 }));
+  delete e.ui; // ((WC) a rig is always its modules: no flag
   lay[dev] = e;
-  const parts = SE.partKeys(t.dev[dev].vals.s, lay, dev, sxUsed(t, dev));
+  const parts = sxPartList(Object.assign({}, t, { lay }), dev);
   if (parts.some(p => lay[dev + '/' + p])) return lay; // (shown before: the stored places)
   if (extra && !parts.includes(extra)) { parts.push(extra); parts.sort((a, b) => SE.PARTS.indexOf(a) - SE.PARTS.indexOf(b)); } // (a part being added: in the group)
-  const devs = [{ key: dev, kind: 'inst', model: 'serum' }].concat(parts.map(p => ({ key: dev + '/' + p, kind: 'part', dev, part: p, model: 'serum' })), [{ key: dev + '/fx', kind: 'fx', model: 'serum', own: dev }]);
+  const mid = t.dev[dev].model, wm = rigWm(t) || undefined, devs = [{ key: dev, kind: 'inst', model: mid, wires: wm }].concat(parts.map(p => ({ key: dev + '/' + p, kind: 'part', dev, part: p, model: mid, wires: wm })), [{ key: dev + '/fx', kind: 'fx', model: mid, own: dev }]);
   const fxM = V ? V.modules.get(dev + '/fx') : null, sz = {};
   for (const d of devs) sz[d.key] = { w: d.kind === 'fx' ? (fxM ? fxM.w : cvModule.W_FX) : sxPartW(d.kind === 'inst' ? 'voice' : SE.kindOf(d.part)) };
-  const td = cvModule.tidy(t, sz, devs), x0 = Math.min(...devs.map(d => td[d.key].x)), ox = e.x - x0, oy = e.y - td[dev].y;
+  if (wm) for (const d of devs) if (d.kind !== 'fx') sz[d.key].h = sxPartH(d.kind === 'inst' ? 'voice' : d.part); // ((WC, review 2 P2-5) the band sits by the faces' heights
+  const td = cvModule.tidy(t, sz, devs, null, wm ? { targets: rigTargetsOf(t, dev, parts), narrow: cvNarrow() } : undefined), x0 = Math.min(...devs.map(d => td[d.key].x)), ox = e.x - x0, oy = e.y - td[dev].y;
   const R = {}; // (the group's rects: Tidy's guessed heights)
   for (const d of devs) {
     const o = lay[d.key] || {}, n = { x: cvDot(td[d.key].x + ox), y: cvDot(td[d.key].y + oy) };
@@ -7361,7 +7501,7 @@ function sxShowPart(dev, part) {
   const t = trk(), k = dev + '/' + part;
   if (!sxParts(t, dev) || (cvView && cvView.modules.has(k))) { cvReveal(t.id, k); return false; }
   flush();
-  hist.record(project, 'Show ' + SE.partLabel(part));
+  hist.record(project, 'Show ' + rigLabel(t, dev, part));
   const lay = cvPinned(t);
   lay[k] = sxSpot(t, lay, dev, part);
   sxFresh.add(t.id + '\n' + k);
@@ -7370,20 +7510,20 @@ function sxShowPart(dev, part) {
   cvReveal(t.id, k);
   return true;
 }
-// a model change of instrument dev (setTrackModel, inside its step): an old Serum's part places and its parts flag go (another
-// Serum, or a classic, under the same id starts clean); a new Serum opens as parts when o.parts says so (Replace with Serum),
-// else when D-R5's pref does
-function sxModelLay(tr, dev, m, o) {
+// a model change of instrument dev (setTrackModel, inside its step): an old Serum-engine device's part places and its parts flag go
+// (another Serum, a rig or a classic under the same id starts clean). (WC) A new Serum is always the whole panel — no D-R5 pref, no
+// o.parts (§6); the rig's first layout (sxLayParts) is lane H's, from its drop paths
+function sxModelLay(tr, dev) {
   if (tr.lay && typeof tr.lay === 'object') {
     let lay = null;
     for (const k of Object.keys(tr.lay)) { const q = CMOD.partOf(k); if (q && q.dev === dev) { lay = lay || Object.assign({}, tr.lay); delete lay[k]; } }
     if (tr.lay[dev] && tr.lay[dev].ui === 'parts') { lay = lay || Object.assign({}, tr.lay); lay[dev] = Object.assign({}, lay[dev]); delete lay[dev].ui; }
     if (lay) tr.lay = lay;
   }
-  if (m.custom && isSerumDev(tr, dev) && (o && o.parts !== undefined ? !!o.parts : sxNewView() === 'parts')) tr.lay = sxLayParts(tr, dev);
 }
-// Bundle: the flag goes (the part entries stay: the next Show parts restores them); the whole panel opens at VOICE's place
-// and what it covers makes room (cvRoom, the instrument's fixed width)
+// the flag goes (the part entries stay: "Make it a <rig name>" restores them); the whole panel opens at VOICE's place and what it
+// covers makes room (cvRoom, the instrument's fixed width). (WC) No caller here any more (Bundle was the one): lane H's schema-16
+// open of a Serum that was shown as parts (STEPS[15] dropped the flag) places it whole with this and cvRoom
 function sxLayBundle(t, dev) {
   const lay = cvPinned(t), e = Object.assign({}, lay[dev] || { x: 0, y: 0 });
   delete e.ui;
@@ -7411,6 +7551,7 @@ function sxSpot(t, lay, dev, part) {
     .map(q => ({ q, part: CMOD.partOf(q).part, r: rectOf(q) })).filter(x => x.r);
   const colOf = p => (sxAbove(p) ? -1 : SX_COL[SE.kindOf(p)] != null ? SX_COL[SE.kindOf(p)] : 1);
   const r = { x: v.x, y: v.y, w, h: h0 };
+  if (isRigDev(t, dev) && rigWm(t)) return rigSpot(t, lay, dev, part, { k, w, h0, v, mine, rectOf, colOf, V });
   if (up) { // the stack above VOICE: on top of its highest member
     const st = mine.filter(x => sxAbove(x.part));
     r.x = st.length ? Math.min(...st.map(x => x.r.x)) : v.x;
@@ -7445,31 +7586,78 @@ function sxSpot(t, lay, dev, part) {
   }
   return { x: r.x, y: r.y };
 }
-// (review 2 P2) a part dropped at p (the tray): below what it would cover (the stack above VOICE: above it), its guessed size
+// (WC, review 2 P2-5 — the user's rule) a rig module's place when it comes (a tap, a part shown with no place): Tidy's rule (cv-module
+// rigLay), never moving a module that stands (only Tidy does) — a modulator in the band over the chain (its bottom VGAP + a grid row over
+// the Amplifier's top), at the free spot nearest the centre of what it drives (rigTargetsOf: Envelope 1 the Amplifier), BAND_GAP from its
+// neighbours; with no target yet at the band's left end (left of the rig's modules), until a Tidy finds it one; a chain module (a source, a
+// Filter, the note tools) in the row at its slot after its left neighbour when the gap to the right one holds it, else under that
+// neighbour (the next Tidy puts it in the row); then clear of what stands (below it; the band: further left)
+function rigSpot(t, lay, dev, part, o) {
+  const { k, w, h0, v, mine, rectOf, colOf, V } = o, D = cvWorld.DOT, G = cvModule.VGAP, BG = cvModule.BAND_GAP, GAP = cvModule.GAP;
+  const all = [...new Set(Object.keys(lay).concat(V ? [...V.modules.keys()] : []))].filter(q => q !== k).map(rectOf).filter(Boolean);
+  const hits = z => all.some(q => sxHits(z, q));
+  const r = { x: v.x, y: v.y, w, h: h0 };
+  if (sxAbove(part)) {
+    r.y = Math.floor((v.y - G - D - h0) / D) * D;
+    const pad = x0 => ({ x: x0 - BG + 1, y: r.y, w: w + 2 * BG - 2, h: h0 }); // (BAND_GAP clear on both sides)
+    const tg = (rigTargetsOf(t, dev, sxPartList(t, dev).concat([part]))[k] || []).filter(q => !sxAbove((CMOD.partOf(q) || {}).part || '')).map(q => { const z = rectOf(q); return z && Object.assign({ key: q }, z); }).filter(Boolean);
+    if (tg.length) {
+      const t0 = tg.sort((a, b) => a.x - b.x)[0], c = part === 'env1' && t0.key === dev ? cvModule.ampEnvCentre(t0.x, t0.w, w) : t0.x + t0.w / 2, C = [Math.round((c - w / 2) / D) * D]; // ((integration fixer L, P3-3) Envelope 1 on the amp slot: its OUT beside the Amplifier, as Tidy's
+      for (const q of all) C.push(Math.ceil((q.x + q.w + BG) / D) * D, Math.floor((q.x - BG - w) / D) * D);
+      const ok = C.filter(x0 => !hits(pad(x0))).sort((a, b) => Math.abs(a + w / 2 - c) - Math.abs(b + w / 2 - c) || a - b);
+      if (ok.length) { r.x = ok[0]; return { x: r.x, y: r.y }; }
+    }
+    const left = Math.min(v.x, ...mine.map(x => x.r.x));
+    r.x = Math.floor((left - BG - w) / D) * D;
+    for (let i = 0; i < 64 && hits(pad(r.x)); i++) r.x -= D; // (a canvas module there: further left)
+    return { x: r.x, y: r.y };
+  }
+  const c = colOf(part), ord = x => [colOf(x.part), SE.PARTS.indexOf(x.part)], before = x => { const a = ord(x), b = [c, SE.PARTS.indexOf(part)]; return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]); };
+  const row = mine.filter(x => colOf(x.part) >= 0 && Math.abs(x.r.y - v.y) < D), prev = row.filter(before).sort((a, b) => b.r.x - a.r.x)[0] || null;
+  const next = row.filter(x => !before(x)).sort((a, b) => a.r.x - b.r.x)[0] || { r: v };
+  r.x = prev ? Math.ceil((prev.r.x + prev.r.w + GAP) / D) * D : Math.floor((next.r.x - GAP - w) / D) * D;
+  if (prev && r.x + w + GAP > next.r.x) { r.x = prev.r.x; r.y = Math.ceil((prev.r.y + prev.r.h + G + D) / D) * D; } // (no room in the row: under its left neighbour)
+  for (let i = 0; i < 32; i++) { const q = all.find(z => sxHits(r, z)); if (!q) break; r.y = Math.ceil((q.y + q.h + G) / D) * D; }
+  return { x: r.x, y: r.y };
+}
+// (review 2 P2) a part dropped at p (the tray): clear of what it would cover, its guessed size — (integration fixer L, review WC-int B2) at the
+// nearest free spot up or down (a modulator dropped over the Effects panel's foot used to go up past the whole panel, off screen); a tie: the
+// old way (the stack above VOICE: up, the rest down)
 function sxDropClear(t, dev, part, p) {
   const k = dev + '/' + part, V = cvView && cvView.trackId === t.id ? cvView : null, D = cvWorld.DOT, G = cvModule.VGAP, up = sxAbove(part), kind = SE.kindOf(part);
   if (!V) return p;
   const R = Object.entries(V.rects()).filter(([q, z]) => q !== k && z && !(q === dev && !sxParts(t, dev))).map(([, z]) => z);
   const r = { x: p.x, y: p.y, w: V.modules.has(k) ? V.modules.get(k).w : sxPartW(kind), h: sxPartH(kind) };
-  for (let i = 0; i < 32; i++) {
-    const o = R.find(q => sxHits(r, q));
-    if (!o) break;
-    r.y = up ? Math.floor((o.y - G - r.h) / D) * D : Math.ceil((o.y + o.h + G) / D) * D;
-  }
-  return { x: r.x, y: r.y };
+  const clear = u => {
+    const q = Object.assign({}, r);
+    for (let i = 0; i < 32; i++) {
+      const o = R.find(z => sxHits(q, z));
+      if (!o) return q;
+      q.y = u ? Math.floor((o.y - G - q.h) / D) * D : Math.ceil((o.y + o.h + G) / D) * D;
+    }
+    return null;
+  };
+  if (!R.some(z => sxHits(r, z))) return { x: r.x, y: r.y };
+  const a = clear(up), b = clear(!up), q = !b || (a && Math.abs(a.y - r.y) <= Math.abs(b.y - r.y)) ? a || r : b;
+  return { x: q.x, y: q.y };
 }
 // (I1) a part shown without a place (on after a preset load, a ⏻ in the bundled panel …) gets one by sxSpot, no History step
 // (a view normalisation, as cvRoom's)
-// The places the rule writes (here, and the first Show parts' group) are automatic (auto: 1, kept by song.normLay, Tidy and
+// The places the rule writes (here, and the first layout's group) are automatic (auto: 1, kept by song.normLay, Tidy and
 // the no-step moves): a load prunes the ones whose part it left neither on nor read (sxPruneAuto), so browsing presets never
 // piles modules up; a user act on the module (a move, a fold, Add, the tray, Show OSC C) makes the place the user's — never
 // pruned (§3's amendment, review 1 F2: the lead's rule)
 function sxPlaceNew(t) {
-  if (!t || !t.dev || !t.lay) return false;
+  if (!t || !t.dev) return false;
   let lay = null;
-  for (const dev of serumIds(t)) {
+  for (const dev of sxIds(t)) {
     if (!sxParts(t, dev)) continue;
-    for (const p of sxPartList(t, dev)) {
+    const L0 = lay || t.lay || {}, list = sxPartList(t, dev);
+    if (list.length && !list.some(p => L0[dev + '/' + p])) { // ((WC) a rig none of whose modules has a place yet (+ Track, a load): Tidy's group
+      t.lay = lay || t.lay; lay = sxLayParts(t, dev);
+      continue;
+    }
+    for (const p of list) {
       const k = dev + '/' + p;
       if ((lay || t.lay)[k]) continue;
       lay = lay || cvPinned(t);
@@ -7486,8 +7674,8 @@ function sxPlaceNew(t) {
 // one): its automatic part places whose part is now neither on (I1) nor read (I2) go, in bundled view too (the next Show
 // parts would show them), no History step (a view normalisation, as sxPlaceNew's). History's undo / redo bring their own lay
 function sxPruneAuto(t, dev) {
-  if (!t || !t.lay || typeof t.lay !== 'object' || !isSerumDev(t, dev)) return false;
-  const want = new Set(SE.partKeys(t.dev[dev].vals.s, null, dev, sxUsed(t, dev)));
+  if (!t || !t.lay || typeof t.lay !== 'object' || !isSxDev(t, dev)) return false;
+  const want = new Set(isRigDev(t, dev) ? RC.partKeys(t.dev[dev].vals.s, null, dev, sxUsed(t, dev), t.dev[dev].rig) : SE.partKeys(t.dev[dev].vals.s, null, dev, sxUsed(t, dev)));
   let lay = null;
   for (const k of Object.keys(t.lay)) {
     const q = CMOD.partOf(k), e = t.lay[k];
@@ -7500,7 +7688,7 @@ function sxPruneAuto(t, dev) {
   persist();
   return true;
 }
-// part places written by a rule (Show parts, a tap, I1) used Tidy's height guesses: once the panels are laid out (the next
+// part places written by a rule (the first layout, a tap, I1) used Tidy's height guesses: once the panels are laid out (the next
 // frame) a part that covers another module moves on below it (above: the upward stack) — no History step
 const sxFresh = new Set(), sxTries = new Map(); // 'trackId\nkey'; the frames it waited for its panel
 let sxSetT = 0;
@@ -7546,10 +7734,10 @@ function sxSettle() {
 
 /* ---- the S0 notice (IMPL-3 §9.9) */
 // touch devices only. The iPad session (bench.json "ui-m3") passed sx1 — one whole-panel Serum, 1866 painted elements — and failed
-// a Serum fully opened in parts with its modulators (3176): once per session, at rest after Show parts / Add part / a tray drop /
-// a load (cvRender), a track with a Serum in parts whose painted elements pass that says so. No History step; nothing while the
+// a Serum fully opened in parts with its modulators (3176; (WC) the parts are the rig's now): once per session, at rest after Add
+// part / a tray drop / a load (cvRender), a track with a rig in parts whose painted elements pass that says so. No History step; nothing while the
 // camera moves, a mounting runs, or over another timed notice ("Added … · tap to undo" keeps its tap); counted once per module set
-const SX_HEAVY = 1866, SX_HEAVY_MS = 600, SX_HEAVY_TXT = 'This many Serum parts may stutter when zooming on this device — Bundle (⋯) puts it back together.';
+const SX_HEAVY = 1866, SX_HEAVY_MS = 600, SX_HEAVY_TXT = `This many ${RIG.NAME} modules may stutter when zooming on this device.`; // ((WC) the rig's text: no Bundle to put it back together)
 let sxHeavyT = 0, sxHeavySig = '', sxHeavyDone = false;
 // (9, IMPL-9 §4.7) a 900 Series' modules the same way, its own words, once. (9b review 2 F6) in the unit of what is PAINTED: the S0
 // rule's boxed elements without the GL faces' hidden SVGs (sxPainted skipFaces — a texture is free to paint, and those SVGs were
@@ -7563,7 +7751,7 @@ let sxHeavyT = 0, sxHeavySig = '', sxHeavyDone = false;
 // on; the consolidated iPad pass re-decides (the user's iPad ran stage 9's m30 P+ at 4 423 in the old unit: "ui-m9")
 const PT_HEAVY = 2048, PT_HEAVY_TXT = 'This many modules may stutter when zooming on this device.';
 let ptHeavyDone = false;
-const heavyOf = t => (serumIds(t).some(d => sxParts(t, d)) ? (sxHeavyDone ? null : 'sx') : patchDevs(t).length && !ptHeavyDone ? 'pt' : null);
+const heavyOf = t => (sxIds(t).some(d => sxParts(t, d)) ? (sxHeavyDone ? null : 'sx') : patchDevs(t).length && !ptHeavyDone ? 'pt' : null);
 // ui-bench-m3's rule: an element with a layout box (a folded module's body, a hidden page have none: skipped whole). skipFaces
 // ((9b, review 2 F6) the 900 Series' unit): not the SVG of a face that is a GL texture (module data-cv-face="gl", its `.hw-decor > svg`
 // visibility: hidden — cv-face setMode): the picture is a texture, free to paint, yet ≈ 2/3 of a System 55's boxed elements. A face
@@ -7597,13 +7785,10 @@ function sxHeavyRun() {
 }
 
 /* ---- adding and removing parts (§2.4, §2.6) */
-const SX_KIND = { osc: 'OSC', sub: 'SUB', noise: 'NOISE', filter: 'FILTER', env: 'ENV', lfo: 'LFO', macros: 'MACROS', arp: 'ARP', clip: 'CLIP' };
-// the refusal when a kind has no free slot (Q3: one Serum per track — a 4th oscillator is refused with the count)
-function sxFullWhy(kind) {
-  return kind === 'osc' ? 'This Serum already has 3 oscillators' : kind === 'filter' ? 'This Serum already has 2 filters'
-    : kind === 'sub' || kind === 'noise' ? 'This Serum’s ' + SX_KIND[kind] + ' is already on' : kind === 'env' ? 'This Serum’s ENV 2–4 are all in use'
-      : kind === 'lfo' ? 'This Serum’s 10 LFOs are all in use' : SX_KIND[kind] + ' is already on the canvas';
-}
+// ((WC) the tiles' kinds and their drag labels: rig-core MODULES' names; a kind's refusal when it has no free slot: rig-core WORDS.full —
+// "This <NAME> already has 3 oscillators" (Q3: one instrument per track))
+const SX_KIND = Object.fromEntries(Object.keys(RC.MODULES).map(k => [k, RC.MODULES[k].label]));
+const sxFullWhy = kind => RC.WORDS.full(kind);
 // the rows reading an own ENV / LFO slot (the Serum's matrix: src or aux, rows with a destination — sx-edges slotsUsed's rule;
 // the canvas link rows from it) or the macros
 function sxReads(t, dev, part) {
@@ -7611,86 +7796,14 @@ function sxReads(t, dev, part) {
   const mine = part === 'macros' ? x => /^macro[1-8]$/.test(x || '') : x => x === part || x === part + 'y';
   return M.filter(r => r && r.dst && (mine(r.src) || mine(r.aux))).length + (Array.isArray(t.mods) ? t.mods.filter(r => r && r.src === dev + '/' + part + '.out').length : 0);
 }
-// a slot whose shape differs from the default Serum's (VOICE ⋯ → Add ▸ says "LFO 4 · shaped")
-let sxD0 = null;
-function sxShaped(s, part) {
-  const D0 = sxD0 || (sxD0 = core.normalizeSerum(core.defaultSerum())), m = /^(lfo|env)(\d+)$/.exec(part);
-  if (!m) return false;
-  const k = +m[2], pre = (m[1] === 'lfo' ? 'l' : 'e') + k + '.';
-  if (m[1] === 'lfo' && JSON.stringify(s.lfo[k - 1]) !== JSON.stringify(D0.lfo[k - 1])) return true;
-  return Object.keys(s.p || {}).some(id => id.startsWith(pre) && Math.abs(core.destBase(s, null, id) - core.destBase(D0, null, id)) > 1e-9);
-}
-// VOICE ⋯ → Add ▸: a part of each kind (its first free slot), the own ENV / LFO slots without a module, MACROS, ARP, CLIP
-function sxAddItems(t, dev) {
-  const s = t.dev[dev].vals.s, shown = new Set(sxPartList(t, dev)), out = [];
-  for (const k of ['osc', 'sub', 'noise', 'filter']) { const p = SE.firstFree(s, k); out.push({ label: p ? SE.partLabel(p) : SX_KIND[k], disabled: !p, action: () => sxAddPart(dev, k) }); }
-  const slots = (L, kind) => L.filter(p => !shown.has(p)).map(p => ({ label: SE.partLabel(p) + (sxShaped(s, p) ? ' · shaped' : ''), action: () => sxAddPart(dev, kind, null, p) }));
-  const env = slots(['env2', 'env3', 'env4'], 'env'), lfo = slots(Array.from({ length: 10 }, (_, l) => 'lfo' + (l + 1)), 'lfo');
-  out.push({ label: 'ENV', sub: env.length ? env : [{ label: 'Every ENV is shown', disabled: true }] }, { label: 'LFO', sub: lfo.length ? lfo : [{ label: 'Every LFO is shown', disabled: true }] });
-  for (const p of ['macros', 'arp', 'clip']) out.push({ label: SE.partLabel(p), disabled: shown.has(p) && SE.partOn(s, p), action: () => sxAddPart(dev, p) });
-  return out;
-}
-// a part of `kind` (osc / sub / noise / filter / macros / arp / clip; env / lfo from Add ▸, part0 the slot) onto Serum dev: a
-// bundled Serum shows its parts first (the same step); the first free slot of the kind (sx-edges firstFree), powered on with
-// its kept settings when it has a power field (SPEC §8.5), laid at `at` (a drop) or by sxSpot (a tap). One History step
-// "Add OSC B" (o.step false: the caller's — Replace with Serum), meta {trackId, dev, part, on, f} when a ⏻ changed; full:
-// the count said, no step. → the part | null
-function sxAddPart(dev, kind, at, part0, o) {
-  const t = trk(), d = t.dev && t.dev[dev];
-  if (!isSerumDev(t, dev)) return null;
-  const s = d.vals.s, P = sxParts(t, dev), shown = new Set(P ? sxPartList(t, dev) : []);
-  const part = part0 || (kind === 'macros' || kind === 'arp' || kind === 'clip' ? kind : SE.firstFree(s, kind, kind === 'env' || kind === 'lfo' ? [...shown] : null));
-  const pw = part ? SE.powerOf(part) : null, on0 = pw ? core.destBase(s, null, pw) : null, k = part ? dev + '/' + part : null;
-  if (!part || (shown.has(part) && (!pw || on0 >= 0.5) && !at)) { // (full, or already a module that is on: said, shown)
-    if (part && P) { notice(SE.partLabel(part) + ' is already on the canvas', 3500); cvReveal(t.id, k); } else notice(sxFullWhy(kind), 4000);
-    return null;
-  }
-  flush();
-  if (!o || o.step !== false) hist.record(project, 'Add ' + SE.partLabel(part));
-  const step = hist.u[hist.u.length - 1];
-  const lay = P ? cvPinned(t) : sxLayParts(t, dev, part);
-  const atOk = at && Number.isFinite(at.x) && Number.isFinite(at.y);
-  if (atOk) { lay[k] = Object.assign({}, lay[k] || {}, sxDropClear(t, dev, part, { x: cvDot(at.x), y: cvDot(at.y) })); sxFresh.add(t.id + '\n' + k); } // ((review 2 P2) a drop: clear of what it lands on, settled once measured)
-  else if (!lay[k]) { lay[k] = sxSpot(t, lay, dev, part); sxFresh.add(t.id + '\n' + k); }
-  if ((lay[k].fold && !atOk) || lay[k].auto) { lay[k] = Object.assign({}, lay[k]); if (!atOk) delete lay[k].fold; delete lay[k].auto; } // (added: the user's place)
-  t.lay = lay;
-  if (pw && !(on0 >= 0.5)) { // (its kept settings, powered on: through the host — the panel's own undo step too)
-    const f = [[['p', pw], on0, 1]];
-    if (step) step.meta = { trackId: t.id, dev, part, on: [on0, 1], f };
-    sxApply(t, dev, f, 'Add ' + SE.partLabel(part));
-  }
-  persist();
-  cvRender();
-  updateUndoUI();
-  if (!o || o.step !== false) cvUndoNotice(`Added ${SE.partLabel(part)} · tap to undo`, step, () => null);
-  return part;
-}
-// ⋯ → Remove: ⏻ off and its lay entry gone, one step (meta as an add's); an own ENV / LFO / MACROS something reads stays
-// ("LFO 3 modulates 2 knobs": its ⋯ → Remove All Destinations first)
-function sxRemovePart(key) {
-  const t = trk(), q = CMOD.partOf(key);
-  if (!q || !isSerumDev(t, q.dev)) return false;
-  const s = t.dev[q.dev].vals.s, pw = SE.powerOf(q.part), on0 = pw ? core.destBase(s, null, pw) : null;
-  if (!pw && SE.slotsUsed(s, sxUsed(t, q.dev)).has(q.part)) { // (in use by I2's own rule — the one that gave it its module: rows with a destination, link rows)
-    const n = Math.max(1, sxReads(t, q.dev, q.part));
-    notice(`${SE.partLabel(q.part)} modulate${q.part === 'macros' ? '' : 's'} ${n} knob${n > 1 ? 's' : ''} · its ⋯ → Remove All Destinations first`, 5000);
-    return false;
-  }
-  flush();
-  hist.record(project, 'Remove ' + SE.partLabel(q.part));
-  const step = hist.u[hist.u.length - 1], lay = cvPinned(t);
-  delete lay[key];
-  t.lay = lay;
-  if (pw && on0 >= 0.5) {
-    const f = [[['p', pw], on0, 0]];
-    if (step) step.meta = { trackId: t.id, dev: q.dev, part: q.part, on: [on0, 0], f };
-    sxApply(t, q.dev, f, 'Remove ' + SE.partLabel(q.part));
-  }
-  persist();
-  cvRender();
-  updateUndoUI();
-  return true;
-}
+// a part of `kind` (osc / sub / noise / filter / env / lfo / macros / arp / clip; part0 a given slot) onto rig dev — (WC) rigAdd: the
+// first free slot (sx-edges firstFree; an Envelope the amp slot's rule), powered on with its kept settings, auto-plugged (rig-core
+// AUTOPLUG), laid at `at` (a drop) or by sxSpot (a tap); one History step "Add Oscillator 2" (o.step false: the caller's), meta {trackId,
+// dev, part, on, f}; full: the count said, no step. → the part | null
+function sxAddPart(dev, kind, at, part0, o) { return rigAdd(dev, kind, at, part0, o); } // ((WC) the rig's rules: rigAdd (its auto-plug, the amp slot, the ordinals)
+// ⋯ → Remove — (WC) rigRemove: ⏻ off and its lay entry gone, one step (meta as an add's); an own Envelope / LFO / Macros something
+// reads stays ("LFO 3 modulates 2 knobs": its ⋯ → Remove All Destinations first)
+function sxRemovePart(key) { return rigRemove(key); } // ((WC) the rig's rules: rigRemove (the amp Envelope's cord first, a Filter's sources re-plugged)
 // field writes [[path, before, after] …] (sx-edges' f) onto Serum dev's state through its host when one is up (the panel's
 // own undo step, its repaint, the patch), else as a host edit would (sxEdit)
 function sxApply(t, dev, f, label) {
@@ -7713,7 +7826,7 @@ function sxFieldSet(s, path, v) {
   for (let i = 0; i < path.length - 1; i++) { if (o[path[i]] == null || typeof o[path[i]] !== 'object') o[path[i]] = {}; o = o[path[i]]; }
   o[path[path.length - 1]] = v;
 }
-const sxSame = (a, b) => a === b || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-9);
+const sxSame = (a, b) => a === b || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-9) || (!!a && !!b && typeof a === 'object' && typeof b === 'object' && JSON.stringify(a) === JSON.stringify(b)); // ((WC) a leaf rig-core diff wrote whole (an array whose length changed)
 // undo / redo of a step carrying Serum field writes (meta.f: a canvas cable edit, a part added / removed): History restores
 // the layout; the fields — the Serum's, kept by keepDevs as knob tweaks are — are written back here: undo the before-values
 // while every field still holds its after-value, redo the after-values while every one holds its before-value; else they
@@ -7723,14 +7836,14 @@ const sxSame = (a, b) => a === b || (typeof a === 'number' && typeof b === 'numb
 let sxBack = null; // { mv: the step's meta, redo, label, noop: the step changed nothing History holds }
 const sxBackOf = (e, redo) => (e && e.meta && Array.isArray(e.meta.f) && e.meta.dev ? { mv: e.meta, redo, label: e.label, noop: !!hist.noop } : null);
 function sxBackApply(p, { mv, redo, label, noop }) {
-  const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null, s = d && d.kind === 'synth' && isSerum(d) && d.vals ? d.vals.s : null;
+  const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null, s = d && d.kind === 'synth' && isSxRec(d) && d.vals ? d.vals.s : null;
   if (!s) return;
   const to = redo ? 2 : 1, from = redo ? 1 : 2;
   if (mv.f.every(x => sxSame(sxField(s, x[0]), x[to]))) { // (already so)
     if (noop) notice(`${label || 'That step'} was already ${redo ? 'redone' : 'undone'} in ${cvDevName(t, mv.dev)}`, 4000);
     return;
   }
-  if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? SE.partLabel(mv.part) + '’s power' : Array.isArray(mv.parts) ? 'the power of ' + andList(mv.parts.map(SE.partLabel)) : 'its routing'} left as it is`, 5000); return; } // ((2026-10-23) parts: a Delete-key press's parts, histFold)
+  if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? rigLabel(t, mv.dev, mv.part) + '’s settings' : Array.isArray(mv.parts) ? 'the power of ' + andList(mv.parts.map(p => rigLabel(t, mv.dev, p))) : 'its connections'} left as it is`, 5000); return; } // ((2026-10-23) parts: a Delete-key press's parts, histFold; (WC) the rig's names
   for (const x of mv.f) sxFieldSet(s, x[0], x[to]);
   sxDirty.add(t.id + '/' + mv.dev);
 }
@@ -7753,55 +7866,47 @@ function ptBackApply(p, { mv, redo }) {
 // jack in parts view) connect through sx-edges setEdge — one History step each (sxCable) —; anything else is refused with its
 // reason ("Serum sources play through their VOICE")
 const sxJackDev = j => { const m = /^([a-z][a-z0-9]*)[./]/.exec(String(j || '')); return m ? m[1] : null; };
-function sxEnds(a, b) { // canvas jacks → { dev, A, B: sx-edges ENDs (B null: not this Serum's) } | { why }
+function sxEnds(a, b) { // canvas jacks → { dev, A, B: sx-edges ENDs (B null: not this rig's) } | { why }
   const t = trk(), dev = sxJackDev(a);
-  if (!dev || !isSerumDev(t, dev) || !sxParts(t, dev)) return { why: 'Inside its instrument: not patchable' };
-  const A = SE.endOf(dev, a), B = sxJackDev(b) === dev ? SE.endOf(dev, b) : null;
-  return A ? { dev, A, B } : { why: 'Inside its instrument: not patchable' };
+  if (!dev || !sxParts(t, dev)) return { why: RC.WORDS.notPatchable }; // (sxParts: a rig, always its modules)
+  const A = rigSrcEnd(dev, a), B = sxJackDev(b) === dev ? SE.endOf(dev, b) : null;
+  return A ? { dev, A, B } : { why: RC.WORDS.notPatchable };
 }
-const sxEndLabel = e => { const m = /^([^.]+)\.(.+)$/.exec(e || ''); return !m ? String(e || '') : m[1] === 'voice' ? 'VOICE ' + m[2].toUpperCase() : SE.partLabel(m[1]); };
+const sxEndLabel = (e, t = trk(), dev = curOf(t)) => rigEndLabel(t, dev, e); // ((WC, G13) "Oscillator 1 · OUT", "Amplifier · IN"
+// ((WC) a cable drag's ends on a rig: rig-core can / plug (lines mode: cv-cables' line drags; cords mode: its cord drag, an Envelope's
+// OUT onto the Amplifier's LEVEL too) — one History step each (rigEdit)
 function sxCan(a, b) {
   const e = sxEnds(a, b), t = trk();
   if (!e.A) return { ok: false, why: e.why };
-  if (!e.B) return { ok: false, why: /^(arp|clip)\./.test(e.A) ? SE.WHY.notes : SE.WHY.voice };
-  const r = SE.setEdge(t.dev[e.dev].vals.s, fxOfDev(t, e.dev), e.A, e.B);
-  return r.edit ? { ok: true, why: '' } : { ok: false, why: r.why };
+  if (!e.B) return { ok: false, why: RC.WORDS.other };
+  const r = RC.can(t.dev[e.dev].vals.s, fxOfDev(t, e.dev), e.A, e.B, { used: sxUsed(t, e.dev), rig: t.dev[e.dev].rig }); // ((pre-deploy [amp-held]) rig: the names)
+  return r.ok ? { ok: true, why: '' } : { ok: false, why: r.why };
 }
 function sxConnect(a, b) {
   const e = sxEnds(a, b), t = trk();
-  if (!e.A || !e.B) { notice(e.why || (e.A && /^(arp|clip)\./.test(e.A) ? SE.WHY.notes : SE.WHY.voice), 4000); return false; }
-  return sxCable(t, e.dev, SE.setEdge(t.dev[e.dev].vals.s, fxOfDev(t, e.dev), e.A, e.B), sxEndLabel(e.A) + ' → ' + sxEndLabel(e.B));
-}
-// an internal cable edit: History records first, the fields go through the host (its panel undo has it too), the step's
-// meta {trackId, dev, f} writes them back on undo / redo (sxBack); the notice "OSC B → FILTER 2 · Undo" undoes it
-function sxCable(t, dev, E, label) {
-  if (!E || !E.edit || !Array.isArray(E.f) || !E.f.length) { notice((E && E.why) || 'Not patchable', 4000); return false; }
-  flush();
-  hist.record(project, label);
-  const step = hist.u[hist.u.length - 1];
-  if (step) step.meta = { trackId: t.id, dev, f: JSON.parse(JSON.stringify(E.f)) };
-  sxApply(t, dev, E.f, label);
-  persist();
-  cvRender();
-  updateUndoUI();
-  cvUndoNotice(label + ' · Undo', step, () => null);
-  return true;
+  if (!e.A || !e.B) { notice(e.why || RC.WORDS.other, 4000); return false; }
+  const r = RC.plug(t.dev[e.dev].vals.s, fxOfDev(t, e.dev), e.A, e.B, rigOpts(t, e.dev));
+  return rigEdit(t, e.dev, 'Plug ' + sxEndLabel(e.A, t, e.dev) + ' → ' + sxEndLabel(e.B, t, e.dev), r);
 }
 // a tap on an internal cable's actions (cv-cables onAction): Disconnect (a fork's branch: the balance all to the other
 // filter), BALANCE (the source's routing popover in its panel), a warp / FM / pitch cable (set in the oscillator's menu)
 function sxCableAct(c, a) {
   const t = trk(), dev = c.dev;
-  if (!isSerumDev(t, dev) || !c.edge) return;
-  if (a === 'disconnect') { sxCable(t, dev, SE.cutEdge(t.dev[dev].vals.s, fxOfDev(t, dev), c.edge.a, c.edge.b), 'Disconnect ' + sxEndLabel(c.edge.a) + (c.edge.b ? ' → ' + sxEndLabel(c.edge.b) : '')); return; }
+  if (!isRigDev(t, dev) || !c.edge) return;
+  if (a === 'disconnect') { // ((WC) rig-core pull: a fork's branch, a cord, the amp cord (the gate back), a note cord
+    const r = RC.pull(t.dev[dev].vals.s, fxOfDev(t, dev), c.id, rigOpts(t, dev));
+    rigEdit(t, dev, 'Pull ' + sxEndLabel(c.edge.a, t, dev) + (c.edge.b ? ' → ' + sxEndLabel(c.edge.b, t, dev) : ''), r);
+    return;
+  }
   const part = String(c.edge.a || '').split('.')[0], key = dev + '/' + part;
-  if (a === 'balance') { if (!sxRouteOpen(t, key)) notice('Open ' + SE.partLabel(part) + '’s routing (its panel’s route button) to set the balance', 4000); return; }
-  if (a === 'tap') { cvReveal(t.id, dev + '/' + String(c.edge.b || c.edge.a || '').split('.')[0]); notice(SE.WHY.ro, 4000); } // (the oscillator that reads it)
+  if (a === 'balance') { if (!sxRouteOpen(t, key)) notice('Open ' + rigLabel(t, dev, part) + '’s ⚙ to set the balance', 4000); return; }
+  if (a === 'tap') { cvReveal(t.id, dev + '/' + String(c.edge.b || c.edge.a || '').split('.')[0]); notice(RC.WORDS.ro, 4000); } // (the oscillator that reads it)
 }
 // (review 2 P1-6) a stub into a filter that is off with no module: "FILTER 1 is off · tap to turn it on" (Add FILTER 1: its
 // module, its ⏻, the cable to it — one step); the offer is for this track's Serum
 function sxOffOffer(c) {
-  const t = trk(), tid = t.id, dev = c.dev, part = c.off, msg = SE.partLabel(part) + ' is off · tap to turn it on';
-  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (trk().id === tid && isSerumDev(trk(), dev)) sxAddPart(dev, 'filter', null, part); });
+  const t = trk(), tid = t.id, dev = c.dev, part = c.off, msg = rigLabel(t, dev, part) + ' is off · tap to turn it on';
+  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (trk().id === tid && isRigDev(trk(), dev)) sxAddPart(dev, 'filter', null, part); });
   notice(msg, 8000);
 }
 // the routing popover of a source part (its panel's route button: OSC / SUB / NOISE)
@@ -7822,9 +7927,11 @@ function sxOwnSrc(src) {
   if ((m = /^([a-z][a-z0-9]*)\/macros\.k([1-8])$/.exec(src || ''))) return { dev: m[1], native: 'macro' + m[2], link: null };
   return null;
 }
-const SX_OWN_MACRO = 'A Serum’s macros modulate that Serum · use a Macro module';
-// an own source onto a knob of the same Serum: a native matrix row through its host (addModUI: the panel's own undo — D11)
+const SX_OWN_MACRO = RC.WORDS.ownMacro; // ((WC, G13) "A <NAME>'s macros modulate that <NAME> · use a Macro module"
+// an own source onto a knob of the same Serum: a native matrix row through its host (addModUI: the panel's own undo — D11); (WC, review 2
+// P2-1) a rig's: a cord edit, one History step (rigOwnConnect)
 function sxOwnConnect(t, own, pid) {
+  if (isRigDev(t, own.dev)) return rigOwnConnect(t, own, pid);
   const rec = sxRecOf(t.id, own.dev);
   let res = null;
   if (rec && rec.ui && rec.trackId === t.id && typeof rec.ui.addModUI === 'function') res = rec.ui.addModUI(own.native, pid);
@@ -7834,64 +7941,1289 @@ function sxOwnConnect(t, own, pid) {
   cvModSync();
   return 'o:' + own.dev + ':' + res.slot;
 }
+// (WC, review 2 P2-1) a rig's own Envelope / LFO / Macro row onto its own knob (its FX panel's too) is a cord: plugged, re-aimed (the badge
+// drag) and pulled as ONE History step each through rigEdit — meta f = the row's fields (sxBack writes them back; the panel's undo has the
+// edit too), "· tap to undo" —, as every other cord edit (§3.5's undo policy); the bundled Serum keeps its panel's undo (D11)
+const rigSrcName = (t, dev, native) => (/^macro[1-8]$/.test(native || '') ? 'Macro ' + native.slice(5) : rigLabel(t, dev, native));
+function rigRowEdit(t, dev, label, fn, o) {
+  const s = t.dev[dev].vals.s, T = sclone(s);
+  if (fn(T) === false) return false;
+  const f = RC.diff(s, T);
+  if (!rigEdit(t, dev, label, { f, why: f.length ? '' : RC.WORDS.same, notes: [] }, o)) return false;
+  cvModAfter(t); cvModSync();
+  return true;
+}
+function rigOwnConnect(t, own, pid) {
+  let k = -1;
+  const ok = rigRowEdit(t, own.dev, 'Modulate ' + modLabel(own.dev + ':' + pid, t) + ' with ' + rigSrcName(t, own.dev, own.native),
+    T => { k = core.addMod(T, fxOfDev(t, own.dev), own.native, pid, { limit: prefs.limitDrop }); return k >= 0; });
+  if (k < 0) { notice(modRefusal('full', { dev: cvDevName(t, own.dev), used: 64, max: 64 }), 4000); return null; }
+  return ok ? 'o:' + own.dev + ':' + k : null;
+}
+// a rig's own row c (a cv-cables record: own, dev, slot, a the module's jack): its words "LFO 1", its module's
+const rigRowSrc = (t, c) => { const q = sxOwnSrc(c.a); return q ? rigSrcName(t, c.dev, q.native) : modLabel(c.a, t); };
 
-/* ---- the Sources tray's Serum parts and note tools (§2.6) */
-// a tile's tap: onto the track's Serum (its first free slot; a bundled one shows its parts first, the same step); on a
-// classic track the offer "Serum parts belong to a Serum · Replace with Serum" — its tap replaces the instrument by Serum
-// (complete) in parts view and adds the part, one step
-function sxPartPick(kind) { sxPartDrop(kind, null); }
+/* ---- the Sources tray's part tiles and note tools (§2.6; WC §3.5, §7) */
+// a module tile's tap or drop (the tray's rig view, §3.5, §7): onto the track's rig it adds (its first free slot, auto-plugged: rigAdd);
+// on any other instrument — a classic, a drum machine, a 900 Series, a Serum — it REPLACES it with a rig holding the Amplifier and that
+// module (+ its FX panel and OUT: rigReplace), one step, "Replaced … · tap to undo"; (integration fixer L — review WC-int B4) in the tray's
+// "+ Add a track…" mode (mode 'track', as a model tile's) a NEW track with a <NAME> that starts from it (rigNewTrack), the tray back to replacing
+function sxPartPick(kind, mode) {
+  if (mode === 'track') { rigNewTrack(kind); srcModeUI('replace'); return; }
+  sxPartDrop(kind, null);
+}
+// a new track holding a <NAME> that starts from module `kind` — the blank (rigBlank: every source off), that module (its ⏻, its auto-plug, its
+// ordinal), the Amplifier, its FX panel and OUT by Tidy's rule (rigFirst) — in addTrack's one step; its canvas frames it (cvCamRestore)
+function rigNewTrack(kind) {
+  const m = modelById(RIG.ID);
+  if (!m || !RC.MODULES[kind]) return null;
+  return addTrack(m, { s: RC.rigBlank() }, { module: kind });
+}
 function sxPartDrop(kind, at) {
   if (cvMaster) { notice(MASTER_SRC, 4000); return null; } // ((M) refused on the master canvas
   const t = trk(), dev = curOf(t);
-  if (isSerumDev(t, dev)) return sxAddPart(dev, kind, at);
-  const msg = 'Serum parts belong to a Serum · Replace with Serum', tid = t.id;
-  // (review 1 F5) the offer is for this track's instrument: tapped once another track (or instrument) is selected, it goes
-  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); const u = trk(); if (u.id === tid && curOf(u) === dev) sxReplaceWithSerum(kind, at); });
-  notice(msg, 8000);
-  return null;
+  return isRigDev(t, dev) ? sxAddPart(dev, kind, at) : rigReplace(kind, at);
 }
-function sxReplaceWithSerum(kind, at) {
-  const t = trk(), iv = curView(t), dev = dvOf(iv), old = modelById(iv.model);
-  if (old.custom) return sxAddPart(dev, kind, at);
-  setTrackModel(iv, 'serum', { parts: true }); // (its step "Replace …": the part goes in the same one)
-  const tr = trk();
-  if (!isSerumDev(tr, dev)) return null;
-  const st = hist.u[hist.u.length - 1];
-  const p = sxAddPart(dev, kind, at, null, { step: false });
-  if (st) st.label = 'Replace ' + old.name + ' with Serum';
-  cvUndoNotice(`Replaced ${old.name} with Serum${p ? ' · added ' + SE.partLabel(p) : ''} · tap to undo`, st, () => null);
-  return p;
-}
-// a tile dragged out: its true-size outline under the pointer over the canvas, the drop where it lands
+// a tile dragged out: its true-size outline under the pointer over the canvas, the drop where it lands; (integration fixer L — review WC-int
+// B4) over the track list a new track with it (rigNewTrack), as every other tile
 const sxPartDrag = {
   move(id, i) {
+    $('#topTray').classList.toggle('cv-dropt', i.over === 'tracks');
     if (!world) return;
-    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: sxPartW(id), h: sxPartH(id), label: '+ ' + (SX_KIND[id] || id) });
+    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: sxPartW(id), h: sxPartH(id), label: '+ ' + (SX_KIND[id] || id) + (isRigDev(trk(), curOf(trk())) ? '' : ' · a ' + RIG.NAME) });
     else { world.ghost(null); shell.drop = null; }
-    world.dragPointer(!i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
+    world.dragPointer(!i.left || i.over === 'tracks' ? null : { x: i.x, y: i.y, pointerType: i.pointerType }); // (no edge pan over the track list)
   },
   begin(id, i) { if (world) world.setDragging(true); sxPartDrag.move(id, i); },
   drop(id, i) {
     const r = shell.drop;
     srcDragEnd();
+    if (i.over === 'tracks') { rigNewTrack(id); return true; }
     if (i.over !== 'canvas') return false;
     sxPartDrop(id, r || (i.at ? { x: i.at.x - sxPartW(id) / 2, y: i.at.y - sxPartH(id) / 2 } : null));
     return true;
   },
   cancel() { srcDragEnd(); },
 };
-// every render: a part tile greys out with its reason when the track's Serum has no room for one more (Q3)
+// every render: a module tile greys out with its reason when the track's rig has no room for one more (Q3; the tray's texts, cv-tray
+// rigFull: "This <NAME> already has 3 oscillators" …); on any other instrument every tile is live (a tile replaces it); (integration fixer
+// L — review WC-int B4) in the "+ Add a track…" mode the track a tap changes is a new one: every tile live (srcModeUI decorates again)
 function sxPartsDecor() {
   const T = shell.tiles;
   if (!T || typeof T.setPartPlaced !== 'function') return;
-  const t = trk(), dev = curOf(t), sx = isSerumDev(t, dev), s = sx ? t.dev[dev].vals.s : null, shown = sx && sxParts(t, dev) ? new Set(sxPartList(t, dev)) : new Set();
-  for (const k of ['osc', 'sub', 'noise', 'filter', 'macros', 'arp', 'clip']) {
+  const t = trk(), dev = curOf(t), rig = isRigDev(t, dev) && !(typeof T.mode === 'function' && T.mode() === 'track'), full = k => (typeof cvTray.rigFull === 'function' ? cvTray.rigFull(k) : null) || sxFullWhy(k);
+  const O = rig ? { held: null, shown: sxPartList(t, dev), used: sxUsed(t, dev) } : null; // (the held slots only change what a drop picks, never whether one is free to say)
+  for (const k of ['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip']) {
     let why = null;
-    if (sx && /^(osc|sub|noise|filter)$/.test(k)) why = SE.firstFree(s, k) ? null : sxFullWhy(k);
-    else if (sx && k === 'macros') why = shown.has('macros') ? 'MACROS is already on the canvas' : null;
-    else if (sx) why = SE.partOn(s, k) && shown.has(k) ? SE.partLabel(k) + ' is already on' : null;
+    if (rig) { const Q = rigSlot(t, dev, k, null, O); why = !Q.part || (Q.shown && Q.on && !Q.gate) ? full(k) : null; }
     T.setPartPlaced(k, why);
   }
+}
+
+/* ---------------------------------------------- cv WAVECRAFT (stage WC, IMPL-WC §3.5, §4, §8.2; lane H): the rig's host */
+// A rig (model RIG.ID, rig-core) is always its modules — the Amplifier (its device key iN, VOICE's place), one module per part (rig-
+// core partKeys: I1 / I2 / I1' / the amp slot), its FX panel iN/fx and OUT —, each a face of rig-ui on the RIG grid over the device's
+// one SerumHost (sxViews). Its connections are cv-cables records (its internal ones rig-core edges()); drawMode(t) says how a canvas
+// draws them: 'cords' — its own connections on the cord layer (cordOf: §4.1's table; a cord onto a socket-less knob goes into the
+// BACK of the target module, the user's 2026-10-25 word), the rest lines — or 'lines' (RIG.WIRES, the pref synth.rig.wires, ?wires=,
+// the hook: the regret path §4.7). Every structural edit — a drop, an add, a plug, a pull, a re-patch, a slot move, Init, a
+// conversion — is ONE History step whose meta {trackId, dev, f} writes rig-core's field writes back on undo / redo (sxBack); knobs
+// stay the panel's undo (the Serum knob policy).
+let RIGUI = null; // rig-ui's rigHost once the panels loaded (false: a loader without rig-ui — the stage-3 views stand in, tests)
+let rigMenuLast = null; // (the jack menu's last items: the hook's)
+const RIG_KIT_WORDS = Object.freeze({ build: RC.WORDS.build, s1Tip: RC.WORDS.s1Tip, s1Warp: 'Legacy mode: WARP 2’s mode has no legacy equivalent for WARP 1' }); // (sxHost words: the kit's Info line, the S1 tooltip, a warp swap's refusal)
+const RIG_WIRES = 'synth.rig.wires', RIG_SKIN = 'synth.rig.skin';
+let rigWiresOv = null; // (the hook's wires(mode): this session)
+const wiresOk = v => v === 'cords' || v === 'lines';
+function rigWires() {
+  if (wiresOk(rigWiresOv)) return rigWiresOv;
+  const q = /[?&]wires=(cords|lines)(?:&|$)/.exec((globalThis.location && location.search) || '');
+  if (q) return q[1];
+  const p = store.get(RIG_WIRES, null);
+  return wiresOk(p) ? p : RIG.WIRES;
+}
+// how track t's canvas draws its connections: 'cords' on a rig's canvas (unless the pref / URL / hook say 'lines'), else 'lines'
+const drawMode = t => (!cvMaster && !!t && isRigDev(t, curOf(t)) ? rigWires() : 'lines');
+const rigWm = t => (RIGUI === false ? null : drawMode(t)); // (cv-module entries' wires: none while the stage-3 views stand in)
+const rigKind = part => (part == null || part === 'voice' || part === 'amp' ? 'amp' : RC.MODULES[part] ? part : SE.kindOf(part)); // (a part 'oscB' or a kind 'osc')
+const sclone = x => (typeof structuredClone === 'function' ? structuredClone(x) : JSON.parse(JSON.stringify(x)));
+// a rig module's width / Tidy height: rig-ui's sizeOf once the panels loaded; before, rig-ui's faceW (64 · cols + 32, §3.8 — restated
+// here for the first frames, pinned equal by canvas-WC-sim) and cv-module's height guesses
+function rigW(part) {
+  const k = rigKind(part), M = RC.MODULES[k];
+  if (RIGUI && RIGUI.FACE && RIGUI.FACE[k]) return RIGUI.sizeOf(k, part).w;
+  return M ? 64 * M.cols + 32 : cvModule.W_MOD;
+}
+function rigHt(part) { const k = rigKind(part); return RIGUI && RIGUI.FACE && RIGUI.FACE[k] ? RIGUI.sizeOf(k, part).h + cvModule.BAR_H : cvModule.PART_H_DEF[k] || 256; }
+// the rig skin on the world (one attribute: rig-ui applySkin; before the panels load the same rule over rig-core SKINS)
+function rigSkin() {
+  const W = cvW(), el = W && W.el, id = store.get(RIG_SKIN, RC.SKIN_DEFAULT);
+  if (!el || typeof el.setAttribute !== 'function') return;
+  if (RIGUI) { RIGUI.applySkin(el, id); return; }
+  const v = RC.SKINS.some(s => s.id === id) ? id : RC.SKIN_DEFAULT;
+  if (el.getAttribute('data-cv-skin') !== v) el.setAttribute('data-cv-skin', v);
+}
+// every rig module — the Amplifier and its parts; not its FX panel, nor OUT (§13) — carries data-cv-rig (the skin's chrome, the screws)
+function rigMark() {
+  if (!cvView) return;
+  const t = trk();
+  for (const [k, m] of cvView.modules) {
+    if (!m.el || typeof m.el.setAttribute !== 'function') continue;
+    const q = CMOD.partOf(k), on = !cvMaster && (q ? isRigDev(t, q.dev) : isRigDev(t, k));
+    if (on !== m.el.hasAttribute('data-cv-rig')) { if (on) m.el.setAttribute('data-cv-rig', ''); else m.el.removeAttribute('data-cv-rig'); }
+  }
+}
+// the slots canvas-modulator injections hold in rig dev (cv-graph injectMods' inj: { kind, k }) — envFromAmp / a new Envelope never take one
+function rigHeld(t, dev) { try { return CG.modRowsFor(t, dev).length ? CG.injectMods(t.dev[dev], CG.modRowsFor(t, dev), modsExt(t), t).inj || [] : []; } catch (err) { console.warn(err); return []; } }
+// rig-core's editor options for rig dev of t (lane K's o): the held slots, the parts laid on the canvas, the link rows reading it, its record
+const rigOpts = (t, dev) => ({ held: rigHeld(t, dev), shown: sxPartList(t, dev), used: sxUsed(t, dev), rig: t.dev[dev].rig, dev });
+const rigOf = (t, dev) => RC.normRig(t.dev[dev].rig);
+const rigLabel = (t, dev, part) => RC.labelOf(part, t.dev[dev] ? t.dev[dev].rig : null);
+// the rig's cords as they stand on its canvas: rig-core edges() whose both ends are modules (a record from a part with no module —
+// an off source rig-core lists dim — has nothing to plug into: never drawn, never in a jack's menu, never fanned)
+// (the amp-slot cord is a connection, not a modulation row: rig-core's kind 'mod' would give it cv-cables' amount badge and the ∿ modes —
+// here it is an 'audio'-kind record, its int 'level' kept); (review 2 P2-2) rig-core's tag ("dry": a source passing dry through a Filter
+// whose input switch is off) is the record's label — what cv-cables draws (above the IN plug of a cord, above a line)
+function rigEdges(t, dev) {
+  const d = t.dev[dev], on = new Set(sxPartList(t, dev)).add('voice'), part = e => String(e || '').split('.')[0];
+  const gc = drawMode(t) === 'lines' ? (typeof d.color === 'string' && d.color) || t.color : null; // ((fixer B2, review 2 P2-4) lines mode: the group colour (§4.7), not grey
+  return RC.edges(d.vals.s, fxOfDev(t, dev), dev, d.rig, sxUsed(t, dev)).filter(r => on.has(part(r.edge.a)) && (!r.edge.b || on.has(part(r.edge.b))))
+    .map(r => { // (the amp-slot cord an 'audio' record; review 2 P2-2 the tag as its label; fixer B2 P2-4 lines mode's group colour)
+      const lv = r.int === 'level' && r.kind === 'mod', lb = !!r.tag && !r.label;
+      return lv || lb || gc ? Object.assign({}, r, lv ? { kind: 'audio' } : null, lb ? { label: r.tag } : null, gc ? { color: gc } : null) : r;
+    });
+}
+// (review 2 P2-5, the user's rule) Tidy's band: what each of rig dev's modulators drives, as module keys — rig-core targetsOf over the modules
+// standing (`parts`; Envelope 1 the Amplifier, a row the module holding its knob, 'voice' the Amplifier, 'fx' its FX panel) and the canvas
+// link rows from its modules' jacks (onto another device: that module)
+function rigTargetsOf(t, dev, parts) {
+  const P = parts || sxPartList(t, dev), T = RC.targetsOf(t.dev[dev].vals.s, P), out = {}, key = p => (p === 'voice' ? dev : dev + '/' + p);
+  for (const p of Object.keys(T)) out[dev + '/' + p] = T[p].map(key);
+  for (const row of Array.isArray(t.mods) ? t.mods : []) {
+    const q = row ? sxOwnSrc(row.src) : null, D = row ? modSplit(row.dst) : null;
+    if (!q || q.dev !== dev || !D || D.dev === dev || !P.includes(q.native)) continue;
+    const L = out[dev + '/' + q.native] || (out[dev + '/' + q.native] = []);
+    if (!L.includes(D.dev)) L.push(D.dev);
+  }
+  return out;
+}
+// a portrait canvas (the band taller than wide — the iPad upright): a rig's Tidy wraps its chain after the Amplifier
+const cvNarrow = () => { const W = cvW(); let b = null; try { b = W && typeof W.band === 'function' ? W.band() : null; } catch (err) { b = null; } return !!b && b.bottom - b.top > b.right - b.left; };
+// cv-module tidy()'s opts for track t: its rigs' modulator targets, the canvas's shape (ignored on every other canvas)
+function rigTidyOpts(t) {
+  const targets = {};
+  for (const dev of sxIds(t)) if (isRigDev(t, dev)) Object.assign(targets, rigTargetsOf(t, dev));
+  return { targets, narrow: cvNarrow() };
+}
+// a jack end's words: "Oscillator 1 · OUT", "Amplifier · LEVEL" (the jack rows' labels, rig-core MODULES)
+function rigEndLabel(t, dev, end) {
+  const i = String(end || '').indexOf('.'), part = i > 0 ? end.slice(0, i) : String(end || ''), port = i > 0 ? end.slice(i + 1) : '';
+  const M = RC.MODULES[rigKind(part)], J = M ? (M.jacks.in || []).concat(M.jacks.out || []).find(j => j.id === port) : null;
+  return rigLabel(t, dev, part) + (port ? ' · ' + (J ? J.label : port === 'env1' ? 'Envelope 1 OUT' : port.toUpperCase()) : '');
+}
+// a rig-core result's structure in t (inside the caller's step): lay renames (simultaneous; the ordinal follows the module), link rows
+// re-sourced, canvas rows re-targeted (null: dropped)
+function rigStruct(t, dev, r) {
+  const d = t.dev[dev];
+  if (Array.isArray(r.lay) && r.lay.length) {
+    const L0 = t.lay && typeof t.lay === 'object' ? t.lay : {}, L = Object.assign({}, L0), rig = RC.normRig(d.rig), n = Object.assign({}, rig.n);
+    for (const [a] of r.lay) { delete L[dev + '/' + a]; delete n[a]; }
+    for (const [a, b] of r.lay) { const e = L0[dev + '/' + a]; if (e) L[dev + '/' + b] = Object.assign({}, e); n[b] = RC.ordinalOf(rig, a); }
+    t.lay = L; d.rig = Object.assign({}, rig, { n });
+  }
+  if (Array.isArray(t.mods) && Array.isArray(r.links) && r.links.length) {
+    const M = new Map(r.links.map(([a, b]) => [dev + '/' + a, dev + '/' + b]));
+    for (const row of t.mods) if (row && M.has(row.src)) row.src = M.get(row.src);
+  }
+  if (Array.isArray(t.mods) && Array.isArray(r.ids) && r.ids.length) {
+    const M = new Map(r.ids.map(([a, b]) => [dev + ':' + a, b ? dev + ':' + b : null]));
+    t.mods = t.mods.filter(row => !(row && M.has(row.dst) && M.get(row.dst) === null));
+    for (const row of t.mods) if (row && M.has(row.dst)) row.dst = M.get(row.dst);
+  }
+}
+const rigPrune = (t, dev) => { // (dev.rig's GC after a structural edit; written only when it drops something — an edit that changed nothing stays a no-op)
+  const d = t.dev[dev];
+  if (!d || !isRigDev(t, dev) || !d.rig) return;
+  const r = RC.pruneRig(d.rig, d.vals.s, t.lay, dev);
+  if (JSON.stringify(r) !== JSON.stringify(RC.normRig(d.rig))) d.rig = r;
+};
+// a rig's structural edit's History step `label` → the step (its meta the caller's): never folded onto an equal top — after a no-op
+// step (an edit that changed nothing) History.record would return false and the edit would take that step's label and lend it its
+// meta (review 1 P3-2); record's return says a step is ours
+const rigStep = label => (hist.record(project, label, true) ? hist.u[hist.u.length - 1] : null);
+// ONE History step `label` for rig-core's result r on rig dev of t: its field writes through the Serum host (the panel's own undo has
+// them too), meta {trackId, dev, f} (sxBack: undo / redo write them back), its structure (rigStruct); a refusal says why, no step.
+// A slot move with equal fields is a move without writes (r.lay: the modules swap places and names). o.quiet: no notice (rig-ui's
+// menus say their own); o.notice: the text, else r's notes, else the label — "· tap to undo"
+function rigEdit(t, dev, label, r, o = {}) {
+  if (!t || !isRigDev(t, dev)) return false;
+  if (!r || r.why || !Array.isArray(r.f) || !(r.f.length || (Array.isArray(r.lay) && r.lay.length))) { if (!o.quiet) notice((r && r.why) || RC.WORDS.bad, 4000); return false; }
+  flush();
+  const step = rigStep(label);
+  if (step && r.f.length) step.meta = { trackId: t.id, dev, f: sclone(r.f) };
+  rigStruct(t, dev, r);
+  if (r.f.length) sxApply(t, dev, r.f, label);
+  rigPrune(t, dev);
+  persist(); cvRender(); updateUndoUI();
+  if (!o.quiet) cvUndoNotice((o.notice || (Array.isArray(r.notes) && r.notes.length ? r.notes.join(' · ') : label)) + ' · tap to undo', step, () => null);
+  return true;
+}
+// a cord's colour (rig-ui's Colour ▸: dev.rig.cc by the source end, one step "Cord colour"; cosmetics only — W3); a pick that changes
+// nothing (the colour it has) records nothing (review 1 P3-2: a no-op step)
+function rigColour(t, dev, src, c) {
+  if (!t || !isRigDev(t, dev) || !Number.isInteger(c) || c < 0 || c > 7) return false;
+  const d = t.dev[dev], rig = RC.normRig(d.rig), nx = RC.normRig(Object.assign({}, rig, { cc: Object.assign({}, rig.cc, { [src]: c }) }));
+  if (JSON.stringify(nx) === JSON.stringify(rig)) return false;
+  flush();
+  hist.record(project, 'Cord colour');
+  d.rig = nx;
+  persist(); cvRender(); updateUndoUI();
+  return true;
+}
+// what adding a module of `kind` (part0: a given slot) to rig dev writes — rig-core's rules, nothing written: the slot (firstFree; an
+// Envelope §3.4: the amp slot while it is the gate with no module — plugged into LEVEL at Serum's envelope defaults —, else the first
+// slot 2–4 nothing reads, shows or holds: Envelope 1 standing as the gate (read) stays as it is, review 1), its ⏻ on, its auto-plug
+// (AUTOPLUG: the first target whose module stands) → { part, f, label, ord, shown, why }
+// the slot alone (cheap: the tiles' decor at every render) → { part, shown: a module stands there, on: its ⏻ (or none), why }
+function rigSlot(t, dev, kind, part0, O) {
+  const s = t.dev[dev].vals.s, shown = new Set(O.shown);
+  let part = part0 || null, held = false;
+  if (!part) {
+    if (kind === 'macros' || kind === 'arp' || kind === 'clip') part = kind;
+    else if (kind === 'env') {
+      if (RC.isGate(s) && !shown.has('env1')) part = 'env1';
+      else {
+        const U = SE.slotsUsed(s, O.used, true), H = new Set((O.held || []).map(x => (x && typeof x === 'object' ? x.kind + ((x.k | 0) + 1) : String(x))));
+        for (const p of ['env2', 'env3', 'env4']) { if (U.has(p) || shown.has(p)) continue; if (H.has(p)) { held = true; continue; } part = p; break; }
+      }
+    } else part = SE.firstFree(s, kind, kind === 'lfo' ? [...shown] : null);
+  }
+  if (!part) return { part: null, why: held ? RC.WORDS.envHeld : RC.WORDS.full(kind) };
+  const pw = SE.powerOf(part);
+  return { part, shown: shown.has(part), on: !pw || core.destBase(s, null, pw) >= 0.5, gate: kind === 'env' && part === 'env1' && RC.isGate(s), why: '' };
+}
+function rigPick(t, dev, kind, part0) {
+  const d = t.dev[dev], s = d.vals.s, fx = fxOfDev(t, dev), O = rigOpts(t, dev), shown = new Set(O.shown), Q = rigSlot(t, dev, kind, part0, O), part = Q.part;
+  if (!part) return { why: Q.why };
+  const T = sclone(s), pw = SE.powerOf(part), f = [];
+  let on = null;
+  if (pw && !(core.destBase(T, null, pw) >= 0.5)) { const b = core.destBase(T, null, pw); f.push([['p', pw], b, 1]); T.p[pw] = 1; on = [b, 1]; }
+  const after = new Set(shown).add(part), O2 = Object.assign({}, O, { shown: [...after] });
+  if (kind === 'env') {
+    if (part === 'env1' && RC.isGate(T)) { const r = RC.plug(T, fx, 'env1.out', 'voice.level', O2); if (r.f.length) { RC.apply(T, r.f); f.push(...r.f); } }
+  } else {
+    for (const tgt of RC.AUTOPLUG[kind] || []) {
+      let end = tgt;
+      if (tgt === 'filter.in') { const k = ['filter', 'filter2'].find(p => p !== part && after.has(p)); if (!k) continue; end = k + '.in'; }
+      if (tgt === 'voice.level') continue;
+      const r = RC.plug(T, fx, part + '.out', end, O2);
+      if (r.f.length) { RC.apply(T, r.f); f.push(...r.f); break; }
+      if (r.why === RC.WORDS.same) break;
+    }
+  }
+  const rig = RC.normRig(d.rig), ord = kind === 'env' && !shown.has(part) ? RC.nextOrdinal(rig, 'env', [...shown]) : null;
+  const label = RC.labelOf(part, ord ? Object.assign({}, rig, { n: Object.assign({}, rig.n, { [part]: ord }) }) : rig);
+  return { part, f, label, ord, on, shown: shown.has(part), why: '' };
+}
+const rigSetOrd = (t, dev, part, ord) => { if (!ord) return; const d = t.dev[dev], rig = RC.normRig(d.rig); rig.n = Object.assign({}, rig.n, { [part]: ord }); d.rig = rig; };
+// a module tile onto rig dev (its tap: the Tidy slot; its drop: where it lands): one step "Add <label>" with its ⏻ and its auto-plug's
+// writes (meta {trackId, dev, part, f}: sxBack), "Added <label> · tap to undo"; full → the count, no step; already a module → shown
+function rigAdd(dev, kind, at, part0, o) {
+  const t = trk();
+  if (!isRigDev(t, dev)) return null;
+  const P = rigPick(t, dev, kind, part0);
+  if (!P.part) { notice(P.why, 4000); return null; }
+  const part = P.part, k = dev + '/' + part, atOk = !!at && Number.isFinite(at.x) && Number.isFinite(at.y);
+  if (P.shown && !P.f.length && !atOk) { notice(RC.WORDS.onCanvas(P.label), 3500); cvReveal(t.id, k); return null; }
+  flush();
+  const own = !o || o.step !== false;
+  const step = own ? rigStep('Add ' + P.label) : hist.u[hist.u.length - 1];
+  const lay = cvPinned(t);
+  let moved = false; // (a drop the clear moved off where it landed)
+  if (atOk) { const p0 = { x: cvDot(at.x), y: cvDot(at.y) }, p = sxDropClear(t, dev, part, p0); moved = p.x !== p0.x || p.y !== p0.y; lay[k] = Object.assign({}, lay[k] || {}, p); sxFresh.add(t.id + '\n' + k); }
+  else if (!lay[k]) { lay[k] = sxSpot(t, lay, dev, part); sxFresh.add(t.id + '\n' + k); }
+  if ((lay[k].fold && !atOk) || lay[k].auto) { lay[k] = Object.assign({}, lay[k]); if (!atOk) delete lay[k].fold; delete lay[k].auto; } // (added: the user's place)
+  t.lay = lay;
+  rigSetOrd(t, dev, part, P.ord);
+  if (P.f.length) {
+    if (step && own) step.meta = Object.assign({ trackId: t.id, dev, part }, P.on ? { on: P.on } : null, { f: sclone(P.f) });
+    sxApply(t, dev, P.f, 'Add ' + P.label);
+  }
+  persist(); cvRender(); updateUndoUI();
+  if (own) cvUndoNotice(RC.WORDS.added(P.label), step, () => null);
+  if (!atOk || moved) rigReveal(t, dev, k); // ((integration fixer L — review WC-int B2) a tap's slot (the band's left end under an open tray, under a neighbour below the
+  // screen) or a moved drop: the camera brings it in at the zoom it has once its face is up — a drop where it landed is where the user put it
+  return part;
+}
+// ⋯ → Remove on a rig's module (one step; meta as an add's): an Envelope / LFO / Macros something reads stays (said); the amp
+// Envelope's cord pulled first (envFromAmp: the gate back) and its module goes; a Filter: every cord into it pulled first (rig-core
+// pull: a fork's branch → the balance all to the other Filter, a sole cord → None), then the sole ones — a source's, the other Filter's
+// (review 1 P2-1: it would sound on through the off Filter with no cord) — plugged where its OUT went (no source silenced; into the
+// other Filter: there), each applied in order, and its ⏻ off (review 1 P2-2: plug alone forked a chained source and kept the Filter);
+// any other part ⏻ off; its lay entry gone
+function rigRemove(key) {
+  const t = trk(), q = CMOD.partOf(key);
+  if (!q || !isRigDev(t, q.dev)) return false;
+  const dev = q.dev, part = q.part, d = t.dev[dev], s = d.vals.s, fx = fxOfDev(t, dev), O = rigOpts(t, dev), name = rigLabel(t, dev, part);
+  const pw = SE.powerOf(part), U = SE.slotsUsed(s, O.used, true);
+  if (!pw && U.has(part)) { notice(RC.WORDS.inUse(name, Math.max(1, sxReads(t, dev, part))), 5000); return false; }
+  const T = sclone(s);
+  let mv = null;
+  if (part === 'env1' && !RC.isGate(s)) { // (the amp Envelope: its cord pulled — the keys gate the level again)
+    const r = RC.envFromAmp(T, O);
+    if (r.why) { notice(r.why, 4500); return false; }
+    RC.apply(T, r.f); mv = r;
+  }
+  if (part === 'filter' || part === 'filter2') { // (what fed it follows its OUT: nothing silenced, nothing heard without a cord)
+    const L = RC.edges(T, fx, dev, d.rig, O.used), out = L.find(e => e.edge.a === part + '.out' && e.edge.b), to = out ? out.edge.b : 'voice.main';
+    for (const e of L.filter(x => x.edge.b === part + '.in' && /^(osc[ABC]|sub|noise|filter2?)\.out$/.test(x.edge.a))) {
+      const rec = RC.edges(T, fx, dev, d.rig, O.used).find(x => x.id === e.id);
+      if (!rec) continue;
+      const r = RC.pull(T, fx, rec.id, O);
+      if (r.f.length) RC.apply(T, r.f);
+      if (rec.fork) continue; // (its other branch stays: the other Filter has it all)
+      const q = RC.plug(T, fx, rec.edge.a, to, O);
+      if (q.f.length) RC.apply(T, q.f);
+    }
+  }
+  if (pw && core.destBase(T, null, pw) >= 0.5) T.p[pw] = 0;
+  const f = RC.diff(s, T);
+  flush();
+  const step = rigStep('Remove ' + name);
+  if (mv) rigStruct(t, dev, mv);
+  const gone = mv && mv.lay && mv.lay[0] ? mv.lay[0][1] : part, lay = cvPinned(t);
+  delete lay[dev + '/' + gone];
+  t.lay = lay;
+  if (f.length) { if (step) step.meta = { trackId: t.id, dev, part, f: sclone(f) }; sxApply(t, dev, f, 'Remove ' + name); }
+  rigPrune(t, dev);
+  persist(); cvRender(); updateUndoUI();
+  return true;
+}
+// a whole state onto rig dev (⋯ → Init: rigInit; the rig tile on a rig: the starter) — one step with sxBack meta, "tap to undo"; its
+// modules follow the state (the places of parts it no longer has go in the step)
+function rigLoad(dev, T, label) {
+  const t = trk();
+  if (!isRigDev(t, dev)) return false;
+  const d = t.dev[dev], s = d.vals.s, f = RC.diff(s, T);
+  if (!f.length) { notice(label + ': already so', 3000); return false; }
+  flush();
+  const step = rigStep(label);
+  if (step) step.meta = { trackId: t.id, dev, f: sclone(f) };
+  const keep = new Set(RC.partKeys(T, null, dev, sxUsed(t, dev), d.rig)), lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {});
+  for (const k of Object.keys(lay)) { const q = CMOD.partOf(k); if (q && q.dev === dev && !keep.has(q.part)) delete lay[k]; }
+  t.lay = lay;
+  sxApply(t, dev, f, label);
+  rigPrune(t, dev);
+  persist(); cvRender(); updateUndoUI();
+  cvUndoNotice(label + ' · tap to undo', step, () => null);
+  return true;
+}
+const rigInitDev = dev => rigLoad(dev, RC.applyPrefs(RC.rigInit(), prefs, true), 'Init ' + RIG.NAME); // (true: MPE stays the Serum's, §13)
+const rigStarterDev = dev => rigLoad(dev, RC.rigStarter(prefs).s, RIG.NAME + ' starter');
+// the rig tile (srcPick / srcDrag) on a rig track: its starter, a preset-style load (never a same-model Replace: IMPL-9 §1.4) → handled
+function rigTile(id) {
+  if (id !== RIG.ID || cvMaster) return false;
+  const t = trk(), dev = curOf(t);
+  if (!isRigDev(t, dev)) return false;
+  rigStarterDev(dev);
+  return true;
+}
+// a module tile on any other instrument (§3.5): Replace it with a rig holding the Amplifier + that module (+ its FX panel and OUT) —
+// one step 'Replace <old>' (setTrackModel o.module), "Replaced <old> with <NAME> · <module> · tap to undo"
+let rigFirstPart = null; // (setTrackModel's module drop: the part it added, its label)
+function rigReplace(kind, at) {
+  if (cvMaster) { notice(MASTER_SRC, 4000); return null; }
+  const t = trk(), iv = curView(t), dev = dvOf(iv), old = modelById(iv.model), tid = t.id;
+  rigFirstPart = null;
+  const why = setTrackModel(iv, RIG.ID, { module: kind, at });
+  const nd = CMOD.instOf(trOf(iv), dev);
+  if (!nd || nd.model !== RIG.ID) return null;
+  const step = hist.u[hist.u.length - 1], P = rigFirstPart || { part: null, label: RC.MODULES[kind] ? RC.MODULES[kind].label : kind };
+  cvUndoNotice(RC.WORDS.replaced(old.name, P.label).replace(/ · tap to undo$/, '') + (why ? ' · ' + why : '') + ' · tap to undo', step, () => {
+    const tr = project.tracks.find(x => x.id === tid), d = tr && CMOD.instOf(tr, dev);
+    return d && d.model === RIG.ID ? () => setTrackModel(instView(tr, dev), old.id) : null;
+  });
+  rigFrame(trk(), dev, { lead: P.part ? dev + '/' + P.part : null }); // (B3: the module just added whole in the first view)
+  return P.part;
+}
+// (review 2 P2-6; integration fixer L — review WC-int B2 / B3 / P3-5) the camera follows a rig being made or grown, once its faces have mounted
+// (a fit before them framed their bars: a face's height arrives with it). rigFrame frames the whole rig — the chain, the modulator band, the
+// Amplifier and its FX panel; OUT stays where the replaced instrument's stood (often far right: framing it gave ≈ 30 %) — never below READ_K
+// (B3's check: below it a press on a module pans instead of turning its knob; a rig too big for the band there shows what matters first —
+// rigFirstKeys, the fit's focus in priority order: on a side it does not fit, the longest head of it that does, centred, slid back only so
+// far that no blank band opens where the rig goes on — cv-world fitCam's floor; o.lead: the module just added); o.all: every module on the
+// canvas (Tidy: its row holds OUT; an overview, as
+// the toolbar's Fit) — into the band it fits (cv-world fit: the visible rect less an open tray, the toolbar and the minimap), animated (o.def:
+// the track's default camera — a jump, not stored, as cvCamRestore's); rigReveal brings one new module into the band at the zoom it has
+// (modShow, the modulators' rule). One request at a time (the newest wins), looked at once a frame until the faces are up (RIG_WAIT frames
+// at most); another track, the master canvas, a hidden canvas, a press / wheel / pinch on the canvas meanwhile or a finger / button still
+// down on it when the faces are up (its gesture owns the camera: a slow device's late fit jumped under the finger — a track switch builds its
+// canvas after the press that follows it) drops it
+const RIG_WAIT = 60, RIG_HELD_MS = 8000;
+let rigCamQ = null, rigCamOn = null;
+const rigDown = new Map(); // pointerId → when it went down on the canvas (lifted anywhere: gone; RIG_HELD_MS at most, a lost lift)
+const rigFrame = (t, dev, o) => rigCam(Object.assign({ tid: t.id, dev }, o));
+const rigReveal = (t, dev, key) => rigCam({ tid: t.id, dev, key });
+function rigCamDrop(e) {
+  if (rigCamQ && rigCamQ.raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rigCamQ.raf);
+  rigCamQ = null;
+  if (e && e.type === 'pointerdown') rigDown.set(e.pointerId, Date.now());
+}
+const rigLift = e => { if (e) rigDown.delete(e.pointerId); };
+const rigPressed = () => { const t = Date.now(); for (const [id, t0] of rigDown) if (t - t0 > RIG_HELD_MS) rigDown.delete(id); return rigDown.size > 0; };
+function rigCam(q) {
+  rigCamDrop();
+  const W = cvW(), vp = W && (W.viewport || W.el);
+  if (vp && vp !== rigCamOn && typeof vp.addEventListener === 'function') {
+    for (const ty of ['pointerdown', 'wheel', 'gesturestart']) vp.addEventListener(ty, rigCamDrop, { capture: true, passive: true });
+    if (!rigCamOn && typeof window !== 'undefined' && typeof window.addEventListener === 'function') for (const ty of ['pointerup', 'pointercancel']) window.addEventListener(ty, rigLift, { capture: true, passive: true });
+    rigCamOn = vp;
+  }
+  rigCamQ = Object.assign(q, { n: 0, raf: 0 });
+  rigCamNext(q);
+}
+function rigCamNext(q) {
+  q.raf = requestAnimationFrame(() => {
+    q.raf = 0;
+    if (rigCamQ !== q) return;
+    const t = trk(), W = cvW(), V = rigView();
+    if (cvMaster || !V || !W || t.id !== q.tid || !isRigDev(t, q.dev) || $('#tab-inst').hidden) { rigCamQ = null; return; }
+    if (!rigFacesUp(t, q.dev) && ++q.n < RIG_WAIT) { rigCamNext(q); return; }
+    rigCamQ = null;
+    if (rigPressed()) return;
+    if (q.key) { modShow(q.key); return; }
+    if (typeof W.fit !== 'function') return;
+    const ids = q.all ? null : [...V.modules.keys()].filter(k => k === q.dev || k.startsWith(q.dev + '/'));
+    if (ids && !ids.length) return;
+    W.fit(Object.assign({ animate: !q.def }, ids ? { ids, kMin: cvWorld.READ_K, focus: rigFirstKeys(V, q.dev, q.lead) } : { all: true }));
+    if (q.def && W.cam) { clearTimeout(cvCamT); cvCamT = 0; cvCamPend = null; cvCamLast = { key: CM.camKey(project.uid, t.id), cam: { tx: W.cam.tx, ty: W.cam.ty, k: W.cam.k } }; } // (still the untouched default)
+  });
+}
+// (integration fixer L — review WC-int B3, after its checks) what a first view at READ_K holds first when the rig does not fit, in PRIORITY
+// order (cv-world fitCam drops from the end what a side cannot hold — a keyboard-up band keeps the chain row, not Envelope 1 over it): the
+// module just added (lead), else the chain's start (the left-most module on the Amplifier's row: no modulator, not its FX panel); the
+// Amplifier; its Envelope 1 (the gate's) — the knobs one plays first
+function rigFirstKeys(V, dev, lead) {
+  const a = V.modules.get(dev), A = a ? a.rect() : null;
+  if (!A) return null;
+  let s = lead && V.modules.has(lead) ? lead : null, sx = Infinity;
+  if (!s) for (const [k, m] of V.modules) {
+    const q = CMOD.partOf(k);
+    if (!q || q.dev !== dev || /^(env\d|lfo\d+|macros)$/.test(q.part)) continue;
+    const r = m.rect();
+    if (r && r.y < A.y + A.h && r.y + r.h > A.y && r.x < sx) { sx = r.x; s = k; }
+  }
+  return [s, dev, dev + '/env1'].filter(k => k && V.modules.has(k));
+}
+// a rig's faces are up: no switch mounting bodies, no panel due, each of its modules holding its face (the host's views: the Amplifier's, each part's)
+function rigFacesUp(t, dev) {
+  const V = rigView(), rec = sxRecOf(t.id, dev);
+  if (!V || cvMount || cvDue.size || !rec || !rec.views) return false;
+  for (const k of V.modules.keys()) if ((k === dev || (CMOD.partOf(k) || {}).dev === dev) && !rec.views.has(k)) return false;
+  return true;
+}
+// (integration fixer L — review WC-int P3-11) the line layer's route (cv-cables o.route) for a rig's Amplifier → Effects line: round the
+// Amplifier when its FX panel stands under it (Tidy's upright wrap: cv-cables wrapPath, which answers null for any other lay — the plain
+// line), its run down 2 × RIG_AMP_AIR beside the Amplifier — beyond Envelope 1's cord, which hangs RIG_AMP_AIR beside it into LEVEL (P3-3):
+// the two cross once, by its OUT, and never run together; every other line the plain one
+function rigRoute(c, A, B) {
+  const V = rigView(), d = c && typeof c.a === 'string' && c.a.endsWith('.out') ? c.a.slice(0, -4) : '';
+  if (!d || !V || cvMaster || c.b !== d + '/fx.in' || !isRigDev(trk(), d) || !B) return null;
+  const s = rigRectOf(d), f = rigRectOf(d + '/fx'); // (the heights read once a render: a drag's every frame asks — no layout read per frame)
+  if (!s || !f || !(B.x < s.x + s.w)) return null; // (the FX panel right of the Amplifier, one row: the plain line, no walk)
+  const O = [];
+  for (const k of V.modules.keys()) if (k !== d && k !== d + '/fx') { const r = rigRectOf(k); if (r) O.push(r); }
+  return cvCables.wrapPath(A, B, s, f, O, 2 * cvModule.RIG_AMP_AIR);
+}
+// inside setTrackModel's step: the module of the first drop on the fresh blank (its ⏻, its auto-plug, its ordinal), the group laid
+// out by Tidy's rule where the old instrument stood (sxLayParts: [module] [Amplifier] [FX] [OUT])
+function rigFirst(tr, dev, kind) {
+  const d = tr.dev[dev], P = rigPick(tr, dev, kind, null);
+  if (!P.part) return null;
+  if (P.f.length) RC.apply(d.vals.s, P.f);
+  rigSetOrd(tr, dev, P.part, P.ord);
+  rigFirstPart = { part: P.part, label: P.label };
+  tr.lay = sxLayParts(tr, dev, P.part);
+  if (!RIG.HUB_OPEN && tr.lay[dev]) tr.lay[dev] = Object.assign({}, tr.lay[dev], { fold: 1 }); // (RIG.HUB_OPEN false: the Amplifier arrives folded to its bar)
+  return P.part;
+}
+// ⋯ → Make it a <NAME> on a Serum (Q4 (a)): the same state (rig-core adopt: only the AMP ENV switches, each said), its FX, preset
+// name, rows and parts' old places (keepLay: sxModelLay's purge skipped; none → Tidy's group) — one step, "Now a <NAME> · same sound"
+function rigConvert(dev) {
+  const t = trk(), iv = instView(t, dev);
+  if (!iv || !isSerumModel(modelById(iv.model)) || !iv.vals || !iv.vals.s) return false;
+  const A = RC.adopt(iv.vals.s), tid = t.id;
+  setTrackModel(iv, RIG.ID, { keepLay: true, vals: { s: A.s }, preset: iv.preset });
+  const nd = CMOD.instOf(t, dev);
+  if (!nd || nd.model !== RIG.ID) return false;
+  const step = hist.u[hist.u.length - 1];
+  cvUndoNotice(A.notes.length ? RC.WORDS.nowAChanged.replace(/ · tap to undo$/, '') + ' · ' + A.notes.join(' · ') + ' · tap to undo' : RC.WORDS.nowA, step, () => {
+    const tr = project.tracks.find(x => x.id === tid), d = tr && CMOD.instOf(tr, dev);
+    return d && d.model === RIG.ID ? () => setTrackModel(instView(tr, dev), 'serum') : null;
+  });
+  rigFrame(t, dev); // ((integration fixer L, B3) the rig framed once its faces are up — not the Serum's camera
+  return true;
+}
+/* ---- the rig's connections: which records are cords, the cord layer's list and anchors (cords mode, §4.1–§4.5) */
+const rigSrcEnd = (dev, a) => { // a source jack's end: 'oscA.out', 'lfo3.out', 'macros.k2', 'env1.out' (VOICE's alias 'iN.env1')
+  const e = SE.endOf(dev, a);
+  if (e) return e === 'voice.env1' ? 'env1.out' : e;
+  const s = String(a || '');
+  return s.startsWith(dev + '/') ? s.slice(dev.length + 1) : s === dev + '.env1' ? 'env1.out' : null;
+};
+// a record the cord layer draws on this canvas (§4.1's table): the rig's internal edges (the amp-slot cord too), its own Envelope / LFO /
+// Macro rows (onto its knobs, its FX panel's included), link rows from its modules' jacks — never Amplifier → FX, FX → OUT, a canvas
+// modulator's row, a preset row, a Pads note line, a stub
+function cordOf(c) {
+  const t = trk();
+  if (!c || cvMaster || drawMode(t) !== 'cords') return false;
+  if (c.int) return typeof c.dev === 'string' && isRigDev(t, c.dev);
+  if (c.kind !== 'mod' || c.preset) return false;
+  if (c.own) return typeof c.dev === 'string' && isRigDev(t, c.dev);
+  const m = typeof c.a === 'string' ? /^([a-z][a-z0-9]*)([./])/.exec(c.a) : null;
+  return !!m && isRigDev(t, m[1]) && (m[2] === '/' || c.a === m[1] + '.env1');
+}
+const isKnobEnd = c => c.kind === 'mod' && typeof c.b === 'string' && c.b.indexOf(':') > 0;
+// a cord's look (§4.5): its colour (rig-core's rule, a user's dev.rig.cc pick for the rig's own cords), its alpha (1 · the rig's own rows
+// 0.85 · off / bypassed / warp 0.45 · the 24+ fade 0.3), its ends' plugs (a knob end: the BACK end, s 2)
+function toCord(c, t) {
+  const dev = c.int ? c.dev : (/^([a-z][a-z0-9]*)/.exec(String(c.a || '')) || [])[1], d = dev && t.dev ? t.dev[dev] : null, knob = isKnobEnd(c);
+  const col = c.int ? (Number.isInteger(c.c) ? c.c : 4) : RC.cordColor(rigSrcEnd(dev, c.a) || '', knob ? null : d && d.rig);
+  const o = c.fade ? RC.LOOK.o.fade : c.dim || c.byp ? RC.LOOK.o.off : c.int ? (typeof c.o === 'number' ? c.o : 1) : RC.LOOK.o.row;
+  return { id: c.id, a: c.a, b: c.b, c: col, s: knob ? 2 : 0, o };
+}
+// the modules' measured heights and their controls (fixer B2: what a badge must not cover) — cleared at every render: a drag reads no layout
+const rigRects = new Map(); // (module key → its measured height)
+const rigCtls = new Map(); // (module key → [x, y, w, h, …]: its controls' rects, module px)
+const rigView = () => (cvView && project && cvView.trackId === trk().id ? cvView : null); // (a view being made for another track is not yet cvView)
+function rigRectOf(key) {
+  const V = rigView(), m = V && V.modules.get(key);
+  if (!m) return null;
+  let h = rigRects.get(key);
+  if (!(h > 0)) { h = m.rect().h; rigRects.set(key, h); }
+  return { x: m.x, y: m.y, w: m.w, h: m.fold ? cvModule.BAR_H : h };
+}
+// ((WC, fixer B2) a module's controls — knobs, buttons, the screens, the menus, the jacks, its bar (the module's own handle) — as rects in
+// module px, read once a render (a face's layout does not move inside its module)
+const RIG_CTL = '[data-dest], button, canvas, input, select, [role="button"], [role="slider"], [role="switch"], [role="combobox"], [data-cv-jack], .cv-bar';
+function rigCtl(key) {
+  let L = rigCtls.get(key);
+  if (L) return L;
+  const V = rigView(), m = V && V.modules.get(key);
+  L = [];
+  if (m && m.el && typeof m.el.querySelectorAll === 'function') {
+    let R = null;
+    try { R = m.el.getBoundingClientRect(); } catch (err) { R = null; }
+    const s = R && R.width > 0 && m.w > 0 ? R.width / m.w : 0;
+    if (s > 0) for (const e of m.el.querySelectorAll(RIG_CTL)) {
+      let r = null;
+      try { r = e.getBoundingClientRect(); } catch (err) { r = null; }
+      if (r && r.width > 0 && r.height > 0) L.push((r.left - R.left) / s, (r.top - R.top) / s, r.width / s, r.height / s);
+    }
+  }
+  rigCtls.set(key, L);
+  return L;
+}
+// the cord layer's list and anchors from cv-cables' claimed records and the ports (§4.3), and the claimed badges' places (fixer B2):
+//  · several cords at one jack fan out '<jack>#<i>' (i the records' order) along the jack's row inside its face, RIG_FAN apart (closer,
+//    ≥ RIG_FAN_MIN, where the row is tight), packed round the row's other jacks and fans — each as near centred on its jack as the room
+//    allows, never a second row over the face (integration fixer K, review P3-6) — and its cords on the plugs that cross the fewest
+//    faces and each other (review B1: S3's Filter 1 cord kept off Filter 2; rigFans / rigOrder); a forked source's BAL right of its fan;
+//  · a knob end (the user, 2026-10-26: "directly to the back of the knob that it is attached to") is 'knob:<id>' on the knob's rim (its
+//    own disc: cv-module kx / ky / kr) where the rope AT REST arrives radially (rigAim, on the layer's own shape: fixer K, P2-1) — it
+//    goes in behind the knob there (cv-cords s 2; the anchor carries the disc, so the layer cuts the rope at the rim: P2-2) —; several
+//    cords onto one knob spread ≥ RIG_SEP apart round it (rigSpread) and ring it in their colours, each segment facing its cord; a
+//    hidden / folded knob's end: the bar corner, as before;
+//  · a claimed mod row's badge on its rope at rest just outside the rim, off every control and every badge placed before it (rigBadge)
+const RIG_FAN = 32, RIG_FAN_MIN = 16, RIG_FAN_PAD = 16, RIG_SEP = 40 * Math.PI / 180;
+// ((fixer K, review P2-1) the drawn rope AT REST between A and B — the layer's shape(): the settled Studio rope with motion (a rig's cords
+// open there: cv-cords rest), the parabola still / SVG — what badges sit on and knob ends are aimed along; cached by its ends and the
+// layer's quality, cleared at every render)
+const RIG_PTS = 2 + 8 * 4; // (High's drawn points: the most a rope has)
+const rigShapeC = new Map();
+function rigShape(C, A, B) {
+  const q = C ? String(C.perf || '') + String(C.mode || '') : '';
+  const key = q + '|' + Math.round(A.x * 16) + ',' + Math.round(A.y * 16) + ',' + Math.round(B.x * 16) + ',' + Math.round(B.y * 16);
+  let s = rigShapeC.get(key);
+  if (s) return s;
+  const P = new Float64Array(2 * RIG_PTS);
+  let m = C && typeof C.shape === 'function' ? C.shape(A, B, P) | 0 : 0;
+  if (!(m >= 2)) m = cvCordsMod.restPath(A.x, A.y, B.x, B.y, P, cvCordsMod.CORD_Q.high); // (a layer without shape(): High's)
+  if (rigShapeC.size > 4000) rigShapeC.clear();
+  s = { P, m };
+  rigShapeC.set(key, s);
+  return s;
+}
+// a drawn rope's last heading (its last segment of any length) → [dx, dy]
+function rigEndDir(P, m) {
+  let k = m - 1;
+  while (k > 1 && P[2 * k] === P[2 * k - 2] && P[2 * k + 1] === P[2 * k - 1]) k--;
+  return [P[2 * k] - P[2 * k - 2], P[2 * k + 1] - P[2 * k - 1]];
+}
+// a drawn rope lies on disc O (x, y, r) before its end (by more than half a px): it would poke into the knob
+function rigInside(P, m, O) {
+  const rr = (O.r - 0.5) * (O.r - 0.5);
+  for (let i = 0; i < m - 1; i++) { const x = P[2 * i] - O.x, y = P[2 * i + 1] - O.y; if (x * x + y * y < rr) return true; }
+  return false;
+}
+// the rim angle on knob disc O (x, y, r) where the rope at rest from S arrives radially (its last heading points at the centre): three
+// steps from the angle toward S — the last one whose rope stays off the knob's face, else toward S (a modulator straight above: its
+// rope's slack fold would wrap the knob — the layer cuts it at the rim instead); C the cord layer (its shape), cached by S and O
+const rigAimC = new Map();
+function rigAim(S, O, C) { // ((the ends to 1 px: a drag's frames reuse an aim within 0.5 px of the source — < 0.2° at a cord's length)
+  const key = [S.x, S.y, O.x, O.y, O.r].map(v => Math.round(v)).join(',') + (C ? String(C.perf || '') + String(C.mode || '') : '');
+  const hit = rigAimC.get(key);
+  if (hit != null) return hit;
+  const th0 = Math.atan2(S.y - O.y, S.x - O.x);
+  let th = th0, ok = null;
+  for (let i = 0; i < 4; i++) {
+    const ex = O.x + O.r * Math.cos(th), ey = O.y + O.r * Math.sin(th);
+    if (Math.hypot(ex - S.x, ey - S.y) < 1) break;
+    const s = rigShape(C, S, { x: ex, y: ey });
+    if (!rigInside(s.P, s.m, O)) ok = th;
+    if (i === 3) break;
+    const [dx, dy] = rigEndDir(s.P, s.m);
+    th = Math.atan2(-dy, -dx);
+  }
+  const r = ok != null ? ok : th0;
+  if (rigAimC.size > 4000) rigAimC.clear();
+  rigAimC.set(key, r);
+  return r;
+}
+// the cords onto one knob ≥ RIG_SEP apart round it (fewer than a circle's worth: 2π / n): sorted, cut at the widest gap, then clusters
+// merged where they crowd, each centred on its cords' own angles (the label-placement rule) — in place on g[].th
+function rigSpread(g) {
+  const n = g.length, TAU = 2 * Math.PI;
+  if (n < 2) return;
+  const sep = Math.min(RIG_SEP, TAU / n);
+  g.sort((a, b) => a.th - b.th || (a.c.id < b.c.id ? -1 : 1));
+  let gi = n - 1, gw = -1;
+  for (let i = 0; i < n; i++) { const w = (i === n - 1 ? g[0].th + TAU : g[i + 1].th) - g[i].th; if (w > gw) { gw = w; gi = i; } }
+  const st = (gi + 1) % n, run = [];
+  for (let j = 0; j < n; j++) { const q = (st + j) % n; run.push({ x: g[q], w: g[q].th + (q < st ? TAU : 0) }); }
+  let cl = run.map(r => ({ L: [r], c: r.w }));
+  for (let merged = true; merged;) {
+    merged = false;
+    for (let i = 1; i < cl.length; i++) {
+      const a = cl[i - 1], b = cl[i];
+      if (b.c - (b.L.length - 1) / 2 * sep - (a.c + (a.L.length - 1) / 2 * sep) < sep - 1e-9) {
+        const L = a.L.concat(b.L);
+        cl.splice(i - 1, 2, { L, c: L.reduce((s, r) => s + r.w, 0) / L.length });
+        merged = true;
+        break;
+      }
+    }
+  }
+  for (const k of cl) k.L.forEach((r, j) => { r.x.th = k.c + (j - (k.L.length - 1) / 2) * sep; });
+}
+// ((fixer K, review P3-6) one jack row's fans: B — its jacks in x order, { x, n (a fan's plugs; 1 a jack that cannot move: empty or one
+// cord), fixed } — packed between lo and hi (plug centres): the fixed jacks stand, every fan's plugs RIG_FAN apart (the gaps to a
+// neighbour too), squeezed to ≥ RIG_FAN_MIN where the room is short, each fan as near centred on its own jack as the others let it (the
+// pool-adjacent rule: crowding fans share the shift) → each item's first plug x and its spacing (in place: b.x0, b.s); a fan whose jack
+// stands off the walls (off its face: a jack not measured yet, a stale port) centred on its jack, as a folded module's (WC-1 merge fixer)
+function rigPack(B, lo, hi) {
+  const S0 = RIG_FAN;
+  const walls = [{ x: lo - S0 }].concat(B.filter(b => b.fixed && b.x > lo - S0 && b.x < hi + S0), [{ x: hi + S0 }]);
+  for (const b of B) { b.x0 = b.fixed ? b.x : b.x - (b.n - 1) * S0 / 2; b.s = S0; } // (a fan in no room below keeps this: never NaN — its plugs are the sources knob ends are aimed from)
+  for (let w = 0; w + 1 < walls.length; w++) {
+    const L = walls[w].x, R = walls[w + 1].x, mv = B.filter(b => !b.fixed && b.x > L && b.x <= R);
+    if (!mv.length) continue;
+    const slots = mv.reduce((s, b) => s + b.n, 0), a0 = L + S0, a1 = R - S0, room = a1 - a0;
+    const s = slots > 1 ? Math.max(RIG_FAN_MIN, Math.min(S0, room / (slots - 1))) : S0, width = (slots - 1) * s;
+    let cl = [];
+    for (const b of mv) {
+      cl.push({ L: [b], n: b.n, x: b.x - (b.n - 1) * s / 2 });
+      for (let merged = true; merged && cl.length > 1;) { // (merge while the last cluster crowds the one before it)
+        merged = false;
+        const p = cl[cl.length - 2], q = cl[cl.length - 1];
+        if (p.x + p.n * s > q.x + 1e-9) {
+          const M = p.L.concat(q.L);
+          let off = 0, sum = 0;
+          for (const m of M) { sum += m.x - (off + (m.n - 1) / 2) * s; off += m.n; }
+          cl.splice(-2, 2, { L: M, n: p.n + q.n, x: sum / M.length });
+          merged = true;
+        }
+      }
+    }
+    // inside the room: clamped from the right, then the left (a fan that cannot fit overflows to its right, never over a fixed jack's left)
+    for (let i = cl.length - 1; i >= 0; i--) { const c = cl[i], lim = i === cl.length - 1 ? a1 : cl[i + 1].x - s; c.x = Math.min(c.x, lim - (c.n - 1) * s); }
+    for (let i = 0; i < cl.length; i++) { const c = cl[i], lim = i ? cl[i - 1].x + cl[i - 1].n * s : a0; c.x = Math.max(c.x, room >= width ? lim : Math.min(lim, a0 + (room - width) / 2)); }
+    for (const c of cl) { let off = 0; for (const b of c.L) { b.x0 = c.x + off * s; b.s = s; off += b.n; } }
+  }
+}
+// ((fixer K, review B1) a fan's cords on its plugs: the order whose ropes at rest cross the fewest faces (not their own ends', ×2) and
+// each other — every order for five cords or fewer, else pairwise swaps from the records' order; a tie keeps the order it had — kept
+// while its plugs and its cords' other ends stay within RIG_ORDER_MOVE px, and while a module is in the finger (no drag frame decides
+// one; rigOrderOwed asks rigRecords for one relayout once the drag is over: the order at rest is decided where the module was let go)
+const rigOrderC = new Map(), RIG_ORDER_MOVE = 24;
+let rigOrderOwed = false, rigDragNow = false;
+function rigOrder(key, list, slots, at, C, M) {
+  const n = list.length, id = list.map(([c]) => c.id).join(',') + '|' + (C ? String(C.perf || '') + String(C.mode || '') : '');
+  const other = list.map(([c, e]) => at(c.rec[e === 'a' ? 'b' : 'a']));
+  if (other.some(o => !o)) return list.map((_, i) => i);
+  const pos = slots.flatMap(s => [s.x, s.y]).concat(other.flatMap(o => [o.x, o.y]));
+  const hit = rigOrderC.get(key);
+  if (hit && hit.id === id && hit.pos.length === pos.length && hit.pos.every((v, i) => Math.abs(v - pos[i]) <= RIG_ORDER_MOVE)) return hit.order;
+  if (hit && hit.id === id && rigDragNow) { rigOrderOwed = true; return hit.order; }
+  const inM = p => M.filter(m => p.x >= m.x0 && p.x <= m.x1 && p.y >= m.y0 && p.y <= m.y1);
+  const poly = [], face = [];
+  for (let i = 0; i < n; i++) for (let a = 0; a < n; a++) {
+    const e = list[i][1], A = e === 'a' ? slots[a] : other[i], B = e === 'a' ? other[i] : slots[a], s = rigShape(C, A, B), own = new Set(inM(A).concat(inM(B)));
+    const T = [];
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (let j = 0; j < s.m; j++) { const x = s.P[2 * j], y = s.P[2 * j + 1]; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; if (j % 3 === 0) T.push(x, y); }
+    T.push(s.P[2 * s.m - 2], s.P[2 * s.m - 1]);
+    let f = 0;
+    for (const m of M) { // (a face it passes over, 3 px in: the drawn rope's segments, not its points — a corner clipped by 8 px counts)
+      if (own.has(m) || bx1 <= m.x0 + 3 || bx0 >= m.x1 - 3 || by1 <= m.y0 + 3 || by0 >= m.y1 - 3) continue;
+      for (let j = 0; j + 1 < s.m; j++) if (rigSegBox(s.P[2 * j], s.P[2 * j + 1], s.P[2 * j + 2], s.P[2 * j + 3], m.x0 + 3, m.y0 + 3, m.x1 - 3, m.y1 - 3)) { f++; break; }
+    }
+    poly[i * n + a] = T; face[i * n + a] = f;
+  }
+  const crossN = (P, Q) => {
+    let c = 0;
+    for (let i = 0; i + 3 < P.length; i += 2) for (let j = 0; j + 3 < Q.length; j += 2) {
+      const ax = P[i], ay = P[i + 1], bx = P[i + 2], by = P[i + 3], cx = Q[j], cy = Q[j + 1], dx = Q[j + 2], dy = Q[j + 3];
+      const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax), d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax), d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx), d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+      if (d1 * d2 < 0 && d3 * d4 < 0) c++;
+    }
+    return c;
+  };
+  const X = new Map(), cross = (i, a, j, b) => { const k = (i * n + a) * n * n + j * n + b; let v = X.get(k); if (v == null) { v = crossN(poly[i * n + a], poly[j * n + b]); X.set(k, v); } return v; };
+  const cost = o => { let c = 0; for (let i = 0; i < n; i++) { c += 2 * face[i * n + o[i]]; for (let j = i + 1; j < n; j++) c += cross(i, o[i], j, o[j]); } return c; };
+  const was = hit && hit.id === id ? hit.order : null;
+  let best = was || list.map((_, i) => i), bc = cost(best);
+  if (n <= 5) {
+    const used = new Array(n).fill(false), cur = [];
+    const walk = d => {
+      if (d === n) { const c = cost(cur); if (c < bc) { bc = c; best = cur.slice(); } return; }
+      for (let a = 0; a < n; a++) if (!used[a]) { used[a] = true; cur.push(a); walk(d + 1); cur.pop(); used[a] = false; }
+    };
+    if (bc > 0) walk(0);
+  } else {
+    for (let better = true; better && bc > 0;) {
+      better = false;
+      for (let i = 0; i < n && !better; i++) for (let j = i + 1; j < n && !better; j++) { const o = best.slice(); [o[i], o[j]] = [o[j], o[i]]; const c = cost(o); if (c < bc) { bc = c; best = o; better = true; } }
+    }
+  }
+  if (rigOrderC.size > 400) rigOrderC.clear();
+  rigOrderC.set(key, { pos, id, order: best });
+  return best;
+}
+// the jacks holding several cords (use: jack key → [[record, end]]) → Map jack key → { slots: [{x, y}] its plugs left → right, order:
+// list index → plug index }; rows of a folded module (or a module unknown): a centred fan, as before
+function rigFans(use, at, P, C, M) {
+  const out = new Map(), multi = [...use].filter(([k, L]) => L.length > 1 && at(k) && k.indexOf(':') < 0 && k.lastIndexOf('.') > 0);
+  if (!multi.length) return out;
+  const V = rigView(), mods = new Map();
+  for (const [k] of multi) mods.set(k.slice(0, k.lastIndexOf('.')), []);
+  for (const [mk, L] of mods) { // (a fanned module's own jacks: its ports, not the whole map)
+    const m = V && V.modules.get(mk);
+    for (const j of m && typeof m.jackIds === 'function' ? m.jackIds() : []) { const key = mk + '.' + j, p = at(key); if (p && isFinite(p.x) && isFinite(p.y)) L.push({ key, x: p.x, y: p.y }); }
+    for (const [k] of multi) if (k.slice(0, k.lastIndexOf('.')) === mk && !L.some(q => q.key === k)) { const p = at(k); L.push({ key: k, x: p.x, y: p.y }); }
+  }
+  const fan = new Map(multi);
+  const centred = (k, p, n) => ({ x0: p.x - (n - 1) * RIG_FAN / 2, s: RIG_FAN });
+  const placed = new Map();
+  for (const [mod, J] of mods) {
+    const m = V && V.modules.get(mod), r = m && !m.fold ? rigRectOf(mod) : null;
+    for (const [k, L] of multi) {
+      if (k.slice(0, k.lastIndexOf('.')) !== mod || placed.has(k)) continue;
+      const p = at(k);
+      if (!r) { placed.set(k, centred(k, p, L.length)); continue; }
+      const row = J.filter(j => Math.abs(j.y - p.y) < 1).sort((a, b) => a.x - b.x || (a.key < b.key ? -1 : 1));
+      const B = row.map(j => ({ key: j.key, x: j.x, n: fan.has(j.key) ? fan.get(j.key).length : 1, fixed: !fan.has(j.key) }));
+      if (!B.some(b => b.key === k)) B.push({ key: k, x: p.x, n: L.length, fixed: false }), B.sort((a, b) => a.x - b.x);
+      rigPack(B, r.x + RIG_FAN_PAD, r.x + r.w - RIG_FAN_PAD);
+      for (const b of B) if (!b.fixed) placed.set(b.key, { x0: b.x0, s: b.s });
+    }
+  }
+  for (const [k, L] of multi) {
+    const p = at(k), pl = placed.get(k) || centred(k, p, L.length), slots = L.map((_, i) => ({ x: pl.x0 + i * pl.s, y: p.y }));
+    out.set(k, { slots, order: rigOrder(k, L, slots, at, C, M) });
+  }
+  return out;
+}
+// a claimed mod row's badge: its width on the glass (its amount, its tags: cv-cables' text), its visible RIG_BADGE_VH and its RIG_BADGE_H
+// hit, at zoom k in world px — walked back along the rope at rest (the layer's shape, cut at the knob's rim: what is drawn) from its end at
+// E toward the source S, the first place (on the rope, else beside it: the visible badge's half extent off it — fixer K, P2-1) whose hit
+// box covers no control and no badge placed before it; none: just outside the rim
+const RIG_BADGE_H = 44, RIG_BADGE_VH = 18;
+const rigBadgeW = c => 14 + 6.6 * String(c.badge || cvCables.amtText(c.amt, c.bi)).length + (c.dashed ? 66 : 0) + (c.preset ? 46 : 0);
+// the obstacles a relayout's badges avoid: every module's rect, its controls in world px (made when a badge first overlaps it), the
+// badges placed so far — built once a relayout
+function rigObs(placed) {
+  const V = rigView(), M = [];
+  if (V) for (const key of V.modules.keys()) { const r = rigRectOf(key); if (r) M.push({ key, x0: r.x, y0: r.y, x1: r.x + r.w, y1: r.y + r.h, c: null }); }
+  return { M, placed };
+}
+// a badge's place by record id, kept while its cord's ends, the zoom and its width stay and its box stays clear (a module drag places again
+// the badges of the cords it moves and those it slides under, not every badge) — cleared at every render, with the controls
+const rigBadgeC = new Map();
+function rigFree(O, x0, y0, x1, y1) {
+  for (const b of O.placed) if (x0 < b[2] && x1 > b[0] && y0 < b[3] && y1 > b[1]) return false;
+  for (const m of O.M) {
+    if (x0 >= m.x1 || x1 <= m.x0 || y0 >= m.y1 || y1 <= m.y0) continue;
+    if (!m.c) { const C = rigCtl(m.key); m.c = new Float64Array(C.length); for (let i = 0; i < C.length; i += 4) { m.c[i] = m.x0 + C[i]; m.c[i + 1] = m.y0 + C[i + 1]; m.c[i + 2] = m.c[i] + C[i + 2]; m.c[i + 3] = m.c[i + 1] + C[i + 3]; } }
+    const c = m.c;
+    for (let i = 0; i < c.length; i += 4) if (x0 < c[i + 2] && x1 > c[i] && y0 < c[i + 3] && y1 > c[i + 1]) return false;
+  }
+  return true;
+}
+function rigBadge(c, S, E, k, O, C, K) {
+  const bw = rigBadgeW(c) / k, bh = RIG_BADGE_H / k, vh = RIG_BADGE_VH / k, air = 2 / k;
+  if (!(Math.hypot(E.x - S.x, E.y - S.y) >= 1)) return null;
+  const sh = rigShape(C, S, E), P = sh.P.slice(0, 2 * sh.m);
+  const m = K ? cvCordsMod.clip(P, sh.m, K.x, K.y, K.r) + 1 : sh.m; // (the rope as drawn: cut at the knob's rim)
+  const cum = new Float64Array(m);
+  for (let i = 1; i < m; i++) cum[i] = cum[i - 1] + Math.hypot(P[2 * i] - P[2 * i - 2], P[2 * i + 1] - P[2 * i - 1]);
+  const Lt = cum[m - 1], end = { x: P[2 * m - 2], y: P[2 * m - 1] };
+  if (!(Lt > 0)) return null;
+  const at = d => { // the point at arc length d from S, and the unit tangent there
+    let i = 1;
+    while (i < m - 1 && cum[i] < d) i++;
+    const l = cum[i] - cum[i - 1], u = l > 0 ? Math.max(0, Math.min(1, (d - cum[i - 1]) / l)) : 0, tx = P[2 * i] - P[2 * i - 2], ty = P[2 * i + 1] - P[2 * i - 1], tl = Math.hypot(tx, ty) || 1;
+    return { x: P[2 * i - 2] + tx * u, y: P[2 * i - 1] + ty * u, tx: tx / tl, ty: ty / tl };
+  };
+  const hw = bw / 2 + air, hh = bh / 2 + air, N = Math.max(16, Math.min(160, Math.ceil(Lt * k / 8)));
+  let pick = null, near = null;
+  for (let i = N - 1; i >= 1 && !pick; i--) {
+    const q = at(Lt * i / N), nx = -q.ty, ny = q.tx;
+    const off = (Math.abs(nx) * bw + Math.abs(ny) * vh) / 2 + air; // ((fixer K, P2-1) beside the rope: the visible badge touches it
+    if (!near && Math.hypot(q.x - end.x, q.y - end.y) > Math.hypot(bw, bh) / 2) near = q;
+    for (const o of [0, off, -off]) { const cx = q.x + nx * o, cy = q.y + ny * o; if (rigFree(O, cx - hw, cy - hh, cx + hw, cy + hh)) { pick = { x: cx, y: cy }; break; } }
+  }
+  const q = pick || near || at(Lt * (N - 1) / N);
+  O.placed.push([q.x - bw / 2, q.y - bh / 2, q.x + bw / 2, q.y + bh / 2]);
+  return { x: q.x, y: q.y };
+}
+function rigLayer(L, P, k) {
+  const t = trk(), C = cvCords(), A = new Map(P || []), cords = [], rings = [], use = new Map(), knobs = new Map(), badges = new Map(), forks = new Map(), plugs = new Map(), ends = new Map();
+  const at = key => (P && typeof P.get === 'function' ? P.get(key) : P ? P[key] : null), kk = k > 0 && isFinite(k) ? k : 1;
+  const recs = L.map(c => Object.assign(toCord(c, t), { rec: c }));
+  const endsOf = c => (isKnobEnd(c.rec) ? ['a'] : ['a', 'b']);
+  for (const c of recs) for (const e of endsOf(c)) { const key = c[e]; if (!use.has(key)) use.set(key, []); use.get(key).push([c, e]); }
+  const V0 = rigView();
+  rigDragNow = !!V0 && [...V0.modules.values()].some(m => typeof m.dragging === 'function' && m.dragging()); // (a module in the finger: fans keep their order)
+  const M = rigObs([]).M, fans = rigFans(use, at, P, C, M);
+  for (const [key, F] of fans) {
+    const list = use.get(key), J = [];
+    list.forEach(([c, e], i) => { const fk = key + '#' + i, p = F.slots[F.order[i]]; c[e] = fk; A.set(fk, { x: p.x, y: p.y }); J.push({ id: c.id, x: p.x, y: p.y }); });
+    plugs.set(key, J);
+  }
+  for (const c of recs) { // (a forked source's BAL: right of its fanned plugs)
+    if (!c.rec.fork || forks.has(c.rec.a)) continue;
+    const p = at(c.rec.a), F = fans.get(c.rec.a);
+    if (p) forks.set(c.rec.a, { x: (F ? Math.max(...F.slots.map(s => s.x)) : p.x) + 14 + 6, y: p.y });
+  }
+  for (const c of recs) {
+    if (!isKnobEnd(c.rec)) continue;
+    const K = at(c.rec.b), S = A.get(c.a) || at(c.rec.a), key = 'knob:' + c.id;
+    c.b = key;
+    if (!K || !S) continue;
+    if (K.hid || !(K.r > 0)) { A.set(key, { x: K.x, y: K.y }); continue; } // (a knob no view shows / a folded module: its bar's corner)
+    const O = Number.isFinite(K.kr) && K.kr > 0 ? { x: K.kx, y: K.ky, r: K.kr } : { x: K.x, y: K.y, r: K.r };
+    if (!knobs.has(c.rec.b)) knobs.set(c.rec.b, []);
+    knobs.get(c.rec.b).push({ c, S, O, th: rigAim(S, O, C) });
+  }
+  for (const [b, g] of knobs) {
+    rigSpread(g);
+    for (const x of g) A.set(x.c.b, { x: x.O.x + x.O.r * Math.cos(x.th), y: x.O.y + x.O.r * Math.sin(x.th), kx: x.O.x, ky: x.O.y, kr: x.O.r }); // ((fixer K, P2-2) the disc: the layer cuts the rope at its rim
+    const i = b.indexOf(':');
+    rings.push({ dev: b.slice(0, i), pid: b.slice(i + 1), segs: g.map(x => ({ c: x.c.c, th: x.th })) });
+  }
+  let O = null;
+  const placed = [], seen = new Set();
+  for (const c of recs) { // (the badges, in the records' order: each clear of those before it)
+    if (!isKnobEnd(c.rec) || c.rec.kind !== 'mod') continue;
+    const K = at(c.rec.b), E = A.get(c.b), S = A.get(c.a) || at(c.rec.a);
+    if (!K || K.hid || !(K.r > 0) || !E || !S) continue;
+    const disc = Number.isFinite(E.kr) ? { x: E.kx, y: E.ky, r: E.kr } : null;
+    const w = rigBadgeW(c.rec), key = [S.x, S.y, E.x, E.y].map(v => Math.round(v * 2)).join(',') + '|' + kk + '|' + w, hit = rigBadgeC.get(c.id);
+    const hw = w / kk / 2 + 2 / kk, hh = RIG_BADGE_H / kk / 2 + 2 / kk;
+    let q = hit && hit.key === key ? hit.q : null;
+    if (q && !rigFree(O || (O = rigObs(placed)), q.x - hw, q.y - hh, q.x + hw, q.y + hh)) q = null; // (still clear: a module moved under it — placed again)
+    if (q) placed.push([q.x - w / kk / 2, q.y - RIG_BADGE_H / kk / 2, q.x + w / kk / 2, q.y + RIG_BADGE_H / kk / 2]);
+    else { q = rigBadge(c.rec, S, E, kk, O || (O = rigObs(placed)), C, disc); if (q) rigBadgeC.set(c.id, { key, q }); }
+    seen.add(c.id);
+    if (q) badges.set(c.id, q);
+  }
+  for (const id of rigBadgeC.keys()) if (!seen.has(id)) rigBadgeC.delete(id);
+  for (const c of recs) {
+    cords.push({ id: c.id, a: c.a, b: c.b, c: c.c, s: c.s, o: c.o, rest: true }); // ((fixer K, P2-1) a rig's cord opens at rest: where its badge is aimed
+    const a = A.get(c.a), b = A.get(c.b);
+    if (a && b) ends.set(c.id, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } });
+  }
+  return { cords, anchors: A, rings, badges, forks, plugs, ends, P };
+}
+// ((WC, integration fixer K; review B5 / P2-3) what a press on rig jack el at p (world px, zoom k) is on (cv-cables' jackAt): the nearest
+// of its module's jack centres — a fanned jack's plugs in its place, an input's each naming its cord (the plug's own, not the most
+// recent) — within max(22 screen px, half the 64 px column) → { el, rec } (rec null: the jack's default), else null (the press keeps el)
+const RIG_HALF = 32; // (half the RIG grid's column: rig-ui GRID.col 64)
+function rigNearest(V, p, k, mod) { // (mod null: every rig jack — data-cv-awake, rig-ui's jack rows)
+  const R = rigLast, P = R && R.P ? R.P : V.ports(), get = key => (P && typeof P.get === 'function' ? P.get(key) : P ? P[key] : null);
+  let best = null, bd = Math.max(22 / (k > 0 ? k : 1), RIG_HALF);
+  for (const J of V.jacks()) {
+    if (!J.el || (mod != null ? J.mod !== mod : typeof J.el.getAttribute !== 'function' || J.el.getAttribute('data-cv-awake') == null)) continue;
+    const F = R && R.plugs ? R.plugs.get(J.id) : null;
+    if (F && F.length) { for (const q of F) { const d = Math.hypot(q.x - p.x, q.y - p.y); if (d <= bd) { bd = d; best = { el: J.el, rec: J.dir === 'in' ? q.id : null }; } } continue; }
+    const c = get(J.id);
+    if (c && isFinite(c.x)) { const d = Math.hypot(c.x - p.x, c.y - p.y); if (d <= bd) { bd = d; best = { el: J.el, rec: null }; } }
+  }
+  return best;
+}
+function rigJackAt(el, p, k) {
+  const V = rigView(), id = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-cv-jack') : null;
+  if (!V || !id || !p || !isFinite(p.x) || !isFinite(p.y)) return null;
+  const i = id.lastIndexOf('.');
+  return i > 0 ? rigNearest(V, p, k, id.slice(0, i)) : null;
+}
+// ((WC, fixer K; review P2-3 and its skeptics) a press on no jack (cv-world setJackNear): the empty canvas, a rig module's sleeping face
+// (all of it: its controls sleep), an awake face where no control is (RIG_CTL: a knob, a switch, a button, a screen, the bar keep theirs)
+// → the nearest rig jack within max(22 screen px, half the column) — past a face's edge too, which clips the jacks' own circles; another
+// module's body keeps its press. Both drawing modes (lines: the same faces)
+function rigNearJack(p, k, t, o) {
+  const V = rigView(), tr = trk();
+  if (!V || cvMaster || !tr || !isRigDev(tr, curOf(tr)) || !p || !o || !isFinite(p.x) || !isFinite(p.y)) return null; // (no rig on the canvas: nothing to do)
+  if (!o.empty) {
+    if (!o.mod || !V.jacks().some(J => J.mod === o.mod && J.el && typeof J.el.getAttribute === 'function' && J.el.getAttribute('data-cv-awake') != null)) return null;
+    if (!o.sleep) { let c = null; try { c = t && typeof t.closest === 'function' ? t.closest(RIG_CTL) : null; } catch (err) { c = null; } if (c) return null; }
+  }
+  const q = rigNearest(V, p, k, null);
+  return q ? q.el : null;
+}
+// a rig jack's element and its module by jack key ('i1/filter.in', 'i1.main') — a lookup in its module, no walk (a drag's frames read no DOM)
+function rigJackEl(V, key) {
+  const i = String(key).lastIndexOf('.'), m = i > 0 && V ? V.modules.get(key.slice(0, i)) : null;
+  if (!m || typeof m.jack !== 'function') return null;
+  let el = null;
+  try { el = m.jack(key.slice(i + 1)) || null; } catch (err) { el = null; }
+  return el ? { el, m } : null;
+}
+const rigLabInfoC = new Map(); // ((fixer K) a render's: the label elements and widths (rigLabels); cleared at every render
+// a fanned jack's target stretched over its plugs (rig-ui's jack hit: --rig-fw the fan's span, --rig-fx its centre's offset, world px)
+let rigFanOn = []; // ([element, span, offset] as last set)
+function rigFanHits(R) {
+  const V = rigView(), want = [];
+  if (V && R && R.plugs && R.plugs.size) {
+    const get = key => (R.P && typeof R.P.get === 'function' ? R.P.get(key) : R.P ? R.P[key] : null);
+    for (const [j, F] of R.plugs) {
+      const q = rigJackEl(V, j), el = q && q.el, J = get(j);
+      if (!el || !J || !F.length || !el.style || typeof el.style.setProperty !== 'function') continue;
+      const x0 = Math.min(...F.map(q => q.x)), x1 = Math.max(...F.map(q => q.x));
+      want.push([el, Math.round(x1 - x0), Math.round((x0 + x1) / 2 - J.x)]);
+    }
+  }
+  if (want.length === rigFanOn.length && want.every((w, i) => w[0] === rigFanOn[i][0] && w[1] === rigFanOn[i][1] && w[2] === rigFanOn[i][2])) return;
+  for (const [e] of rigFanOn) if (!want.some(w => w[0] === e) && e.style && typeof e.style.removeProperty === 'function') { e.style.removeProperty('--rig-fw'); e.style.removeProperty('--rig-fx'); }
+  for (const [e, w, x] of want) { e.style.setProperty('--rig-fw', w + 'px'); e.style.setProperty('--rig-fx', x + 'px'); }
+  rigFanOn = want;
+}
+// ((WC, integration fixer K; review P3-12) a jack's label (the line under it) reads through its own cords: where a rope of the jack's (at
+// rest, as drawn) crosses the label, the label is lifted above the cords — a chip in the layer's top with its words in the face's colours,
+// at its place (the jack's centre, RIG_LAB_DY under it); a label no rope of its jack crosses stays as it is, no chip
+const RIG_LAB_DY = 20, RIG_LAB_H = 12, RIG_ROPE_HW = 5.6; // (rig-ui GRID: jack 28 / 2 + jackGap 6, jackLab 12; cv-cords LOOK.W / 2)
+const rigLabC = new Map(); // (jack key → its chip)
+const rigLabOf = el => { const p = el && el.parentNode; for (const c of (p && p.children) || []) if (c && typeof c.getAttribute === 'function' && /(^|\s)rig-jl(\s|$)/.test(c.getAttribute('class') || (typeof c.className === 'string' ? c.className : ''))) return c; return null; };
+function rigSegBox(ax, ay, bx, by, x0, y0, x1, y1) { // segment a → b meets box [x0, x1] × [y0, y1] (Liang–Barsky)
+  let t0 = 0, t1 = 1;
+  const dx = bx - ax, dy = by - ay;
+  for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]]) {
+    if (p === 0) { if (q < 0) return false; continue; }
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+  }
+  return true;
+}
+// (a label's struck verdict, kept while its cords' ends stay within RIG_LAB_MOVE px: a module drag decides again every few px, not a frame)
+const rigLabHitC = new Map(), RIG_LAB_MOVE = 12;
+function rigLabels(R) {
+  const C = cvCords(), V = rigView(), top = R && C && typeof C.top === 'function' ? C.top() : null, want = new Map();
+  if (top && V && R) {
+    const get = key => (R.P && typeof R.P.get === 'function' ? R.P.get(key) : R.P ? R.P[key] : null), by = new Map();
+    for (const c of R.cords) for (const e of c.s === 2 ? ['a'] : ['a', 'b']) { const j = String(c[e]).replace(/#\d+$/, ''); if (!by.has(j)) by.set(j, []); by.get(j).push(c); }
+    for (const [j, L] of by) {
+      const J = get(j), q = rigJackEl(V, j);
+      if (!J || !q || q.m.fold) continue; // (a folded module shows no jack row)
+      let info = rigLabInfoC.get(j);
+      if (!info || info.el !== q.el) { // (once a render: the label and its measured line, else its words' estimate)
+        const lab = rigLabOf(q.el), ow = lab ? lab.offsetWidth : 0, oh = lab ? lab.offsetHeight : 0;
+        info = { el: q.el, lab, w: lab ? (ow > 0 && oh > 0 && oh < 40 ? ow : 4 + 6.4 * String(lab.textContent || '').length) : 0 };
+        rigLabInfoC.set(j, info);
+      }
+      if (!info.lab) continue;
+      const pos = [J.x, J.y, info.w];
+      for (const c of L) { const a = R.anchors.get(c.a), b = R.anchors.get(c.b); pos.push(a ? a.x : NaN, a ? a.y : NaN, b ? b.x : NaN, b ? b.y : NaN); }
+      const was = rigLabHitC.get(j);
+      let hit;
+      if (was && was.pos.length === pos.length && was.pos.every((v, i) => Math.abs(v - pos[i]) <= RIG_LAB_MOVE)) hit = was.hit;
+      else {
+        const w = info.w, x0 = J.x - w / 2 - RIG_ROPE_HW, x1 = J.x + w / 2 + RIG_ROPE_HW, y0 = J.y + RIG_LAB_DY - RIG_ROPE_HW, y1 = J.y + RIG_LAB_DY + RIG_LAB_H + RIG_ROPE_HW;
+        hit = L.some(c => {
+          const a = R.anchors.get(c.a), b = R.anchors.get(c.b);
+          if (!a || !b) return false;
+          const s = rigShape(C, a, b);
+          for (let i = 0; i + 1 < s.m; i++) if (rigSegBox(s.P[2 * i], s.P[2 * i + 1], s.P[2 * i + 2], s.P[2 * i + 3], x0, y0, x1, y1)) return true;
+          return false;
+        });
+        if (rigLabHitC.size > 400) rigLabHitC.clear();
+        rigLabHitC.set(j, { pos, hit });
+      }
+      if (hit) want.set(j, { J, lab: info.lab });
+    }
+  }
+  for (const [j, ch] of rigLabC) if (!want.has(j) || ch.parentNode !== top) { try { ch.remove(); } catch (err) { /* gone */ } rigLabC.delete(j); }
+  for (const [j, { J, lab }] of want) {
+    let ch = rigLabC.get(j);
+    if (!ch) {
+      ch = document.createElement('span');
+      ch.className = 'rig-jl-top';
+      ch.setAttribute('data-jack', j);
+      ch.setAttribute('aria-hidden', 'true');
+      top.insertBefore(ch, top.firstChild || null); // (under the badges, the × and BAL of the same layer)
+      rigLabC.set(j, ch);
+    }
+    const txt = String(lab.textContent || '');
+    if (ch.getAttribute('data-t') !== txt) { // its words — the printed normal (KEYS) in its own span — in the face's colours
+      ch.setAttribute('data-t', txt);
+      const cn = lab.childNodes, kids = cn && typeof cn === 'object' && typeof cn[Symbol.iterator] === 'function' ? [...cn] : [];
+      ch.textContent = '';
+      if (kids.length && typeof document.createTextNode === 'function' && kids.every(n => n.nodeType === 3 || n.nodeType === 1)) {
+        for (const n of kids) {
+          if (n.nodeType === 3) { ch.appendChild(document.createTextNode(n.textContent)); continue; }
+          const s = document.createElement('span');
+          s.className = typeof n.className === 'string' ? n.className : '';
+          s.textContent = n.textContent;
+          try { if (typeof getComputedStyle === 'function' && s.style) s.style.color = getComputedStyle(n).color; } catch (err) { /* the CSS's */ }
+          ch.appendChild(s);
+        }
+      }
+      if (String(ch.textContent || '') !== txt) ch.textContent = txt; // (a DOM without text nodes)
+      let cs = null, fs = null;
+      const face = typeof lab.closest === 'function' ? lab.closest('.rig-face') : null;
+      try { cs = typeof getComputedStyle === 'function' ? getComputedStyle(lab) : null; fs = face && typeof getComputedStyle === 'function' ? getComputedStyle(face) : null; } catch (err) { cs = fs = null; }
+      if (cs && ch.style) { ch.style.color = cs.color; ch.style.fontFamily = cs.fontFamily; }
+      if (fs && ch.style) ch.style.background = fs.backgroundColor;
+    }
+    const row = typeof lab.closest === 'function' ? lab.closest('[data-plugged]') : null;
+    if (!!row !== ch.hasAttribute('data-plugged')) { if (row) ch.setAttribute('data-plugged', ''); else ch.removeAttribute('data-plugged'); }
+    const l = J.x + 'px', t = (J.y + RIG_LAB_DY) + 'px';
+    if (ch.style.left !== l) ch.style.left = l;
+    if (ch.style.top !== t) ch.style.top = t;
+  }
+}
+// the knobs a cord goes into wear a ring in its colour (data-rig-cord: the rig chrome's CSS), so the end reads; several cords: a segmented
+// ring, each segment facing its cord (--rig-ring, a conic gradient on the knob's disc; its place in the control measured once); set
+// where the knob is shown, cleared where it no longer is
+const RIG_RING = ['#d8432f', '#e6b83a', '#3f80d8', '#41a75c', '#e9e5da', '#e27c2f', '#9060c9', '#8a8c90']; // (cv-cords PALETTE; its black lifted, style.css's)
+const rigDisc = new WeakMap(); // (a knob control → its disc's centre / size in it, CSS px)
+function rigRingCss(segs) { // the segments' conic gradient (CSS: 0deg up, clockwise), a 4° gap between colours
+  const L = segs.map(x => ({ c: RIG_RING[x.c] || RIG_RING[4], f: ((Math.round((x.th * 180 / Math.PI + 90) / 5) * 5) % 360 + 360) % 360 })).sort((a, b) => a.f - b.f), n = L.length;
+  const B = L.map((x, i) => (x.f + (i === n - 1 ? L[0].f + 360 : L[i + 1].f)) / 2), from = B[n - 1] - 360, out = [];
+  L.forEach((x, i) => { const s0 = (i ? B[i - 1] : B[n - 1] - 360) - from, s1 = B[i] - from; out.push('transparent ' + s0 + 'deg ' + (s0 + 2) + 'deg', x.c + ' ' + (s0 + 2) + 'deg ' + (s1 - 2) + 'deg', 'transparent ' + (s1 - 2) + 'deg ' + s1 + 'deg'); });
+  return 'conic-gradient(from ' + from + 'deg, ' + out.join(', ') + ')';
+}
+function rigDiscOf(el) {
+  let d = rigDisc.get(el);
+  if (d) return d;
+  const S = wkDiscBox(el); // (the kit's one measure: cv-module's knob ends — the cord's rim, its badge — and cv-cables' aim read the same disc)
+  if (!S) return null;
+  const R = el.getBoundingClientRect(), s = R.width > 0 && el.offsetWidth > 0 ? R.width / el.offsetWidth : 1;
+  d = { x: (S.left + S.width / 2 - R.left) / s, y: (S.top + S.height / 2 - R.top) / s, d: S.width / s };
+  rigDisc.set(el, d);
+  return d;
+}
+let rigRingOn = []; // ([knob element, its colour, its segments' gradient | ''] as last set)
+function rigRings(R) {
+  const V = rigView(), want = [];
+  if (V) for (const x of R) { const el = rigDestOf(V, x.dev, x.pid); if (el) want.push([el, String(x.segs[0].c), x.segs.length > 1 ? rigRingCss(x.segs) : '']); }
+  if (want.length === rigRingOn.length && want.every((w, i) => w[0] === rigRingOn[i][0] && w[1] === rigRingOn[i][1] && w[2] === rigRingOn[i][2] && w[0].isConnected !== false)) return; // (the same knobs, the same rings)
+  for (const [e] of rigRingOn) { e.removeAttribute('data-rig-cord'); e.removeAttribute('data-rig-ring'); }
+  for (const [el, c, css] of want) {
+    el.setAttribute('data-rig-cord', c);
+    const d = css ? rigDiscOf(el) : null;
+    if (d && el.style && typeof el.style.setProperty === 'function') {
+      el.setAttribute('data-rig-ring', '');
+      el.style.setProperty('--rig-ring', css); el.style.setProperty('--rig-rx', d.x + 'px'); el.style.setProperty('--rig-ry', d.y + 'px'); el.style.setProperty('--rig-rd', d.d + 'px');
+    }
+  }
+  rigRingOn = want;
+}
+// a knob's element by 'dev:pid' (looked up once a render: a module drag walks no DOM)
+const rigDestC = new Map();
+function rigDestOf(V, dev, pid) {
+  const key = dev + ':' + pid;
+  let el = rigDestC.get(key);
+  if (el && el.isConnected !== false) return el;
+  el = null;
+  for (const [k, m] of V.modules) { if ((k === dev || k.startsWith(dev + '/')) && (el = rigDestEl(m.el, pid))) break; }
+  if (el) rigDestC.set(key, el); else rigDestC.delete(key);
+  return el;
+}
+function rigDestEl(root, pid) { // the first [data-dest="pid"] element under root that has a box (a hidden page's twin skipped)
+  const st = [root];
+  while (st.length) {
+    const n = st.pop();
+    for (const c of n.children || []) {
+      if (!c || typeof c.getAttribute !== 'function') continue;
+      if (c.getAttribute('data-dest') === pid && c.getAttribute('data-twin') == null && (typeof c.getClientRects !== 'function' || c.getClientRects().length)) return c;
+      st.push(c);
+    }
+  }
+  return null;
+}
+// ((WC, fixer B2; review 2 P2-4: the regret path) lines mode: a rig's internal lines run under the faces to jacks inside them — each jack
+// a line arrives at or leaves wears a ring in the line's colour (the group colour), one more ring for each further line (a Σ input's
+// count), so which jack a line uses reads where the line itself is hidden
+let rigLineOn = []; // ([element, its rings] as last set)
+function rigLineRings(on) {
+  const V = rigView(), t = trk(), J = new Map(), want = [];
+  if (on && V) for (const c of V.cables.list()) {
+    if (!c || !c.int || c.stub || typeof c.a !== 'string' || typeof c.b !== 'string' || !isRigDev(t, c.dev)) continue;
+    for (const j of [c.a, c.b]) { if (!J.has(j)) J.set(j, []); J.get(j).push(c.color || t.color || '#8d8b86'); }
+  }
+  if (J.size) for (const x of V.jacks()) {
+    const L = J.get(x.id);
+    if (!L || !x.el || typeof x.el.setAttribute !== 'function') continue;
+    want.push([x.el, L.length, L.slice(0, 3).map((c, i) => '0 0 0 ' + (2 + 4 * i) + 'px #0c0d0f, 0 0 0 ' + (4 + 4 * i) + 'px ' + c).reverse().join(', ')]);
+  }
+  if (want.length === rigLineOn.length && want.every((w, i) => w[0] === rigLineOn[i][0] && w[2] === rigLineOn[i][2] && w[0].isConnected !== false)) return; // (the same jacks, the same rings)
+  for (const [e] of rigLineOn) { e.removeAttribute('data-rig-line'); if (e.style && typeof e.style.removeProperty === 'function') e.style.removeProperty('--rig-lines'); }
+  for (const [e, n, sh] of want) { e.setAttribute('data-rig-line', String(n)); if (e.style && typeof e.style.setProperty === 'function') e.style.setProperty('--rig-lines', sh); }
+  rigLineOn = want;
+}
+// cv-cables onRecords → the cord layer (cords mode on this canvas) and the claimed badges' places (its answer); leaving it (lines, another
+// track's canvas) clears the rig's cords — lines mode rings the jacks its lines use
+let rigCordsOn = false, rigLast = null, rigLaid = false; // (rigLaid: records came — cvRender lays the view's again once it is the track's)
+// ((fixer K) a fan whose order a module drag held: once no module is in the finger, one relayout decides it (cv-cables lays its records again)
+let rigOrderTm = 0;
+function rigOrderLater() {
+  if (rigOrderTm) clearTimeout(rigOrderTm);
+  rigOrderTm = setTimeout(() => {
+    rigOrderTm = 0;
+    const V = rigView();
+    if (!V || !rigCordsOn || typeof V.ports !== 'function') return;
+    if ([...V.modules.values()].some(m => typeof m.dragging === 'function' && m.dragging())) { rigOrderLater(); return; }
+    V.cables.layout(V.ports());
+  }, 180);
+}
+function rigRecords(L, P, k) {
+  rigLaid = true;
+  const C = cvCords(), t = trk(), cm = drawMode(t) === 'cords';
+  rigLineRings(!cm && !cvMaster && isRigDev(t, curOf(t)));
+  if (!C || !cm) { if (rigCordsOn) { rigCordsOn = false; rigLast = null; if (C && !ptShown()) C.set([]); rigRings([]); rigFanHits(null); rigLabels(null); } return null; }
+  rigCordsOn = true;
+  rigOrderOwed = false;
+  const R = rigLayer(Array.isArray(L) ? L : [], P, k > 0 ? k : (cvW() && cvW().k) || 1);
+  if (rigOrderOwed) rigOrderLater();
+  rigLast = R;
+  C.set(R.cords);
+  C.anchors(R.anchors);
+  rigRings(R.rings);
+  rigFanHits(R); rigLabels(R); // ((fixer K) a fan's jack target over its plugs (P2-3 / B5); the labels its cords cross lifted (P3-12)
+  return { badges: R.badges, forks: R.forks, ends: R.ends }; // ((fixer K) ends: a claimed cord's tag above its own plug (P3-6)
+}
+// a live rope's look from a rig jack (cv-cables cordLook): the source's colour, a plug in the finger
+function rigLook(jk) {
+  const t = trk(), m = /^([a-z][a-z0-9]*)[./]/.exec(String(jk || '')), dev = m ? m[1] : null;
+  if (!dev || !isRigDev(t, dev)) return { c: 4, s: 0, o: 1 };
+  return { c: RC.cordColor(rigSrcEnd(dev, jk) || '', t.dev[dev].rig), s: 0, o: 1 };
+}
+// a re-patch of a cord's input plug (cv-cables' grab dropped on another input): rig-core repatch, one step
+function rigRepatch(id, a, b) {
+  const t = trk(), m = /^x:([a-z][a-z0-9]*):/.exec(String(id || '')), dev = m ? m[1] : null;
+  if (!dev || !isRigDev(t, dev)) return false;
+  const B = SE.endOf(dev, b), d = t.dev[dev];
+  if (!B) { notice(RC.WORDS.other, 4000); return false; }
+  const r = RC.repatch(d.vals.s, fxOfDev(t, dev), id, 'b', B, rigOpts(t, dev)), rec = rigEdges(t, dev).find(x => x.id === id);
+  return rigEdit(t, dev, 'Re-patch ' + (rec ? rigEndLabel(t, dev, rec.edge.a) : 'cord') + ' → ' + rigEndLabel(t, dev, B), r);
+}
+// a cord pulled away from any jack (cv-cables onPull): a rig cord → rig-core pull (the amp cord: envFromAmp, its own words); a mod row →
+// its Disconnect — "Cord pulled · tap to undo"
+function rigPull(id) {
+  const t = trk(), m = /^x:([a-z][a-z0-9]*):/.exec(String(id || ''));
+  if (m && isRigDev(t, m[1])) {
+    const dev = m[1], d = t.dev[dev], rec = rigEdges(t, dev).find(x => x.id === id);
+    const r = RC.pull(d.vals.s, fxOfDev(t, dev), id, rigOpts(t, dev));
+    return rigEdit(t, dev, 'Pull ' + (rec ? rigEndLabel(t, dev, rec.edge.a) + ' → ' + rigEndLabel(t, dev, rec.edge.b) : 'cord'), r, { notice: r.notes && r.notes.length ? r.notes.join(' · ') : RC.WORDS.cordPulled.replace(/ · tap to undo$/, '') });
+  }
+  const c = cvView && cvView.cables.list().find(x => x.id === id);
+  if (!c || c.kind !== 'mod') return false;
+  if (c.own && isRigDev(t, c.dev)) { modCableAct(id, 'disconnect'); return true; } // (a rig's own row: rigRowEdit says "Cord pulled · tap to undo" itself — once, review WC-int P3-18)
+  const n0 = hist.u.length;
+  modCableAct(id, 'disconnect');
+  if (hist.u.length > n0) { const step = hist.u[hist.u.length - 1]; cvUndoNotice(RC.WORDS.cordPulled, step, () => null); } else notice(RC.WORDS.cordPulled.replace(/ · tap to undo$/, ''), 3000);
+  return true;
+}
+// a modulation cord's knob end moved to another knob (its badge dragged, cv-cables onRepatchMod): a canvas row one step "Re-patch …"; the
+// rig's own row (its matrix) re-aimed in the panel (its own undo) on the same instrument
+function rigRepatchMod(id, dst) {
+  const t = trk(), c = cvView && cvView.cables.list().find(x => x.id === id), D = modSplit(dst);
+  if (!c || c.kind !== 'mod' || !D) return false;
+  if (c.own || c.preset) {
+    if (D.dev !== c.dev) { notice('This row stays on its ' + RIG.NAME + ' · drag from the module’s jack for another instrument', 4000); return false; }
+    const d = t.dev[c.dev], r = CMOD.destOk(d, D.pid);
+    if (!r.ok) { notice(modRefusal('nomod'), 4000); return false; }
+    if (c.own && isRigDev(t, c.dev)) return rigRowEdit(t, c.dev, 'Re-patch ' + rigRowSrc(t, c) + ' → ' + modLabel(dst, t), T => { if (!T.matrix[c.slot]) return false; T.matrix[c.slot].dst = D.pid; }); // ((review 2 P2-1) one step
+    const rec = sxRecOf(t.id, c.dev), fn = s => { if (s.matrix[c.slot]) s.matrix[c.slot].dst = D.pid; };
+    if (rec && rec.ui && rec.trackId === t.id && !rec.ui.dead) rec.ui.edit(fn, { label: 'Move Modulation' }); else sxEdit(instView(t, c.dev), fn);
+    cvModAfter(t); cvModSync();
+    return true;
+  }
+  const row = (t.mods || []).find(x => x && x.id === id);
+  if (!row) return false;
+  const ok = modCan(row.src, dst);
+  if (!ok.ok) { notice(ok.why, 4000); return false; }
+  hist.record(project, 'Re-patch ' + modLabel(row.src) + ' → ' + modLabel(dst));
+  row.dst = dst;
+  cvModAfter(t); cvModSync();
+  return true;
+}
+// rig-ui's host (the jack row's tap menu) and the faces' builder, made once the panels loaded (uiMods: rig-ui with sx-ui-mod)
+function rigUiOf(M) {
+  if (RIGUI !== null) return RIGUI;
+  if (!M || !M.rig || typeof M.rig.rigHost !== 'function') { RIGUI = false; return RIGUI; }
+  const cur = () => { if (cvMaster) return null; const t = trk(), dev = curOf(t); if (!isRigDev(t, dev)) return null; const d = t.dev[dev]; return { t, dev, s: d.vals.s, fx: fxOfDev(t, dev), rig: d.rig }; };
+  const opt = () => { const C = cur(); return C ? rigOpts(C.t, C.dev) : {}; };
+  RIGUI = M.rig.rigHost({
+    doc: document, world: () => cvW(), cur, view: () => cvView,
+    rec: (t, dev) => rigEdges(t, dev).map(r => Object.assign({}, r, { a: r.edge.a, b: r.edge.b })),
+    edit: (t, dev, label, r) => rigEdit(t, dev, label, r, { quiet: true }),
+    colour: (t, dev, src, c) => rigColour(t, dev, src, c),
+    notice: (text, ms, onTap) => {
+      if (onTap) { const step = hist.u[hist.u.length - 1]; noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); if (step && hist.u[hist.u.length - 1] === step) onTap(); }); }
+      notice(text, ms);
+    },
+    undo: () => undo(),
+    menu: (x, y, items, opts) => { rigMenuLast = items; return wkContextMenu(x, y, items, opts); }, // (the kit's menu; its items kept for the hook)
+    title: (t, dev, part) => rigLabel(t, dev, part),
+    can: (s, fx, a, b) => { const C = cur(); return RC.can(s, fx, a, b, C ? { used: sxUsed(C.t, C.dev), rig: C.t.dev[C.dev].rig } : null); }, // (the link rows: Envelope 1 read as the gate; the names)
+    plug: (s, fx, a, b) => RC.plug(s, fx, a, b, opt()),
+    pull: (s, fx, id) => RC.pull(s, fx, id, opt()),
+    repatch: (s, fx, id, end, b) => RC.repatch(s, fx, id, end, b, opt()),
+  });
+  rigSkin();
+  return RIGUI;
+}
+// sx-host's ENV moves with ENV 1 a party on a rig (its Swap with ▸, its label drag): through rig-core (envToAmp — Envelope k takes the level
+// over —; with ENV 1 a real envelope: refused, "pull it first"), so the re-law, the lay rename and the gate rules always hold (§3.4) →
+// handled
+function rigEnvSwap(t, dev, a, b) {
+  if (!isRigDev(t, dev) || !(a === 'env1' || b === 'env1') || a === b || !/^env[1-4]$/.test(a) || !/^env[1-4]$/.test(b)) return false;
+  const k = a === 'env1' ? b : a, d = t.dev[dev], s = d.vals.s;
+  if (!RC.isGate(s)) { notice(RC.WORDS.ampHeld(RC.ordinalOf(d.rig, 'env1')), 4000); return true; } // ((pre-deploy [amp-held]) the amp slot's module by its name)
+  const r = RC.envToAmp(s, k, rigOpts(t, dev));
+  rigEdit(t, dev, 'Plug ' + rigLabel(t, dev, k) + ' → ' + RC.MODULES.amp.label + ' · LEVEL', r);
+  return true;
+}
+// ⋯ → Init on the amp Envelope = envFromAmp (§3.4; review 1 P3-1): the gate on LEVEL again, the module stays — unplugged, at the first
+// free slot, its name and values kept (Init never deletes a module) — one step; no free slot: refused, said. Envelope 1 standing as
+// the gate (read): nothing to init — said, no step (the kit's Init would make it a real envelope)
+function rigEnvInit(t, dev) {
+  if (!isRigDev(t, dev)) return false;
+  const d = t.dev[dev], s = d.vals.s;
+  if (RC.isGate(s)) { notice(RC.WORDS.gate, 4000); return false; }
+  return rigEdit(t, dev, 'Init ' + rigLabel(t, dev, 'env1'), RC.envFromAmp(s, rigOpts(t, dev)));
 }
 
 /* ---------------------------------------------- cv MODULATION (stage 2a, IMPL-2a §5): modulator modules, mod cables, the mod layer */
@@ -7915,7 +9247,7 @@ const MOD_EDIT = new Set(['lfo', 'env', 'macro', 'cc', 'chaos', 'note']); // (2b
 const modSrcList = t => CMOD.sourcesOf(t, project).concat(CMOD.linkSources(t)); // (every source a cable may start from: the wheel, the modules, the Serums' own LFOs / ENVs)
 const modDestDevs = t => (t && t.dev ? Object.keys(t.dev).filter(k => t.dev[k] && (t.dev[k].kind === 'synth' || t.dev[k].kind === 'panel')) : []); // (the devices with knobs)
 const modSplit = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), pid: dst.slice(i + 1) } : null; };
-// (isSerumDev, serumIds: R2's helpers, at the top)
+// (isSxDev, sxIds: R2's helpers, at the top)
 let modLayer = null, modHostO = null, modDrag = null, modPend = null, modSelHost = false, modMenuId = null;
 const modBodies = new Map(); // module key → its cv-mods-ui body (+ kind)
 // the view's devices: the track's (its modulators among them) and the project's wheel once placed
@@ -7926,8 +9258,13 @@ function cvDevices(t) {
   // 'notes' jack the note cables leave from — and their colour from the entry)
   for (const M of padMods()) L.push({ key: M.id, kind: 'mod', mod: 'pads', model: null, dev: null, jacks: cvPads.moduleJacks(M), color: cvPads.PADS_COLOR });
   // (milestone 3, §2.1) each Serum in parts view: its part modules (sx-edges partKeys: I1 the parts that are on, I2 the own
-  // ENV / LFO slots something reads, MACROS when a macro row exists, ARP / CLIP when on, any laid-out part)
-  for (const dev of serumIds(t)) if (sxParts(t, dev)) for (const part of sxPartList(t, dev)) L.push({ key: dev + '/' + part, kind: 'part', dev, part, model: 'serum', title: SE.partLabel(part) });
+  // ENV / LFO slots something reads, MACROS when a macro row exists, ARP / CLIP when on, any laid-out part); (WC, §8.2) a rig, always:
+  // rig-core's partKeys (+ I1', the amp slot), its own names, the canvas's drawing mode on its entries (wires: cv-module's jack rows)
+  for (const dev of sxIds(t)) if (sxParts(t, dev)) {
+    const wm = rigWm(t) || undefined, e = L.find(x => x.key === dev);
+    if (e) Object.assign(e, { ui: 'parts' }, wm ? { wires: wm } : null);
+    for (const part of sxPartList(t, dev)) L.push(Object.assign({ key: dev + '/' + part, kind: 'part', dev, part, model: t.dev[dev].model, title: rigLabel(t, dev, part) }, wm ? { wires: wm } : null));
+  }
   // (9, IMPL-9 §4.1) a 900 Series: its controller — the instrument's own module — carries the console's face jacks and no fold;
   // then its modules, one 'pm' module each (cv-patch devices: compact bar, no fold, the type's fixed size, its face's jacks)
   for (const dev of patchDevs(t)) {
@@ -7947,8 +9284,9 @@ const cvCords = () => { const W = cvW(); try { return W && typeof W.cords === 'f
 // the shown track's cords (none: []) and the faces from its record, the cord layer's buffer while a 900 Series is shown (§4.3)
 function ptShow() {
   PATCH.sync();
-  const C = cvCords(), t = trk();
-  if (C && typeof C.alloc === 'function') { try { C.alloc(!cvMaster && isPatchDev(t, curOf(t))); } catch (err) { console.error(err); } }
+  const C = cvCords(), t = trk(), pt = !cvMaster && isPatchDev(t, curOf(t)), rig = drawMode(t) === 'cords';
+  if (C && !pt && !rig) { if (rigCordsOn) { rigCordsOn = false; rigLast = null; rigRings([]); } try { C.set([]); } catch (err) { console.error(err); } } // ((WC) a canvas with neither: no cords — what PATCH.sync's set([]) did before its dep answered a patch canvas only
+  if (C && typeof C.alloc === 'function') { try { C.alloc(pt || rig); } catch (err) { console.error(err); } } // ((WC, §4.1) a rig canvas in cords mode: the buffer too
   ptDim();
 }
 // (§4.3) the cords of the shown 900 Series are drawn at 0.45 alpha while it is off: its track muted or soloed out, or its own ⏻ (cv-cords dim).
@@ -7981,7 +9319,7 @@ const PATCH = cvPatch.patchHost({
   vals: (t, dev) => { const x = ptT(t); return x && isPatchDev(x, dev) ? x.dev[dev].vals : null; },
   edit: (t, dev, label, r) => ptEdit(ptT(t), dev, label, r),
   knob: (t, dev, mid, id, v, ph) => ptKnob(ptT(t), dev, mid, id, v, ph),
-  view: () => cvView, cords: () => cvCords(),
+  view: () => cvView, cords: () => (ptShown() ? cvCords() : null), // ((WC, skeptic P2-2) the layer is the patch canvas's only here: on a rig canvas it holds the rig's cords
   // (a "tap to undo" undoes its own step only while it is still the newest: a later edit is never undone by an old notice)
   notice: (text, ms, onTap) => {
     if (onTap) { const step = hist.u[hist.u.length - 1]; noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); if (step && hist.u[hist.u.length - 1] === step) onTap(); }); }
@@ -8313,7 +9651,7 @@ function sxInjEnv(t) {
   let L = injEnvMemo.get(pay);
   if (L) return L;
   L = [];
-  for (const dev of serumIds(t)) {
+  for (const dev of sxIds(t)) {
     const rows = CG.modRowsFor(t, dev);
     if (!rows.length) continue;
     for (const x of CG.injectMods(t.dev[dev], rows, pay.off ? [] : pay.ext || [], t).inj) {
@@ -8622,7 +9960,7 @@ function modLabel(id, t0) { // canvas-form ids: a source ('wheel', 've.out', 'l2
   const D = modSplit(id);
   if (!D) return t.dev && t.dev[id] ? cvDevName(t, id) : '';
   const d = t.dev ? t.dev[D.dev] : null;
-  if (isSerumDev(t, D.dev)) { try { return core.destLabel(D.pid, d.vals.s, d.fx) || D.pid; } catch (err) { return D.pid; } }
+  if (isSxDev(t, D.dev)) { try { return core.destLabel(D.pid, d.vals.s, d.fx) || D.pid; } catch (err) { return D.pid; } }
   if (d && d.kind === 'panel') { const x = modDescsOf(d).find(k => k.id === D.pid), m = /^fx\.([^.]+)\./.exec(D.pid); return x ? (m ? modInstLabel(d, m[1]) + ' ' : '') + x.label : D.pid; } // ("Reverb Mix")
   const c = d && d.kind === 'synth' ? (modelById(d.model).controls || []).find(x => x.id === D.pid) : null;
   return c ? c.label : D.pid;
@@ -8632,7 +9970,7 @@ const modInstLabel = (d, inst) => { try { return core.instLabel(d.fx, inst) || i
 function modCan(src, dst) {
   const t = trk(), D = modSplit(dst), d = D && t.dev ? t.dev[D.dev] : null, own = sxOwnSrc(src);
   if (own) { // ((3, §2.5) a Serum's own LFO / ENV / macro: a native row on its own knobs, a link row elsewhere — never its macros)
-    if (!d || !isSerumDev(t, own.dev)) return { ok: false, why: modRefusal('nomod') };
+    if (!d || !isSxDev(t, own.dev)) return { ok: false, why: modRefusal('nomod') };
     if (D.dev === own.dev) { const r = CMOD.destOk(d, D.pid); return r.ok ? { ok: true, why: '' } : { ok: false, why: modRefusal('nomod') }; }
     if (!own.link) return { ok: false, why: SX_OWN_MACRO };
     src = own.link;
@@ -8641,7 +9979,7 @@ function modCan(src, dst) {
   if (!d) return no('nomod');
   const r = CMOD.destOk(d, D.pid); // (2b: classic sm / apply / proc and panel knobs open; chunk → stage 5; a switched-off oscillator's level says so)
   if (!r.ok) return r.stage ? no('stage', { stage: r.stage }) : /oscillator/.test(r.why || '') ? { ok: false, why: r.why } : no('nomod');
-  if (isSerumDev(t, D.dev)) { const b = CG.modBudget(t, D.dev, project); if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max }); }
+  if (isSxDev(t, D.dev)) { const b = CG.modBudget(t, D.dev, project); if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max }); }
   return { ok: true, why: '' };
 }
 // the knobs a drag lights up: every modulatable one of the track's instruments and panels (memoised per drag)
@@ -8713,6 +10051,18 @@ const modDragOpts = {
   onBarDrop: (src, key) => { const m = cvView && cvView.modules.get(key); modDests(src, String(key).split('/')[0], m ? m.bar : null); },
   onJackTap: (src, el) => { modJackTap(src, el); },
   cordPress: (e, el) => PATCH.press(e, el), // ((9, §4.4) a patch cord's jack: cv-patch's plug drag (cv-cables hands it every cord jack's press)
+  // ((WC, §4.4; the lead's decision after lane C) a rig's cord jacks (cords mode: cv-patch declines them) are cv-cables' cord drag: the
+  // live rope and a grabbed plug on the cord layer, a re-patch / pull / a knob end moved by its badge (rig-core, one step each), the
+  // jack's tap menu rig-ui's, a tap on a cord's body (the layer's hit; the patch canvas's cords never answer)
+  live: x => { const C = cvCords(); if (C && rigCordsOn) C.live(x); },
+  grab: () => (rigCordsOn ? cvCords() : null),
+  cordLook: jk => rigLook(jk),
+  onPull: id => { rigPull(id); },
+  onRepatch: (id, a, b) => { rigRepatch(id, a, b); },
+  onRepatchMod: (id, dst) => { rigRepatchMod(id, dst); },
+  jackMenu: (j, el, x, y) => (RIGUI ? RIGUI.jackMenu(j, el, x, y) : null),
+  cordHit: (p, r, ok) => { const C = rigCordsOn ? cvCords() : null; return C && typeof C.hit === 'function' ? C.hit(p, r, ok) : null; },
+  jackAt: (el, p, k) => (rigCordsOn ? rigJackAt(el, p, k) : null), // ((fixer K, B5 / P2-3) the nearest jack or fanned plug: its own cord
 };
 function modSelect(id) { if (!cvView) return; modSelHost = true; try { cvView.cables.select(id); } finally { modSelHost = false; } }
 // (review 2 P1-5) fn once the tap that called it is over: after its click (a mouse's comes in the same task, a touch's
@@ -8753,7 +10103,7 @@ function modCableMenu(id) {
   modMenuId = id;
   const c = cvView && cvView.cables.list().find(x => x.id === id);
   if (c && c.int && (c.fork || c.stub)) return [{ label: c.stub ? 'Routing…' : 'Balance…', action: () => sxCableAct(c, 'balance') }] // ((3) a forked internal cable, a stub: the source's routing popover
-    .concat(c.off ? [{ label: 'Turn ' + SE.partLabel(c.off) + ' on', action: () => sxAddPart(c.dev, 'filter', null, c.off) }] : []); // ((P1-6) a stub into an off filter)
+    .concat(c.off ? [{ label: 'Turn ' + rigLabel(trk(), c.dev, c.off) + ' on', action: () => sxAddPart(c.dev, 'filter', null, c.off) }] : []); // ((P1-6) a stub into an off filter)
   if (!c || c.kind !== 'mod') return [];
   return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } },
     { label: 'Bypass', checked: !!c.byp, action: () => modBypass(id) }]; // (U15, SPEC §2.9; the amount stays the inspector's)
@@ -8777,6 +10127,7 @@ function modCableAct(id, a) { // Disconnect (the menu, the Delete key): a canvas
   if (c && c.int) { sxCableAct(c, a); return; } // ((3) a Serum's internal cable: sx-edges, one step; BALANCE, a warp source's tap)
   if (a === 'tap' && c && c.kind === 'note') { padsNoteTap(c); return; } // ((8, §9) a Pads module's note cable: its pads listed)
   if (a !== 'disconnect' || !c || c.kind !== 'mod') return;
+  if (c.own && isRigDev(t, c.dev)) { rigRowEdit(t, c.dev, 'Pull ' + rigRowSrc(t, c) + ' → ' + modLabel(c.b, t), T => { if (!T.matrix[c.slot]) return false; T.matrix[c.slot] = core.normRow(null); }, { notice: RC.WORDS.cordPulled.replace(/ · tap to undo$/, '') }); return; } // ((WC, review 2 P2-1) a rig's own row: one step
   if (c.preset || c.own) modRemove({ preset: c.dev, slot: c.slot }); // ((3) a Serum's own row too: its matrix
   else { hist.record(project, 'Disconnect'); CMOD.removeMod(t, id); }
   cvModAfter(t);
@@ -8816,7 +10167,7 @@ function modUnstep() {
 // after every row edit: the patch, the Serum's halos, the view (cables, the "mods n/64" badge), the track rows
 function cvModAfter(t) { queuePatch(t); modHalos(t); cvRender(); renderHeads(); persist(); updateUndoUI(); }
 function modHalos(t) {
-  for (const d of serumIds(t)) {
+  for (const d of sxIds(t)) {
     const r = sxRecOf(t.id, d);
     if (r && r.ui && r.trackId === t.id && typeof r.ui.paintMods === 'function') { try { r.ui.paintMods(true); } catch (err) { console.warn(err); } }
   }
@@ -8827,12 +10178,12 @@ function modHalos(t) {
    dots (setLive). The racks: 'iN/fx' a Serum's own FX (rows through sxExtra: the Serum source each compiles to), 'fxN' a shared
    panel (rows straight from track.mods, like a classic panel's); the live value of a knob: a Serum's snapshot eff at its
    FX-context index, a panel's base + the ModCore offsets its monitor message carries (mo, engine.js postMon). */
-const fxKeysOf = t => [...serumIds(t).map(d => d + '/fx'), ...Object.keys(t.dev || {}).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
+const fxKeysOf = t => [...sxIds(t).map(d => d + '/fx'), ...Object.keys(t.dev || {}).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
 const rowPol = kind => (/^(bend|chaos)$/.test(kind) ? 'bi' : 'uni');
 function fxRowsOf(t, key) { // → rowsOf(destId) for fx-ui paintMods, or null (a rack that takes no canvas rows)
   const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, memo = new Map();
   let by = null;
-  if (own ? !isSerumDev(t, own) : !t.dev || !t.dev[key] || t.dev[key].kind !== 'panel') return null;
+  if (own ? !isSxDev(t, own) : !t.dev || !t.dev[key] || t.dev[key].kind !== 'panel') return null;
   return id => {
     if (!memo.has(id)) {
       if (own) memo.set(id, sxExtra(t, own, id));
@@ -8898,7 +10249,7 @@ const cpMons = new Map(), cpLive = new Map(), cpXf = new Map(), cpVer = new Map(
 // when the rows go, or with the panel: cvDropBody)
 function cpHalos(t, only) {
   for (const dev of CMOD.instIds(t)) {
-    if (isSerumDev(t, dev) || (only && dev !== only)) continue;
+    if (isSxDev(t, dev) || (only && dev !== only)) continue;
     const k = t.id + '/' + dev, P = classicPanels.get(k), rows = cpRows(t, dev), any = Object.keys(rows).length > 0;
     if (P && !P.dead) { try { P.setMods(rows, any ? cpLive.get(k) || null : null); } catch (err) { console.warn(err); } }
     if (any && P && !P.dead && !cpMons.has(k)) cpMonitor(t.id, dev);
@@ -8959,7 +10310,7 @@ function modEdit(key, f) {
     const r = (t.mods || []).find(x => x.id === key);
     return r ? Object.assign({}, r) : null;
   }
-  if (!key || !isSerumDev(t, key.preset)) return null;
+  if (!key || !isSxDev(t, key.preset)) return null;
   let out = null;
   sxEdit(instView(t, key.preset), s => { const M = s.matrix.slice(); M[key.slot] = out = core.normRow(Object.assign({}, M[key.slot], f)); s.matrix = M; });
   modHalos(t);
@@ -8968,7 +10319,7 @@ function modEdit(key, f) {
 function modRemove(key) {
   const t = trk();
   if (typeof key === 'string') { modPre(); const r = CMOD.removeMod(t, key); queuePatch(t); return r; }
-  if (!key || !isSerumDev(t, key.preset)) return null;
+  if (!key || !isSxDev(t, key.preset)) return null;
   sxEdit(instView(t, key.preset), s => { const M = s.matrix.slice(); M[key.slot] = core.normRow(null); s.matrix = M; });
   return { ok: true };
 }
@@ -8976,7 +10327,7 @@ function modRemove(key) {
 // panel and the patch follow); the compile is the same (cv-model keeps the slot)
 function modToPreset(id) {
   const t = trk(), r0 = (t.mods || []).find(x => x.id === id), D = r0 && modSplit(r0.dst);
-  if (!D || !isSerumDev(t, D.dev)) return { ok: false, why: 'No such cable' };
+  if (!D || !isSxDev(t, D.dev)) return { ok: false, why: 'No such cable' };
   modPre();
   const iv = instView(t, D.dev), r = CMOD.toPreset(t, id, iv.vals.s);
   if (!r.ok) { modUnpre(); return r; }
@@ -8986,7 +10337,7 @@ function modToPreset(id) {
 }
 function modFromPreset(dev, slot) {
   const t = trk();
-  if (!isSerumDev(t, dev)) return { ok: false, why: 'No such Serum' };
+  if (!isSxDev(t, dev)) return { ok: false, why: 'No such instrument' };
   modPre();
   const iv = instView(t, dev), row = iv.vals.s.matrix[slot], r = CMOD.fromPreset(t, dev, slot, { project });
   if (!r.ok) { modUnpre(); return r; }
@@ -9000,7 +10351,7 @@ function modFromPreset(dev, slot) {
 function modDescs(dev) {
   const t = trk(), d = dev && t.dev ? t.dev[dev] : null, out = [];
   if (!d) return out;
-  if (isSerumDev(t, dev)) { for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: CMOD.plainSwitch(it.id) }); return out; } // ((canvas 2b) the filter's routing switches are plain switches: greyed)
+  if (isSxDev(t, dev)) { for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: CMOD.plainSwitch(it.id) }); return out; } // ((canvas 2b) the filter's routing switches are plain switches: greyed)
   if (d.kind === 'synth') {
     const m = modelById(d.model), by = new Map(modDescsOf(d).map(x => [x.id, x])), seen = new Set();
     const put = (group, x) => { const r = CMOD.destOk(d, x.id); seen.add(x.id); out.push(Object.assign({ id: x.id, label: x.label, group, nomod: !r.ok && !r.stage }, r.stage ? { stage: r.stage } : null, !r.ok && !r.stage && r.why ? { why: r.why } : null)); };
@@ -9016,7 +10367,7 @@ function modDescs(dev) {
 function modPresetRows(t, dev) {
   const d = t.dev && t.dev[dev];
   if (!d) return [];
-  if (!isSerumDev(t, dev) || !sxParts(t, dev)) return CMOD.presetRows(d);
+  if (!sxParts(t, dev)) return CMOD.presetRows(d);
   const M = Array.isArray(d.vals.s.matrix) ? d.vals.s.matrix : [], out = [];
   M.forEach((r, slot) => { if (r && r.src && typeof r.dst === 'string' && r.dst) out.push(Object.assign({ slot, own: !CMOD.SRC_MOD[r.src] }, r, CMOD.SRC_MOD[r.src] ? { from: CMOD.SRC_MOD[r.src] } : null)); });
   return out;
@@ -9026,16 +10377,16 @@ function modPresetRows(t, dev) {
 // no sound change, one step) or its module revealed; null when the knob is on screen or the Serum is bundled
 function modHidden(dev, pid) {
   const t = trk();
-  if (!cvView || cvView.trackId !== t.id || !isSerumDev(t, dev) || !sxParts(t, dev) || /^fx\./.test(pid)) return null;
+  if (!cvView || cvView.trackId !== t.id || !sxParts(t, dev) || /^fx\./.test(pid)) return null;
   const q = cvView.destPort(dev, pid);
   if (!q || !q.hid) return null;
   const part = typeof core.moduleOf === 'function' ? core.moduleOf(pid) : null, k = part && SE.PARTS.includes(part) ? dev + '/' + part : null;
-  const tag = q.tag || cvCables.hiddenTag(pid), lab = k ? SE.partLabel(part) : 'VOICE';
+  const tag = q.tag || cvCables.hiddenTag(pid), lab = k ? rigLabel(t, dev, part) : RC.MODULES.amp.label;
   if (k && !cvView.modules.has(k)) return { tag, show: { label: 'Show ' + lab, action: () => sxShowPart(dev, part) } };
   return { tag, show: { label: 'Show ' + lab, action: () => cvReveal(t.id, k || dev) } };
 }
 function modSources(dev) { // the Serum's own sources (the aux menu)
-  const t = trk(), d = isSerumDev(t, dev) ? t.dev[dev] : null, out = [];
+  const t = trk(), d = isSxDev(t, dev) ? t.dev[dev] : null, out = [];
   if (d) for (const g of core.srcMenu(d.vals.s)) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group });
   return out;
 }
@@ -9050,7 +10401,7 @@ function initModLayer() {
       presetRows: dev => modPresetRows(trk(), dev), // ((3) parts view: every s.matrix row — the Mod list replaces MATRIX)
       nativeLabel: (dev, src) => { const x = modSources(dev).find(q => q.id === src); return x ? x.label : ''; }, // ((3) a Serum source's name)
       hidden: (dev, pid) => modHidden(dev, pid), // ((3, §2.4) a knob no mounted view shows: its tag, Show …
-      budget: dev => { const t = trk(), d = t.dev && t.dev[dev]; return Object.assign(modBudgetOf(t, dev), { kind: isSerumDev(t, dev) ? 'serum' : d && d.kind === 'panel' ? 'panel' : 'classic' }); }, // (2b: the ModCore slots, the device kind; (U9) cables, not payload rows)
+      budget: dev => { const t = trk(), d = t.dev && t.dev[dev]; return Object.assign(modBudgetOf(t, dev), { kind: isSxDev(t, dev) ? 'serum' : d && d.kind === 'panel' ? 'panel' : 'classic' }); }, // (2b: the ModCore slots, the device kind; (U9) cables, not payload rows)
       edit: modEdit, remove: modRemove, toPreset: modToPreset, fromPreset: modFromPreset,
       connect: (src, dst) => { // (the parameter list: no step here — the layer names it)
         const ok = modCan(src, dst), own = sxOwnSrc(src), D0 = modSplit(dst);
@@ -9211,12 +10562,35 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     keyed: t => scKeyed(t), any: () => scAny(), edges: t => { const N = t && nodes.get(t.id); return N ? [...N.scIn].map(([id, e]) => [id, e.kg.gain.value]) : []; },
     graph: () => scGraph(), keySet: () => [...scKeySet()], sources: self => scSources(self), freshId: () => scFreshId(), mAlign: F => mAlign(F),
   };
+  // (stage WC, IMPL-WC §8.2, §11.1: tests/canvas-WC-sim, ui-bench-wc) the rig's host — add / remove / plug / pull / repatch / can / edges
+  // (rig-core's ends: 'oscA.out', 'voice.main'), the first drop (drop: a tile's tap / drop, replace), Make it a <NAME> (convert), Init,
+  // the amp slot (amp: plug an Envelope into LEVEL; gate: is ENV 1 the gate), the drawing mode (wires(mode?): read / set this session's),
+  // the faces' host (ui), the cords' layer view (layer: the last list / anchors / rings), the widths (rig-ui's), the S0 line (HEAVY)
+  const rigT = dev => { const t = trk(), d = dev || curOf(t); return isRigDev(t, d) ? { t, d, dv: t.dev[d] } : null; };
+  globalThis.__synthTest.cv.rig = {
+    add: (dev, kind, part, at) => rigAdd(dev || curOf(trk()), kind, at || null, part || null),
+    remove: key => rigRemove(key),
+    plug: (dev, a, b) => { const R = rigT(dev); return R ? rigEdit(R.t, R.d, 'Plug ' + rigEndLabel(R.t, R.d, a) + ' → ' + rigEndLabel(R.t, R.d, b), RC.plug(R.dv.vals.s, fxOfDev(R.t, R.d), a, b, rigOpts(R.t, R.d))) : false; },
+    pull: (dev, id) => { const R = rigT(dev); return R ? rigEdit(R.t, R.d, 'Pull', RC.pull(R.dv.vals.s, fxOfDev(R.t, R.d), id, rigOpts(R.t, R.d))) : false; },
+    repatch: (dev, id, end, b) => { const R = rigT(dev); return R ? rigEdit(R.t, R.d, 'Re-patch', RC.repatch(R.dv.vals.s, fxOfDev(R.t, R.d), id, end, b, rigOpts(R.t, R.d))) : false; },
+    can: (dev, a, b) => { const R = rigT(dev); return R ? RC.can(R.dv.vals.s, fxOfDev(R.t, R.d), a, b, { used: sxUsed(R.t, R.d), rig: R.dv.rig }) : { ok: false, why: 'No rig' }; },
+    edges: dev => { const R = rigT(dev); return R ? rigEdges(R.t, R.d) : []; },
+    drop: (kind, at) => sxPartDrop(kind, at || null), replace: (kind, at) => rigReplace(kind, at || null), convert: dev => rigConvert(dev || curOf(trk())),
+    init: dev => rigInitDev(dev || curOf(trk())), starter: dev => rigStarterDev(dev || curOf(trk())), tile: id => rigTile(id || RIG.ID),
+    amp: (dev, k) => { const R = rigT(dev); return R ? rigEdit(R.t, R.d, 'Plug Envelope', RC.plug(R.dv.vals.s, fxOfDev(R.t, R.d), 'env' + k + '.out', 'voice.level', rigOpts(R.t, R.d))) : false; },
+    gate: dev => { const R = rigT(dev); return R ? RC.isGate(R.dv.vals.s) : null; },
+    wires: mode => { if (mode !== undefined) { rigWiresOv = wiresOk(mode) ? mode : null; cvRender(); ptShow(); } return drawMode(trk()); },
+    mode: () => drawMode(trk()), cordOf, toCord: c => toCord(c, trk()), layer: () => rigLast, cordsOn: () => rigCordsOn, ui: () => RIGUI, setUi: v => { RIGUI = v; },
+    width: part => rigW(part), height: part => rigHt(part), opts: dev => { const R = rigT(dev); return R ? rigOpts(R.t, R.d) : null; }, envSwap: (dev, a, b) => rigEnvSwap(trk(), dev || curOf(trk()), a, b), envInit: dev => rigEnvInit(trk(), dev || curOf(trk())),
+    aim: rigAim, spread: rigSpread, pack: rigPack, jackAt: rigJackAt, ringCss: rigRingCss, menuLast: () => rigMenuLast, HEAVY: SX_HEAVY,
+  };
+  globalThis.__synthTest.cv.cordsOf = () => cvCords(); // (the world's cord layer: list / anchors / stats / hit through it)
   // (milestone 3, lane D: tests/canvas-3-sim, ui-bench ?m3=1&real=1) the parts hook on cv.parts — cvParts' own fields (home,
   // root, scope, about) stay as they are
   Object.assign(cvParts, {
-    show: (dev, on = true) => sxSetView(dev, on), add: sxAddPart, remove: sxRemovePart, showPart: sxShowPart, rec: dev => sxRecOf(trk().id, dev), list: dev => sxPartList(trk(), dev),
-    isParts: dev => sxParts(trk(), dev), connect: sxConnect, can: sxCan, act: sxCableAct, pick: sxPartPick, drop: sxPartDrop, drag: sxPartDrag, replace: sxReplaceWithSerum,
-    newView: sxNewView, VIEW_DEFAULT: SX_VIEW_DEFAULT, VIEW_PREF: SX_VIEW, own: sxOwnSrc, hidden: modHidden, settle: sxSettle, spot: sxSpot, decor: sxPartsDecor,
+    add: sxAddPart, remove: sxRemovePart, showPart: sxShowPart, rec: dev => sxRecOf(trk().id, dev), list: dev => sxPartList(trk(), dev),
+    isParts: dev => sxParts(trk(), dev), connect: sxConnect, can: sxCan, act: sxCableAct, pick: sxPartPick, drop: sxPartDrop, drag: sxPartDrag,
+    own: sxOwnSrc, hidden: modHidden, settle: sxSettle, spot: sxSpot, decor: sxPartsDecor,
     module: () => SXMOD, widths: () => SXW, setModule: m => { SXMOD = m || null; SXW = m ? m.PART_W || null : null; }, live: modLive, cancel: modCancel, rowsOps: modRowsOps,
     views: modViews, modSpot, modClear, mcSnap, injEnv: sxInjEnv, presetRows: dev => modPresetRows(trk(), dev),
     painted: sxHeavyCount, heavyReset: () => { sxHeavyDone = false; ptHeavyDone = false; sxHeavySig = ''; }, HEAVY: SX_HEAVY, HEAVY_MS: SX_HEAVY_MS, // (the S0 notice, §9.9)

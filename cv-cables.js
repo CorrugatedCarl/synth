@@ -5,6 +5,7 @@
 // from vector-effect. Owner: MODULES lane.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub; imports carry ?v=9.
 //   cablePath(x1, y1, x2, y2)   the cubic of one cable (horizontal tangents)
+//   wrapPath(A, B, src, dst, o) (WC) a line routed round its source module (a portrait rig's Amplifier → Effects; o.route: the host's)
 //   deriveCables(track)         the stage-1b track's cables (pure)
 //   routeLabel(s, fx)           a Serum's own-FX route label (pure: reads state only)
 //   cablesOf(track)             (1e) a v2 track's cables: its wires (editable) + each Serum's own-FX route (read-only) (pure)
@@ -44,6 +45,14 @@ import * as wk from './wk.js?v=9';
 import { routeLabel, serumEdges, jackOf, partLabel, partOn } from './sx-edges.js?v=9';
 import { COLORS as PAD_COLORS, visibleSlots, targetNotes, drumNote, PAD_ID, padOfSrc } from './pads-core.js?v=9';
 import { PERS, normDrum } from './drum-core.js?v=9';
+import { isSxId } from './models.js?v=9'; // ((WC) a Serum-engine device — the Serum and the rig — has the own-FX cable, the internal cables and the preset rows)
+import { HIT_PX } from './cv-cords.js?v=9'; // ((WC) a cord body's tap target, screen px)
+export { HIT_PX };
+// ((WC) the cords-mode target chip beside the finger: cv-patch's offsets, screen px — (fixer K, review P3-9) its bottom CHIP_UP over the
+// finger (cv-patch's top at −54 with one 27 px line; no room above: its top CHIP_UP under it), as wide as CHIP_W (style.css [data-wrap])
+// before it wraps; unmeasured, a line CHIP_LH tall plus CHIP_PAD (5 + 5 padding, 1 + 1 border); (round 1) flipped under a finger or a
+// pen, CHIP_CLEAR px clear of it sideways (a fingertip's half-width and a margin)
+const CHIP_DX = 26, CHIP_UP = 27, CHIP_W = 360, CHIP_LH = 17, CHIP_PAD = 12, CHIP_CLEAR = 44;
 /** (milestone 3) a stub's length (world px) */
 export const STUB_PX = 56;
 /** (review 2 P1-5) below k = 1 a stub keeps STUB_PX screen px (its out jack's touch circle is 22 screen px at any zoom), at
@@ -90,6 +99,11 @@ export const MACRO_PORTS = Object.freeze(['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k
 export const MOD_MODES = Object.freeze(['always', 'select', 'never']);
 /** (2a) The hint shown once when more than MOD_FADE_N mod cables are visible. */
 export const MOD_HINT = MOD_FADE_N + '+ mod cables, tap ∿ to filter';
+/** (WC, IMPL-WC §4.5) A claimed per-note row's badge tag (a rope cannot dash; the inspector's wording) and a claimed record's label
+ * (a dry source's "dry") above its b plug (world px). */
+export const NOTE_TAG = '∿ last note', CORD_TAG_DY = 22;
+/** (WC, §4.4) A long-press (touch, ms) on a cords-mode input holding several cords: "Which cord?". */
+export const WHICH_MS = 500;
 
 const SVG = 'http://www.w3.org/2000/svg';
 const fin = x => typeof x === 'number' && isFinite(x);
@@ -191,12 +205,35 @@ export function cablePath(x1, y1, x2, y2) {
   const d = Math.max(TANGENT_MIN, Math.abs(x2 - x1) / 2);
   return `M ${r2(x1)} ${r2(y1)} C ${r2(x1 + d)} ${r2(y1)}, ${r2(x2 - d)} ${r2(y2)}, ${r2(x2)} ${r2(y2)}`;
 }
+/** (WC, integration fixer L — review WC-int P3-11) the corner radius of a routed line (world px; less where its runs are short) */
+export const WRAP_R = 24;
+/** (WC, integration fixer L — review WC-int P3-11) A line from A (an out jack on module src's right edge) to B (an in jack on the left edge of
+ * module dst, on a row under src, B left of src's right edge — a portrait rig's Amplifier → Effects, Tidy's wrap) ROUTED round src: out
+ * rightward, down beside it, along the gap between the rows, into B from the left — cablePath's horizontal tangents would loop it back
+ * across src's face. Its run down `out` right of src's right edge (default TANGENT_MIN; a rig's beyond Envelope 1's cord), into B TANGENT_MIN
+ * from the left, the corners rounded (WRAP_R); obst: every other module's rect (world px). null when B is not under src, not left of its
+ * right edge, or a module stands in a run or the gap (the plain line stands). Pure.
+ * @returns {{d: string, x: number, y: number, x0: number, x1: number} | null} the path, its label point (the gap run's middle), its x span */
+export function wrapPath(A, B, src, dst, obst, out) {
+  const box = r => !!r && fin(r.x) && fin(r.y) && fin(r.w) && fin(r.h), pt = p => !!p && fin(p.x) && fin(p.y);
+  if (!pt(A) || !pt(B) || !box(src) || !box(dst)) return null;
+  const sr = src.x + src.w, sb = src.y + src.h, xr = Math.max(A.x, sr) + (fin(out) && out > WRAP_R ? out : TANGENT_MIN), xl = B.x - TANGENT_MIN, g = (sb + dst.y) / 2;
+  if (!(B.x < sr) || !(dst.y >= sb + 2 * WRAP_R) || !(B.y > g) || !(A.y < g)) return null;
+  const hits = (x0, y0, x1, y1) => (obst || []).some(r => box(r) && r.x < x1 && r.x + r.w > x0 && r.y < y1 && r.y + r.h > y0); // (a module over a run: a thin box)
+  if (hits(A.x, A.y - 1, xr + 1, A.y + 1) || hits(xr - 1, A.y, xr + 1, g) || hits(xl, sb, xr, dst.y) || hits(xl - 1, g, xl + 1, B.y) || hits(xl - 1, B.y - 1, B.x, B.y + 1)) return null;
+  const R = Math.min(WRAP_R, xr - A.x, (g - A.y) / 2, (xr - xl) / 2, (B.y - g) / 2, B.x - xl), K = R * 0.5523, P = (x, y) => r2(x) + ' ' + r2(y);
+  const d = 'M ' + P(A.x, A.y) + ' L ' + P(xr - R, A.y) + ' C ' + P(xr - R + K, A.y) + ', ' + P(xr, A.y + R - K) + ', ' + P(xr, A.y + R)
+    + ' L ' + P(xr, g - R) + ' C ' + P(xr, g - R + K) + ', ' + P(xr - R + K, g) + ', ' + P(xr - R, g)
+    + ' L ' + P(xl + R, g) + ' C ' + P(xl + R - K, g) + ', ' + P(xl, g + R - K) + ', ' + P(xl, g + R)
+    + ' L ' + P(xl, B.y - R) + ' C ' + P(xl, B.y - R + K) + ', ' + P(xl + R - K, B.y) + ', ' + P(xl + R, B.y) + ' L ' + P(B.x, B.y);
+  return { d, x: r2((xl + xr) / 2), y: r2(g), x0: xl, x1: xr };
+}
 
 /** The derived cables of a stage-1b track: classic i1.out → fx1.in → out.in; Serum i1.out → i1/fx.in (label: the
  * Serum's routes, routeLabel) → out.in. @param {{model: string, vals?: object, fx?: object}} track @returns {Cable[]} */
 export function deriveCables(track) {
   const t = isObj(track) ? track : {}, color = typeof t.color === 'string' ? t.color : undefined;
-  const sx = t.model === 'serum', fx = sx ? 'i1/fx' : 'fx1';
+  const sx = isSxId(t.model), fx = sx ? 'i1/fx' : 'fx1';
   const c = (a, b, label) => {
     const o = { id: a + '>' + b, a, b, kind: 'audio', readonly: true };
     if (label) o.label = label;
@@ -206,7 +243,7 @@ export function deriveCables(track) {
   return [c('i1.out', fx + '.in', sx ? routeLabel(isObj(t.vals) ? t.vals.s : null, t.fx) : ''), c(fx + '.out', 'out.in')];
 }
 
-const isSx = (D, id) => isObj(D[id]) && D[id].kind === 'synth' && D[id].model === 'serum';
+const isSx = (D, id) => isObj(D[id]) && D[id].kind === 'synth' && isSxId(D[id].model);
 const serumDev = isSx; // ((3) the parts code's name for it: a device-record read, never a track accessor — isSx( is the ratchet's v1 name)
 const devOf = p => (typeof p === 'string' ? p.slice(0, p.lastIndexOf('.')) : '');
 /** (1e) The model port behind a canvas jack of a v2 track: a Serum's own-FX out ('i2/fx.out') is the Serum's 'i2.out'; the
@@ -236,7 +273,8 @@ const dB = g => (g > 0 ? (Math.round(20 * Math.log10(g) * 10) / 10).toFixed(1).r
  * leaves from its own FX module, 'iN/fx.out'), plus the read-only 'iN.out → iN/fx.in' inside every Serum (route label).
  * Colour: the source instrument's (dev.color), else the track's. dim: every instrument the cable carries is silent
  * (powered off, or another instrument is soloed) — a panel's output carries what reaches the panel. A track without
- * dev (v1): deriveCables. Pure. @param {{dev?: object, wires?: Array, color?: string}} track @returns {Cable[]}
+ * dev (v1): deriveCables. (WC) opts.edges(id, dev) → records: a device shown as its modules takes its internal records from the
+ * host (a rig: rig-core's edges()), else sx-edges'. Pure. @param {{dev?: object, wires?: Array, color?: string}} track @returns {Cable[]}
  */
 export function cablesOf(track, opts) {
   const t = isObj(track) ? track : {}, D = isObj(t.dev) ? t.dev : null;
@@ -274,8 +312,19 @@ export function cablesOf(track, opts) {
     if (typeof w.g === 'number' && isFinite(w.g) && w.g !== 1) { o.g = w.g; o.label = dB(w.g); }
     out.push(mk(o, srcs.get(devOf(w.a)) || []));
   }
-  for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internal(id, D[id], tc, on, isObj(t.lay) ? t.lay : {}));
+  for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internalOf(t, id, D[id], tc, on, opts));
   return out.concat(modCables(t, D, opts), noteCables(t, D, opts));
+}
+// (WC, IMPL-WC §4.1) a device's internal records: the host's opts.edges(id, dev) when it answers an array (a rig: rig-core's edges(),
+// cv-cables' record shape + the cord fields), else sx-edges' (internal below) — a null or a throw: sx-edges'
+function internalOf(t, id, dev, tc, on, opts) {
+  const f = isObj(opts) && typeof opts.edges === 'function' ? opts.edges : null;
+  if (f) {
+    let L = null;
+    try { L = f(id, dev); } catch (err) { L = null; }
+    if (Array.isArray(L)) return L.filter(c => isObj(c) && typeof c.id === 'string');
+  }
+  return internal(id, dev, tc, on, isObj(t.lay) ? t.lay : {});
 }
 /** (milestone 3) Is Serum `id` of this track shown as parts? opts.parts: false (never), a function (id) → bool, else the
  * view flag track.lay[id].ui === 'parts'. Pure. */
@@ -456,10 +505,29 @@ export { routeLabel };
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
  * (review 2) A selection a pointer tap made calls o.onSelect(id, pointerType) (none otherwise): the tap's click is still to
  * come — what the host opens waits for it. A touch tap's own click never reaches the × that appeared under the finger.
+ * (WC, IMPL-WC §4.1 / §4.4; lane C) Cords mode — o.cords(record) → true CLAIMS a record for the host's cord layer (a rig
+ * canvas: its own connections; a stub — no b end — is never claimed): it gets NO path element (its group, without paths, sits in
+ * the over layer and carries its label as a tag at its b end — a dry source's "dry"), and keeps everything else — its badge (a
+ * claimed mod row's sits where the host's onRecords answer puts it — (fixer B2) on the cord just outside the knob's rim, off every
+ * control and every other badge, centred: data-at "c" —, else END_PX screen px past the knob's rim, ports' b.r, toward the source:
+ * data-to "l" / "r"; a per-note row's badge says NOTE_TAG, a rope cannot dash), the hidden-end tag, selection (o.cordSel(id | null)
+ * mirrors it to the layer), the × (at the tap point, else o.cordPoint(id, 0.5), else the chord's middle), the menus, Escape / Delete.
+ * tap(id, p, by): a tap on a claimed cord's body (the world's cord hook, through createCableDrag) — a line's tap. o.onRecords(records,
+ * ports, k) after every set / layout / zoom (rezoom) and when the visibility changes: the claimed records shown (∿ Never: no mod
+ * ones; On select: those touching the selection; past MOD_FADE_N a copy with fade: true) and the ports the host turns into the
+ * layer's anchors; it may answer { badges: Map id → {x, y}, forks: Map jack → {x, y} } (world px: the claimed badges' and BAL's
+ * places). (fixer B2; review 2 P2-3) o.top() → the layer above the cords (cv-cords top()): a claimed mod row's badge, a claimed
+ * cord's ×, a claimed fork's BAL go there — never under a rope — its --ik the world's (copied at each layout / zoom). A claimed mod
+ * badge's drag is the knob end's (setBadgeDrag: createCableDrag's re-patch / pull) — never a pan. o.cords absent: today's DOM
+ * byte for byte (W7).
  * @param {HTMLElement} worldEl  #world
  * @param {{doc?: Document, onSelect?: (id: string | null, by?: string) => void, onAction?: (id: string, action: string) => void,
  *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string,
- *   ignore?: (target: Element) => boolean}} [o]  ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
+ *   ignore?: (target: Element) => boolean, cords?: ((c: Cable) => boolean) | null,
+ *   onRecords?: (records: Cable[], ports: Map<string, {x: number, y: number}> | null, k: number) => void | {badges?: Map<string, {x: number, y: number}>, forks?: Map<string, {x: number, y: number}>},
+ *   cordSel?: (id: string | null) => void, cordPoint?: (id: string, t: number) => {x: number, y: number} | null,
+ *   top?: () => HTMLElement | null}} [o]  (top: the layer above the cords — the claimed badges, ×, BAL)
+ *   ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
  */
 export function createCables(worldEl, o) {
   const O0 = o || {}, doc = O0.doc || (worldEl && worldEl.ownerDocument) || globalThis.document;
@@ -479,27 +547,51 @@ export function createCables(worldEl, o) {
   let ghost = false; // (review 2 P1-1) a touch tap just selected: its compatibility click (no press of its own) may land on the × under the finger
   let tapBy; // (P1-5) the pointer type of the tap being handled: onSelect(id, tapBy) — the host acts after that tap's click
   let mode = MOD_MODES.includes(O0.mods) ? O0.mods : 'always', hinted = false;
-  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}; (2a) a mod cable: og (over twin), end, badge, amt, ptag; (3) htag
+  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my, kd, mod, cord}; (2a) a mod cable: og (over twin), end, badge, amt, ptag; (3) htag; (WC) a claimed one: no paths, no twin, ntag, xp (the ×'s tap point)
   const forks = new Map(); // (milestone 3) a forked source's jack → its BALANCE badge {id, b, x, y, off}
-  const isMod = it => !!it && !!it.og;
+  const isMod = it => !!it && !!it.mod;
   const kOf = () => { let k = 1; try { k = typeof O0.k === 'function' ? +O0.k() : 1; } catch (err) { k = 1; } return k > 0 && isFinite(k) ? k : 1; };
   let kNow = kOf();
   // a class on a cable's group and, for a mod cable, its over twin and badge
-  const tog = (it, c, on) => { it.g.classList.toggle(c, on); if (it.og) { it.og.classList.toggle(c, on); it.badge.classList.toggle(c, on); } };
+  const tog = (it, c, on) => { it.g.classList.toggle(c, on); if (it.og) it.og.classList.toggle(c, on); if (it.badge) it.badge.classList.toggle(c, on); };
   const node = (tag, cls) => { const e = doc.createElementNS(SVG, tag); if (cls) e.setAttribute('class', cls); return e; };
   const listen = (t, type, fn, opt) => { t.addEventListener(type, fn, opt); return () => t.removeEventListener(type, fn, opt); };
+  const call = (f, ...a) => { if (typeof f !== 'function') return undefined; try { return f(...a); } catch (err) { console.error(err); return undefined; } };
   const editable = id => { const it = items.get(id); return !!it && !it.c.readonly; };
-  const drop = it => { it.g.remove(); if (it.og) { it.og.remove(); it.bOff(); it.badge.remove(); } };
-  // (2a) a mod cable's over-layer twin (its end) and its amount badge
+  const drop = it => { it.g.remove(); if (it.og) it.og.remove(); if (it.badge) { it.bOff(); it.badge.remove(); } };
+  // (WC) the host's cords predicate: a record it claims is drawn by the cord layer (never a stub: no b end to plug)
+  const CL = typeof O0.cords === 'function' ? O0.cords : null;
+  const claims = c => !!CL && c.b != null && !c.stub && !!call(CL, c);
+  let recSig = null, inLay = false, bdrag = null, cordAt = null; // (WC) the last onRecords' visible set; inside layout (it reports once); the badge-drag handler; the cord-body test
+  let took = null; // ((WC pre-deploy [badge-hold]) the pointer whose badge press became a drag, until its lift: its late long-press opens no menu
+  // ((WC, fixer B2; review 2 P2-3) the layer above the cords (o.top: cv-cords top()) — what must never lie under a rope: a claimed mod row's
+  // badge, a claimed cord's ×, a claimed fork's BAL; asked when one is first made (never on a canvas without them), its --ik the world's.
+  // hostPl: the host places the claimed badges (onRecords' answer; else the rim rule)
+  let topEl = null, topIk = null;
+  const topOf = () => { if (!topEl && typeof O0.top === 'function') { const t = call(O0.top); if (t && typeof t.append === 'function') topEl = t; } return topEl; };
+  const hostFor = cord => (cord ? topOf() || worldEl : worldEl);
+  const hostPl = !!CL && typeof O0.onRecords === 'function';
+  function syncTop() {
+    if (!topEl || !worldEl || !worldEl.style || typeof worldEl.style.getPropertyValue !== 'function') return;
+    const v = worldEl.style.getPropertyValue('--ik') || '';
+    if (v === topIk) return;
+    topIk = v;
+    try { if (v) topEl.style.setProperty('--ik', v); else if (typeof topEl.style.removeProperty === 'function') topEl.style.removeProperty('--ik'); } catch (err) { /* inert */ }
+  }
+  // (2a) a mod cable's over-layer twin (its end) and its amount badge; (WC) a claimed one: the badge alone (+ its "last note" tag)
   function modParts(it) {
-    const og = node('g', 'cv-cable-g'), end = node('path', 'cv-cable cv-mend');
-    og.append(end);
-    O.g.append(og);
+    if (!it.cord) {
+      const og = node('g', 'cv-cable-g'), end = node('path', 'cv-cable cv-mend');
+      og.append(end);
+      O.g.append(og);
+      Object.assign(it, { og, end });
+    }
     const b = doc.createElement('button'), amt = doc.createElement('span'), ptag = doc.createElement('span'), htag = doc.createElement('span');
     b.className = 'cv-mbadge'; b.type = 'button';
     amt.className = 'cv-mamt'; ptag.className = 'cv-ptag'; ptag.hidden = true;
     htag.className = 'cv-htag'; htag.hidden = true; // ((3) a hidden knob's tag: 'OSC B · LEVEL · hidden')
     b.append(amt, ptag, htag);
+    if (it.cord) { const ntag = doc.createElement('span'); ntag.className = 'cv-ntag'; ntag.hidden = true; b.append(ntag); b.setAttribute('data-cord', ''); it.ntag = ntag; }
     const id = () => it.c.id;
     // (U2) a knob beneath the badge wins: the press is handed to it (the badge's own stops here); (U4) else it is the
     // canvas's press (cv-module isBackground: a pan) and a tap — its lift followed on the document — selects
@@ -529,12 +621,15 @@ export function createCables(worldEl, o) {
           return;
         }
         press = { id: id(), pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false, badge: true };
+        // ((WC) a claimed row's badge is its knob end's handle: never the canvas's pan — past TAP_PX the drag takes it (setBadgeDrag))
+        if (it.cord && bdrag && !it.c.readonly) { press.own = true; press.type = e.pointerType || 'mouse'; press.el = b; e.stopPropagation(); try { b.setPointerCapture(e.pointerId); } catch (err) { /* gone */ } }
       }),
       listen(b, 'click', e => { e.stopPropagation(); if (!(e.detail >= 1)) tapped(id(), true); }), // (Enter / Space / VoiceOver: a pointer's tap is the lift's)
       listen(b, 'contextmenu', e => {
         if (e.preventDefault) e.preventDefault();
         e.stopPropagation();
         if (handed && handed.touch && e.isTrusted) return; // (the control's long-press already opened its menu)
+        if (took != null) return; // ((WC pre-deploy [badge-hold]) a drag took the press first: never the menu too)
         const k = knob(e);
         if (k) { k.dispatchEvent(ctxEv(e)); return; }
         if (press && press.moved) return; // (a pan's long-press timer: no menu)
@@ -543,20 +638,22 @@ export function createCables(worldEl, o) {
       }),
       wk.menuSource(b, { keys: false }),
     ];
-    if (worldEl) worldEl.append(b);
-    Object.assign(it, { og, end, badge: b, amt, ptag, htag, ed: '', bx: NaN, by: NaN, bOff: () => { for (const f of offs) f(); } });
+    const H = hostFor(it.cord); // ((fixer B2) a claimed one: above the cords
+    if (H) H.append(b);
+    Object.assign(it, { badge: b, amt, ptag, htag, ed: '', bx: NaN, by: NaN, bOff: () => { for (const f of offs) f(); } });
   }
   function set(cables) {
     list = Array.isArray(cables) ? cables.filter(c => isObj(c) && typeof c.id === 'string') : [];
-    const want = new Map(list.map(c => [c.id, c.kind === 'mod']));
-    for (const [id, it] of items) if (!want.has(id) || want.get(id) !== isMod(it)) { drop(it); items.delete(id); } // (a kind change: made again)
+    // what each record is made as: mod or not, (WC) claimed or not — a change of either makes it again
+    const want = new Map(list.map(c => [c.id, (c.kind === 'mod' ? 1 : 0) + (claims(c) ? 2 : 0)]));
+    for (const [id, it] of items) if (!want.has(id) || want.get(id) !== it.kd) { drop(it); items.delete(id); } // (a kind change: made again)
     for (const c of list) {
       let it = items.get(c.id);
       if (!it) {
-        const g = node('g', 'cv-cable-g'), hit = node('path', 'cv-cable-hit'), vis = node('path', 'cv-cable');
-        g.append(hit, vis);
-        U.g.append(g);
-        it = { c, g, vis, hit, lab: null, d: '', lx: NaN, ly: NaN, mx: NaN, my: NaN };
+        const kd = want.get(c.id), g = node('g', 'cv-cable-g');
+        if (kd >= 2) { g.setAttribute('data-cord', ''); O.g.append(g); it = { c, g, vis: null, hit: null }; } // ((WC) claimed: no path — its tag only, above the modules
+        else { const hit = node('path', 'cv-cable-hit'), vis = node('path', 'cv-cable'); g.append(hit, vis); U.g.append(g); it = { c, g, vis, hit }; }
+        Object.assign(it, { lab: null, d: '', lx: NaN, ly: NaN, mx: NaN, my: NaN, kd, mod: c.kind === 'mod', cord: kd >= 2, xp: null });
         items.set(c.id, it);
         if (c.kind === 'mod') modParts(it);
       }
@@ -567,16 +664,17 @@ export function createCables(worldEl, o) {
       // (milestone 3) a Serum's internal cable: its kind (audio / note / warp), a stub, a fork's branch
       for (const [k, v] of [['data-int', c.int], ['data-stub', c.stub ? '' : null], ['data-fork', c.fork ? '' : null], ['data-tap', c.tap]]) { if (v != null) it.g.setAttribute(k, v); else it.g.removeAttribute(k); }
       if (c.color) it.g.style.setProperty('--cc', c.color); else if (it.g.style.removeProperty) it.g.style.removeProperty('--cc');
-      tog(it, 'cv-off', !!(c.dim || (it.og && c.byp)));
-      if (it.og) {
-        it.og.setAttribute('data-cable', c.id); it.og.setAttribute('data-kind', 'mod');
+      tog(it, 'cv-off', !!(c.dim || (it.mod && c.byp)));
+      if (it.mod) {
+        if (it.og) { it.og.setAttribute('data-cable', c.id); it.og.setAttribute('data-kind', 'mod'); }
         it.badge.setAttribute('data-cable', c.id);
-        for (const n of [it.og, it.badge]) { if (c.color) n.style.setProperty('--cc', c.color); else if (n.style.removeProperty) n.style.removeProperty('--cc'); }
+        for (const n of [it.og, it.badge]) { if (!n) continue; if (c.color) n.style.setProperty('--cc', c.color); else if (n.style.removeProperty) n.style.removeProperty('--cc'); }
         tog(it, 'cv-preset', !!c.preset); tog(it, 'cv-dash', !!c.dashed);
         const t = c.badge || amtText(c.amt, c.bi);
         if (it.amt.textContent !== t) it.amt.textContent = t;
         it.ptag.hidden = !c.preset; text1(it.ptag, c.preset ? 'preset' : ''); // (the tag's text only on a preset row: the badge reads as its amount)
-        const L = 'Modulation ' + t + (c.preset ? ' (saved with the preset)' : '') + (c.byp ? ', bypassed' : '') + ' — tap to edit';
+        if (it.ntag) { it.ntag.hidden = !c.dashed; text1(it.ntag, c.dashed ? NOTE_TAG : ''); } // ((WC) a rope cannot dash: a per-note row's badge says so)
+        const L = 'Modulation ' + t + (c.preset ? ' (saved with the preset)' : '') + (c.byp ? ', bypassed' : '') + (it.ntag && c.dashed ? ', ' + NOTE_TAG : '') + ' — tap to edit';
         it.badge.setAttribute('aria-label', L); it.badge.title = L;
       }
       if (c.label) {
@@ -589,9 +687,12 @@ export function createCables(worldEl, o) {
     for (const c of list) if (c.fork && c.kind !== 'mod' && !fk.has(c.a)) fk.set(c.a, c.id);
     for (const [a, F] of forks) if (fk.get(a) !== F.id) { F.off(); F.b.remove(); forks.delete(a); }
     for (const [a, id] of fk) if (!forks.has(a) && worldEl) forks.set(a, forkBtn(a, id));
+    for (const F of forks.values()) { const it = items.get(F.id), H = hostFor(!!it && it.cord); if (H && F.b.parentNode !== H) H.append(F.b); } // ((fixer B2) a claimed fork's BAL above the cords
     paintHl();
     if (sel && !editable(sel)) select(null); // (disconnected, or now read-only)
-    if (ports) layout(ports); else vis();
+    else if (sel) syncSel(); // ((WC) made again as a cord or a line: the layer's selection follows)
+    if (ports) layout(ports);
+    else { inLay = true; try { vis(); } finally { inLay = false; } records(true); } // ((WC) one onRecords)
   }
   // (milestone 3) a fork's BALANCE badge: a tap is onAction(id, 'balance') (the host opens the source's routing popover)
   function forkBtn(a, id) {
@@ -615,52 +716,96 @@ export function createCables(worldEl, o) {
       it.g.style.display = show ? '' : 'none';
       if (it.og) it.og.style.display = show ? '' : 'none';
       if (!show) { it.mx = NaN; continue; }
-      const d = cablePath(A.x, A.y, B.x, B.y);
-      if (d !== it.d) { it.d = d; it.vis.setAttribute('d', d); it.hit.setAttribute('d', d); }
-      if (it.og) {
+      const rt = !it.cord && typeof O0.route === 'function' ? call(O0.route, it.c, A, B) : null; // ((WC, integration fixer L — P3-11) the host's routed line (a rig's upright wrap: wrapPath)
+      it.rt = rt && typeof rt.d === 'string' && fin(rt.x) && fin(rt.y) ? rt : null;
+      if (!it.cord) {
+        const d = it.rt ? it.rt.d : cablePath(A.x, A.y, B.x, B.y);
+        if (d !== it.d) { it.d = d; it.vis.setAttribute('d', d); it.hit.setAttribute('d', d); }
+      } else { // ((WC) a cord: its ends moved → the ×'s tap point is no longer on it)
+        const e = A.x + ',' + A.y + ',' + B.x + ',' + B.y;
+        if (e !== it.d) { if (it.d) it.xp = null; it.d = e; }
+      }
+      if (it.mod) {
         const hid = !!B.hid, tg = hid ? String(B.tag || '') : '';
         tog(it, 'cv-hid', hid);
         if (it.htag.textContent !== tg) it.htag.textContent = tg;
         it.htag.hidden = !tg;
         if (hid) { const q = B.x + ',' + B.y; it.hn = hidN.get(q) || 0; hidN.set(q, it.hn + 1); } else it.hn = 0;
       }
-      if (it.og) ends(it, A, B);
-      // the cubic's midpoint (t = ½) is the chord's midpoint for these symmetric tangents: the label sits above it, the × on it
-      it.mx = r2((A.x + B.x) / 2); it.my = r2((A.y + B.y) / 2);
+      if (it.mod) { if (it.cord && hostPl) { it.A = A; it.B = B; } else ends(it, A, B); } // ((fixer B2) a claimed one: the host's place (records), else the rim rule
+      // the cubic's midpoint (t = ½) is the chord's midpoint for these symmetric tangents: the label sits above it, the × on it;
+      // ((WC) a cord's label is a tag above its b plug — a dry source's "dry" at the filter's IN)
+      it.mx = it.rt ? r2(it.rt.x) : r2((A.x + B.x) / 2); it.my = it.rt ? r2(it.rt.y) : r2((A.y + B.y) / 2); // ((P3-11) a routed one: its gap run's middle
       if (it.lab) {
-        const lx = it.mx, ly = r2(it.my - 10);
+        const lx = it.cord ? r2(B.x) : it.mx, ly = it.cord ? r2(B.y - CORD_TAG_DY) : r2(it.my - 10);
         if (lx !== it.lx || ly !== it.ly) { it.lx = lx; it.ly = ly; it.lab.setAttribute('x', lx); it.lab.setAttribute('y', ly); }
       }
       x0 = Math.min(x0, A.x, B.x); y0 = Math.min(y0, A.y, B.y); x1 = Math.max(x1, A.x, B.x); y1 = Math.max(y1, A.y, B.y);
+      if (it.rt && fin(it.rt.x0) && fin(it.rt.x1)) { x0 = Math.min(x0, it.rt.x0); x1 = Math.max(x1, it.rt.x1); }
     }
-    for (const [a, F] of forks) { // (3) the BALANCE badge just right of the forked source's jack
+    for (const [a, F] of forks) { // (3) the BALANCE badge just right of the forked source's jack ((fixer B2) a claimed one: the host's place, records)
       const A = at(a), show = !!(A && fin(A.x) && fin(A.y));
       F.b.hidden = !show;
-      if (show && (r2(A.x + 22) !== F.x || A.y !== F.y)) { F.x = r2(A.x + 22); F.y = A.y; F.b.style.left = F.x + 'px'; F.b.style.top = F.y + 'px'; }
+      if (show) forkAt(F, A.x + 22, A.y);
     }
     place(U, x0, y0, x1, y1);
     place(O, x0, y0, x1, y1);
+    syncTop();
     placeX();
-    vis();
+    inLay = true;
+    try { vis(); } finally { inLay = false; }
+    records(true);
   }
   // (2a) a mod cable's last END_PX screen px (the over layer) and its badge at their start (world px)
   // ((review 2 P1-7) a hidden knob's end — VOICE's corner —: its tagged badge at the end itself, right of it and above
   // (CSS .cv-hid), the n-th one at that end HID_STEP screen px higher: never left of the end, where FILTER 1's bar stands)
+  // ((WC) a claimed row — a rope, no tail — the host does not place: END_PX screen px past the knob's rim (ports' B.r, the knob's radius)
+  // on the line to its source, placed once a relayout (never per frame); data-to says which side of the tip it sits (CSS: the badge
+  // grows away from it))
   function ends(it, A, B) {
-    const T = tail(A.x, A.y, B.x, B.y, END_PX / kNow);
-    if (T.d !== it.ed) { it.ed = T.d; it.end.setAttribute('d', T.d); }
-    const bx = B.hid ? B.x : T.x, by = B.hid ? r2(B.y - (it.hn || 0) * HID_STEP / kNow) : T.y;
+    let bx, by;
+    if (it.og) {
+      const T = tail(A.x, A.y, B.x, B.y, END_PX / kNow);
+      if (T.d !== it.ed) { it.ed = T.d; it.end.setAttribute('d', T.d); }
+      bx = B.hid ? B.x : T.x; by = B.hid ? r2(B.y - (it.hn || 0) * HID_STEP / kNow) : T.y;
+    } else if (B.hid) { bx = B.x; by = r2(B.y - (it.hn || 0) * HID_STEP / kNow); }
+    else {
+      const dx = A.x - B.x, dy = A.y - B.y, L = Math.hypot(dx, dy) || 1, R = (fin(B.r) && B.r > 0 ? B.r : 0) + END_PX / kNow, to = dx > 0 ? 'r' : 'l';
+      bx = r2(B.x + dx / L * R); by = r2(B.y + dy / L * R);
+      if (it.badge.getAttribute('data-to') !== to) it.badge.setAttribute('data-to', to);
+    }
+    if (it.cord && it.badge.hasAttribute('data-at')) it.badge.removeAttribute('data-at');
     if (bx !== it.bx || by !== it.by) { it.bx = bx; it.by = by; it.badge.style.left = bx + 'px'; it.badge.style.top = by + 'px'; }
   }
-  // (2a) after a zoom: the ends are END_PX screen px again (nothing else moves)
+  // ((WC, fixer B2) a claimed mod row's badge at the host's place (world px), centred on it (data-at "c"; no data-to)
+  function badgeAt(it, x, y) {
+    const bx = r2(x), by = r2(y);
+    if (it.badge.getAttribute('data-at') !== 'c') it.badge.setAttribute('data-at', 'c');
+    if (it.badge.hasAttribute('data-to')) it.badge.removeAttribute('data-to');
+    if (bx !== it.bx || by !== it.by) { it.bx = bx; it.by = by; it.badge.style.left = bx + 'px'; it.badge.style.top = by + 'px'; }
+  }
+  // a fork's BAL at (x, y) — its left edge there (CSS) — unless the host placed it (a claimed fork: F.hp)
+  function forkAt(F, x, y) {
+    if (F.hp) return;
+    const fx = r2(x), fy = y;
+    if (fx !== F.x || fy !== F.y) { F.x = fx; F.y = fy; F.b.style.left = fx + 'px'; F.b.style.top = fy + 'px'; }
+  }
+  // (2a) after a zoom: the ends are END_PX screen px again (nothing else moves); ((fixer B2) the claimed badges: the host's places at
+  // the new zoom — records asked again; the layer above the cords takes the world's --ik)
   function rezoom() {
     const k = kOf();
+    syncTop();
     if (k === kNow) return false;
     const re = stubLen(k) !== stubLen(kNow);
     kNow = k;
     if (re && [...items.values()].some(it => it.c.stub)) { layout(ports); return true; } // ((3) P1-5: a stub's length follows the zoom below 1)
     const at = q => (!ports ? null : typeof ports.get === 'function' ? ports.get(q) : ports[q]) || null;
-    for (const it of items.values()) if (it.og && fin(it.mx)) { const A = at(it.c.a), B = at(it.c.b); if (A && B) ends(it, A, B); }
+    let cl = false;
+    for (const it of items.values()) {
+      if (it.cord) cl = true;
+      if (it.mod && fin(it.mx) && !(it.cord && hostPl)) { const A = at(it.c.a), B = at(it.c.b); if (A && B) ends(it, A, B); }
+    }
+    if (cl && hostPl) records(true);
     return true;
   }
   // (2a) the mod cables' visibility (setModsVisible) and the MOD_FADE_N+ fade; the badge follows its cable
@@ -673,8 +818,49 @@ export function createCables(worldEl, o) {
       tog(it, 'cv-hide', hide);
       tog(it, 'cv-fade', many && !t);
       it.badge.hidden = hide || !fin(it.mx);
+      it.hide = hide; it.fade = many && !t; // ((WC) a claimed one's: the records the layer gets)
     }
     if (many && !hinted) { hinted = true; if (typeof O0.onHint === 'function') { try { O0.onHint(MOD_HINT); } catch (err) { console.error(err); } } }
+    if (!inLay) records(false);
+  }
+  // (WC) o.onRecords(records, ports): the claimed records the visibility shows (a faded one a copy with fade: true) — after each set /
+  // layout (force), and from vis() when that set changed (a selection, a highlight, the ∿ mode)
+  function records(force) {
+    if (typeof O0.onRecords !== 'function' || !CL) return;
+    const out = [];
+    let sig = '';
+    for (const it of items.values()) {
+      if (!it.cord || (it.mod && it.hide)) continue;
+      const f = !!(it.mod && it.fade);
+      out.push(f ? Object.assign({}, it.c, { fade: true }) : it.c);
+      sig += it.c.id + (f ? '~|' : '|');
+    }
+    if (!force && sig === recSig) return;
+    recSig = sig;
+    places(call(O0.onRecords, out, ports, kNow));
+  }
+  // ((WC, fixer B2) the host's answer: { badges, forks } (Maps or objects, world px) — a claimed mod row's badge at its place, else the rim
+  // rule (ends, from its last layout's ends); a claimed fork's BAL at its place, else beside its jack as a line's)
+  function places(R) {
+    const get = (M, k) => (!M || typeof M !== 'object' ? null : typeof M.get === 'function' ? M.get(k) : M[k]) || null;
+    const B = R && typeof R === 'object' ? R.badges : null, F = R && typeof R === 'object' ? R.forks : null, EN = R && typeof R === 'object' ? R.ends : null;
+    for (const it of items.values()) { // ((fixer K, review P3-6) a claimed cord's tag ("dry") above its own plug — a fan's are apart
+      if (!it.cord || !it.lab) continue;
+      const q = get(EN, it.c.id), b = q && q.b;
+      if (!b || !fin(b.x) || !fin(b.y)) continue;
+      const lx = r2(b.x), ly = r2(b.y - CORD_TAG_DY);
+      if (lx !== it.lx || ly !== it.ly) { it.lx = lx; it.ly = ly; it.lab.setAttribute('x', lx); it.lab.setAttribute('y', ly); }
+    }
+    for (const it of items.values()) {
+      if (!it.cord || !it.mod || !it.badge || !fin(it.mx)) continue;
+      const q = get(B, it.c.id);
+      if (q && fin(q.x) && fin(q.y) && !(it.B && it.B.hid)) badgeAt(it, q.x, q.y);
+      else if (it.A && it.B) ends(it, it.A, it.B);
+    }
+    for (const [a, Fb] of forks) {
+      const it = items.get(Fb.id), q = it && it.cord ? get(F, a) : null;
+      if (q && fin(q.x) && fin(q.y)) { Fb.hp = false; forkAt(Fb, q.x, q.y); Fb.hp = true; } else if (Fb.hp) { Fb.hp = false; const A = ports ? (typeof ports.get === 'function' ? ports.get(a) : ports[a]) : null; if (A && fin(A.x)) forkAt(Fb, A.x + 22, A.y); }
+    }
   }
   function setModsVisible(m) {
     if (!MOD_MODES.includes(m)) return mode;
@@ -702,18 +888,32 @@ export function createCables(worldEl, o) {
   }
   /* ---- (1e) selection, the floating ×, the menu */
   const act = (id, a) => { if (id && typeof O0.onAction === 'function') O0.onAction(id, a); };
+  // ((WC) a claimed cable's ×: at the tap point, else on its drawn rope's middle (o.cordPoint), else the chord's middle)
+  const xAt = it => {
+    if (!it.cord) return { x: it.mx, y: it.my };
+    if (it.xp) return it.xp;
+    const q = call(O0.cordPoint, it.c.id, 0.5);
+    return q && fin(q.x) && fin(q.y) ? { x: r2(q.x), y: r2(q.y) } : { x: it.mx, y: it.my };
+  };
   function placeX() {
     const it = sel ? items.get(sel) : null;
     if (!xb) return;
     const show = !!it && !isMod(it) && fin(it.mx) && fin(it.my); // (a mod cable: its badge and the inspector, no ×)
     xb.hidden = !show;
-    if (show) { xb.style.left = it.mx + 'px'; xb.style.top = it.my + 'px'; }
+    if (show) { const H = hostFor(it.cord); if (H && xb.parentNode !== H) H.append(xb); const p = xAt(it); xb.style.left = p.x + 'px'; xb.style.top = p.y + 'px'; } // ((fixer B2) a cord's ×: above the cords
+  }
+  // ((WC) the selection's class on a cable made again, and the cord layer's outline: the claimed selected one's id, else none)
+  function syncSel() {
+    const it = sel ? items.get(sel) : null;
+    if (it) tog(it, 'cv-sel', true);
+    if (CL) call(O0.cordSel, it && it.cord ? sel : null);
   }
   function select(id) {
     const want = id && editable(id) && !items.get(id).c.tap ? id : null; // ((3) a tap cable — a warp source — is never selected)
     if (want === sel) return;
-    if (sel && items.get(sel)) tog(items.get(sel), 'cv-sel', false);
+    if (sel && items.get(sel)) { tog(items.get(sel), 'cv-sel', false); items.get(sel).xp = null; }
     sel = want;
+    syncSel();
     if (sel) {
       tog(items.get(sel), 'cv-sel', true);
       if (!xb && worldEl) {
@@ -728,7 +928,7 @@ export function createCables(worldEl, o) {
         // a tap anywhere else (the canvas, a module, a tray) clears it: document capture phase, so nothing can swallow it
         let tp = null;
         const offK = listen(doc, 'keydown', onKey, true);
-        const offD = listen(doc, 'pointerdown', e => { const t = e.target; tp = cableAt(t) || (xb && xb.contains(t)) || aside(t) ? null : { pid: e.pointerId, x: e.clientX, y: e.clientY }; }, true);
+        const offD = listen(doc, 'pointerdown', e => { const t = e.target; tp = cableAt(t) || (xb && xb.contains(t)) || aside(t) || (cordAt && call(cordAt, e)) ? null : { pid: e.pointerId, x: e.clientX, y: e.clientY }; }, true); // ((WC) a cord's body: no "elsewhere")
         const offU = listen(doc, 'pointerup', e => { const P = tp; tp = null; if (P && e.pointerId === P.pid && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(null); }, true);
         keyOff = () => { offK(); offD(); offU(); };
       }
@@ -784,18 +984,26 @@ export function createCables(worldEl, o) {
       press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false };
     }),
     listen(doc, 'pointerdown', () => { ghost = false; }, true), // (P1-1: a new press — the × answers its click)
-    listen(doc, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press.moved = true; }, { capture: true, passive: true }),
+    listen(doc, 'pointermove', e => {
+      if (!press || e.pointerId !== press.pid || Math.hypot(e.clientX - press.x, e.clientY - press.y) <= TAP_PX) return;
+      press.moved = true;
+      // ((WC) a claimed badge dragged: the knob end's drag — (pre-deploy [badge-hold]) never after its long-press opened the menu (the menu
+      // ends the gesture, as the jack's "Which cord?"); once it runs, the long-press still pending opens nothing (took)
+      if (press.own) { if (press.ctx) return; const P = press; press = null; took = P.pid; if (!bdrag || !call(bdrag, P.id, e, P)) { try { P.el.releasePointerCapture(P.pid); } catch (err) { /* released */ } } }
+    }, { capture: true, passive: true }),
     listen(doc, 'pointerup', e => {
+      if (took === e.pointerId) took = null;
       const P = press;
       if (!P || e.pointerId !== P.pid) return;
       press = null;
+      if (P.own) { try { P.el.releasePointerCapture(P.pid); } catch (err) { /* released */ } }
       if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) {
         ghost = e.pointerType === 'touch' || e.pointerType === 'pen';
         tapBy = String(e.pointerType || 'mouse');
         try { tapped(P.id, P.badge); } finally { tapBy = undefined; }
       }
     }, true),
-    listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
+    listen(doc, 'pointercancel', e => { if (took === e.pointerId) took = null; if (press && e.pointerId === press.pid) { if (press.own) { try { press.el.releasePointerCapture(press.pid); } catch (err) { /* released */ } } press = null; } }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)
       if (press && press.moved) { if (e.preventDefault) e.preventDefault(); return; } // (a pan's long-press timer: no menu)
       const id = cableAt(e.target) || (press && press.id);
@@ -833,6 +1041,29 @@ export function createCables(worldEl, o) {
     setModsVisible, modsVisible: () => mode, rezoom, badge: id => { const it = items.get(id); return it && it.badge ? it.badge : null; },
     /** (milestone 3) a forked source's BALANCE badge by its jack ('i1/oscB.out'), null without one */
     forkBadge: a => { const F = forks.get(a); return F ? F.b : null; },
+    /** (WC) is cable `id` claimed by the cords predicate (drawn by the cord layer)? The claimed records, in the list's order (all of
+     * them, whatever the visibility shows: the drag's "the most recent cord at this input") */
+    claimed: id => { const it = items.get(id); return !!it && !!it.cord; },
+    cordList: () => list.filter(c => { const it = items.get(c.id); return !!it && it.cord; }),
+    /** (WC, §4.4) a tap on claimed cable `id`'s body at world point p (the world's cord hook): a line's tap — an editable one selected
+     * (its × at p; again: onSelect again — a mod row's inspector), a tap cable's onAction(id, 'tap'); by: the pointer type (the
+     * host's afterTap). → whether it was claimed */
+    tap(id, p, by) {
+      const it = dead ? null : items.get(id);
+      if (!it || !it.cord) return false;
+      it.xp = p && fin(p.x) && fin(p.y) ? { x: r2(p.x), y: r2(p.y) } : null;
+      ghost = by === 'touch' || by === 'pen';
+      tapBy = by ? String(by) : undefined;
+      try { tapped(id, it.mod); } finally { tapBy = undefined; }
+      if (sel === id) placeX(); // (already selected: the × to the new tap point)
+      return true;
+    },
+    /** (WC) the claimed badges' drag: fn(id, pointermove event, {pid, x, y, type, el}) → truthy when it took the press (createCableDrag's
+     * knob-end re-patch / pull); null removes it. Returns a remover */
+    setBadgeDrag(fn) { const f = typeof fn === 'function' ? fn : null; bdrag = f; return () => { if (bdrag === f) bdrag = null; }; },
+    /** (WC) fn(pointer event) → the claimed cord whose body lies under it (createCableDrag: the world's cord hit), or null: a press
+     * there is no tap "elsewhere" (the selection stays; the world's tap then answers through tap()). Returns a remover */
+    setCordAt(fn) { const f = typeof fn === 'function' ? fn : null; cordAt = f; return () => { if (cordAt === f) cordAt = null; }; },
     destroy() {
       if (dead) return;
       dead = true;
@@ -842,7 +1073,7 @@ export function createCables(worldEl, o) {
       menuOff();
       if (xb) xb.remove();
       if (liveP) liveP.remove();
-      for (const it of items.values()) if (it.og) { it.bOff(); it.badge.remove(); }
+      for (const it of items.values()) if (it.badge) { it.bOff(); it.badge.remove(); }
       for (const F of forks.values()) { F.off(); F.b.remove(); }
       forks.clear();
       U.e.remove(); O.e.remove(); items.clear(); list = []; ports = null;
@@ -875,7 +1106,25 @@ export function createCables(worldEl, o) {
  * (9, IMPL-9 §4.4, D9) A press on a patch cord's jack ([data-kind="cord"], whatever its data-ro) is the host's: o.cordPress(e,
  *   jackEl) → false | {cancel} (cv-patch's plug drag); an audio / mod drag never marks a cord jack, its keys and right-click are
  *   cv-patch's too.
- * @param {object} world  cv-world World (toClient, toWorld, dragPointer, on, setJackHook, el)
+ * (WC, IMPL-WC §4.4; lane C) Cords mode — o.live (the cord layer's live(spec)) given: a rig's jacks are cord jacks with a
+ *   role (cv-module data-cord: audio / note / mod / warp); a press o.cordPress leaves (it answers the 900 Series' only) is this
+ *   drag's, by the rules of the skeptic's P1-3: an OUTPUT always starts a NEW cord (the rope in the finger: o.live({a: the jack, b:
+ *   the finger, c, s, o}) — o.cordLook(jack) → {c, s, o}, default cream, a mod output's tip); an INPUT holding claimed cords GRABS
+ *   THE MOST RECENT (the last at it in the list's order: o.grab — the layer or () => it, its grab / move / drop — its b end in the
+ *   finger), a touch long-press on one holding several offers "Which cord?" (the list by source: a pick selects it and opens its
+ *   menu); a free input a new cord backwards. The target: the jack under the finger decides first (its hit circle, cv-patch's
+ *   rule), else the nearest compatible within SNAP_PX, else a module body's first; the chip (#overlay .cv-plugchip) names it or
+ *   the refusal. Release: a new cord → o.onConnect(outPort, inPort); a grabbed one on another compatible input →
+ *   o.onRepatch(id, outPort, inPort), back on its own jack or its source → nothing, AWAY FROM ANY JACK → o.onPull(id) (the host:
+ *   "Cord pulled · tap to undo"), near a refused jack → o.onRefuse; a second finger / Escape → it springs back. A mod output's
+ *   rope lands on a knob (as the mod drag: o.onMod) or on a compatible cord input (an Envelope onto the Amplifier's LEVEL:
+ *   o.onConnect). A WARP jack is a target only. A tap / Enter / Space / right-click on a cord jack → o.jackMenu(jack, el, x, y)
+ *   (the host's Connect to… / plug menu, rig-ui's), else a mod output's o.onJackTap, else "Connect to…" with Pull items. A claimed
+ *   mod row's BADGE dragged (cv-cables setBadgeDrag) grabs its knob-end tip: onto another accepted knob → o.onRepatchMod(id, dst),
+ *   away from any knob → o.onPull(id), onto its own / a refused one → nothing. o.cordHit(p, r, ok) (the layer's hit) given: the
+ *   world's cord hook (setCordHook) — a tap on a claimed cord's body is the cables' tap(id, p) — and the cables' "not elsewhere"
+ *   test. Without o.live nothing of this runs: today's drags byte for byte.
+ * @param {object} world  cv-world World (toClient, toWorld, dragPointer, on, setJackHook, el; (WC) setCordHook, overlay, k)
  * @param {{
  *   ports: () => Map<string, {x: number, y: number}>,
  *   jacks?: () => Array<{id: string, el?: Element, dir?: 'in' | 'out', mod?: string, label?: string}>,
@@ -890,6 +1139,10 @@ export function createCables(worldEl, o) {
  *   markDests?: (src: string) => Array<{dev: string, ids: string[]} | string> | ((dev: string, id: string) => boolean),
  *   onBarDrop?: (src: string, key: string) => void, onJackTap?: (src: string, jackEl: Element) => void,
  *   hit?: (x: number, y: number) => Element | null, cordPress?: (e: PointerEvent, jackEl: Element) => false | {cancel: () => void},
+ *   live?: (spec: object | null) => void, grab?: object | (() => object), cordLook?: (jack: string) => {c?: number, s?: number, o?: number},
+ *   onPull?: (id: string) => void, onRepatchMod?: (id: string, dst: string) => void,
+ *   jackMenu?: (jack: string, el: Element, x?: number, y?: number) => any, cordHit?: (p: {x: number, y: number}, r: number, ok: Function) => string | null,
+ *   later?: (f: Function, ms: number) => any, unlater?: (id: any) => void,
  * }} o
  * @returns {{press: (e: PointerEvent, jackEl: Element) => false | {cancel: () => void},
  *   menu: (jack: string, x?: number, y?: number) => object | null, cancel: () => void, active: () => boolean, destroy: () => void}}
@@ -919,8 +1172,11 @@ export function createCableDrag(world, o) {
       const walk = n => { for (const c of n.children || []) { const id = c.getAttribute && c.getAttribute('data-cv-jack'); if (id) L.push({ id, el: c }); else walk(c); } };
       if (W && W.el) walk(W.el);
     }
-    return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirEl(j.id, j.el), mod: j.mod || modOf(j.id), label: j.label,
-      kind: j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio' })).filter(j => j.kind !== 'cord'); // ((9) cord jacks: never marked here)
+    return L.filter(j => j && typeof j.id === 'string').map(j => {
+      const k0 = j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio';
+      const role = k0 === 'cord' && j.el && typeof j.el.getAttribute === 'function' ? j.el.getAttribute('data-cord') : null; // ((WC) a rig's cord jack: its role)
+      return { id: j.id, el: j.el || null, dir: j.dir || dirEl(j.id, j.el), mod: j.mod || modOf(j.id), label: j.label, kind: role || k0, cord: !!role };
+    }).filter(j => j.kind !== 'cord'); // ((9) the 900 Series' cord jacks: never marked here)
   }
   const labelOf = (j, d) => {
     const L = call(Op.label, j);
@@ -931,6 +1187,10 @@ export function createCableDrag(world, o) {
   };
   const wires = () => { const L = Op.wires ? call(Op.wires) : C ? C.list() : []; return (Array.isArray(L) ? L : []).filter(c => isObj(c) && typeof c.wire === 'string' && !c.readonly); };
   const colorOf = () => (typeof Op.color === 'function' ? call(Op.color) : Op.color) || undefined;
+  // ((WC, fixer B2; review 2 P2-4: the regret path) a rig's internal lines arriving at input j (unclaimed: lines mode) as wires — a press
+  // there grabs the most recent one's end (re-patch by drag, as a cord's): its id, its source jack)
+  const lines = j => (C ? C.list() : []).filter(c => isObj(c) && c.int && c.b === j && typeof c.a === 'string' && !c.readonly && !c.tap && !c.stub && c.kind !== 'mod'
+    && !(typeof C.claimed === 'function' && C.claimed(c.id))).map(c => ({ wire: c.id, a: c.a, b: c.b }));
   // can out-jack a feed in-jack b? → {ok, why} (model ports through o.canConnect)
   function check(a, b) {
     const pa = portOf(a), pb = portOf(b);
@@ -939,16 +1199,81 @@ export function createCableDrag(world, o) {
     if (r && typeof r === 'object') return { ok: !!r.ok, why: r.why ? String(r.why) : '' };
     return { ok: r !== false, why: '' };
   }
+  // ((WC, fixer B2; review 2 P1-2) a rig cord jack's port: the host's, else the jack itself — its port() answers null for a mod output (an
+  // Envelope's OUT: no sx-edges end), yet o.canConnect / o.onConnect take the canvas jacks of a rig (the host resolves them))
+  const cordPort = j => portOf(j) || j;
+  function checkCord(a, b) {
+    const r = call(Op.canConnect, cordPort(a), cordPort(b));
+    if (r && typeof r === 'object') return { ok: !!r.ok, why: r.why ? String(r.why) : '' };
+    return { ok: r !== false && r !== undefined, why: '' };
+  }
   let D = null, dead = false, unhook = null;
+  /* ---- (WC) cords mode: the layer's live rope / grabbed plug, the cords at a jack, the target chip */
+  const cordsOn = () => typeof Op.live === 'function';
+  const rigJack = el => cordsOn() && !!el && typeof el.getAttribute === 'function' && el.getAttribute('data-kind') === 'cord' && el.getAttribute('data-cord') != null;
+  const LIVE = x => call(Op.live, x);
+  const layerG = () => { const g = typeof Op.grab === 'function' ? call(Op.grab) : Op.grab; return g && typeof g.grab === 'function' ? g : null; };
+  const GR = (name, ...a) => { const g = layerG(); if (g && typeof g[name] === 'function') { try { g[name](...a); } catch (err) { console.error(err); } } };
+  const cordsAt = (j, end) => (C && typeof C.cordList === 'function' ? C.cordList() : []).filter(c => c[end] === j && !c.readonly && !c.tap);
+  const lookOf = (j, mod) => { const L = call(Op.cordLook, j) || {}; return { c: fin(L.c) ? L.c : 4, s: L.s === 0 || L.s === 1 || L.s === 2 ? L.s : mod ? 2 : 0, o: fin(L.o) ? L.o : 1 }; };
+  const later = (f, ms) => (typeof Op.later === 'function' ? Op.later(f, ms) : setTimeout(f, ms));
+  const unlater = id => { if (id == null) return; if (typeof Op.unlater === 'function') Op.unlater(id); else clearTimeout(id); };
+  const kNow = () => (W && W.k > 0 ? W.k : 1);
+  // a jack's hit circle on the glass (screen px radius): the CSS clamp(28px, 44px · --ik, --jp) at zoom k (cv-patch's hitR)
+  const jpOf = el => { const v = el && el.style && typeof el.style.getPropertyValue === 'function' ? parseFloat(el.style.getPropertyValue('--jp')) : NaN; return v > 0 ? v : 44; };
+  const hitR = (el, k) => Math.max(28 * k, Math.min(44, jpOf(el) * k)) / 2;
+  let chipEl = null, ovR = null, chipSz = null; // (chipSz: the chip's box as read once per text and overlay width, { w, h, ow })
+  function chip(text, no) { // (cv-patch's chip: the target's name beside the finger, a refusal muted; #overlay)
+    if (!text) { if (chipEl) chipEl.hidden = true; return; }
+    if (!chipEl) {
+      if (!doc || typeof doc.createElement !== 'function') return;
+      chipEl = doc.createElement('div');
+      chipEl.className = 'cv-plugchip';
+      chipEl.setAttribute('aria-hidden', 'true');
+      chipEl.setAttribute('data-wrap', ''); // ((fixer K, review P3-9) a long refusal wraps (style.css), never cut
+      (W && W.overlay ? W.overlay : doc.body).append(chipEl);
+    }
+    if (chipEl.textContent !== text) { chipEl.textContent = text; chipSz = null; }
+    if (!!no !== chipEl.hasAttribute('data-no')) { if (no) chipEl.setAttribute('data-no', ''); else chipEl.removeAttribute('data-no'); chipSz = null; }
+    chipEl.hidden = false;
+    // ((fixer K, P3-9 and its skeptics) its box read once per text and overlay width (a wrapped refusal's lines; one layout read, not
+    // a frame's; round 1: Slide Over narrows the screen between drags), else estimated: it stands CHIP_UP px over the finger by its
+    // height; no room above (its top past the overlay's 4 px: near the canvas top, under the top bar) → it flips CHIP_UP px below the
+    // finger (never slid over it) — a mouse's right of the cursor, a finger's or a pen's LEFT of it, CHIP_CLEAR px clear (round 1: a
+    // right hand rests below and right), right only where the left has no room — where neither has (round 2: an overlay under ~816 px,
+    // the iPad mini's portrait, Split View) as far LEFT as it goes, never pinned to the right edge under the hand; to the finger's left
+    // where the right has no room; whole inside the overlay either way (a canvas too short for both: its top 4 px down)
+    const o2 = ovR || { left: 0, top: 0, width: 1e4, height: 1e4 }, oh = fin(o2.height) && o2.height > 0 ? o2.height : 1e4;
+    if (!chipSz || chipSz.ow !== o2.width) { const w = +chipEl.offsetWidth, h = +chipEl.offsetHeight; chipSz = w > 0 && h > 0 ? { w, h, ow: o2.width } : null; }
+    const wE = chipSz ? chipSz.w : Math.min(CHIP_W, Math.max(0, o2.width - 16), 20 + 7.6 * text.length);
+    const hE = chipSz ? chipSz.h : CHIP_PAD + CHIP_LH * Math.max(1, Math.ceil(7.6 * text.length / Math.max(1, wE - 20) - 1e-6));
+    let cx = D.x - o2.left + CHIP_DX, cy = D.y - o2.top - CHIP_UP - hE;
+    if (cx + wE > o2.width - 4) cx = D.x - o2.left - CHIP_DX - wE;
+    if (cy < 4) {
+      cy = D.y - o2.top + CHIP_UP;
+      if (D.type !== 'mouse') { cx = D.x - o2.left - CHIP_CLEAR - wE; if (cx < 4) { const r = D.x - o2.left + CHIP_CLEAR; cx = r + wE <= o2.width - 4 ? r : 4; } }
+    }
+    cy = Math.max(4, Math.min(cy, oh - 4 - hE));
+    chipEl.style.transform = 'translate(' + Math.round(Math.max(4, Math.min(cx, o2.width - 4 - wE))) + 'px, ' + Math.round(cy) + 'px)';
+  }
   /* ---- the press (the world's jack hook) */
   function press(e, el) {
     if (D || dead || !el || typeof el.getAttribute !== 'function' || (e.button != null && e.button !== 0)) return false;
-    if (el.getAttribute('data-kind') === 'cord') return call(Op.cordPress, e, el) || false; // ((9) a patch cord's jack: cv-patch's drag)
+    if (el.getAttribute('data-kind') === 'cord') { // ((9) a patch cord's jack: cv-patch's drag; (WC) a rig's that it leaves: this one's
+      const r = call(Op.cordPress, e, el);
+      if (r) return r;
+      if (!rigJack(el)) return false;
+      // ((WC, fixer K; review B5 / P2-3) the host names what the press is on: the nearest jack centre or fanned plug (its own cord, not
+      // the most recent) — at Fit zoom a jack's 44-screen-px target overlaps its neighbours'
+      const q = typeof Op.jackAt === 'function' && fin(e.clientX) && fin(e.clientY) ? call(Op.jackAt, el, toWorld(e.clientX, e.clientY), kNow()) : null;
+      return pressCord(e, q && rigJack(q.el) ? q.el : el, q && typeof q.rec === 'string' ? q.rec : null);
+    }
     if (ro(el)) return false;
     if (isModJack(el)) return pressMod(e, el);
     const j = el.getAttribute('data-cv-jack'), dir = j && dirEl(j, el);
     if (!dir || !portOf(j)) return false;
-    const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], w = ws.length ? ws[ws.length - 1] : null;
+    const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], ls = dir === 'in' && !ws.length ? lines(j) : [];
+    const w = ws.length ? ws[ws.length - 1] : ls.length ? ls[ls.length - 1] : null;
     D = { pid: e.pointerId, type: e.pointerType || 'mouse', el, grab: j, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, on: false,
       mode: w ? 'repatch' : 'new', wire: w ? w.wire : null, fixed: w ? w.a : j, want: w || dir === 'out' ? 'in' : 'out',
       lift: w ? [w.wire] : dir === 'out' ? wires().filter(c => c.a === j).map(c => c.wire) : [],
@@ -969,12 +1294,54 @@ export function createCableDrag(world, o) {
       listen(doc, 'keydown', key, true), listen(el, 'lostpointercapture', lost));
     return { cancel };
   }
+  // (WC) a press on a rig's cord jack (cords mode): an output a new cord (a mod output's onto a knob or a cord input), an input
+  // holding cords its most recent one grabbed (a touch long-press with several: "Which cord?"), a free input a new one backwards,
+  // a warp jack a tap only
+  function pressCord(e, el, rec) {
+    const j = el.getAttribute('data-cv-jack'), role = el.getAttribute('data-cord') || 'audio', dir = j && dirEl(j, el);
+    if (!j || !dir || ro(el)) return false;
+    const base = { pid: e.pointerId, type: e.pointerType || 'mouse', el, grab: j, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, on: false,
+      cord: true, role, marks: new Map(), tgt: null, offs: [], camOff: null };
+    if (role === 'warp') D = Object.assign(base, { tapOnly: true, fixed: j });
+    else if (role === 'mod' && dir === 'out') D = Object.assign(base, { mod: true, src: modSrcOf(j), fixed: j, want: 'in', knobs: [], dimmed: [], memo: new Map(), look: lookOf(j, true) });
+    else {
+      if (!portOf(j)) return false;
+      const recs = dir === 'in' ? cordsAt(j, 'b') : [], w = (rec && recs.find(c => c.id === rec)) || (recs.length ? recs[recs.length - 1] : null); // ((fixer K, B5) the pressed plug's own
+      D = Object.assign(base, { mode: w ? 'grab' : 'new', wire: w ? w.id : null, fixed: w ? w.a : j, want: w || dir === 'out' ? 'in' : 'out', recs, body: false, near: null, held: false });
+      D.look = lookOf(D.fixed, false);
+      if (recs.length > 1 && D.type !== 'mouse') {
+        const d0 = D;
+        D.which = later(() => { if (D !== d0 || D.on) return; D.which = null; const d = finish(); whichCord(d.grab, d.el, d.x0, d.y0, d.recs); }, WHICH_MS);
+      }
+    }
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+    D.offs.push(listen(doc, 'pointermove', move, { passive: true }), listen(doc, 'pointerup', up), listen(doc, 'pointercancel', pcancel),
+      listen(doc, 'keydown', key, true), listen(el, 'lostpointercapture', lost));
+    return { cancel };
+  }
+  // (WC) a claimed mod row's badge dragged past TAP_PX (cv-cables setBadgeDrag): its knob-end tip in the finger — another knob
+  // re-targets the row, away from any knob pulls it
+  function badgeDrag(id, e, P) {
+    if (D || dead || !cordsOn() || !layerG() || !P) return false;
+    const c = C ? C.list().find(x => x.id === id) : null;
+    if (!c || c.kind !== 'mod' || c.readonly || typeof c.a !== 'string') return false;
+    D = { pid: P.pid, type: P.type || e.pointerType || 'mouse', el: P.el, grab: null, x0: P.x, y0: P.y, x: e.clientX, y: e.clientY, on: false,
+      cord: true, mod: true, badge: id, mode: 'grab', wire: id, src: modSrcOf(c.a), fixed: c.a, cur: c.b, marks: new Map(), knobs: [], dimmed: [], memo: new Map(), tgt: null, offs: [], camOff: null };
+    try { P.el.setPointerCapture(P.pid); } catch (err) { /* gone */ }
+    D.offs.push(listen(doc, 'pointermove', move, { passive: true }), listen(doc, 'pointerup', up), listen(doc, 'pointercancel', pcancel),
+      listen(doc, 'keydown', key, true));
+    begin();
+    follow();
+    if (W && typeof W.dragPointer === 'function') W.dragPointer({ x: D.x, y: D.y, pointerType: D.type });
+    return true;
+  }
   function move(e) {
     if (!D || e.pointerId !== D.pid) return;
     if (D.type === 'mouse' && e.buttons === 0) { up(e); return; } // (a swallowed pointerup)
     D.x = e.clientX; D.y = e.clientY;
     if (!D.on) {
       if (Math.hypot(D.x - D.x0, D.y - D.y0) <= (D.type === 'mouse' ? 4 : TAP_PX)) return;
+      if (D.tapOnly) return; // ((WC) a warp jack: a target only — no drag from it)
       begin();
     }
     follow();
@@ -982,6 +1349,8 @@ export function createCableDrag(world, o) {
   }
   function begin() {
     D.on = true;
+    if (D.which != null) { unlater(D.which); D.which = null; }
+    if (D.cord) { beginCord(); return; }
     if (D.mod) { beginMod(); return; }
     for (const J of jacks()) {
       if (!J.el) continue;
@@ -1077,7 +1446,118 @@ export function createCableDrag(world, o) {
     if (tg && tg.kind === 'knob' && tg.ok) { const r = tg.el.getBoundingClientRect ? tg.el.getBoundingClientRect() : null; if (r) T = toWorld(r.left + r.width / 2, r.top + r.height / 2); }
     if (C && F && T) C.live({ x1: F.x, y1: F.y, x2: T.x, y2: T.y, color: D.color || undefined, snap: !!(tg && tg.ok !== false), mod: true });
   }
+  /* ---- (WC) cords mode: the marks, the targets, the rope */
+  function beginCord() {
+    if (D.mod) {
+      beginMod(); // (the knobs markDests names, every jack cv-no, the modules without one dimmed, #world[data-cv-patching="mod"])
+      if (!D.badge) for (const [id, m] of D.marks) { // a cord input that takes this output (an Envelope onto the Amplifier's LEVEL): a target too
+        if (!m.J.cord || m.J.dir !== 'in' || id === D.fixed) continue;
+        const r = checkCord(D.fixed, id); // ((fixer B2, P1-2) asked with the jacks; refused: the host's reason, not the knob hint
+        if (!r.ok) { if (r.why) { m.why = r.why; m.J.el.setAttribute('title', r.why); } continue; }
+        m.J.el.classList.remove(m.cls); m.cls = 'cv-ok'; m.why = ''; m.J.el.classList.add('cv-ok');
+        if (m.title == null) m.J.el.removeAttribute('title'); else m.J.el.setAttribute('title', m.title);
+      }
+    } else {
+      for (const J of jacks()) {
+        if (!J.el) continue;
+        let cls = 'cv-no', why = '';
+        if (J.id === D.fixed) cls = 'cv-from';
+        else if (J.dir !== D.want) why = D.want === 'in' ? 'Connect an output to an input' : 'Connect an input to an output';
+        else if (D.mode === 'grab' && J.id === D.grab) cls = 'cv-ok';
+        else { const r = D.want === 'in' ? check(D.fixed, J.id) : check(J.id, D.fixed); if (r.ok) cls = 'cv-ok'; else why = r.why || 'Not compatible'; }
+        D.marks.set(J.id, { J, cls, why, title: J.el.getAttribute('title') });
+        J.el.classList.add(cls);
+        if (cls === 'cv-no' && why) J.el.setAttribute('title', why);
+      }
+      if (W && W.el) W.el.setAttribute('data-cv-patching', 'cord');
+      D.rects = call(Op.rects) || {};
+      if (W && typeof W.on === 'function') D.camOff = W.on('camera', () => { if (D && D.on) follow(); });
+    }
+    let r = null;
+    try { r = W && W.overlay && typeof W.overlay.getBoundingClientRect === 'function' ? W.overlay.getBoundingClientRect() : null; } catch (err) { r = null; } // (one layout read: the chip's frame)
+    ovR = r && fin(r.left) ? r : null;
+    if (D.mode === 'grab') GR('grab', D.wire, 'b', toWorld(D.x, D.y));
+  }
+  // the jack under the finger decides first (inside its hit circle: compatible → the target, refused → its reason, the cord's own
+  // source → held), else the nearest compatible within SNAP_PX (else the nearest refused one's reason) — cv-patch's rule
+  function pickJack(P) {
+    const k = kNow();
+    let best = null, bd = SNAP_PX + 1e-9, near = null, nd = SNAP_PX + 1e-9, under = null, ud = Infinity;
+    for (const [id, m] of D.marks) {
+      const p = at(P, id);
+      if (!p) continue;
+      const c = toClient(p.x, p.y), d = Math.hypot(c.x - D.x, c.y - D.y);
+      if (d <= hitR(m.J.el, k) && d < ud) { ud = d; under = id; } // ((fixer B2, P3-3) a jack of the wrong direction under the finger too: refused there
+      if (m.cls === 'cv-from' || m.J.dir !== D.want) continue;
+      if (m.cls === 'cv-ok') { if (d < bd) { bd = d; best = id; } } else if (d < nd) { nd = d; near = id; }
+    }
+    if (under) { const m = D.marks.get(under); return { best: m.cls === 'cv-ok' ? under : null, near: m.cls === 'cv-no' ? under : null, held: m.cls === 'cv-from' }; }
+    return { best, near, held: false };
+  }
+  // ((fixer B2, P3-3) why a near jack refuses: the host's words (check, as the release's notice says it — "Two outputs — connect an output
+  // to an input"), once a drag; the mark's own reason without them
+  function nearWhy(id) {
+    const m = D.marks.get(id);
+    if (!m) return '';
+    if (m.hw == null) { const a = D.want === 'in' ? D.fixed : id, b = D.want === 'in' ? id : D.fixed, r = m.J.dir !== D.want ? check(a, b) : null; m.hw = (r && r.why) || m.why || ''; }
+    return m.hw;
+  }
+  function followCord() {
+    const P = call(Op.ports);
+    let { best, near, held } = pickJack(P), body = false;
+    if (!best && !near && !held) { // over a module body: its first compatible jack
+      const w = toWorld(D.x, D.y), R = D.rects || {};
+      for (const k of Object.keys(R)) {
+        const r = R[k];
+        if (!r || !(w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h)) continue;
+        for (const [id, m] of D.marks) if (m.cls === 'cv-ok' && m.J.mod === k && id !== D.grab) { best = id; body = true; break; }
+        break;
+      }
+    }
+    if (best !== D.tgt) {
+      const o1 = D.tgt && D.marks.get(D.tgt), o2 = best && D.marks.get(best);
+      if (o1) o1.J.el.classList.remove('cv-hot');
+      if (o2) o2.J.el.classList.add('cv-hot');
+      D.tgt = best;
+    }
+    D.body = body; D.near = best ? null : near; D.held = held;
+    if (best && best !== D.grab) chip(labelOf(best, D.marks.get(best).J), false);
+    else if (D.near) chip(labelOf(D.near, D.marks.get(D.near).J) + ' — ' + (nearWhy(D.near) || 'Not compatible'), true);
+    else chip(null);
+    const F = at(P, D.fixed), T = best && !body ? at(P, best) : toWorld(D.x, D.y);
+    if (!T) return;
+    if (D.mode === 'grab') GR('move', { x: T.x, y: T.y });
+    else if (F) LIVE({ a: { x: F.x, y: F.y }, b: { x: T.x, y: T.y }, c: D.look.c, s: D.look.s, o: D.look.o });
+  }
+  function followCordMod() {
+    const t = hitAt(D.x, D.y);
+    let tg = null;
+    const de = attrUp(t, 'data-dest');
+    if (de && de !== D.el && !attrUp(de, 'data-twin')) {
+      const dv = devAt(de), id = de.getAttribute('data-dest');
+      if (dv && id) { const r = checkMod(dv + ':' + id, de); tg = { kind: 'knob', el: de, dst: dv + ':' + id, ok: r.ok, why: r.why }; }
+    }
+    const P = call(Op.ports);
+    if (!tg && !D.badge) { const q = pickJack(P); if (q.best || q.near) { const id = q.best || q.near, m = D.marks.get(id); tg = { kind: 'jack', el: m.J.el, id, ok: !!q.best, why: m.why }; } }
+    if (!tg && !D.badge) {
+      const b = attrUp(t, 'data-cv-bar'), m = b && attrUp(b, 'data-cv-mod'), k = m && m.getAttribute('data-cv-mod');
+      if (k && k !== modOf(D.fixed)) tg = { kind: 'bar', el: b, key: k };
+    }
+    const o1 = D.tgt, same = o1 && tg && o1.el === tg.el;
+    // (a jack target lights only when it takes the cord: a refused one keeps its mark's cv-no)
+    const lit = (x, on) => { if (!x) return; if (x.kind === 'jack') { if (x.ok) x.el.classList.toggle('cv-hot', on); } else x.el.classList[on ? 'add' : 'remove'](x.ok === false ? 'cv-no' : 'cv-hot'); };
+    if (!same) { lit(o1, false); lit(tg, true); D.tgt = tg; }
+    const lab = tg && tg.kind === 'knob' ? (tg.el.getAttribute('aria-label') || tg.el.title || tg.dst) : tg && tg.kind === 'jack' ? labelOf(tg.id, D.marks.get(tg.id).J) : null;
+    if (tg && tg.kind !== 'bar' && !(D.badge && tg.dst === D.cur)) chip(tg.ok === false ? lab + ' — ' + (tg.why || 'Not compatible') : lab, tg.ok === false); else chip(null);
+    let T = toWorld(D.x, D.y);
+    if (tg && tg.ok && tg.kind === 'knob') { const r = wk.discBox(tg.el) || (tg.el.getBoundingClientRect ? tg.el.getBoundingClientRect() : null); if (r) T = toWorld(r.left + r.width / 2, r.top + r.height / 2); } // ((fixer B2) its disc's centre (wk.discBox: the kit's one measure — the cord's rim and the ring read the same, review WC-int P3-18), else the control's
+    else if (tg && tg.ok && tg.kind === 'jack') { const q = at(P, tg.id); if (q) T = q; }
+    if (D.badge) { GR('move', { x: T.x, y: T.y }); return; }
+    const F = at(P, D.fixed);
+    if (F && T) LIVE({ a: { x: F.x, y: F.y }, b: { x: T.x, y: T.y }, c: D.look.c, s: D.look.s, o: D.look.o });
+  }
   function follow() { // the target under the pointer (snap, else a module body's first compatible jack) and the live cable
+    if (D.cord) { if (D.mod) followCordMod(); else followCord(); return; }
     if (D.mod) { followMod(); return; }
     const P = call(Op.ports);
     let best = null, bd = Infinity, near = null, nd = Infinity;
@@ -1132,12 +1612,74 @@ export function createCableDrag(world, o) {
       if (C) { for (const id of d.lift || []) C.hide(id, false); C.live(null); }
       if (W && typeof W.dragPointer === 'function') W.dragPointer(null);
     }
+    if (d.cord) { if (d.which != null) unlater(d.which); chip(null); } // ((WC) the long-press, the chip)
     try { d.el.releasePointerCapture(d.pid); } catch (err) { /* released */ }
     return d;
+  }
+  // (WC) the cord layer after a cords-mode drag (after its callbacks: a commit's set came first): the live rope goes, a grabbed end
+  // is let go — it springs to its anchor (a re-patch's new jack, its own after a cancel; a pulled cord is gone already)
+  function done(d) { if (!d || !d.cord || !d.on) return; if (d.mode === 'grab') GR('drop'); else LIVE(null); }
+  function abandon() { done(finish()); } // (Escape, a pointercancel, a second finger: nothing written)
+  // (WC) a cords-mode release
+  function upCord(e) {
+    if (!D.on) { // a tap: the host's jack menu (Connect to… / the plug menu), else a mod output's list, a warp's own menu, Connect to…
+      const d = finish();
+      if (!d.badge && Math.hypot(d.x - d.x0, d.y - d.y0) <= TAP_PX) cordTap(d.grab, d.el, e.clientX, e.clientY);
+      return;
+    }
+    follow();
+    const d = finish(), t = d.tgt;
+    try {
+      if (d.mod && d.badge) { // a row's knob end: another knob re-targets it, none pulls it, its own / a refused one leaves it
+        if (!t) call(Op.onPull, d.wire);
+        else if (t.kind === 'knob') { if (!t.ok) call(Op.onRefuse, d.src, t.dst, t.why); else if (t.dst !== d.cur) call(Op.onRepatchMod, d.wire, t.dst); }
+        return;
+      }
+      if (d.mod) {
+        if (!t) return;
+        if (t.kind === 'bar') call(Op.onBarDrop, d.src, t.key);
+        else if (t.kind === 'jack') { if (t.ok) call(Op.onConnect, cordPort(d.fixed), cordPort(t.id)); else call(Op.onRefuse, cordPort(d.fixed), cordPort(t.id), t.why); }
+        else if (t.ok) call(Op.onMod || Op.onConnect, d.src, t.dst);
+        else call(Op.onRefuse, d.src, t.dst, t.why);
+        return;
+      }
+      if (t) {
+        if (d.mode === 'grab') { if (t !== d.grab) call(Op.onRepatch, d.wire, portOf(d.fixed), portOf(t)); }
+        else if (d.want === 'in') call(Op.onConnect, portOf(d.fixed), portOf(t)); else call(Op.onConnect, portOf(t), portOf(d.fixed));
+      } else if (d.near) {
+        const a = d.want === 'in' ? d.fixed : d.near, b = d.want === 'in' ? d.near : d.fixed, m = d.marks.get(d.near);
+        call(Op.onRefuse, portOf(a), portOf(b), check(a, b).why || (m && m.why) || 'Not compatible');
+      } else if (d.mode === 'grab' && !d.held) call(Op.onPull, d.wire); // (let go away from any jack: pulled — the host's "Cord pulled · tap to undo")
+    } finally { done(d); }
+  }
+  // (WC) a tap (Enter / Space) on a rig's cord jack: the host's menu first (rig-ui's Connect to… / plug menu with the swatches)
+  function cordTap(j, el, x, y) {
+    if (dead || !j) return null;
+    const r = call(Op.jackMenu, j, el, x, y);
+    if (r) return r;
+    const role = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-cord') : null, dir = dirEl(j, el);
+    if (role === 'mod' && dir === 'out') return call(Op.onJackTap, modSrcOf(j), el);
+    if (role === 'warp') { const w = C && typeof C.cordList === 'function' ? C.cordList().filter(c => c.b === j).pop() : null; return w && C.tap ? C.tap(w.id, null) : null; } // (its warp / FM menu: the host's tap action)
+    return menu(j, x, y);
+  }
+  // (WC) "Which cord?" — a long-press (a right-click) on an input holding several: the host's jack menu, as a tap ((fixer K) its "Which
+  // cord?" ▸ each cord's Pull · Re-patch to ▸ · Colour ▸); without one its cords by source, the most recent first — a pick selects it
+  // and opens its menu (Disconnect, the host's items)
+  function whichCord(j, el, x, y, recs) {
+    if (dead) return null;
+    const h = call(Op.jackMenu, j, el, x, y); // ((fixer K, review P3-7) what a tap offers: the host's plug menu (Which cord? ▸ Pull · Re-patch to ▸ · Colour ▸)
+    if (h) return h;
+    const L = jacks(), items = [{ label: 'Which cord?', disabled: true }];
+    for (const c of recs.slice().reverse()) {
+      const J = L.find(q => q.id === c.a);
+      items.push({ label: labelOf(c.a, J), action: () => { if (C) { C.select(c.id); if (typeof C.openMenu === 'function') C.openMenu(c.id, x, y); } } });
+    }
+    return wk.contextMenu(x, y, items, el ? { anchor: el } : undefined);
   }
   function up(e) {
     if (!D || e.pointerId !== D.pid) return;
     D.x = e.clientX; D.y = e.clientY;
+    if (D.cord) { upCord(e); return; }
     if (!D.on) { // a tap: "Connect to…" ((2a) a mod jack's: the host's list)
       const d = finish();
       if (Math.hypot(d.x - d.x0, d.y - d.y0) <= TAP_PX) { if (d.mod) call(Op.onJackTap, d.src, d.el); else menu(d.grab, e.clientX, e.clientY); }
@@ -1164,16 +1706,17 @@ export function createCableDrag(world, o) {
     if (d.mode === 'repatch') { if (t !== d.grab) call(Op.onRepatch, d.wire, portOf(d.fixed), portOf(t)); return; }
     if (d.want === 'in') call(Op.onConnect, portOf(d.fixed), portOf(t)); else call(Op.onConnect, portOf(t), portOf(d.fixed));
   }
-  function pcancel(e) { if (D && e.pointerId === D.pid) finish(); } // (a second finger's flagged cancel, the browser's)
+  function pcancel(e) { if (D && e.pointerId === D.pid) abandon(); } // (a second finger's flagged cancel, the browser's)
   function lost(e) { if (D && e.pointerId === D.pid && !D.on) finish(); } // (the jack went: a sync rebuilt its module)
   function key(e) {
     if (!D || e.key !== 'Escape') return;
     if (e.preventDefault) e.preventDefault();
     if (e.stopPropagation) e.stopPropagation();
-    finish();
+    abandon();
   }
-  function cancel() { finish(); }
-  /* ---- "Connect to…": a tap, Enter / Space or a right-click on a jack */
+  function cancel() { abandon(); }
+  /* ---- "Connect to…": a tap, Enter / Space or a right-click on a jack; (WC) a rig cord jack's lists the outputs that may feed it
+   * (an Envelope's too, onto LEVEL) and Pull items for the cords at it (o.onPull) */
   function menu(j, x, y) {
     const L0 = dead ? [] : jacks(), me0 = L0.find(J => J.id === j), dir = me0 ? me0.dir : dirOf(j || '');
     if (!dir || !portOf(j) || dead) return null;
@@ -1182,7 +1725,7 @@ export function createCableDrag(world, o) {
     const items = [{ label: 'Connect ' + labelOf(j, me) + ' to…', disabled: true }];
     let n = 0;
     for (const J of L) {
-      if (J.dir === dir || J.id === j || J.kind === 'mod' || !portOf(J.id)) continue;
+      if (J.dir === dir || J.id === j || (J.kind === 'mod' && !(me.cord && J.cord)) || !portOf(J.id)) continue;
       const r = dir === 'out' ? check(j, J.id) : check(J.id, j);
       if (!r.ok) continue;
       n++;
@@ -1197,23 +1740,40 @@ export function createCableDrag(world, o) {
         items.push({ label: 'Disconnect ' + labelOf(other, OJ), action: () => call(Op.onDisconnect, c.wire) });
       }
     }
+    if (me.cord && typeof Op.onPull === 'function') { // ((WC) the cords at a rig jack: Pull each)
+      const rs = cordsAt(j, dir === 'in' ? 'b' : 'a');
+      if (rs.length) items.push({ sep: true });
+      for (const c of rs) {
+        const other = dir === 'in' ? c.a : c.b, OJ = L.find(J => J.id === other);
+        items.push({ label: 'Pull ' + labelOf(other, OJ), action: () => call(Op.onPull, c.id) });
+      }
+    }
     if (x == null || y == null) { const r = me.el && me.el.getBoundingClientRect ? me.el.getBoundingClientRect() : null; x = r ? r.left + r.width / 2 : 0; y = r ? r.bottom + 4 : 0; }
     return wk.contextMenu(x, y, items, me.el ? { anchor: me.el } : undefined);
   }
-  // ((9) a cord jack's keys / right-click are cv-patch's: none here)
+  // ((9) a cord jack's keys / right-click are cv-patch's: none here; (WC) a rig's cord jack in cords mode: cordEl, this drag's)
   const jackEl = t => { for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) { if (n.getAttribute('data-cv-jack') != null) return n.getAttribute('data-kind') === 'cord' ? null : n; if (n.getAttribute('data-cv-mod') != null) return null; } return null; };
+  const cordEl = t => { for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) { if (n.getAttribute('data-cv-jack') != null) return rigJack(n) && !ro(n) ? n : null; if (n.getAttribute('data-cv-mod') != null) return null; } return null; };
   const offs = [];
   if (W && W.el) {
     offs.push(listen(W.el, 'keydown', e => {
-      const je = (e.key === 'Enter' || e.key === ' ') && jackEl(e.target);
-      if (!je || je !== e.target) return;
+      const ok = e.key === 'Enter' || e.key === ' ', je = ok && jackEl(e.target);
+      if (!je) { const ce = ok && cordEl(e.target); if (ce && ce === e.target) { if (e.preventDefault) e.preventDefault(); cordTap(ce.getAttribute('data-cv-jack'), ce); } return; }
+      if (je !== e.target) return;
       if (e.preventDefault) e.preventDefault();
       if (isModJack(je)) { if (!dead) call(Op.onJackTap, modSrcOf(je.getAttribute('data-cv-jack')), je); return; }
       menu(je.getAttribute('data-cv-jack'));
     }));
     offs.push(listen(W.el, 'contextmenu', e => {
       const je = jackEl(e.target);
-      if (!je) return;
+      if (!je) { // ((WC) a rig cord jack: "Which cord?" on an input holding several, else its tap's menu)
+        const ce = cordEl(e.target);
+        if (!ce) return;
+        if (e.preventDefault) e.preventDefault();
+        const j = ce.getAttribute('data-cv-jack'), rs = dirEl(j, ce) === 'in' ? cordsAt(j, 'b') : [];
+        if (rs.length > 1) whichCord(j, ce, e.clientX, e.clientY, rs); else cordTap(j, ce, e.clientX, e.clientY);
+        return;
+      }
       if (e.preventDefault) e.preventDefault();
       if (isModJack(je)) { if (!dead) call(Op.onJackTap, modSrcOf(je.getAttribute('data-cv-jack')), je); return; }
       menu(je.getAttribute('data-cv-jack'), e.clientX, e.clientY);
@@ -1221,15 +1781,27 @@ export function createCableDrag(world, o) {
   }
   if (W && typeof W.setJackHook === 'function') unhook = W.setJackHook(press, cancel);
   else if (W && W.hooks) { W.hooks.jack = press; W.hooks.jackCancel = cancel; unhook = () => { if (W.hooks.jack === press) { W.hooks.jack = null; W.hooks.jackCancel = null; } }; }
+  // (WC) cords mode: the claimed badges' drag; o.cordHit — the world's tap on a claimed cord's body (cv-world setCordHook) and the
+  // cables' "not elsewhere" (a press on the selected cord's body keeps it)
+  const unhooks = [];
+  if (C && cordsOn() && typeof C.setBadgeDrag === 'function') unhooks.push(C.setBadgeDrag(badgeDrag));
+  if (typeof Op.cordHit === 'function') {
+    const mine = id => !!C && typeof C.claimed === 'function' && C.claimed(id);
+    const hitAtP = (p, r) => (p && fin(p.x) && fin(p.y) ? call(Op.cordHit, p, r, mine) || null : null);
+    if (W && typeof W.setCordHook === 'function') unhooks.push(W.setCordHook((p, r) => hitAtP(p, r), (id, e, p) => { if (!dead && C && typeof C.tap === 'function') C.tap(id, p, e && e.pointerType); }));
+    if (C && typeof C.setCordAt === 'function') unhooks.push(C.setCordAt(e => (dead ? null : hitAtP(toWorld(e.clientX, e.clientY), HIT_PX / kNow()))));
+  }
   return {
     press, menu, cancel,
     active: () => !!(D && D.on),
     destroy() {
       if (dead) return;
-      finish();
+      abandon();
       dead = true;
       for (const f of offs) f();
       if (unhook) unhook();
+      for (const f of unhooks) { try { if (typeof f === 'function') f(); } catch (err) { /* gone */ } }
+      if (chipEl) { chipEl.remove(); chipEl = null; }
       if (own) own.destroy();
     },
   };

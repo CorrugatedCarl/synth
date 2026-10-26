@@ -7,7 +7,7 @@
 // tray like a drawer and its release snaps it open or shut (pullSnap: a flick goes its way, else past half opens).
 // Stage 2a (IMPL-2a §3): the Sources tray's Modulators section (sourcesTray o.mods: Mod Wheel, Velocity, Aftertouch, Bend;
 // setPlaced greys a singleton that is already there). Milestone 3 (IMPL-3 §2.6): the Serum view's Serum parts (OSC, SUB,
-// NOISE, FILTER, MACROS) and Note tools (ARP, CLIP) tiles (sourcesTray o.parts: PART_TILES; the drops are the host's).
+// NOISE, FILTER, MACROS) and Note tools (ARP, CLIP) tiles (sourcesTray o.parts; the drops are the host's) — (WC) the rig's now.
 // Stage 9 (IMPL-9 §4.6): the Sources view "Moog modules" — the Model 15 tile (the m900 model tile: the whole set, patched; no
 // maker word, D4) and a tile row of its own (sourcesTray o.moog: MOOG_TILES — the module types by group, each an original
 // monochrome glyph, MOOG_GLYPH); CLASSIC is models.js classicOf (a patch instrument is never in Hardware / Simple).
@@ -17,11 +17,17 @@
 // and the sixteen 9b glyphs, drawn from our faces (panels/m900b.js) as the nine were.
 // Stage 9c (IMPL-9c §1.8, §2; lane K9c): the System IIIc set tile (s3c) and a sixth group, "1960s" (the ten new types: 35 tiles in all);
 // their ten glyphs laid out from the tables (a dot per knob, a ring per jack), the CP3's the CP3A's.
+// Stage WC (IMPL-WC §7; lane U): the rig's view (RIG.VIEW, after Serum, named by the display constant RIG.NAME — every word of it here
+// reads the constant): the rig tile ("<year> · modular synth", no maker), the module tiles (RIG_TILES: milestone 3's part tiles became
+// the rig's — Oscillator, Sub oscillator, Noise, Filter, Envelope, LFO, Macros; Arpeggiator and Clip sequencer arrive with the next cut,
+// RIG_CUT, so WC-1's Note tools section is a placeholder), their headings written from the constant into the host's sections, rigFull's
+// "full" texts for setPartPlaced; the Serum view keeps its tile and the modulators.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
-import { classicOf } from './models.js?v=9';
+import { classicOf, isSerumModel, isRigModel } from './models.js?v=9';
+import { RIG, MODULES } from './rig-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
 import { MAX_MODS } from './patch-core.js?v=9';
 
@@ -115,6 +121,105 @@ export function budget(s) {
     }
   }
   return { top, bottom: bot, canvas: vh - top - bot };
+}
+
+/** (WC pre-deploy [toast]) The notice line's room: NOTICE_GAP px from what it sits beside, at most NOTICE_MAX px wide, never squeezed
+ * under NOTICE_MIN px (a narrower room wraps it into a column); NOTICE_LIFT px over the stage's foot where nothing else decides;
+ * (round 2) NOTICE_FLOOR px: the narrowest column a narrow window's free span gives it (two short words a line) before a narrower one. */
+export const NOTICE_GAP = 12, NOTICE_MAX = 620, NOTICE_MIN = 200, NOTICE_LIFT = 24, NOTICE_FLOOR = 96;
+const crosses = (a, b, m = 0) => !!a && !!b && a.left < b.right + m && a.right > b.left - m && a.top < b.bottom + m && a.bottom > b.top - m;
+/**
+ * (WC pre-deploy [toast]) Where the notice line goes (main.js noticePlace; the 8 s "· tap to undo" lay centred on the canvas toolbar's
+ * row: a tap meant for Fit / Tidy landed on it and undid the last step). It never lies over the toolbar (its row, its fold button, the
+ * page-zoom chip), the minimap, the keyboard's grip, the open Sources tray or its pull tab. The rooms, in order: beside the toolbar on
+ * its row (on the row's centre line, lifted clear of the grip's box), above the row right of the minimap (the toolbar's left without
+ * one) — the toolbar's foot, which a fit keeps clear of modules (cv-world band) — and above both (centred past the tray). Of the rooms
+ * that touch none of them, the one where the line takes the fewest lines, a room above both counting 1.5 more (one line there loses to
+ * two in the foot), the earlier on a tie; a wrapped line grows upward from its foot. No toolbar (the roll; the canvas hidden): centred
+ * over the stage NOTICE_LIFT px above its foot, lifted clear of the grip. (round 2 — the skeptic) None of them clear (a narrow window —
+ * a 1/3 or 1/2 split, Slide Over, a phone — with the Sources tray open; the tray pulled wide): a free column of the stage (below), never
+ * the old fall back onto the tray, its tab or the toolbar's fold button; only where no column is left at all (the tray wider than the
+ * window) the last room tried. Its size at a width: o.fit's measure where given (a wrap carries whole words down — a line more than
+ * need / width), else that estimate. Pure (o.fit aside).
+ * @param {{stage: Box | null, bar?: Box | null, map?: Box | null, grip?: Box | null, tray?: Box | null, tab?: Box | null, top?: Box | null,
+ *   w: number, h: number, fit?: (maxW: number) => {w: number, h: number, lines?: number}}} o
+ *   client boxes ({left, top, right, bottom}; null: not shown; top: the track list's grip over the stage's top edge) and the notice's
+ *   one-line size (px); fit: its size at a whole-px max width
+ * @returns {{x: number, bottom: number, maxW: number} | null} its left edge and its bottom edge (client px) and the width it may take;
+ *   null: nothing measured (the stylesheet's spot)
+ * @typedef {{left: number, top: number, right: number, bottom: number}} Box
+ */
+export function noticeSpot(o) {
+  const S = o && o.stage;
+  if (!S || !(S.right > S.left) || !(S.bottom > S.top)) return null;
+  const box = n => (n && n.right > n.left && n.bottom > n.top ? n : null);
+  const bar = box(o.bar), map = box(o.map), grip = box(o.grip), tray = box(o.tray), tab = box(o.tab), avoid = [bar, map, grip, tray, tab, box(o.top)].filter(Boolean);
+  const need = Math.min(Math.max(0, +o.w || 0), NOTICE_MAX), h = Math.max(0, +o.h || 0), G = NOTICE_GAP;
+  const L = Math.max(S.left, tray ? tray.right : S.left) + G, R = S.right - G;
+  const fits = new Map(), size = mw => { // (its size at a max width: measured once a width, else need / width lines of h)
+    const lines = Math.max(1, Math.ceil(need / mw - 1e-9)), est = { w: Math.min(need, mw), h: h * lines, lines };
+    if (typeof o.fit !== 'function') return est;
+    const k = Math.floor(mw);
+    if (!fits.has(k)) { const f = o.fit(k) || {}; fits.set(k, +f.h > 0 ? { w: Math.min(+f.w || k, k), h: +f.h, lines: Math.max(1, Math.round(+f.lines) || lines) } : est); }
+    return fits.get(k);
+  };
+  const rooms = []; // { x (null: centred over L…R), b: its foot }
+  if (bar) {
+    rooms.push({ x: bar.right + G, b: bar.bottom, row: bar.bottom - bar.top });
+    rooms.push({ x: map ? map.right + G : bar.left, b: bar.top - 8 });
+    rooms.push({ x: null, b: Math.min(bar.top, map ? map.top : bar.top) - 8 });
+  } else rooms.push({ x: null, b: S.bottom - NOTICE_LIFT });
+  let best = null, rank = Infinity, last = null;
+  for (const q of rooms) {
+    const room = Math.min(R - (q.x == null ? L : q.x), NOTICE_MAX);
+    if (room < Math.min(need, NOTICE_MIN)) continue;
+    const z = size(room), lines = z.lines, ww = z.w, hh = z.h, x = q.x == null ? L + (R - L - ww) / 2 : q.x;
+    let b = q.row ? q.b - Math.max(0, (q.row - hh) / 2) : q.b; // (on the row's centre line; taller, up from its foot)
+    if (grip && crosses({ left: x, top: b - hh, right: x + ww, bottom: b }, grip, 2)) b = Math.min(b, grip.top - 4); // (lifted clear of the grip)
+    const r = { left: x, top: b - hh, right: x + ww, bottom: b }, k = lines + (q.x == null && bar ? 1.5 : 0);
+    last = { x, bottom: b, maxW: room };
+    if (r.top < S.top || r.right > S.right || avoid.some(n => crosses(r, n, 2)) || k >= rank) continue;
+    best = last; rank = k;
+  }
+  if (best) return best;
+  // (round 2) the free column: at a foot — that last room's, over the top of each thing, the toolbar's foot, the stage's top
+  // (NOTICE_GAP px under it) — the widest span of the stage that the band of the line's height crosses nothing in (each thing cut out
+  // NOTICE_GAP px either side: the tray and its width grip, its tab, the grips, the toolbar, the minimap), the band as tall as the line
+  // takes in that span; at least NOTICE_FLOOR px wide (a narrower span only when none is); centred in it; the fewest lines, the lowest on
+  // a tie. No column at all (a short window, the tray pulled over most of it: the toolbar, the minimap and the tab fill what is left):
+  // the same with the minimap given up — the chrome least tapped right after an add or a swap (not the toolbar's row, the tray, its tab,
+  // a grip, the track list); only where even that has none (the tray wider than the window), the last room tried
+  const T0 = S.top + G, f0 = rooms[rooms.length - 1].b;
+  const column = (things, floor) => {
+    const feet = [f0, ...things.map(n => n.top - 8), ...(bar ? [bar.bottom] : [])].filter((f, i, a) => f > T0 && f <= S.bottom && a.indexOf(f) === i);
+    feet.sort((a, c) => c - a).push(null); // (null: the stage's top)
+    const spans = (t, b) => {
+      let out = [[S.left + G, R]];
+      for (const n of things) {
+        if (!(n.top < b + 2 && n.bottom > t - 2)) continue;
+        const a = n.left - G, e = n.right + G;
+        out = out.flatMap(([l, r]) => (e <= l || a >= r ? [[l, r]] : [...(a > l ? [[l, a]] : []), ...(e < r ? [[e, r]] : [])]));
+      }
+      return out.reduce((a, sp) => (!a || sp[1] - sp[0] > a[1] - a[0] ? sp : a), null);
+    };
+    let col = null, fk = Infinity;
+    for (const f of feet) {
+      let hh = h, z = null, sp = null;
+      for (let i = 0; i < 8 && !z; i++) { // (a taller band only narrows the span: the lines settle)
+        const b = f == null ? T0 + hh : f;
+        if (b - hh < T0 - 0.5) break;
+        sp = spans(b - hh, b);
+        if (!sp || sp[1] - sp[0] < floor) break;
+        const c = size(Math.min(sp[1] - sp[0], NOTICE_MAX));
+        if (c.h <= hh + 0.5) z = c; else hh = c.h;
+      }
+      if (!z || z.lines >= fk) continue;
+      col = { x: sp[0] + (sp[1] - sp[0] - z.w) / 2, bottom: f == null ? T0 + z.h : f, maxW: Math.min(sp[1] - sp[0], NOTICE_MAX) }; fk = z.lines;
+    }
+    return col;
+  };
+  const bare = avoid.filter(n => n !== map);
+  return column(avoid, NOTICE_FLOOR) || column(avoid, 48) || (map && (column(bare, NOTICE_FLOOR) || column(bare, 48))) || last;
 }
 
 /**
@@ -447,14 +552,16 @@ export function sideTray(el, o) {
 // setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
 // track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id). (2b) an item with
 // multi: true (LFO, ENV, Macro, CC, Chaos — MOD_TILES) carries data-multi and ignores setPlaced.
-// (milestone 3, IMPL-3 §2.6) o.parts: [{id, name, group: 'parts' | 'notes'}] (PART_TILES: OSC, SUB, NOISE, FILTER, MACROS —
-// "Serum parts" —, ARP, CLIP — "Note tools") — one button.cv-tile.cv-ptile[data-part][data-group] each (an original glyph,
-// the name, span.cv-treason) in o.partsEl / o.notesEl (their sections o.partsSec / o.notesSec shown in a view with that
-// section; without the elements: a section of their own in o.secEl, in place of the placeholder). A tap: (o.partPick ||
-// o.pick)(id, mode); a drag as a modulator tile's through (o.partDrag || o.drag) with info.part = true, info.over 'canvas' or
-// null, info.at the world point; the ghost hides over the canvas while o.partCanvasGhost() says the world draws an outline.
-// setPartPlaced(id, reason | null) greys a tile with its reason (the host's: "This Serum already has 3 oscillators"); the
-// drop's own refusals are the host's (§2.6). Without o.parts the two sections stay placeholders.
+// (milestone 3, IMPL-3 §2.6; WC, IMPL-WC §7) o.parts: [{id, name, group: 'rigmods' | 'rignotes', cut}] (RIG_TILES: the rig's
+// module tiles — Oscillator … Macros — and its note tools, ARP and CLIP, the next cut's) — one button.cv-tile.cv-ptile[data-part]
+// [data-group] per live item (cut ≤ RIG_CUT: an original glyph, the name, span.cv-treason) in o.partsEl / o.notesEl (their sections
+// o.partsSec / o.notesSec, headed and labelled from the view's section — RIG.NAME's —, shown in a view with that section; without
+// the elements: a section of their own in o.secEl, in place of the placeholder; a group with no live tile is the placeholder, in
+// the host's section when it gives one). A tap: (o.partPick || o.pick)(id, mode); a drag as a modulator tile's through (o.partDrag
+// || o.drag) with info.part = true, info.over 'canvas' or null, info.at the world point; the ghost hides over the canvas while
+// o.partCanvasGhost() says the world draws an outline. setPartPlaced(id, reason | null) greys a tile with its reason (the host's —
+// rigFull(kind): "This <NAME> already has 3 oscillators"); the drop's own refusals are the host's (§3.5). Without o.parts the two
+// sections stay placeholders.
 // (8, IMPL-8 §1.2) o.ctls: [{id: 'pads', name}] (CTL_TILES) — the Controllers view's tile row, a Modulators-style row of its own (not the
 // Serum parts): one button.cv-tile.cv-mtile[data-ctl] per item (an original glyph, the name, span.cv-treason) in o.ctlsEl (its section
 // o.ctlsSec shown in a view with 'ctls'; without the element: an h3.cv-tgrp "Controllers" and the tiles after the synths in el). A tap:
@@ -472,8 +579,12 @@ export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'Drop a modulator on the canvas and cable its jack to any knob.',
-    sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
-      { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
+    sections: [{ id: 'serum', models: isSerumModel }, { id: 'mods' }] }, // ((WC, IMPL-WC §6, §7) the Serum tile and the modulators: no Serum parts, no note tools (the part tiles are the rig's — its own view); the rig (custom too) is not here)
+  // (WC, IMPL-WC §7) the rig: its tile, its module tiles (o.parts: RIG_TILES, group 'rigmods'), Note tools (group 'rignotes': the next
+  // cut's — a placeholder until RIG_CUT reaches them), the modulators; no layout of its own (the classics' kept)
+  { id: RIG.VIEW, label: RIG.NAME, tip: 'Our own modular synth, patched with cords', // (the menu shows the label above the tip: the name once)
+    note: `Drop a module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`,
+    sections: [{ id: 'rig', models: isRigModel }, { id: 'rigmods', head: RIG.NAME + ' modules' }, { id: 'rignotes', head: 'Note tools', note: `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.` }, { id: 'mods' }] }, // ((WC, integration fixer L — review WC-int P3-8) our words, not the plan's "next cut"
   { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
     note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
   { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
@@ -549,23 +660,39 @@ const CTL_GLYPH = {
   pads: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="26.5" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="4" y="10.75" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="10.75" width="9.5" height="6.5" rx="1.8" fill="currentColor"/><rect x="26.5" y="10.75" width="9.5" height="6.5" rx="1.8"/><rect x="4" y="19" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="19" width="9.5" height="6.5" rx="1.8"/><rect x="26.5" y="19" width="9.5" height="6.5" rx="1.8"/></svg>',
 };
 const ctlGlyph = id => CTL_GLYPH[id] || CTL_GLYPH.pads;
-/** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
-export const PART_TILES = Object.freeze([
-  { id: 'osc', name: 'OSC', group: 'parts' }, { id: 'sub', name: 'SUB', group: 'parts' }, { id: 'noise', name: 'NOISE', group: 'parts' },
-  { id: 'filter', name: 'FILTER', group: 'parts' }, { id: 'macros', name: 'MACROS', group: 'parts' },
-  { id: 'arp', name: 'ARP', group: 'notes' }, { id: 'clip', name: 'CLIP', group: 'notes' },
-].map(Object.freeze));
-// original monochrome glyphs: a wave in a frame, a low sine, a scatter, a low-pass slope, four dials, rising steps, a clip of notes
+/** (WC, IMPL-WC §7; milestone 3's Serum parts and note tools before it) The rig's module tiles: id = the module kind (rig-core
+ * MODULES; sx-edges firstFree's part kind), name = its label there, group 'rigmods' | 'rignotes' (the rig view's two sections), cut =
+ * the cut that ships its face (1 = WC-1, 2 = WC-2). A tile is live while its cut ≤ RIG_CUT; a group with no live tile is a placeholder
+ * (its heading and note). The host passes them as o.parts (or o.parts: true). */
+export const RIG_CUT = 1;
+export const RIG_TILES = Object.freeze(['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip'].map(id => Object.freeze({
+  id, name: MODULES[id].label, group: id === 'arp' || id === 'clip' ? 'rignotes' : 'rigmods', cut: MODULES[id].cut })));
+/** (WC) A module tile's reason when the track's rig has no room for one more (setPartPlaced; the host decides when): "This <NAME>
+ * already has 3 oscillators" (the counts are MODULES' max), "<label> is on the canvas" for a one-off, "<label> is on" for a note tool
+ * (its cord is its power); null for an unknown kind. */
+const FULL_OF = { osc: 'oscillators', filter: 'filters', env: 'envelopes', lfo: 'LFOs' };
+export function rigFull(kind) {
+  const M = Object.prototype.hasOwnProperty.call(MODULES, kind) ? MODULES[kind] : null;
+  if (!M) return null;
+  if (FULL_OF[kind]) return `This ${RIG.NAME} already has ${M.max} ${FULL_OF[kind]}`;
+  return M.label + (kind === 'arp' || kind === 'clip' ? ' is on' : ' is on the canvas');
+}
+// original monochrome glyphs: a wave in a frame, a low sine, a scatter, a low-pass slope, (WC) an ADSR trace and an LFO's shape — each with
+// the editor's square handles at its points (so neither reads as the Modulators' ENV / LFO beside them) —, four dials, rising steps, a clip of notes
 const PART_GLYPH = {
   osc: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="3"/><path d="M8 14c3-7 6-7 8 0s5 7 8 0 5-7 8 0"/></svg>',
   sub: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c6-11 10-11 16 0s10 11 16 0"/><path d="M4 24.5h32"/></svg>',
   noise: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 15l3-6 2 11 3-14 2 12 3-8 2 9 3-12 2 13 3-9 2 7 3-10 2 6 2-2"/></svg>',
   filter: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 9h17c4 0 5-3 7-3 2 0 3 6 8 18"/><path d="M4 24.5h32"/></svg>',
+  env: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 24.5h32"/><path d="M6 24 12 5l6 9.5h10L34 24"/><rect x="10.5" y="3.5" width="3" height="3"/><rect x="16.5" y="13" width="3" height="3"/><rect x="26.5" y="13" width="3" height="3"/></svg>',
+  lfo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 21C9 21 9 6 14 6s7 15 12 15 5-8 9-8"/><rect x="12.5" y="4.5" width="3" height="3"/><rect x="24.5" y="19.5" width="3" height="3"/><rect x="33.5" y="11.5" width="3" height="3"/></svg>',
   macros: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="5" y="4" width="13" height="9" rx="2"/><rect x="22" y="4" width="13" height="9" rx="2"/><rect x="5" y="16" width="13" height="9" rx="2"/><rect x="22" y="16" width="13" height="9" rx="2"/></svg>',
   arp: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 23h6v-5h6v-5h6v-5h6v-5h6"/><circle cx="8" cy="23" r="1.6"/><circle cx="14" cy="18" r="1.6"/><circle cx="20" cy="13" r="1.6"/><circle cx="26" cy="8" r="1.6"/></svg>',
   clip: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="2"/><path d="M9 9h7M19 14h9M12 19h6M24 9h6"/></svg>',
 };
 const partGlyph = id => PART_GLYPH[id] || PART_GLYPH.osc;
+// (WC) the rig tile's words: what the tile gives (RIG.STARTER: a starter rig that plays; null: an Amplifier alone), no maker
+const RIG_META = 'modular synth', RIG_GIVES = () => (RIG.STARTER ? 'a small starter rig that plays' : 'an Amplifier to add modules to');
 /** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles, in MOD_ORDER: id = the mod kind, scope 'project' (the wheel)
  * or 'track', multi = any number per track (its tile never greys out: setPlaced ignores it). The host passes them as
  * o.mods (with its own names if it likes). */
@@ -639,14 +766,15 @@ export function sourcesTray(el, o) {
     const b = mk(d, 'button', 'cv-tile');
     b.type = 'button';
     b.setAttribute('data-model', m.id);
-    const dr = DRUMS(m), pa = PATCH(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals; (9) nor a patch set's)
+    const dr = DRUMS(m), pa = PATCH(m), rg = isRigModel(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals; (9) nor a patch set's; (WC) the rig is ours: no maker)
     b.title = dr ? `${meta.label} (${meta.year}) — ${DR_TIP[m.id] || 'our model of its circuits, not recordings'} — tap to use it, or drag it onto the canvas or the track list`
       : pa ? `${meta.label} (${meta.year}) — the whole set of modules, patched with cords and ready to play (our model of its circuits) — tap to use it, or drag it onto the canvas or the track list`
+      : rg ? `${meta.label} (${meta.year}) — our modular synth: modules patched with cords, ${RIG_GIVES()} — tap to use it, or drag it onto the canvas or the track list`
       : `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
-    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : pa ? `${meta.year} · modular system` : `${meta.year} · ${meta.maker}`);
+    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : pa ? `${meta.year} · modular system` : rg ? `${meta.year} · ${RIG_META}` : `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
     if (CLASSIC(m)) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
@@ -789,36 +917,49 @@ export function sourcesTray(el, o) {
     for (const [id, T] of stiles) fill(T, o.setCost, id); // ((9b, review 2 N3) the set tiles' load, as the Model 15 tile's)
   }
   refreshMoog();
-  // (milestone 3) the Serum parts and note tools: a section per group (the host's elements, else made in o.secEl / el)
+  // (milestone 3; WC, IMPL-WC §7) the rig's module tiles and note tools: a section per group — a views' section of that id ('rigmods',
+  // 'rignotes'): the host's elements (o.partsEl / o.partsSec, o.notesEl / o.notesSec), else made in o.secEl / el; each heading is the
+  // section's `head` (RIG.NAME's: written into the host's section here — index.html holds no name). A tile is live while its cut ≤
+  // RIG_CUT; a group with no live tile is a placeholder (below)
   const ptiles = new Map(), pplaced = new Map(), pbox = new Map(); // id → {b, rs, tip, name, group}; group → {sec, box, head}
-  const PT = Array.isArray(o.parts) ? o.parts : o.parts === true ? PART_TILES : null;
+  const PT = Array.isArray(o.parts) ? o.parts : o.parts === true ? RIG_TILES : null;
+  const secOf = g => { for (const V of VIEWS) for (const S of V.sections || []) if (S && S.id === g) return S; return null; };
+  const headOf = g => { const S = secOf(g); return (S && S.head) || g; };
+  const OWN = { rigmods: ['partsEl', 'partsSec'], rignotes: ['notesEl', 'notesSec'] }; // (the host's box and section of a group)
+  const hostOf = g => (OWN[g] && o[OWN[g][0]] ? { box: o[OWN[g][0]], sec: o[OWN[g][1]] || null } : null);
+  // a host's section gets the group's heading (first) and label; destroy gives the section back as it was
+  const headHost = (sec, g) => {
+    const h = mk(d, 'h3', 'cv-tgrp', headOf(g)), had = sec.getAttribute('aria-label');
+    sec.insertBefore(h, sec.firstChild || null);
+    sec.setAttribute('aria-label', headOf(g));
+    offs.push(() => { h.remove(); if (had == null) sec.removeAttribute('aria-label'); else sec.setAttribute('aria-label', had); });
+  };
   if (PT) {
     const pick = o.partPick || o.pick, drag = o.partDrag || o.drag || {};
     const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
-    const HEAD = { parts: 'Serum parts', notes: 'Note tools' };
     const boxOf = g => {
       let B = pbox.get(g);
       if (B) return B;
-      const own = g === 'notes' ? o.notesEl : o.partsEl;
-      if (own) B = { sec: (g === 'notes' ? o.notesSec : o.partsSec) || null, box: own, head: null };
+      const H = hostOf(g);
+      if (H) { B = { sec: H.sec, box: H.box, head: null }; if (H.sec) headHost(H.sec, g); }
       else if (o.secEl) {
         const sec = mk(d, 'section', 'cv-tsec cv-psec'), box = mk(d, 'div', 'cv-tiles cv-ptiles');
-        sec.setAttribute('data-sec', g); sec.setAttribute('aria-label', HEAD[g] || g);
-        sec.append(mk(d, 'h3', 'cv-tgrp', HEAD[g] || g), box);
+        sec.setAttribute('data-sec', g); sec.setAttribute('aria-label', headOf(g));
+        sec.append(mk(d, 'h3', 'cv-tgrp', headOf(g)), box);
         o.secEl.appendChild(sec);
         offs.push(() => sec.remove());
         B = { sec, box, head: null };
-      } else { const hd = mk(d, 'h3', 'cv-tgrp cv-phead', HEAD[g] || g); el.appendChild(hd); offs.push(() => hd.remove()); B = { sec: null, box: el, head: hd }; }
+      } else { const hd = mk(d, 'h3', 'cv-tgrp cv-phead', headOf(g)); el.appendChild(hd); offs.push(() => hd.remove()); B = { sec: null, box: el, head: hd }; }
       pbox.set(g, B);
       return B;
     };
     for (const m of PT) {
       const id = m && typeof m.id === 'string' ? m.id : null;
-      if (!id || ptiles.has(id)) continue;
-      const g = m.group === 'notes' ? 'notes' : 'parts', name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-ptile');
+      if (!id || ptiles.has(id) || (m.cut | 0) > RIG_CUT) continue; // ((WC) a later cut's kind: no tile yet — its group may be a placeholder)
+      const g = m.group === 'rignotes' ? 'rignotes' : 'rigmods', name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-ptile');
       b.type = 'button';
       b.setAttribute('data-part', id); b.setAttribute('data-group', g);
-      const tip = `${name} — tap to add it to this track's Serum, or drag it onto the canvas`;
+      const tip = `${name} — tap to add it to this track's ${RIG.NAME} (or start one with it), or drag it onto the canvas`;
       b.title = tip;
       const pic = mk(d, 'span', 'cv-mglyph');
       pic.setAttribute('aria-hidden', 'true');
@@ -831,18 +972,29 @@ export function sourcesTray(el, o) {
       const dd = { begin: (x, i) => { i.part = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.part = true; if (drag.move) drag.move(x, i); },
         drop: (x, i) => { i.part = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.part = true; if (drag.cancel) drag.cancel(x, i); } };
       offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.partCanvasGhost }), b, id, { pic: () => partGlyph(id), picCls: 'cv-mglyph', cls: 'cv-mghost', off,
-        norm: r => ({ over: (r && typeof r === 'object' ? r.over : r) === 'canvas' ? 'canvas' : null, key: null, near: null }), at,
-        label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
+        norm: r => { const v = r && typeof r === 'object' ? r.over : r; return { over: v === 'canvas' || v === 'tracks' ? v : null, key: null, near: null }; }, at, // ((WC, integration fixer L — review WC-int B4) the track list: a new track with it, as a Moog tile
+        label: over => (over === 'canvas' ? '+ Add ' + name : over === 'tracks' ? '+ New track' : '') }));
       boxOf(g).box.appendChild(b);
       ptiles.set(id, { b, rs, tip, name, group: g });
       offs.push(() => b.remove());
     }
   }
   // the placeholder sections (a heading, a one-line note), once each, in o.secEl after the Modulators ((3) not for a group
-  // the parts tiles fill)
+  // the parts tiles fill; (WC) a group the host has a section for — Note tools — is that section: the heading, the note, the
+  // cv-tsoon class, its empty tile box hidden; given back as it was at destroy)
   const secs = new Map();
   for (const V of VIEWS) for (const S of V.sections || []) {
-    if (!o.secEl || !S || S.models || S.id === 'mods' || !S.head || secs.has(S.id) || pbox.has(S.id)) continue;
+    if (!S || S.models || S.id === 'mods' || !S.head || secs.has(S.id) || pbox.has(S.id)) continue;
+    const H = hostOf(S.id);
+    if (H && H.sec) {
+      const sec = H.sec, p = mk(d, 'p', 'cv-tnote', S.note || ''), was = H.box.hidden;
+      headHost(sec, S.id);
+      sec.appendChild(p); sec.classList.add('cv-tsoon'); H.box.hidden = true;
+      offs.push(() => { p.remove(); sec.classList.remove('cv-tsoon'); H.box.hidden = was; });
+      secs.set(S.id, sec);
+      continue;
+    }
+    if (!o.secEl) continue;
     const sec = mk(d, 'section', 'cv-tsec cv-tsoon');
     sec.setAttribute('data-sec', S.id); sec.setAttribute('aria-label', S.head);
     sec.append(mk(d, 'h3', 'cv-tgrp', S.head), mk(d, 'p', 'cv-tnote', S.note || ''));
@@ -942,7 +1094,7 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'rig' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
@@ -967,7 +1119,7 @@ export function sourcesTray(el, o) {
       T.b.setAttribute('aria-label', r ? T.aria + ' — ' + r : T.aria);
     },
     setPlacedOf: id => splaced.get(id) || null,
-    /** (milestone 3) the Serum parts / note tools tiles; greying one out with its reason (null: available again) */
+    /** (milestone 3; WC) the rig's module tiles (the live ones); greying one out with its reason (rigFull's; null: available again) */
     partTiles: () => [...ptiles.values()].map(T => T.b), partTile: id => (ptiles.get(id) || {}).b || null,
     setPartPlaced(id, reason) {
       const T = ptiles.get(id);

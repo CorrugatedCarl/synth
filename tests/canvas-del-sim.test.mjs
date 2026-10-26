@@ -83,6 +83,14 @@ function press(key, o = {}) {
   return !!e.prevented;
 }
 const sel = (...ids) => W().selectMany(ids);
+// ((WC, IMPL-WC §6) the parts view is the rig's: a Serum has no Show parts any more. Lane H's conversion is not in yet, so the sim sets what it
+// will write — the model 'rig' (the same state: W2) and the lay flag — and lets the view re-render, as Show parts' step did)
+async function rigParts(dev = 'i1') {
+  const t = T();
+  t.dev[dev].model = 'rig';
+  t.lay = Object.assign({}, t.lay || {}, { [dev]: Object.assign({}, (t.lay || {})[dev] || { x: 0, y: 0 }, { ui: 'parts' }) });
+  cv.renderViews(); await settle(2);
+}
 
 test('the harness: the CANVAS view shows (ROLL hidden), a Serum on track 1, the world a selection of several', () => {
   cv.openTab('canvas');
@@ -138,15 +146,15 @@ test('the instrument / OUT alone: nothing deleted, no step — a notice says why
   assert.deepEqual([has('l1'), has('m1'), hsteps()], [true, true, n0]);
 });
 
-test('a selected Serum part is removed (its ⋯ Remove: ⏻ off, one step); two parts and VOICE in one press: both removed in ONE step whose undo turns both back on (the merged ⏻ meta) and whose redo turns both off', async () => {
-  assert.equal(PT.show('i1'), true); await settle(2);
+test('a selected rig part is removed (its ⋯ Remove: ⏻ off, one step); two parts and VOICE in one press: both removed in ONE step whose undo turns both back on (the merged ⏻ meta) and whose redo turns both off', async () => {
+  await rigParts();
   assert.equal(PT.add('i1', 'osc'), 'oscB'); await settle();
   assert.equal(PT.add('i1', 'osc'), 'oscC'); await settle();
   assert.deepEqual([base('b.on'), base('c.on'), has('i1/oscB'), has('i1/oscC')], [1, 1, true, true]);
   const n0 = hsteps();
   sel('i1/oscC');
   press('Delete'); await settle();
-  assert.deepEqual([base('c.on'), has('i1/oscC'), hsteps(), cv.hist.undoLabel, note()], [0, false, n0 + 1, 'Remove OSC C', 'Deleted OSC C · tap to undo']);
+  assert.deepEqual([base('c.on'), has('i1/oscC'), hsteps(), cv.hist.undoLabel, note()], [0, false, n0 + 1, 'Remove Oscillator 3', 'Deleted Oscillator 3 · tap to undo']); // ((WC, lane H) the rig's names
   cv.undo(); await settle();
   assert.deepEqual([base('c.on'), has('i1/oscC'), hsteps()], [1, true, n0]);
   sel('i1/oscB', 'i1', 'i1/oscC');
@@ -169,7 +177,7 @@ test('a selected Serum part is removed (its ⋯ Remove: ⏻ off, one step); two 
   sel('i1/lfo2', 'i1/oscC');
   press('Delete'); await settle();
   assert.deepEqual([has('i1/lfo2'), has('i1/oscC'), hsteps()], [true, false, n1 + 1]);
-  assert.match(note(), /^Deleted OSC C · LFO 2 modulates 1 knob · its ⋯ → Remove All Destinations first · tap to undo$/);
+  assert.match(note(), /^Deleted Oscillator 3 · LFO 2 modulates 1 knob · its ⋯ → Remove All Destinations first · tap to undo$/);
   cv.undo(); await settle();
   assert.equal(has('i1/oscC'), true);
 });

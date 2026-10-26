@@ -45,12 +45,19 @@
 //  13  stage P (IMPL-P §3): no artificial caps — a 900 Series patch of up to 512 modules / 4096 cords, a track of up to 1024 devices (4096 wires / mod rows / layout entries),
 //      up to 64 Pads modules: the same fields, bounded higher, so STEPS[12] is the identity (every 12 reads unchanged). A schema-12 build normalises to the old
 //      bounds (48 modules, a track's 64th device, 8 Pads) and would autosave the cut: it opens a 13 read-only
+//  14  stage M (IMPL-M §2.3): project.master — its FX rack and canvas: additive, the identity (a 14 opens read-only in a 13 build)
+//  15  stage SC (IMPL-SC §5.3): the 'duck' FX type and the compressor's v3 (its sidechain key) in any rack's FX state: additive, the identity
+//  16  stage WC (IMPL-WC §2.4): the rig (rig-core RIG.NAME) — a 'rig' instrument device (model 'rig', its `rig` record: cord colours, module ordinals; song.normDev
+//      → rig-core normRig) and a Serum shown as parts opens WHOLE: STEPS[15] drops the lay entry's ui 'parts' (its 'iN/*' entries stay for
+//      "Make it a <NAME>") and names the track in upgrade()'s `notes`. A schema-15 build would read 'rig' as a Minimoog (modelById's
+//      fallback), drop `rig` and autosave the loss: it opens a 16 read-only. toV1 saves a rig as a Serum (the same vals.s / fx: the same sound)
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
 // before it.
-//   upgrade(o)              a parsed project (autosave or file) → { p, from, readOnly }: p is o brought to SCHEMA by STEPS
-//                           (o itself untouched), or o as it is when it is newer (readOnly)
+//   upgrade(o)              a parsed project (autosave or file) → { p, from, readOnly, notes }: p is o brought to SCHEMA by STEPS
+//                           (o itself untouched), or o as it is when it is newer (readOnly); notes: what a step tells the user
+//                           (STEPS[15]'s parts-view Serums; [] from every other step — the loader shows them with the 1f idiom)
 //   stamp(p, src)           a project p made by song.js (newProject / deserialize, which keep only the fields they know)
 //                           gets src's uid (when valid; else a new one) and schema = SCHEMA → p
 //   schemaOf(x)             (appstore.js) the schema of a project object or JSON text; 0 for none
@@ -96,13 +103,14 @@ import { defaultFx2 } from './serum-core.js?v=9';
 import { modLabelOf, modDevs } from './cv-mods.js?v=9';
 import * as cvModule from './cv-module.js?v=9'; // (STEPS[6]: the module sizes, read-only)
 import { usable as hwUsable, sizeOf as hwSizeOf } from './cv-panel.js?v=9';
-import { MODELS } from './models.js?v=9';
+import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxId: a Serum-engine device — the Serum and the rig — keeps its FX inside; the lone 'serum' literals are the bundled Serum (partsWhole) and toV1's rig → Serum target)
 import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
+import { RIG } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it)
 
 export { schemaOf };
-export const SCHEMA = 15;
+export const SCHEMA = 16;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -155,18 +163,46 @@ export const STEPS = Object.freeze([
   // schema-14 build's normalizeFx2 drops an unknown type (a Ducker: fx-core.js normalizeFx2) and reads an unknown variant as the
   // highest it knows (a v3 compressor becomes a v2, its key rows and sub.src gone) and would autosave the loss: it opens a 15 read-only
   p => Object.assign({}, p, { schema: 15 }),
+  // 15 → 16: stage WC, the rig (IMPL-WC §2.4): a 'rig' device (model 'rig', its `rig` record — song.normDev) is additive; a Serum shown as
+  // parts (lay[iN].ui 'parts') opens WHOLE — the flag goes, its 'iN/*' entries stay (harmless data the bundled view ignores; the positions
+  // "Make it a <NAME>" reuses), the track named in `notes` (partsWhole). Sound-neutral: lay only (IMPL-3 N2). A schema-15 build would read
+  // 'rig' as a Minimoog (modelById's fallback), drop `rig` and autosave the loss: it opens a 16 read-only
+  (p, notes) => Object.assign(partsWhole(p, notes), { schema: 16 }),
 ]);
 
 export function upgrade(o) {
   if (!isObj(o)) throw new Error('Not a SYNTH project');
-  const from = schemaOf(o);
-  if (from > SCHEMA) return { p: o, from, readOnly: true };
+  const from = schemaOf(o), notes = [];
+  if (from > SCHEMA) return { p: o, from, readOnly: true, notes };
   let p = o;
-  for (let n = from; n < SCHEMA; n++) p = STEPS[n](p);
+  for (let n = from; n < SCHEMA; n++) p = STEPS[n](p, notes);
   if (p === o) p = Object.assign({}, o); // (already at SCHEMA: still a copy)
   if (!isUid(p.uid)) p.uid = newUid();
   p.schema = SCHEMA;
-  return { p, from, readOnly: false };
+  return { p, from, readOnly: false, notes };
+}
+// (WC) STEPS[15]: every Serum device shown as parts opens whole — its lay entry's `ui` goes, the 'iN/*' entries stay; one note per such device
+// (the track, its name when the device has one), plus one when link rows leave from its parts ('iN/lfo3.out' → another device's knob: they
+// compile, cv-mods, but draw nothing while whole, cv-cables) → a new project (changed tracks copied with a new lay; the input untouched)
+function partsWhole(p, notes) {
+  if (!isObj(p) || !Array.isArray(p.tracks)) return Object.assign({}, p);
+  const N = Array.isArray(notes) ? notes : [];
+  const tracks = p.tracks.map(t => {
+    if (!isObj(t) || !isObj(t.dev) || !isObj(t.lay)) return t;
+    let lay = null;
+    for (const k of Object.keys(t.dev)) {
+      const d = t.dev[k], e = t.lay[k];
+      if (!isObj(d) || d.kind !== 'synth' || d.model !== 'serum' || !isObj(e) || e.ui !== 'parts') continue;
+      lay = lay || Object.assign({}, t.lay);
+      lay[k] = Object.assign({}, e); delete lay[k].ui;
+      const who = typeof d.name === 'string' && d.name ? `its Serum “${d.name}”` : 'its Serum';
+      N.push(`“${t.name}”: ${who} was shown as parts — it opens whole now. ⋯ → Make it a ${RIG.NAME} keeps the parts as a ${RIG.NAME} (same sound)`);
+      const n = (Array.isArray(t.mods) ? t.mods : []).filter(r => isObj(r) && typeof r.src === 'string' && r.src.startsWith(k + '/')).length;
+      if (n) N.push(`“${t.name}”: ${n} modulation cable${n > 1 ? 's' : ''} from its parts ${n > 1 ? 'are' : 'is'} hidden while whole — Make it a ${RIG.NAME} shows ${n > 1 ? 'them' : 'it'}`);
+    }
+    return lay ? Object.assign({}, t, { lay }) : t;
+  });
+  return Object.assign({}, p, { tracks });
 }
 
 export function stamp(p, src) {
@@ -183,7 +219,7 @@ export function trackToV2(t) {
   const o = {};
   for (const k of Object.keys(t)) if (!V1_KEYS.includes(k)) o[k] = t[k];
   if (isObj(t.dev)) return o; // (already v2: a file's mirror is dropped)
-  const sx = t.model === 'serum';
+  const sx = isSxId(t.model);
   const i1 = { kind: 'synth', model: typeof t.model === 'string' ? t.model : 'minimoog', vals: isObj(t.vals) ? t.vals : {}, preset: t.preset === undefined ? null : t.preset };
   if (t.seq != null) i1.seq = t.seq;
   if (sx) {
@@ -211,8 +247,8 @@ export function panelOf(t, id) {
 const v1Of = (d, fx) => { const o = { model: d.model, vals: d.vals, preset: d.preset === undefined ? null : d.preset }; if (d.seq != null) o.seq = d.seq; o.fx = fx; return o; };
 // an instrument device's v1 fields: a Serum its own FX, a classic one the panel it feeds (else an empty rack)
 function instV1(t, id) {
-  const d = t.dev[id], pid = d.model === 'serum' ? null : panelOf(t, id);
-  return v1Of(d, d.model === 'serum' ? (d.fx != null ? d.fx : defaultFx2()) : pid && t.dev[pid].fx != null ? t.dev[pid].fx : defaultFx2());
+  const d = t.dev[id], pid = isSxId(d.model) ? null : panelOf(t, id);
+  return v1Of(d, isSxId(d.model) ? (d.fx != null ? d.fx : defaultFx2()) : pid && t.dev[pid].fx != null ? t.dev[pid].fx : defaultFx2());
 }
 export function primV1(t) {
   if (!isObj(t) || !isObj(t.dev)) return null;
@@ -253,6 +289,18 @@ export function toV1(p0) {
   if (Array.isArray(p.pads) && p.pads.length) lost.push(`the Pads controllers (${p.pads.length})`); // (stage 8: main has no pad controller; their mod rows are in each track's cable count)
   { const n = masterCount(p.master); if (n) lost.push(`the master effects (${n})`); } // (stage M: main has no master rack; an empty one says nothing)
   delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads; delete p.master;
+  // (WC, IMPL-WC §2.4) a rig becomes a Serum device with the same vals.s / fx / preset — main opens it as a bundled Serum, the same
+  // sound (W2); its `rig` record (cord colours, module ordinals) and its modules' lay entries 'iN/<part>' go ('iN/fx' is a Serum's too: kept)
+  for (const t of p.tracks) {
+    if (!isObj(t) || !isObj(t.dev)) continue;
+    for (const k of Object.keys(t.dev)) {
+      const d = t.dev[k];
+      if (!isObj(d) || d.kind !== 'synth' || d.model !== RIG.ID) continue;
+      d.model = 'serum'; delete d.rig;
+      if (isObj(t.lay)) for (const key of Object.keys(t.lay)) if (key.startsWith(k + '/') && key !== k + '/fx') delete t.lay[key];
+      lost.push(`“${t.name}”: ${RIG.NAME} is saved as a Serum (same sound; the live site has no ${RIG.NAME})`);
+    }
+  }
   const out = [], ids = new Set(p.tracks.map(t => isObj(t) && t.id));
   let n = 0;
   const freshId = () => { let id; do id = 'trk_' + (1000 + ++n); while (ids.has(id)); ids.add(id); return id; };
@@ -276,8 +324,8 @@ export function toV1(p0) {
       if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (d.name || d.model); delete tr.lay; }
       const nm = `“${tr.name}”: `;
       if (isPatchModel(d.model)) lost.push(patchLine(tr.name, d));
-      if (via && d.model === 'serum') lost.push(`“${t.name}”: the panel ${via} after the Serum (its effects are not in the Serum’s track)`);
-      else if (via && srcs(via).filter(k => t.dev[k].model !== 'serum').length > 1) lost.push(`“${t.name}”: the shared panel ${via} (copied for each instrument)`);
+      if (via && isSxId(d.model)) lost.push(`“${t.name}”: the panel ${via} after the Serum (its effects are not in the Serum’s track)`);
+      else if (via && srcs(via).filter(k => !isSxId(t.dev[k].model)).length > 1) lost.push(`“${t.name}”: the shared panel ${via} (copied for each instrument)`);
       // (each becomes a track of its own that sounds: say so of one that did not)
       if (d.on === false) lost.push(nm + 'was switched off');
       else if (!end || kindOf(t.dev[end.id]) !== 'out') lost.push(nm + 'was not connected (it sounds now)');
@@ -335,7 +383,7 @@ function single(t) {
   let c = null;
   try { c = compileTrack(t); } catch { return false; }
   if (!c.canonical) return false;
-  const sx = t.dev[ins[0]].model === 'serum', pid = sx ? null : panelOf(t, ins[0]);
+  const sx = isSxId(t.dev[ins[0]].model), pid = sx ? null : panelOf(t, ins[0]);
   return (sx || !!pid) && Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out' || kindOf(t.dev[k]) === 'mod');
 }
 // (2a / 2b) the rows of t that end on instrument id and start at the project wheel, any port of a modulator of t or the
@@ -377,7 +425,7 @@ export function splitTracks(p, o = {}) {
     const used = new Set(R.map(r => r.via).filter(Boolean)), why = [];
     let kept = 0;
     R.forEach(({ id, d, v, to, via, end, heard }, i) => {
-      const tr = coreOf(t), dv = Object.assign({}, d), sx = d.model === 'serum', lost = [];
+      const tr = coreOf(t), dv = Object.assign({}, d), sx = isSxId(d.model), lost = [];
       for (const k of ['on', 'solo', 'zone', 'fx']) delete dv[k];
       if (!heard) {
         tr.mute = true; // (it did not sound: it stays quiet until unmuted)
@@ -453,7 +501,7 @@ function rectOf(d, e, w) {
   const fold = !!(e && e.fold), H = cvModule.BAR_H;
   let W, h;
   if (d.kind === 'inst') {
-    const m = MODELS.find(x => x.id === d.model) || null, L = m && !m.custom && !(e && e.ui === 'flow') ? hwUsable(m.id, m) : null, z = L ? hwSizeOf(L, m) : cvModule.sizeFor(d.model);
+    const m = MODELS.find(x => x.id === d.model) || null, L = m && !isSxModel(m) && !(e && e.ui === 'flow') ? hwUsable(m.id, m) : null, z = L ? hwSizeOf(L, m) : cvModule.sizeFor(d.model);
     W = z.w; h = z.h;
   } else if (d.kind === 'mod') { W = w; h = cvModule.MOD_H[d.mod || cvModule.modKind(d.key)] || cvModule.MOD_H.at; }
   else if (d.kind === 'out') { W = cvModule.W_OUT; h = H_OUT; } else { W = cvModule.W_FX; h = H_FX; }

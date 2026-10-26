@@ -40,7 +40,7 @@
 //   classOf(modelId, ctlId) → class | null      counts(table) → { none, sm, apply, proc, chunk, struct }
 //   fieldClass(path, engine)                     classTable() → { modelId: { ctlId: class } }
 //   sweepControl(model, ctl) → { cls, fields }   the fields: normalised patch paths ('osc.lev', 'ops.R', 'mod3?' = presence)
-import { MODELS } from './models.js?v=9';
+import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxModel / isSxId: the Serum-engine models — the Serum and the rig — take the Serum's destinations and link sources)
 import { DESTS, FXP_TAB } from './serum-core.js?v=9';
 import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS, PAD_ID } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
 
@@ -101,7 +101,7 @@ const G = { drift: 0.5, hiss: 0, sr: 48000, bpm: 120, smooth: 1, fx: null, qr: n
 const modelOf = m => (typeof m === 'string' ? MODELS.find(x => x.id === m) : m);
 // no classic modulation: Serum (its own matrix) and, from stage 9, a patch model (the 900 Series: its controller's knobs are flat ids of another engine, its modules' are vals.p;
 // a cable on a patch is a later stage — IMPL-9 §4.8). The drums stay in: their knobs are classic ones (proc).
-const noClassic = m => !m || m.custom || m.family === 'patch';
+const noClassic = m => !m || isSxModel(m) || m.family === 'patch';
 const isObj = x => x !== null && typeof x === 'object';
 // the model's map of panel values v (as patchFor: P = each control's converted value)
 export function patchOf(model, v) {
@@ -393,7 +393,7 @@ export function rackDescs(rack) {
 // (a panel: its FX state whole, as stage 1c keeps it, else §5.1's single-rack form)
 export function descs(dev) {
   if (!isObj(dev)) return [];
-  if (dev.kind === 'synth') return dev.model === 'serum' ? serumDescs().concat(rackDescs(dev.fx)) : classicDescs(dev.model);
+  if (dev.kind === 'synth') return isSxId(dev.model) ? serumDescs().concat(rackDescs(dev.fx)) : classicDescs(dev.model);
   if (dev.kind === 'panel') return rackDescs(isObj(dev.fx) ? dev.fx : dev.rack);
   return [];
 }
@@ -480,7 +480,7 @@ export function srcDev(t, src) {
   if (padOfSrc(src)) return { q, dev: null, kind: 'pad' }; // (IMPL-8 §5.1: project-level, as the wheel — no 'pd<n>' device on a track)
   const d = D[q.dev];
   if (!isObj(d)) return null;
-  if (q.link) return d.kind === 'synth' && d.model === 'serum' && q.port === 'out' ? { q, dev: d, kind: 'link' } : null;
+  if (q.link) return d.kind === 'synth' && isSxId(d.model) && q.port === 'out' ? { q, dev: d, kind: 'link' } : null;
   if (d.kind === 'macro') return /^k[1-8]$/.test(q.port) && kindOfId(q.dev) === 'macro' ? { q, dev: d, kind: 'macro' } : null;
   return MOD_LABEL[d.kind] && d.kind !== 'wheel' && kindOfId(q.dev) === d.kind && q.port === 'out' ? { q, dev: d, kind: d.kind } : null;
 }
@@ -527,8 +527,8 @@ export function linkSources(t) {
   const D = isObj(t) && isObj(t.dev) ? t.dev : {}, out = [];
   for (const id of Object.keys(D)) {
     const d = D[id];
-    if (!isObj(d) || d.kind !== 'synth' || d.model !== 'serum') continue;
-    const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || 'Serum';
+    if (!isObj(d) || d.kind !== 'synth' || !isSxId(d.model)) continue;
+    const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || (MODELS.find(m => m.id === d.model) || { name: 'Serum' }).name; // ((WC, G13) the model's own name: a rig's not 'Serum'
     const used = x => M.some(r => isObj(r) && r.dst && (r.src === x || r.src === x + 'y' || r.aux === x));
     for (let l = 1; l <= 10; l++) out.push({ id: `${id}/lfo${l}.out`, label: `${name} LFO ${l}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'lfo' + l, perNote: !!perNoteOf(t, `${id}/lfo${l}.out`), used: used('lfo' + l) });
     for (let e = 1; e <= 4; e++) out.push({ id: `${id}/env${e}.out`, label: `${name} ENV ${e}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'env' + e, perNote: true, used: e === 1 || used('env' + e) });
@@ -595,7 +595,7 @@ export function destOk(dev, id, keep) {
   if (MOD_LABEL[dev.kind]) return no(NOMOD_MOD);
   if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
   if (dev.kind !== 'synth') return no(NOMOD);
-  if (dev.model !== 'serum') {
+  if (!isSxId(dev.model)) {
     const c = classOf(dev.model, id);
     if (c === null || c === 'struct' || c === 'none') return no(NOMOD);
     if (c === 'chunk') return no('This knob takes modulation from stage 5', '5');
