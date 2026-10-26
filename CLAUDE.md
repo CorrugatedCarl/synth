@@ -62,6 +62,10 @@ The user's Mac crashed twice from test memory blowups (one full run peaked at 47
 - Original content only: never copy Xfer (Serum) wavetables, presets, samples or manual text; instrument art/panels are original (no logos).
 - Don't change macOS system/privacy settings; the user does that.
 - Code style: dense, terse comments in the existing voice; match surrounding idioms.
+- Headless browser tests (CDP scripts, reviewers, fixers) use **Chrome for Testing**, never the user's Google Chrome (a headless copy of
+  /Applications/Google Chrome.app makes macOS hand the user's own Chrome launch to it — no window opens; the user, 2026-10-26):
+  `.claude/test-browser/156.0.8078.47/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
+  (gitignored; Google's official build), always with its own `--user-data-dir` in the scratchpad; kill it when done.
 - Local preview: `.claude/launch.json` config `synth` (`node .claude/serve.mjs`, port 8817, no-store). Check desktop (1440×900) and iPad
   sizes (1366×1024, 1024×1366); reset viewport emulation afterwards.
 - Long background work stops if the Mac sleeps (closed lid): ask the user to keep it plugged in with the lid open.
