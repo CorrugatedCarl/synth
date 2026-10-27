@@ -230,7 +230,7 @@ function fakeGL() {
   const rec = (k, a) => { calls.push([k, ...a.map(x => (x && typeof x === 'object' && !ArrayBuffer.isView(x) ? x.tag || '[obj]' : ArrayBuffer.isView(x) ? Array.from(x) : x))]); };
   const fn = (k, r) => { gl[k] = (...a) => { rec(k, a); return typeof r === 'function' ? r(...a) : r; }; };
   for (const k of ['compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'deleteProgram', 'useProgram', 'bindVertexArray', 'bindBuffer', 'bufferData', 'bufferSubData',
-    'enableVertexAttribArray', 'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'uniform4fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear',
+    'enableVertexAttribArray', 'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'uniform4fv', 'uniform1i', 'uniform2iv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear',
     'drawArrays', 'drawArraysInstanced']) fn(k);
   fn('shaderSource', (s, src) => { gl.src.push(src); });
   fn('createShader', () => ({ tag: 'shader' }));
@@ -1177,4 +1177,98 @@ test('(WC, fixer K; review P3-13) a rig\'s own mod cord (o 0.85, lighter over th
   eq([g.getAttribute('opacity'), g.children.filter(n => n.localName === 'path').map(p => p.getAttribute('opacity')), kids(g)[0].getAttribute('opacity'), kids(g)[1].getAttribute('opacity')],
     [null, ['0.85', '0.85', '0.85', '0.85'], null, '0.85'], 'the strokes and the knob end at 0.85, the plug opaque');
   eq(g2.getAttribute('opacity'), '0.45', 'an off cord: the whole group as before');
+});
+
+/* ------------------------------------------------------------------ (the user, 2026-10-26) stacked plugs, cables behind the modules */
+test('(the user, 2026-10-26: stacked plugs, "newest on top") the cords are drawn in the list\'s order — the last on top (its rope and its plugs after the others: a stacked jack\'s newest plug over the rest): a set() in another order re-orders the layer (one new layout, nothing re-seeded), the same order keeps it', () => {
+  const S = setup(), gl = S.gl;
+  S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 1000, 600, 1);
+  const f0 = S.L.stats().fulls, mid = S.L.pointAt('c1', 0.5);
+  let plugs = lastBytes(gl)[1];
+  eq([plugs[0], plugs[1], plugs[10], plugs[11]], [100, 100, 120, 500], 'c1 first, c2 after');
+  S.L.set([LIST[1], LIST[0]]); S.L.draw(cam, 1000, 600, 1);
+  plugs = lastBytes(gl)[1];
+  eq([plugs[0], plugs[1], plugs[10], plugs[11]], [120, 500, 100, 100], 'c2 first now, c1 last: on top');
+  eq(S.L.stats().fulls, f0 + 1, 'one new layout');
+  nearPt(S.L.pointAt('c1', 0.5), mid, 'nothing re-seeded');
+  S.L.set([LIST[1], LIST[0]].map(c => Object.assign({}, c))); S.L.draw(cam, 1000, 600, 1);
+  eq(S.L.stats().fulls, f0 + 1, 'the same order: no new layout');
+  const V = setup({ opts: { mode: 'svg' } });
+  V.L.anchors(PORTS()); V.L.set(LIST); V.L.set([LIST[1], LIST[0]]);
+  const g = dom.one(V.w, 'cv-cords-svg').children.filter(n => n.localName === 'g');
+  eq(g.map(n => n.children.filter(x => x.localName === 'g')[0].getAttribute('transform')), ['translate(120.0 500.0)', 'translate(100.0 100.0)'], 'the SVG fallback: its groups in the list\'s order');
+});
+
+test('(the user, 2026-10-26: "we need a button that makes cables go behind") behind(fn): the rope bodies — the shadow and the cord passes — are drawn BEHIND the boxes fn writes at each draw (the modules\' world rects: discarded inside them), the plugs on top; a KNOB end (it goes into its knob, on the panel) hides with its rope; the live rope, the cord in the finger and the selected cord stay whole on top; behind(null): as before. Never told (the default): no hide uniform written, the bytes as before', () => {
+  const A = setup(), B = setup();
+  for (const X of [A, B]) { X.L.anchors(PORTS()); X.L.set(LIST); }
+  B.L.behind(null);
+  A.L.draw(cam, 1000, 600, 1); B.L.draw(cam, 1000, 600, 1);
+  eq([A.gl.count('uniform1i'), A.gl.count('uniform2iv'), A.gl.calls.filter(c => c[0] === 'uniform4fv' && c[1] === 'u:hb').length, B.gl.count('uniform1i')], [0, 0, 0, 0], 'off: no hide uniform');
+  eq(lastBytes(A.gl), lastBytes(B.gl), 'the same bytes');
+  eq(C.HIDE_MAX, 64, 'up to 64 boxes');
+  const S = setup(), gl = S.gl, asked = [];
+  let boxes = [[150, 50, 350, 200]];
+  S.L.anchors(PORTS()); S.L.set(LIST);
+  S.L.behind((out, max) => { asked.push(max); boxes.forEach((b, i) => out.set(b, 4 * i)); return boxes.length; });
+  S.L.draw(cam, 1000, 600, 1);
+  const fs = gl.src.find(x => /flat in float wpx/.test(x)), vs = gl.src.find(x => /layout\(location=2\) in vec3 a/.test(x)), pfs = gl.src.find(x => /rb\(vec2 p,vec2 b,float r\)/.test(x)), pvs = gl.src.find(x => /layout\(location=2\) in float fl/.test(x));
+  ok(/uniform vec4 hb\[64\]/.test(fs) && /uniform int nh/.test(fs) && /discard/.test(fs), 'the strip: discarded inside the boxes');
+  ok(/gl_VertexID/.test(vs) && /uniform ivec2 fr\[3\]/.test(vs), 'its front ranges by vertex');
+  const d = pfs.indexOf('discard');
+  ok(d > pfs.indexOf('if(shp>2.5)') && d < pfs.indexOf('if(shp>1.5)') && pfs.indexOf('discard', d + 1) < 0 && /gl_InstanceID/.test(pvs), 'the plug shader: only the knob end hides (a plug never)');
+  const last = (k, u) => gl.calls.filter(c => c[0] === k && c[1] === u).pop();
+  eq([asked.at(-1), last('uniform1i', 'u:nh'), last('uniform4fv', 'u:hb'), last('uniform2iv', 'u:fr'), last('uniform2iv', 'u:fp')],
+    [64, ['uniform1i', 'u:nh', 1], ['uniform4fv', 'u:hb', [150, 50, 350, 200]], ['uniform2iv', 'u:fr', [0, 0, 0, 0, 0, 0]], ['uniform2iv', 'u:fp', [0, 0, 0, 0, 0, 0]]], 'on: the boxes, nothing in front');
+  eq(gl.calls.filter(c => c[0] === 'uniform1i').length, 2, 'both programs');
+  // the hit: inside a box the rope is behind the panel — a press there is the panel's; outside it the cord's
+  const mid = S.L.pointAt('c1', 0.5), start = S.L.pointAt('c1', 0.04);
+  eq([S.L.hit(mid, 2), S.L.hit(start, 2)], [null, 'c1'], 'behind a box: no hit; in the open: the cord');
+  // the selected cord, the one in the finger, the live rope: whole, on top
+  S.L.sel('c1'); S.L.draw(cam, 1000, 600, 1);
+  eq([last('uniform2iv', 'u:fr')[2], last('uniform2iv', 'u:fp')[2]], [[0, 0, 0, 0, 0, 69], [0, 0, 0, 0, 0, 2]], 'the selected cord (j 0): its vertices and plugs in front');
+  eq(S.L.hit(mid, 2), 'c1', 'and hit where it shows');
+  S.L.sel(null); S.L.grab('c2', 'b', { x: 500, y: 500 }); S.L.draw(cam, 1000, 600, 1);
+  eq([last('uniform2iv', 'u:fr')[2], last('uniform2iv', 'u:fp')[2]], [[0, 0, 69, 138, 0, 0], [0, 0, 2, 4, 0, 0]], 'the cord in the finger (j 1, the last)');
+  S.L.drop(); S.L.live({ a: { x: 100, y: 100 }, b: { x: 600, y: 300 }, c: 1, s: 0 }); S.L.draw(cam, 1000, 600, 1);
+  eq([last('uniform2iv', 'u:fr')[2], last('uniform2iv', 'u:fp')[2]], [[139, 208, 0, 0, 0, 0], [4, 6, 0, 0, 0, 0]], 'the live rope (after the cords: c2 no longer last)');
+  S.L.live(null);
+  boxes = [[0, 0, 10, 10], [20, 20, 30, 30]];
+  S.L.draw({ tx: 5, ty: 0, k: 1 }, 1000, 600, 1);
+  eq([last('uniform1i', 'u:nh'), last('uniform4fv', 'u:hb')[2]], [['uniform1i', 'u:nh', 2], [0, 0, 10, 10, 20, 20, 30, 30]], 'asked again at every draw (a module in the finger)');
+  // off again: one 0, then nothing
+  S.L.behind(null); S.L.draw(cam, 1000, 600, 1);
+  const n1 = gl.calls.length;
+  S.L.draw({ tx: 9, ty: 0, k: 1 }, 1000, 600, 1);
+  eq([last('uniform1i', 'u:nh'), gl.calls.slice(n1).filter(c => c[0] === 'uniform1i' || c[0] === 'uniform2iv').length, S.L.hit(mid, 2)], [['uniform1i', 'u:nh', 0], 0, 'c1'], 'off: nh 0 once, no more hide calls; the rope hit everywhere');
+  // the host's allocation told (the world shows its toolbar toggle on a cord canvas only)
+  const seen = [], H = setup({ opts: { onAlloc: on => seen.push(on) } });
+  H.L.alloc(true); H.L.alloc(false);
+  eq(seen, [true, false], 'onAlloc');
+});
+
+test('(the cables-behind toggle) the SVG fallback: behind(fn) masks each rope\'s strokes (a <mask> of the boxes: white, the boxes black) and a knob end with it — the plugs never; the selected cord unmasked; boxes asked again at each repaint (a module moved: its anchors); behind(null): no mask left (the markup as before)', () => {
+  const V = setup({ opts: { mode: 'svg' } }), J = new Map(PORTS());
+  J.set('i1/lfo1.out', { x: 60, y: 600 }); J.set('knob:k', { x: 380, y: 420 });
+  const list = LIST.concat([{ id: 'k', a: 'i1/lfo1.out', b: 'knob:k', c: 5, s: 2 }]);
+  V.L.anchors(J); V.L.set(list);
+  const root = dom.one(V.w, 'cv-cords-svg'), groups = () => root.children.filter(n => n.localName === 'g');
+  const snap = () => JSON.stringify(dom.all(root).map(n => [n.localName, ...(n._a ? [...n._a].map(([k, v]) => k + '=' + v) : [])]));
+  const before = snap();
+  let boxes = [[150, 50, 350, 200]];
+  V.L.behind((out, max) => { boxes.forEach((b, i) => out.set(b, 4 * i)); return boxes.length; });
+  const defs = root.children.find(n => n.localName === 'defs'), mask = defs && defs.children[0], id = mask && mask.getAttribute('id');
+  ok(mask && mask.localName === 'mask' && /^cv-cords-hide-\d+$/.test(id), 'a mask');
+  const R = mask.children.filter(n => n.localName === 'rect');
+  eq([R.length, R[0].getAttribute('fill'), [1].map(i => ['x', 'y', 'width', 'height', 'fill'].map(k => R[i].getAttribute(k)))[0]], [2, 'white', ['150', '50', '200', '150', 'black']], 'white, the box black');
+  const [g1, g2, gk] = groups(), paths = g => g.children.filter(n => n.localName === 'path'), ends = g => g.children.filter(n => n.localName === 'g');
+  eq([paths(g1).map(p => p.getAttribute('mask')), ends(g1).map(e => e.getAttribute('mask')), ends(gk).map(e => e.getAttribute('mask'))],
+    [Array(4).fill('url(#' + id + ')'), [null, null], [null, 'url(#' + id + ')']], 'the strokes masked, the plugs not; a knob end with its rope');
+  V.L.sel('c2');
+  eq([paths(g2).map(p => p.getAttribute('mask')), paths(g1)[0].getAttribute('mask')], [[null, null, null, null], 'url(#' + id + ')'], 'the selected cord whole');
+  V.L.sel(null);
+  boxes = [[0, 0, 10, 10], [20, 20, 40, 30]]; V.L.anchors(J);
+  eq(mask.children.filter(n => n.localName === 'rect').length, 3, 'asked again at the repaint');
+  V.L.behind(null);
+  eq(snap(), before, 'off: the markup as before');
 });

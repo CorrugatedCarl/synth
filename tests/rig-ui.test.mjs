@@ -144,14 +144,15 @@ test('the grid CSS: injected once per document, every --rig-* layout property is
   assert.ok(!/--sx-[a-z0-9-]+\s*:/.test(css), 'no colour token is set here (a skin\'s, §5.1)');
 });
 
-test('(WC, fixer K; review P2-3 / B5 and its skeptics) a jack\'s own hit is the grid\'s 44 world px circle — never zoom-scaled (a face clips it at its edge, and a bigger one stole the switch / knob row above at 50–60 %): its reach never passes the 12 px gap to the row above, and alone it is no wider than its column (neighbours\' circles never overlap: lines mode has no nearest rule); a fanned jack\'s stretched sideways over its plugs (--rig-fw the fan\'s span, --rig-fx its centre\'s offset, the host\'s) — the rest of P2-3\'s reach (22 screen px at Fit, outside the face too) is the world\'s near hook (main.js rigNearJack)', () => {
+test('(WC, fixer K; review P2-3 and its skeptics; the user\'s stacked plugs, 2026-10-26) a jack\'s own hit is the grid\'s 44 world px circle — never zoom-scaled (a face clips it at its edge, and a bigger one stole the switch / knob row above at 50–60 %): its reach never passes the 12 px gap to the row above, and it is no wider than its column (neighbours\' circles never overlap: lines mode has no nearest rule); never stretched — several cords stack their plugs on the jack itself (fixer K\'s fan pill, --rig-fw / --rig-fx, retired by design) — the rest of P2-3\'s reach (22 screen px at Fit, outside the face too) is the world\'s near hook (main.js rigNearJack)', () => {
   const css = RU.cssText(), rule = (css.match(/\.rig-face \.rig-jack::before \{[^}]*\}/) || [''])[0];
-  assert.match(rule, /width: calc\(var\(--rig-hit\) \+ var\(--rig-fw, 0px\)\);/, 'the width: the grid\'s hit, plus the fan');
+  assert.match(rule, /width: var\(--rig-hit\);/, 'the width: the grid\'s hit');
   assert.match(rule, /height: var\(--rig-hit\);/, 'the height: the grid\'s hit');
   assert.doesNotMatch(rule, /--ik|--rig-col|max\(/, 'never zoom-scaled, never a column tall');
-  assert.match(rule, /transform: translate\(calc\(-50% \+ var\(--rig-fx, 0px\)\), -50%\);/, 'centred on the fan');
+  assert.match(rule, /transform: translate\(-50%, -50%\);/, 'centred on the jack');
+  assert.doesNotMatch(css, /--rig-fw|--rig-fx/, 'no fan stretch left');
   assert.ok(GRID.hit / 2 < GRID.jackTop + GRID.jack / 2 + GRID.gap, 'its reach up (' + GRID.hit / 2 + ') short of the row above (' + (GRID.jackTop + GRID.jack / 2 + GRID.gap) + ')');
-  assert.ok(GRID.hit <= GRID.col, 'no wider than its column alone');
+  assert.ok(GRID.hit <= GRID.col, 'no wider than its column');
 });
 
 /* ================================================================ the faces */

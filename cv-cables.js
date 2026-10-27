@@ -844,7 +844,7 @@ export function createCables(worldEl, o) {
   function places(R) {
     const get = (M, k) => (!M || typeof M !== 'object' ? null : typeof M.get === 'function' ? M.get(k) : M[k]) || null;
     const B = R && typeof R === 'object' ? R.badges : null, F = R && typeof R === 'object' ? R.forks : null, EN = R && typeof R === 'object' ? R.ends : null;
-    for (const it of items.values()) { // ((fixer K, review P3-6) a claimed cord's tag ("dry") above its own plug — a fan's are apart
+    for (const it of items.values()) { // ((fixer K, review P3-6) a claimed cord's tag ("dry") above its own plug (the user, 2026-10-26: a stack's on its jack)
       if (!it.cord || !it.lab) continue;
       const q = get(EN, it.c.id), b = q && q.b;
       if (!b || !fin(b.x) || !fin(b.y)) continue;
@@ -1263,8 +1263,8 @@ export function createCableDrag(world, o) {
       const r = call(Op.cordPress, e, el);
       if (r) return r;
       if (!rigJack(el)) return false;
-      // ((WC, fixer K; review B5 / P2-3) the host names what the press is on: the nearest jack centre or fanned plug (its own cord, not
-      // the most recent) — at Fit zoom a jack's 44-screen-px target overlaps its neighbours'
+      // ((WC, fixer K; review B5 / P2-3) the host names what the press is on: the nearest jack centre and, on a stacked input (the user,
+      // 2026-10-26: its plugs on the one socket), its top cord — at Fit zoom a jack's 44-screen-px target overlaps its neighbours'
       const q = typeof Op.jackAt === 'function' && fin(e.clientX) && fin(e.clientY) ? call(Op.jackAt, el, toWorld(e.clientX, e.clientY), kNow()) : null;
       return pressCord(e, q && rigJack(q.el) ? q.el : el, q && typeof q.rec === 'string' ? q.rec : null);
     }
@@ -1306,7 +1306,7 @@ export function createCableDrag(world, o) {
     else if (role === 'mod' && dir === 'out') D = Object.assign(base, { mod: true, src: modSrcOf(j), fixed: j, want: 'in', knobs: [], dimmed: [], memo: new Map(), look: lookOf(j, true) });
     else {
       if (!portOf(j)) return false;
-      const recs = dir === 'in' ? cordsAt(j, 'b') : [], w = (rec && recs.find(c => c.id === rec)) || (recs.length ? recs[recs.length - 1] : null); // ((fixer K, B5) the pressed plug's own
+      const recs = dir === 'in' ? cordsAt(j, 'b') : [], w = (rec && recs.find(c => c.id === rec)) || (recs.length ? recs[recs.length - 1] : null); // ((fixer K, B5) the record the host names: a stack's top
       D = Object.assign(base, { mode: w ? 'grab' : 'new', wire: w ? w.id : null, fixed: w ? w.a : j, want: w || dir === 'out' ? 'in' : 'out', recs, body: false, near: null, held: false });
       D.look = lookOf(D.fixed, false);
       if (recs.length > 1 && D.type !== 'mouse') {

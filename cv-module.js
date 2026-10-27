@@ -326,8 +326,9 @@ export function devicesOf(track) {
  * @param {Array<{key: string, kind: string, model?: string, own?: string}>} [devs]
  * @param {(instKey: string) => Object<string, {x: number, y: number}>} [rack] (9) the patch modules ('pm') of an instrument,
  *   relative to its top-left (main.js: patch-core rackLayout through cv-patch); without it one flush row above it
- * @param {{targets?: Object<string, string[]>, narrow?: boolean}} [opts] (WC, review 2 P2-5) a rig's Tidy (rigLay below): its modulators'
- *   targets (modulator key → the module keys it drives: the host's rig-core targetsOf) and a portrait canvas; ignored elsewhere @returns {Lay}
+ * @param {{targets?: Object<string, string[]>, narrow?: boolean, past?: Object<string, boolean>}} [opts] (WC, review 2 P2-5) a rig's Tidy
+ *   (rigLay below): its modulators' targets (modulator key → the module keys it drives: the host's rig-core targetsOf), a portrait canvas
+ *   and (the user's stacked plugs) the rigs whose Amplifier takes a source past a filter (rig key → true); ignored elsewhere @returns {Lay}
  */
 export function tidy(track, sizes, devs, rack, opts) {
   if (!Array.isArray(devs) && !(track && isObj(track.dev))) return tidy1(track, sizes);
@@ -390,7 +391,10 @@ export function tidy(track, sizes, devs, rack, opts) {
   // portrait canvas): the chain wraps after the Amplifier — its FX, the panels and OUT on a row under it (Amplifier → FX stays a line: the
   // host routes it round the Amplifier's right side and along the gap — cv-cables wrapPath, review WC-int P3-11), a modulator driving that
   // row standing right of the Amplifier's slot (Envelope 1 keeps its place beside it). Measured by review 2
-  // (tidyproto.mjs): S1 / S2 0 cords across a face, S3 1
+  // (tidyproto.mjs): S1 / S2 0 cords across a face, S3 1. (The user, 2026-10-26: stacked plugs — the Amplifier's Σ IN takes every chain
+  // cord on its one socket) opts.past (rig key → true: the host's — a source of it straight to its Amplifier while a filter stands) a grid
+  // row (DOT) more air before the Amplifier: that cord rises into the socket from under the filters and clears the foot of the taller
+  // filter beside it (S3's Sub: 2.5 px into Filter 2's corner at GAP, 26 px clear at GAP + DOT — S3 stays 1)
   function rigLay(d0) {
     const T = isObj(opts) && isObj(opts.targets) ? opts.targets : {}, by = new Map(L.map(d => [d.key, d]));
     const wR = d => { if (d !== d0) return wOf(d); const s = S(d.key); return s && fin(s.w) && s.w > 0 ? s.w : PART_W_DEF.amp; };
@@ -400,7 +404,8 @@ export function tidy(track, sizes, devs, rack, opts) {
     const mine = parts.filter(d => (typeof d.dev === 'string' ? d.dev : (splitKey(d.key) || {}).dev) === d0.key);
     const head = mine.filter(d => !isMod(d)).sort((a, b) => rank(a) - rank(b) || pord(a, b)).concat([d0]), f = own.get(d0.key), tail = (f ? [f] : []).concat(pans, outs);
     let x = 0;
-    for (const d of head) { lay[d.key] = { x, y: 0 }; x = gup(x + wR(d) + GAP); }
+    const air0 = isObj(opts) && isObj(opts.past) && opts.past[d0.key] ? DOT : 0; // ((the user's stacked plugs) the Amplifier's air: opts.past
+    for (const d of head) { if (d === d0 && x > 0) x += air0; lay[d.key] = { x, y: 0 }; x = gup(x + wR(d) + GAP); }
     const wrap = !!(isObj(opts) && opts.narrow && tail.length);
     if (wrap) { x = lay[d0.key].x; y = gup(max(head, hR) + VGAP + DOT); } else y = 0;
     for (const d of tail) { lay[d.key] = { x, y }; x = gup(x + wR(d) + GAP); }

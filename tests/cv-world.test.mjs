@@ -1182,9 +1182,9 @@ test('wk.localPoint inside a module under the world transform: layout px at k = 
 test('toolbar: % / fit / tidy / ∿ (2a: the mod cables\' visibility) / the native chip; no ⊖ / ⊕ (pinch, wheel and keys zoom), no Snap (always on); the % tap resets to 100 %; the tools button folds the rest', () => {
   const { tb, world, frame, tidy, item } = setup();
   const btn = n => all(tb).find(x => x.getAttribute && x.getAttribute('data-cv-tb') === n);
-  eq(['pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'native', 'tools'].map(n => !!btn(n)), [true, true, true, true, true, true, true, true]);
+  eq(['pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'behind', 'native', 'tools'].map(n => !!btn(n)), [true, true, true, true, true, true, true, true, true]);
   eq(['out', 'in', 'snap'].map(n => !!btn(n)), [false, false, false], 'no ⊖, no ⊕, no Snap');
-  eq(all(tb).filter(n => n.getAttribute && n.getAttribute('data-cv-tb')).map(n => n.getAttribute('data-cv-tb')), ['tools', 'pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'native'], 'the order');
+  eq(all(tb).filter(n => n.getAttribute && n.getAttribute('data-cv-tb')).map(n => n.getAttribute('data-cv-tb')), ['tools', 'pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'behind', 'native'], 'the order ((the user, 2026-10-26) the cables-behind toggle after ∿)');
   eq([btn('mods').disabled, btn('mods').getAttribute('aria-label'), btn('pct').textContent, btn('pct').getAttribute('aria-label')], [false, 'Modulation cables: Always', '100%', 'Zoom 100% — reset to 100 %']);
   world.add(item('a', 0, 0, 500, 300)); frame();
   world.setCamera({ tx: 0, ty: 0, k: 1.5 }); frame(30);
@@ -2668,4 +2668,86 @@ test('(WC, fixer K; review P3-9, its skeptics\' round 1) the drop outline\'s lab
   ok(/white-space: normal;/.test(many) && /display: -webkit-box;/.test(many) && /-webkit-box-orient: vertical;/.test(many) && /-webkit-line-clamp: var\(--gl-lines/.test(many), 'several: wrapped and clamped to the lines counted, the last ending in …: ' + many);
   ok(!/overflow-wrap: (break-word|anywhere)|word-break: break-all|max-height/.test(many), 'at words only, never a height cut: ' + many);
   ok(/translate: 0 -50%;/.test(lift), 'a short box: its lines centred on the inline top: ' + lift);
+});
+
+/* ------------------------------------------------------------------ (the user, 2026-10-26: "we need a button that makes cables go behind") */
+// a cord layer that records behind() and tells its allocation (cv-cords' onAlloc)
+function fakeCordsB(log, made) {
+  const mk = fakeCords(log, made);
+  return (vp, opts) => {
+    const L = mk(vp, opts);
+    L.hide = null;
+    L.behind = fn => { L.hide = typeof fn === 'function' ? fn : null; log.push(['behind', typeof fn]); };
+    L.alloc = on => { log.push(['alloc', !!on]); if (typeof opts.onAlloc === 'function') opts.onAlloc(!!on); };
+    return L;
+  };
+}
+test('(the user, 2026-10-26: "we need a button that makes cables go behind") the toolbar\'s cables-behind toggle: after ∿, the row\'s style (a 44 px target on touch), shown only on a cord canvas (the cord layer allocated: a Wavecraft in cords mode, a 900 Series); off by default ("Cables behind modules: off", aria-pressed false — today\'s look); a tap puts the cables behind the modules: the layer told behind(fn), fn writing each module\'s world rect (x0 y0 x1 y1, its live x / y: a module in the finger), remembered in synth.cv.behind, a \'behind\' event; again: back on top (behind(null)); a saved on restores (the layer, built later, told at once); setBehind / behindOn', () => {
+  const log = [], made = [];
+  const S = setup({ opts: { createCords: fakeCordsB(log, made) } });
+  S.frame();
+  const b = all(S.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'behind');
+  ok(b, 'the button');
+  eq([W.BEHIND_PREF, b.className, b.hasAttribute('hidden'), b.getAttribute('aria-pressed'), b.getAttribute('aria-label'), b.title, S.world.behindOn()],
+    ['synth.cv.behind', 'cv-tb-btn', true, 'false', 'Cables behind modules: off', 'Cables behind modules: off', false], 'off, hidden until a cord canvas');
+  ok(/<svg[^>]*aria-hidden="true"/.test(String(b.innerHTML)), 'an icon');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  ok(/\.cv-tb-btn\[hidden\]\s*\{\s*display:\s*none;?\s*\}/.test(css), 'style.css hides a hidden toolbar button (its display is inline-flex)');
+  ok(/@media \(pointer: coarse\) \{\s*\.cv-tb > \[data-cv-tb="tools"\][^}]*\}\s*\.cv-tb-btn \{ width: 44px; height: 44px;/.test(css), 'a 44 px target on touch (the row\'s)');
+  const L = S.world.cords();
+  L.alloc(true);
+  eq(b.hasAttribute('hidden'), false, 'a cord canvas: shown');
+  const it1 = S.item('a', 10, 20, 300, 200), it2 = S.item('b', 400, 20, 200, 100);
+  S.world.add(it1); S.world.add(it2); S.frame();
+  const told = [];
+  S.world.on('behind', on => told.push(on));
+  eq(L.hide, null, 'the layer not told yet');
+  b.click();
+  eq([b.getAttribute('aria-pressed'), b.getAttribute('aria-label'), S.world.behindOn(), S.prefs.get('synth.cv.behind'), told, typeof L.hide], ['true', 'Cables behind modules: on', true, true, [true], 'function'], 'on');
+  const out = new Float32Array(4 * 64), n = L.hide(out, 64);
+  eq([n, Array.from(out.slice(0, 8))], [2, [10, 20, 310, 220, 400, 20, 600, 120]], 'the modules\' world rects');
+  it1.x = 50; it1.y = 60; // (a module in the finger: its live place, no rect read)
+  const r0 = it1.reads;
+  L.hide(out, 64);
+  eq([Array.from(out.slice(0, 4)), it1.reads - r0], [[50, 60, 350, 260], 0], 'followed live, no layout read');
+  eq(L.hide(out, 1), 1, 'never past max');
+  b.click();
+  eq([b.getAttribute('aria-pressed'), S.world.behindOn(), S.prefs.get('synth.cv.behind'), told, L.hide, log.filter(e => e[0] === 'behind').map(e => e[1])], ['false', false, false, [true, false], null, ['function', 'object']], 'off: back on top');
+  S.world.setBehind(false); S.world.setBehind(true); S.world.setBehind(true);
+  eq(told, [true, false, true], 'one event a change');
+  L.alloc(false);
+  eq(b.hasAttribute('hidden'), true, 'no cord canvas: hidden again (its state kept)');
+  const S2 = setup({ prefs: [['synth.cv.behind', true]], opts: { createCords: fakeCordsB([], []) } });
+  S2.frame();
+  const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'behind');
+  eq([S2.world.behindOn(), b2.getAttribute('aria-pressed')], [true, 'true'], 'restored on');
+  eq(typeof S2.world.cords().hide, 'function', 'the layer built later: told at once');
+  const S3 = setup({ prefs: [['synth.cv.behind', 'yes']] });
+  eq(S3.world.behindOn(), false, 'a bad pref: off');
+});
+
+test('(the cables-behind toggle) the real cv-cords through the world on a fake WebGL2: off (the default), no hide uniform is ever written — today\'s frames; on, every cord frame hands the GL the modules\' rects (nh, hb) and a module moved is followed at the next frame; off again: nh 0', async () => {
+  const calls = [], gl = {};
+  for (const k of ['COMPILE_STATUS', 'LINK_STATUS', 'VERTEX_SHADER', 'FRAGMENT_SHADER', 'ARRAY_BUFFER', 'STATIC_DRAW', 'DYNAMIC_DRAW', 'FLOAT', 'TRIANGLE_STRIP', 'BLEND', 'ONE', 'ONE_MINUS_SRC_ALPHA', 'COLOR_BUFFER_BIT', 'DEPTH_TEST']) gl[k] = k;
+  for (const k of ['shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'useProgram', 'bindVertexArray', 'bindBuffer', 'bufferData', 'bufferSubData', 'enableVertexAttribArray',
+    'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear', 'drawArrays', 'drawArraysInstanced', 'uniform2iv']) gl[k] = () => { calls.push(k); };
+  gl.uniform4fv = (u, a) => { calls.push(u === 'hb' ? ['hb', ...Array.from(a)] : 'uniform4fv'); };
+  gl.uniform1i = (u, v) => { calls.push([u, v]); };
+  Object.assign(gl, { createShader: () => ({}), createProgram: () => ({}), createBuffer: () => ({}), createVertexArray: () => ({}), getUniformLocation: (p, n) => n, getShaderParameter: () => true, getProgramParameter: () => true, getExtension: () => null });
+  const glDoc = vp => ({ createElement: t => { const el = vp.ownerDocument.createElement(t); if (t === 'canvas') el.getContext = k => (k === 'webgl2' ? gl : null); return el; } });
+  const S = setup({ opts: { createCords: (vp, o) => CORDS.createCords(vp, Object.assign({}, o, { doc: glDoc(vp) })) } });
+  S.frame();
+  const L = S.world.cords(), it = S.item('m', 100, 50, 200, 150);
+  S.world.add(it); L.alloc(true);
+  L.anchors(new Map([['a', { x: 20, y: 100 }], ['b', { x: 500, y: 120 }]])); L.set([{ id: 'c', a: 'a', b: 'b', c: 2, s: 0 }]); S.frame(3);
+  const hide = () => calls.filter(c => Array.isArray(c) && (c[0] === 'nh' || c[0] === 'hb') || c === 'uniform2iv');
+  ok(calls.includes('drawArraysInstanced') && hide().length === 0, 'off: drawn, no hide uniform');
+  const b = all(S.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'behind');
+  b.click(); S.frame(2);
+  const nh = () => calls.filter(c => Array.isArray(c) && c[0] === 'nh').pop(), hb = () => calls.filter(c => Array.isArray(c) && c[0] === 'hb').pop();
+  eq([nh(), hb()], [['nh', 1], ['hb', 100, 50, 300, 200]], 'on: the module\'s rect');
+  it.x = 140; S.world.hooks.pan(-2, 0, { cx: 500, cy: 400 }); await null; S.frame();
+  eq(hb(), ['hb', 140, 50, 340, 200], 'moved: followed');
+  b.click(); S.frame(8); // (the pan's own draws lead for a few frames: the tick draws once they are stale)
+  eq(nh(), ['nh', 0], 'off again');
 });

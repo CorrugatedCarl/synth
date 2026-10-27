@@ -118,6 +118,10 @@ export const TB_PREF = 'synth.cv.tbcollapsed';
  * On select → Never; each change emits 'mods' with the mode (the track view's setModsVisible). */
 export const MODS_PREF = 'synth.cv.mods';
 export const MODS_MODES = Object.freeze(['always', 'select', 'never']);
+/** (the user, 2026-10-26: "we need a button that makes cables go behind") The cables-behind pref (appstore; stored as synthc.cv.behind):
+ * true = the toolbar toggle is on — every cord canvas (a rig in cords mode, a 900 Series) draws its rope bodies behind the
+ * modules (cv-cords behind: the modules' world rects), the plugs on top; anything else = on top (the default: today's look). */
+export const BEHIND_PREF = 'synth.cv.behind';
 const MODS_LABEL = { always: 'Always', select: 'On select', never: 'Never' };
 /** A finger held this long (ms) on empty canvas, then dragged, draws a marquee instead of panning (SPEC §4.1). */
 export const MARQUEE_HOLD_MS = 250;
@@ -457,6 +461,7 @@ export function createWorld(viewport, o) {
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
   let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, tbOff = false, locked = false, modsMode = 'always';
+  let behind = false, cordCanvas = false; // ((the user, 2026-10-26) the cables-behind toggle (BEHIND_PREF); a cord canvas shown (its layer allocated)
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
@@ -747,8 +752,10 @@ export function createWorld(viewport, o) {
     const mk = typeof o.createCords === 'function' ? o.createCords : createCords;
     try {
       CD = mk(viewport, { world: W, doc, win, now, mode: pref === 'off' ? 'svg' : cdUnder ? 'under' : 'gl', test: pref === 'test', perf,
-        under: () => (GL && GL.ready !== false ? GL.gl || null : null), onWake: () => { if (active && !destroyed) request(); } }) || null;
+        under: () => (GL && GL.ready !== false ? GL.gl || null : null), onWake: () => { if (active && !destroyed) request(); },
+        onAlloc: on => cordsShown(on) }) || null; // ((the user, 2026-10-26) the cables-behind toggle shows on a cord canvas only
     } catch (err) { console.error(err); CD = null; }
+    if (CD && behind) behindTell();
     if (CD) { try { CD.resize(vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
     return CD;
   }
@@ -1688,6 +1695,8 @@ export function createWorld(viewport, o) {
     map: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="1.5"/><rect x="5" y="6.5" width="4" height="3"/><rect x="10.5" y="8" width="4.5" height="5"/></svg>',
     lock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9M10 12.2v1.6"/></svg>',
     unlock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 5.8-1.1M10 12.2v1.6"/></svg>',
+    // ((the user, 2026-10-26) cables behind: a panel, a cord passing behind it (in at its left, out at its right)
+    behind: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 14.5c1.6-3.4 2.8-4.5 4.6-4.6M13.4 8.6c1.8.1 3.2 1.4 4.6 4.4"/><rect x="6.5" y="3.5" width="7" height="13" rx="1.2"/></svg>',
   };
   function buildToolbar(host) {
     if (!host || !doc) return;
@@ -1715,6 +1724,8 @@ export function createWorld(viewport, o) {
     const lockB = btn('lock', 'Lock view', ICON.unlock, () => setLock(!locked));
     const mapB = btn('map', 'Minimap', ICON.map, () => setMap(!mapOn));
     const mods = btn('mods', 'Modulation cables', ICON.mods, () => setModsMode(MODS_MODES[(MODS_MODES.indexOf(modsMode) + 1) % MODS_MODES.length]));
+    const behindB = btn('behind', 'Cables behind modules', ICON.behind, () => setBehind(!behind)); // ((the user, 2026-10-26) a cord canvas's only
+    behindB.hidden = !cordCanvas;
     const chip = mk('button', 'cv-tb-chip');
     chip.type = 'button';
     chip.setAttribute('data-cv-tb', 'native');
@@ -1727,12 +1738,12 @@ export function createWorld(viewport, o) {
       pct, mk('span', 'cv-tb-sep'),
       btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
       btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
-      lockB, mapB, mods);
+      lockB, mapB, mods, behindB);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold, lock: lockB, map: mapB, mods });
+    Object.assign(TB, { bar, row, pct, chip, fold, lock: lockB, map: mapB, mods, behind: behindB });
     buildMap(host);
-    toolbarUI(); lockUI(); mapUI(); modsUI();
+    toolbarUI(); lockUI(); mapUI(); modsUI(); behindUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
   }
 
@@ -1866,6 +1877,42 @@ export function createWorld(viewport, o) {
     if (store) { try { store.set(MODS_PREF, m); } catch (err) { /* storage */ } }
     emit('mods', m);
   }
+  // ((the user, 2026-10-26: "we need a button that makes cables go behind") the cables-behind toggle (remembered: BEHIND_PREF): on, every
+  // cord canvas draws its rope bodies behind the modules (the cord layer's behind(): the modules' world rects at each draw), the plugs,
+  // the knob rings, the badges and the × on top; off (the default): on top, today's look. Shown on a cord canvas only (its layer allocated)
+  function behindUI() {
+    const b = TB.behind;
+    if (!b) return;
+    b.hidden = !cordCanvas;
+    b.setAttribute('aria-pressed', String(behind));
+    b.title = 'Cables behind modules: ' + (behind ? 'on' : 'off');
+    b.setAttribute('aria-label', b.title);
+  }
+  // the boxes the ropes go behind: each item's world rect — its live place (x / y: a module in the finger) and its cached size, no layout read
+  function behindBoxes(out, max) {
+    const fin = v => typeof v === 'number' && isFinite(v);
+    let n = 0;
+    for (const rec of items.values()) {
+      if (n >= max) break;
+      const it = rec.item, r = rec.rect;
+      const x = fin(it.x) ? it.x : r && r.x, y = fin(it.y) ? it.y : r && r.y, w = fin(it.w) ? it.w : r && r.w, h = r && r.h;
+      if (!fin(x) || !fin(y) || !(w > 0) || !(h > 0)) continue;
+      out[4 * n] = x; out[4 * n + 1] = y; out[4 * n + 2] = x + w; out[4 * n + 3] = y + h;
+      n++;
+    }
+    return n;
+  }
+  function behindTell() { if (CD && typeof CD.behind === 'function') { try { CD.behind(behind ? behindBoxes : null); } catch (err) { console.error(err); } } }
+  function setBehind(on) {
+    on = !!on;
+    if (on === behind) return;
+    behind = on;
+    behindUI();
+    behindTell();
+    if (store) { try { store.set(BEHIND_PREF, on); } catch (err) { /* storage */ } }
+    emit('behind', on);
+  }
+  function cordsShown(on) { on = !!on; if (on === cordCanvas) return; cordCanvas = on; behindUI(); }
   // lock view (toolbar toggle, remembered): no gesture on the canvas moves the camera (LOCK_PREF); the minimap and the
   // toolbar's % / fit buttons still do. Switching it on stops a glide and a drag's edge pan where they are
   function lockUI() {
@@ -1915,6 +1962,7 @@ export function createWorld(viewport, o) {
   mapOn = !(store && store.get && store.get(MAP_PREF, true) === false);
   locked = !!(store && store.get && store.get(LOCK_PREF, false) === true);
   { const m = store && store.get ? store.get(MODS_PREF, 'always') : 'always'; modsMode = MODS_MODES.includes(m) ? m : 'always'; }
+  behind = !!(store && store.get && store.get(BEHIND_PREF, false) === true);
   attr(viewport, 'data-cv-pinch', pinchMode);
   attr(viewport, 'data-cv-locked', locked);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
@@ -1996,6 +2044,8 @@ export function createWorld(viewport, o) {
     toolbarCollapsed: () => tbOff, setToolbarCollapsed,
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
     modsMode: () => modsMode, setModsMode,
+    /** (the user, 2026-10-26) the cables-behind toggle: on = every cord canvas's rope bodies behind the modules (BEHIND_PREF); a change emits 'behind' */
+    behindOn: () => behind, setBehind,
     /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */
     setDragging: on => away(2, !!on),
     /** (1e) installs the jack hook (cv-cables createCableDrag): fn(e, jackEl) → truthy | {cancel} takes the press;

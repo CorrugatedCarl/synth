@@ -1647,13 +1647,9 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   const body = s => chrome.find(r => r.sel === s).body;
   assert.match(body('.cv-mod[data-cv-rig] .cv-title'), /^color: var\(--rig-title, var\(--text\)\); font: 600 13px\/1\.2 var\(--rig-font, var\(--ui\)\); letter-spacing: 0\.06em;?$/, 'the bar title: the face font, 600, 0.06 em (uppercase: the bar\'s own), 13 px (§3.8\'s least)');
   assert.match(body('.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab'), /^font-family: var\(--rig-font, var\(--ui\)\);?$/, 'the knob and menu labels in the face font (values keep the mono)');
-  // the screws: one pseudo-element (no DOM), never a press, four 8 px discs at 5 px from the corners and four 5 px slots over them, centred on the discs
+  // the screws: one pseudo-element (no DOM), never a press — its four images (head and slot in one SVG each) are the next test's pins
   const sc = body('.cv-mod[data-cv-rig] > .cv-body::after');
   assert.match(sc, /content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;/);
-  const layers = /background: ([\s\S]*?);?$/.exec(sc)[1].split(/,(?![^(]*\))/).map(s => s.trim());
-  assert.deepEqual(layers, ['left', 'right'].flatMap(x => ['top', 'bottom'].map(y => `var(--rig-slot-g) ${x} 6.5px ${y} 6.5px / 5px 5px no-repeat`))
-    .concat(['left', 'right'].flatMap(x => ['top', 'bottom'].map(y => `var(--rig-screw-g) ${x} 5px ${y} 5px / 8px 8px no-repeat`))));
-  assert.match(sc, /--rig-screw-g: radial-gradient\(circle, var\(--rig-screw, #[0-9a-f]{6}\) 0 1\.5px, var\(--rig-screw-lo, #[0-9a-f]{6}\) 3\.3px, rgba\(0, 0, 0, 0\.55\) 3\.6px, transparent 4px\)/);
   // the jack: a cream ring round a nut and its hole inside the 28 px jack (≤ 14 px radius); dimmed, not blacked out, while a cord cannot take it
   const jk = body('.cv-mod[data-cv-rig] .cv-fjack');
   assert.match(jk, /--rig-jack-g: radial-gradient\(circle, var\(--rig-jack-hole, #[0-9a-f]{6}\) 0 5\.5px, var\(--rig-jack-nut, #[0-9a-f]{6}\) 6px 8\.75px, var\(--rig-jack-ring, #[0-9a-f]{6}\) 9\.25px 13\.25px, transparent 13\.75px\); background: var\(--rig-jack-g\);?$/);
@@ -1662,4 +1658,61 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   const C0 = css.indexOf('(WC, lane C)'), K0 = css.indexOf('#world[data-cv-skin="charcoal"]');
   assert.ok(C0 > chrome[chrome.length - 1].at && C0 < K0, 'lane C\'s block goes between the chrome and the skins');
   assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
+});
+
+// (WC, the user 2026-10-26: "the slot in the center is off center" on Windows) Blink rounds each background layer to whole layout px on its
+// own, and a radial and a linear gradient differently: the old radial head (8 px at 5 px) and linear slot (5 px at 6.5 px) parted by up to
+// 0.5 layout px at a DPR of 1, 1.5 or 1.75 (2.6 device px under the camera's 3× zoom; DPR 2 hid it). A screw is now ONE SVG — head and slot
+// in one coordinate space, so a tile's rounding moves both — the old look drawn in it: the head's stops, the slot's hexagon, the skin's colours.
+test('style.css (WC, the user 2026-10-26): each corner screw is one SVG image — head and slot in one coordinate space, the slot point-symmetric about the head\'s centre; four 8 px tiles at 5 px, whole CSS px; no layered slot gradient; the image\'s colours are every skin\'s --rig-screw / --rig-screw-lo / --rig-jack-hole', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length));
+  const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim() }));
+  const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
+  const sc = rules.filter(r => r.sel === '.cv-mod[data-cv-rig] > .cv-body::after');
+  assert.equal(sc.length, 1, 'one rule, one pseudo-element');
+  const D = Object.fromEntries(decls(sc[0].body));
+  assert.deepEqual(Object.keys(D), ['content', 'position', 'inset', 'z-index', 'pointer-events', '--rig-screw-g', 'background'], 'one image helper, nothing else declared');
+  // four layers, one per corner: the same image in an 8 px tile at 5 px from that corner (whole CSS px — no half-px offset to round)
+  const layers = D.background.split(/,(?![^(]*\))/).map(s => s.trim());
+  assert.deepEqual(layers, ['left', 'right'].flatMap(x => ['top', 'bottom'].map(y => `var(--rig-screw-g) ${x} 5px ${y} 5px / 8px 8px no-repeat`)));
+  // no layered slot: no gradient in the rule, no slot helper left anywhere in the file
+  assert.ok(!/gradient\(/.test(sc[0].body), 'no CSS gradient layer in the screws\' rule');
+  assert.ok(!css.includes('--rig-slot-g'), 'no slot layer helper');
+  // the image: one data-URI SVG, its user unit the tile's CSS px (viewBox 0 0 8 8 in an 8 px tile)
+  const m = /^url\("data:image\/svg\+xml,([^"]*)"\)$/.exec(D['--rig-screw-g']);
+  assert.ok(m, 'the helper is one SVG data URI');
+  assert.ok(!/[#<>"]/.test(m[1]), 'a portable data URI: < > # escaped');
+  const svg = decodeURIComponent(m[1]);
+  assert.match(svg, /^<svg xmlns='http:\/\/www\.w3\.org\/2000\/svg' viewBox='0 0 8 8'>[\s\S]*<\/svg>$/);
+  assert.deepEqual([...svg.matchAll(/<([a-zA-Z]+)/g)].map(x => x[1]), ['svg', 'radialGradient', 'stop', 'stop', 'stop', 'stop', 'circle', 'path'], 'a head and a slot, nothing else');
+  assert.ok(!/href|https?:\/\/(?!www\.w3\.org\/2000\/svg')/.test(svg), 'no external reference');
+  const attrs = tag => Object.fromEntries([...(new RegExp(`<${tag}([^>]*)>`).exec(svg) || ['', ''])[1].matchAll(/([a-zA-Z-]+)='([^']*)'/g)].map(x => [x[1], x[2]]));
+  // the head: a disc of radius 4 at (4, 4), its radial gradient centred there — the old stops (offset × 4 px): the screw colour to 1.5 px,
+  // screw-lo at 3.3 px, black at 0.55 at 3.6 px, clear at 4 px
+  assert.deepEqual(attrs('circle'), { cx: '4', cy: '4', r: '4', fill: 'url(#h)' });
+  assert.deepEqual(attrs('radialGradient'), { id: 'h', cx: '4', cy: '4', r: '4', gradientUnits: 'userSpaceOnUse' });
+  const stops = [...svg.matchAll(/<stop([^>]*)\/>/g)].map(x => Object.fromEntries([...x[1].matchAll(/([a-zA-Z-]+)='([^']*)'/g)].map(y => [y[1], y[2]])));
+  assert.deepEqual(stops.map(s => +s.offset * 4), [1.5, 3.3, 3.6, 4]);
+  assert.deepEqual(stops.map(s => [s['stop-color'] || 'black', s['stop-opacity'] || '1']), [[stops[0]['stop-color'], '1'], [stops[1]['stop-color'], '1'], ['black', '.55'], ['black', '0']]);
+  // the slot: the old one's shape — the 45° band |x − y| ≤ 1.2 (24 % of the 5 px square's gradient line) cut by that square [1.5, 6.5]²,
+  // a hexagon — and point-symmetric about (4, 4): its centre IS the head's centre, whatever a tile rounds to
+  const P = attrs('path'), pts = [];
+  let cur = [0, 0];
+  for (const [, c, a] of P.d.matchAll(/([MLHVZ])([^MLHVZ]*)/g)) {
+    const n = a.trim() ? a.trim().split(/[\s,]+/).map(Number) : [];
+    if (c === 'Z') break;
+    cur = c === 'H' ? [n[0], cur[1]] : c === 'V' ? [cur[0], n[0]] : [n[0], n[1]];
+    pts.push(cur);
+  }
+  assert.deepEqual(pts, [[1.5, 1.5], [2.7, 1.5], [6.5, 5.3], [6.5, 6.5], [5.3, 6.5], [1.5, 2.7]]);
+  const key = p => p.map(v => v.toFixed(6)).join(',');
+  assert.deepEqual(pts.map(p => key([8 - p[0], 8 - p[1]])).sort(), pts.map(key).sort(), 'the slot is point-symmetric about the head\'s centre (4, 4)');
+  for (const [x, y] of pts) assert.ok(x >= 1.5 && x <= 6.5 && y >= 1.5 && y <= 6.5 && Math.abs(x - y) <= 1.2 + 1e-9, `(${x}, ${y}) on the old slot`);
+  // the colours: every skin's screw, screw-lo and jack hole (an image cannot read a custom property — a skin with other screws needs its own image)
+  for (const S of SKINS) {
+    const blk = rules.find(r => r.sel.startsWith(`#world[data-cv-skin="${S.id}"] `));
+    assert.ok(blk, S.id + ': its block');
+    const v = Object.fromEntries(decls(blk.body));
+    assert.deepEqual([stops[0]['stop-color'], stops[1]['stop-color'], P.fill], [v['--rig-screw'], v['--rig-screw-lo'], v['--rig-jack-hole']], S.id + ': the screw image in the skin\'s colours');
+  }
 });

@@ -501,7 +501,8 @@ the rope arrives radially, several ≥ 40° apart; the fan is 32 px; the claimed
 fixer K, the go / no-go review: a fan stays in its jack row, packed between the row's other jacks and the face's edges, its cords on the
 plugs that cross the fewest faces and each other; a press on a plug is that plug's cord (§4.4 amended); the rope "at rest" the knob end and
 the badge are aimed on is the layer's own settled shape, and the anchor carries the knob's disc so the layer cuts the rope at the rim —
-§14.)**
+§14.)** **(The user, 2026-10-26, §12: the fan is retired — several cords at one jack STACK on its socket, every end the jack itself, the
+newest on top; §14 "stacked plugs".)**
 
 ### 4.4 Interactions on a Wavecraft canvas (ease of use first — parity with the lines)
 **Jack kind by mode** (skeptic P2-7: cv-module gives `data-kind="cord"` only to face jacks, an inline jack gets `j.kind || 'audio'`,
@@ -521,7 +522,9 @@ grabs **that plug's** cord — the most recent is the default only at the jack i
 its module within max(22 screen px, half the 64 px column), so at Fit zoom a rig jack is as easy to hit as a line jack — a press on no jack
 too (cv-world `setJackNear`: the empty canvas past a face's edge, a sleeping face, an awake face where no control is), while a jack's own hit
 stays the grid's 44 px circle (a face clips it; it never reaches the row above); the long-press "Which cord?" opens the tap's plug menu —
-each cord's Pull · Re-patch to ▸ · Colour ▸. §14.)**
+each cord's Pull · Re-patch to ▸ · Colour ▸. §14.)** **(The user, 2026-10-26: stacked plugs — a press on a stacked input grabs the
+stack's top, the newest (the host's jackAt names it), "Which cord?" lists it first; an output's press a new cord, as ever; no fanned plug to
+pick. §14.)**
 
 **A cord's body**: a **tap selects it** (`cords.sel`; a × at the tap point, cv-cables' × idiom → Pull / Disconnect; Delete does the same) —
 parity with a line (the lead's first guess on the skeptic's question 2; the user's 2026-10-21 "only plugs" rule stays on the 900 Series);
@@ -900,6 +903,20 @@ edge (the Effects panel 90 % / 61 % in view) the right trade, or the whole rig s
    the inspector) (§3.4; `dev.rig.n`).
 5. **The Filter keeps its per-input switches on its face** — they are audible state (§3.1; the skeptic's P1-1 / P1-2).
 6. **Tracks keep the name they were given**; a later rename of the instrument does not rename existing tracks ("Wavecraft 3" stays; §13).
+
+**The user, 2026-10-26, on the live Wavecraft (canvas 050ea9f) — three decisions** (§14 "stacked plugs, cables over labels, cables behind"):
+- **Stacked plugs** — "in cases like this all cables should overlap at the outlet" (an LFO's OUT with two cords fanned side by side) and
+  "overlap everywhere": every jack holding several cords, outputs and Σ inputs alike, shows its plugs **stacked on its one socket** (its
+  centre, the newest on top, the cables diverging from there) like real stackable patch cables. Integration fixer K's fan along the jack row
+  (B5's per-plug press, P3-6's row packing, B1's plug order) is retired. The press rules stay: an output's press starts a new cord; an
+  input's grabs the most recent — now the stack's top (the cord plugged last in this session; after a reload, edges() order); long-press /
+  right-click → "Which cord?" (the top first); a tap on a cord's body → ×; a badge drag re-targets its row.
+- **Cables over the jack labels** — "cable should be on top of text here" (the IN Σ label drawn over its rope): the physical look, the
+  cable passes **over** its jack's label; review WC-int P3-12's lifted label chip is retired. A label no cord crosses reads as before.
+- **A cables-behind button** — "we need a button that makes cables go behind": a toggle in the canvas toolbar after ∿ ("Cables behind
+  modules", the row's style and 44 px touch target, shown on a cord canvas only: a Wavecraft in cords mode, a 900 Series) draws the rope
+  bodies **behind the modules** so the knobs and text are clear; the plugs on their jacks, the knob rings, the badges and the × stay on top
+  and usable; pressed again, the cables return on top. Remembered (synth.cv.behind, the app's prefs store); default off = today's look.
 
 ## 12a. Design requirement added 2026-10-25: faces on one layout system
 The user: "one gripe i had with our current serum system is that everything feels a bit crowded with some text areas not having enough
@@ -2154,6 +2171,61 @@ not touched; the one shared line is cvRender's cache clear (`rigLabInfoC` beside
 - **Gates** (one file at a time, `--max-old-space-size=2048`, after `node tools/precache.mjs --write`): canvas-WC-sim 49, cv-cables 67,
   cv-module 77, cv-art 7, rig-core 19, main 47, canvas-sim 24, cv-shell-sim 18, tap-tempo-sim 18, cv-tray 45, rig-model 11, rig-ui 27,
   canvas-1i-sim 20, lint 169, pwa 25; `tests/ref-WC/record.mjs`: "the record matches base.json (114 fixtures, 5 sessions)". No DSP file in the diff.
+
+### Notes — stacked plugs, cables over labels, cables behind (the user, 2026-10-26; §12; `main.js`, `cv-cords.js`, `cv-world.js`, `cv-module.js` (Tidy's Amplifier air), `cv-cables.js` (comments), `rig-ui.js` (the jack's hit), `style.css`; `tests/canvas-WC-sim`, `cv-cords`, `cv-world`, `cv-module`, `rig-ui`)
+Every item's test was committed failing first (7cd4b04: canvas-WC-sim 4, cv-cords 3, cv-world 3, rig-ui 1; the Amplifier-air cv-module test
+before its code: d07118b), then the change. No DSP file in the diff.
+- **(1) Stacked plugs** — "in cases like this all cables should overlap at the outlet", "overlap everywhere". `rigLayer` no longer fans:
+  every cord's end is its jack's own key, the jack's centre (the anchors map is the ports'), the cables diverge from there. **Retired**:
+  `RIG_FAN` / `RIG_FAN_MIN` / `RIG_FAN_PAD`, `rigPack`, `rigOrder` (+ its cache, `rigOrderOwed` / `rigDragNow` / `rigOrderLater`),
+  `rigFans`, the `'<jack>#<i>'` keys, `rigFanHits` and rig-ui's `--rig-fw / --rig-fx` stretch (the jack's hit is its 44 px circle again),
+  the test hook `cv.rig.pack`. **The stack's order**: the records' order (cv-cables' claimed records, which follow plug order in a session:
+  a new cord's record, or one plugged again after a pull / undo, comes last; a view built afresh — a reload, a track switch — starts from
+  edges() order); `cv-cords set()` now draws **in the list's order** (a list in another order re-orders the layer: one new layout, nothing
+  re-seeded; the same order keeps it — the 900 Series' lists keep their order, its bytes as before: P-1 (c) / BASE_SCENE green), so the
+  last cord at a jack — its plug — is drawn on top. **The press rules**: an output's press starts a new cord (as ever); an input's grabs the
+  stack's top — `rigNearest` names it (`R.tops`: a jack with ≥ 2 cords → its last), cv-cables `pressCord(e, el, rec)` grabs it (the
+  channel fixer K made for a fanned plug, now the stack's top); "Which cord?" lists the top first (`rigStack`: the jack menu's records in
+  the layer's order — §4.4's pin moved: Oscillator 2, re-patched last, now first). A forked source's BAL right of its jack (+20).
+  **S3 ≤ 1 re-measured** (the gate unchanged): with the plugs stacked the Sub's cord into the Amplifier's IN Σ (fixer K's B1 had put its
+  plug right of the fan) read **2** — its settled rope 2.5 px inside Filter 2's bottom-right corner (beyond the 3 px margin). Fixed in the
+  layout: `cv-module tidy` takes `opts.past` (rig key → true; main.js `rigPast`: a source straight to its Amplifier, IN or DIRECT, while a
+  filter stands — rigTidyOpts and sxLayParts pass it) and gives that rig's Amplifier **one grid row (DOT) more air** before it (the rope
+  26 px clear at GAP + DOT; the Amplifier, its FX, OUT, Envelope 1 over it follow; upright the wrapped row follows too). S1 0, S2 0, S3 1
+  (the accepted `o:i1:1 × i1/oscA`); a rig with no such source lays exactly as before (cv-module's position pins unchanged).
+- **(2) Cables over the jack labels** — "cable should be on top of text here". Review WC-int P3-12's lifted label is retired: `rigLabels`
+  (+ `rigLabC` / `rigLabInfoC` / `rigLabHitC` / `rigLabOf` / `rigSegBox` / `RIG_LAB_*`) and style.css `.cv-cords-top > .rig-jl-top` are
+  gone; a jack's label stays in its face, under the cord canvas, so a rope crossing it passes over it (the physical look); a label no rope
+  crosses reads as before.
+- **(3) Cables behind** — "we need a button that makes cables go behind". `cv-world`: a toolbar toggle after ∿ (`data-cv-tb="behind"`,
+  `aria-pressed`, "Cables behind modules: on / off", the row's `.cv-tb-btn` — 34 px with a mouse, 44 px on touch; `.cv-tb-btn[hidden]`),
+  shown only while the cord layer is allocated (a cord canvas: a Wavecraft in cords mode, a 900 Series — cv-cords `onAlloc`), remembered
+  in `BEHIND_PREF` (`synth.cv.behind`, the store every canvas pref uses, try / catch), a `'behind'` event, `behindOn()` / `setBehind()`;
+  on, the layer is told `behind(fn)` — fn writes each world item's rect (its live x / y — a module in the finger — and its cached size: no
+  layout read a frame). `cv-cords behind(fn)`: at each draw the boxes (≤ `HIDE_MAX` 64) go to both programs (`hb`, `nh`); the strip's
+  fragments inside a box are discarded (the shadow pass by its own offset point), so the rope bodies run behind the panels; the plugs are
+  drawn whole on top; a knob end's instance (it lies on the panel) hides with its rope; the live rope, the cord in the finger and the
+  selected cord stay whole on top (`fr` / `fp`: their strip vertices and plug instances by `gl_VertexID` / `gl_InstanceID`); `hit()`
+  skips a rope behind a box (a press there is the panel's). The SVG fallback: a `<mask>` (white, the boxes black) on each rope's strokes
+  and a knob end, never a plug; the front cords unmasked. **Default off**: no hide uniform is ever written (a program's `nh` stays 0 as
+  linked — the frames call for call as before; cv-cords' and cv-world's "off" tests), the SVG markup as before. The knob rings, the
+  badges, the × and BAL (the layer's top) are DOM over everything, as before. `tests/ref-WC/record.mjs` matches: the toggle changes
+  no record (the 900 Series' cords look the same while it is off).
+- **Browser** (Chrome for Testing 156, headless, own no-store server on a free port, real CDP mouse / touch, `?gltest` for pixel reads of
+  the cord canvas; `scratchpad/WC-ST/st.mjs <d|p>`, shots in `scratchpad/WC-ST/shots/`), 1440 × 900 mouse and 1024 × 1366 touch dpr 2: the
+  rig (Oscillator 1 + 2 → Filter, LFO 1 → CUTOFF / RES) after Tidy — no fan key, both stacks on their jack's centre, the plug drawn on the
+  LFO's OUT; a real drag from the stacked LFO OUT onto DRIVE made a **third** cord (stacked, the newest last); a real drag from the
+  stacked Filter IN pulled **Oscillator 2's** (the top), "Cord pulled · tap to undo"; long-press (touch) / right-click (mouse) "Which
+  cord?" → Oscillator 2 first; no lifted label anywhere, the IN Σ and OUT labels in their faces with the cables over them; the toggle:
+  shown on the Wavecraft and the 900 Series, hidden on a Juno, 44 × 44 on touch, the undo notice clear of it (both sizes); on → the
+  LFO → CUTOFF rope over the Filter's face reads alpha 0, the rope in the open and the plug 255, the pref stored; a tap on a rope in the
+  open selects it (×); off → as before; the 900 Series (15 cords): on, a rope over a module 0 and its plug 255, off 255 / 255; no console
+  error.
+- **Gates** (one file at a time, `--max-old-space-size=2048`, after `node tools/precache.mjs --write`): canvas-WC-sim 49 (S3 1, the
+  gate unchanged), cv-cables 67, cv-cords 48, cv-module 78, cv-world 84, cv-patch 31, rig-ui 27, rig-core 19, main 47, canvas-sim 24,
+  canvas-9-sim 22, canvas-9b-sim 14, canvas-9c-sim 3, cv-shell-sim 19, lint 169, pwa 25; also canvas-3-sim 25, cv-tray 46, ui-bench-wc 5,
+  rig-model 11, integration 44, golden-graph 6; `tests/ref-WC/record.mjs`: "the record matches base.json (114 fixtures, 5 sessions)". No
+  DSP file in the diff.
 
 ## 15. Review log
 

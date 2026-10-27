@@ -171,6 +171,9 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    2 reviews, an in-app check, fixers with skeptic loops), 145 test files green. **Next: the user's hands-on** — §12's "ask after"
    list (the Amplifier's presence, cords vs lines, the 3 ms, auto-plug, the portrait Fit floor, first-view / Tidy zoom with the track
    list open, the badge over the Filter's display after Tidy) — then WC-2. Browser tests use Chrome for Testing (CLAUDE.md).
+19. **(2026-10-26.)** **Cable look + screws deployed** (holding branch `wt-C`): the user's three asks — plugs STACK on every jack (outputs and
+   Σ inputs; no fan), cables pass OVER jack labels, a "Cables behind modules" toolbar toggle on cord canvases (Wavecraft + 900 Series; pref
+   `synth.cv.behind`, off = today) — and the screws drawn as one SVG each (slot centred at every display scale; it was off on Windows).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

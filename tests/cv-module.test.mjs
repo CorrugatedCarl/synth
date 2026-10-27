@@ -1803,6 +1803,18 @@ test('(WC, §3.6; review 2 P2-5 moved this pin — the user\'s rule) Tidy on a r
   assert.deepEqual(['i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/fx'].map(xy0), ['0,0', '0,448', '448,0', '832,0', '1440,0'], 'no wires: stage 3\'s (VOICE 448)');
 });
 
+test('(the user, 2026-10-26: stacked plugs — the Amplifier\'s Σ IN takes every chain cord on its one socket) opts.past names a rig whose source runs straight to its Amplifier past a standing filter: a grid row (DOT) more air before the Amplifier — it, its FX, OUT and Envelope 1 over it a DOT right, the sources and the filters where they were; a rig it does not name, or no past: as before', () => {
+  const P = part => ({ key: 'i1/' + part, kind: 'part', dev: 'i1', part, model: 'rig', wires: 'cords' });
+  const devs = [{ key: 'i1', kind: 'inst', model: 'rig', ui: 'parts', wires: 'cords' }, P('oscA'), P('oscB'), P('filter'), P('env1'), P('lfo1'), { key: 'i1/fx', kind: 'fx', model: 'rig', own: 'i1' }, { key: 'out', kind: 'out' }];
+  const K = ['i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/fx', 'out', 'i1/env1', 'i1/lfo1'], xy = L => K.map(k => L[k].x + ',' + L[k].y);
+  const L0 = M.tidy({}, {}, devs), L1 = M.tidy({}, {}, devs, null, { past: { i1: true } }), L2 = M.tidy({}, {}, devs, null, { past: { i2: true } });
+  assert.deepEqual(xy(L0), ['0,0', '448,0', '896,0', '1280,0', '1728,0', '2656,0', '1344,-352', '-480,-416'], 'no past: as before');
+  assert.deepEqual(xy(L1), ['0,0', '448,0', '896,0', '1312,0', '1760,0', '2688,0', '1376,-352', '-480,-416'], 'past: the Amplifier and after a DOT right (32)');
+  assert.deepEqual(xy(L2), xy(L0), 'another rig named: as before');
+  const N = M.tidy({}, {}, devs, null, { past: { i1: true }, narrow: true }), N0 = M.tidy({}, {}, devs, null, { narrow: true });
+  assert.deepEqual([N.i1.x - N0.i1.x, N['i1/fx'].x - N0['i1/fx'].x, N['i1/fx'].y - N0['i1/fx'].y], [32, 32, 0], 'upright too: the wrapped row under the Amplifier follows it');
+});
+
 /* ------------------------------------------------------------------ review 2 (fixer B1) */
 test('review 2 P1-1: an inline jack whose anchor is not in the body yet (a face mounting after the module) is measured again at its next port() — the anchor found then is the jack (data-cv-jack moved onto it, the dot hidden); a hidden one without an anchor is not re-walked', () => {
   const doc = fresh();

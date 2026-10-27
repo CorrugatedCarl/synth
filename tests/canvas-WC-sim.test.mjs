@@ -227,7 +227,7 @@ const rigRec = (a, b) => RG.edges().find(e => e.edge.a === a && e.edge.b === b);
 const world = () => cv.parts.root;
 const xBtn = () => { const W = world().children || [], T = W.find(c => c.className === 'cv-cords-top'); return [...W, ...((T && T.children) || [])].find(c => c.className === 'cv-cable-x') || null; }; // ((fixer B2) a cord's ×: in the layer above the cords
 
-test('§4.1 cords mode on the rig canvas: the cord layer draws the rig\'s own connections (its edges, the amp-slot cord) — no SVG path of theirs —, its buffer on; Amplifier → FX and FX → OUT stay lines; the layer\'s list is cv-cables\' claimed records (fanned ends where a jack holds several)', async () => {
+test('§4.1 cords mode on the rig canvas: the cord layer draws the rig\'s own connections (its edges, the amp-slot cord) — no SVG path of theirs —, its buffer on; Amplifier → FX and FX → OUT stay lines; the layer\'s list is cv-cables\' claimed records (the user, 2026-10-26: a jack holding several stacks them on its socket — every end the jack itself)', async () => {
   assert.equal(RG.mode(), 'cords');
   const internal = RG.edges().map(e => e.id).sort();
   assert.deepEqual(claimed(), internal, 'claimed: the rig\'s edges');
@@ -254,10 +254,11 @@ test('§4.4 cord edits on the rig canvas (cv-cables\' cord drag → the host, ri
   assert.equal(cv.hist.u.at(-1).label, 'Re-patch Oscillator 2 · OUT → Amplifier · IN');
   assert.ok(ends().includes('oscB.out>voice.main'));
   const s3 = JSON.stringify(S());
-  // "Which cord?": the Amplifier's IN holds the Filter's and Oscillator 2's — its menu lists them, the most recent first
+  // "Which cord?": the Amplifier's IN holds the Filter's and Oscillator 2's — its menu lists them, the most recent first: the stack's top
+  // (the user, 2026-10-26: stacked plugs, newest on top — Oscillator 2's, re-patched there last; was the last in edges() order, the Filter's)
   RG.ui().jackMenu('i1.main', null, 10, 10);
   const M = RG.menuLast().map(i => i.label);
-  assert.deepEqual(M.slice(0, 3), ['Which cord?', 'Filter 1 · OUT', 'Oscillator 2 · OUT'], 'by source, the most recent (the last in edges() order) first');
+  assert.deepEqual(M.slice(0, 3), ['Which cord?', 'Oscillator 2 · OUT', 'Filter 1 · OUT'], 'by source, the most recent (the stack\'s top) first');
   O.onPull(rigRec('oscB.out', 'voice.main').id); await settle(3);
   assert.deepEqual([cv.hist.u.at(-1).label, note()], ['Pull Oscillator 2 · OUT → Amplifier · IN', 'Cord pulled · tap to undo']);
   assert.equal(S().osc[1].route, 3, 'unplugged: route None (silent, its module dimmed)');
@@ -1314,19 +1315,39 @@ const drawn = (A, B, O) => {
   if (O) m = clip(P, m, O.x, O.y, O.r) + 1;
   return u => along(P, m, u);
 };
-const fanOf = jack => (REC.list || []).flatMap(c => ['a', 'b'].filter(e => String(c[e]).startsWith(jack + '#')).map(e => ({ id: c.id, key: c[e], p: REC.at.get(c[e]) })));
-const rowJacksOf = (mod, y) => [...V().ports()].filter(([k, p]) => k.lastIndexOf('.') > 0 && k.slice(0, k.lastIndexOf('.')) === mod && k.indexOf(':') < 0 && Math.abs(p.y - y) < 0.5).map(([k, p]) => ({ k, p }));
-test('(fixer K; review B5) a press on a fanned plug is that plug\'s cord: the host\'s jackAt(el, p, k) answers the plug nearest the press — Oscillator 1 and the auto-plugged Oscillator 2 at the Filter\'s IN Σ: a press on either plug names its own record (the most recent is only the default); a press on the jack of a single cord names none (its one cord)', async () => {
+const stackAt = jack => (REC.list || []).filter(c => c.a === jack || c.b === jack);
+// the user, 2026-10-26 (canvas 050ea9f): "in cases like this all cables should overlap at the outlet" (an LFO's OUT with two cords fanned side by
+// side) and "overlap everywhere" — fixer K's fan (B5's plug press, P3-6's row) retired by design
+test('(the user, 2026-10-26: "all cables should overlap at the outlet", "overlap everywhere") STACKED PLUGS — every jack holding several cords, outputs and Σ inputs alike, has their plugs on its one socket like stackable patch cables: Oscillator 1 and the auto-plugged Oscillator 2 at the Filter\'s IN Σ, an LFO\'s OUT with two cords, then three — each record\'s end the jack itself (no "<jack>#<i>" fan), its anchor the jack\'s centre, the cables diverging from there; the newest on top (the last of the jack\'s cords in the layer\'s list: drawn last) — Oscillator 1 pulled and plugged again comes on top; a press on a stacked INPUT grabs that top cord (jackAt names it), on a stacked OUTPUT names none (a new cord); a single cord\'s jack names none', async () => {
   await fresh(RIG.ID);
   RG.add(null, 'osc'); await settle(2);
+  RG.add(null, 'lfo'); await settle(2);
   rigGeometry(); await settle(2);
-  const F = fanOf('i1/filter.in'), el = jackEl('i1/filter.in'), J = cv.mod.opts.jackAt;
-  assert.deepEqual([F.length, typeof J, el !== null], [2, 'function', true], 'two plugs fanned at the Filter\'s IN');
-  for (const f of F) {
-    const r = J(el, { x: f.p.x + 3, y: f.p.y - 2 }, 1);
-    assert.deepEqual([r && r.rec, !!r && r.el === el], [f.id, true], 'its own plug: ' + f.id);
-  }
-  const M = V().ports().get('i1.main'), r1 = J(jackEl('i1.main'), { x: M.x + 2, y: M.y }, 1);
+  const lfo = ['f.cutoff', 'f.level'].map(d => cv.mod.connect('i1/lfo1.out', 'i1:' + d)); await settle(3);
+  rigGeometry(); await settle(2);
+  const J = cv.mod.opts.jackAt, P = () => V().ports();
+  const check = (jack, n, top, what) => {
+    for (const c of REC.list) for (const e of ['a', 'b']) assert.ok(!/#\d+$/.test(String(c[e])), what + ': ' + c.id + ' ' + c[e] + ' — the jack itself, no fan');
+    const L = stackAt(jack), Q = P().get(jack);
+    assert.equal(L.length, n, what + ': ' + n + ' cords at ' + jack);
+    for (const c of L) { const p = REC.at.get(jack); assert.deepEqual([p && p.x, p && p.y], [Q.x, Q.y], what + ': ' + c.id + ' on the socket'); }
+    assert.equal(L[L.length - 1].id, top, what + ': the newest on top (drawn last)');
+    return J(jackEl(jack), { x: Q.x + 3, y: Q.y - 2 }, 1);
+  };
+  const oscA = rigRec('oscA.out', 'filter.in').id, oscB = rigRec('oscB.out', 'filter.in').id;
+  let r = check('i1/filter.in', 2, oscB, 'the Filter\'s IN Σ');
+  assert.deepEqual([!!r && r.el === jackEl('i1/filter.in'), r && r.rec], [true, oscB], 'a press on the stacked input: its top cord');
+  r = check('i1/lfo1.out', 2, lfo[1], 'the LFO\'s OUT');
+  assert.deepEqual([!!r && r.el === jackEl('i1/lfo1.out'), r && r.rec], [true, null], 'a press on the stacked output: none named (a new cord)');
+  const third = cv.mod.connect('i1/lfo1.out', 'i1:f.res'); await settle(3);
+  rigGeometry(); await settle(2);
+  check('i1/lfo1.out', 3, third, 'three on the LFO\'s OUT');
+  cv.mod.opts.onPull(oscA); await settle(3);
+  RG.plug(null, 'oscA.out', 'filter.in'); await settle(3);
+  rigGeometry(); await settle(2);
+  r = check('i1/filter.in', 2, oscA, 'Oscillator 1 plugged again');
+  assert.equal(r && r.rec, oscA, 'a press grabs it');
+  const M = P().get('i1.main'), r1 = J(jackEl('i1.main'), { x: M.x + 2, y: M.y }, 1);
   assert.deepEqual([!!r1 && r1.el === jackEl('i1.main'), r1 && r1.rec], [true, null], 'one cord at the Amplifier\'s IN: the jack, no record named');
 });
 
@@ -1367,24 +1388,16 @@ test('(fixer K; review P2-3, its skeptics) the world\'s near hook (setJackNear �
   }
 });
 
-test('(fixer K; review P3-6) a Σ input holding many cords fans them along its jack row inside its face — never a second row over the Filter\'s switches or its "dry" tag: S3\'s Filter 1 IN (four cords) and the Amplifier\'s IN (three): every plug on the jack\'s line, inside the face, ≥ 28 px from every other plug and from every other jack of its row; a forked source\'s BAL right of its plugs', async () => {
+test('(the user\'s stacked plugs, 2026-10-26; fixer K\'s P3-6 fan retired) S3\'s Filter 1 IN (four cords) and the Amplifier\'s IN (three) stack every plug on the jack\'s socket — each end the jack\'s own key at its centre, nothing laid along the row (over the Filter\'s switches, its "dry" tag); a forked source\'s BAL right of its jack', async () => {
   await scene('S3');
   const P = V().ports();
-  for (const [jack, mod, n] of [['i1/filter.in', 'i1/filter', 4], ['i1.main', 'i1', 3]]) {
-    const F = fanOf(jack), J = P.get(jack), m = box(mod), others = rowJacksOf(mod, J.y).filter(o => o.k !== jack);
-    assert.equal(F.length, n, jack + ': ' + n + ' cords');
-    for (const f of F) {
-      assert.ok(Math.abs(f.p.y - J.y) < 1e-6, jack + ': ' + f.key + ' on the jack\'s line (' + f.p.y + ' vs ' + J.y + ')');
-      assert.ok(f.p.x >= m.x + 14 && f.p.x <= m.x + m.w - 14, jack + ': ' + f.key + ' inside the face (' + f.p.x + ' in ' + m.x + ' … ' + (m.x + m.w) + ')');
-      for (const o of others) assert.ok(Math.hypot(f.p.x - o.p.x, f.p.y - o.p.y) >= 28 - 1e-6, jack + ': ' + f.key + ' clear of ' + o.k);
-    }
-    for (let i = 0; i < F.length; i++) for (let j = i + 1; j < F.length; j++) assert.ok(Math.hypot(F[i].p.x - F[j].p.x, F[i].p.y - F[j].p.y) >= 28 - 1e-6, jack + ': plugs apart');
+  for (const [jack, n] of [['i1/filter.in', 4], ['i1.main', 3]]) {
+    const L = stackAt(jack), J = P.get(jack);
+    assert.equal(L.length, n, jack + ': ' + n + ' cords');
+    for (const c of L) { const p = REC.at.get(c.b); assert.deepEqual([c.b, p && p.x, p && p.y], [jack, J.x, J.y], jack + ': ' + c.id + ' on the socket'); }
   }
-  const fork = (REC.list || []).find(c => c.id.includes('oscC.out>filter2.in'));
-  if (fork) {
-    const b = V().cables.forkBadge && V().cables.forkBadge('i1/oscC.out'), FA = fanOf('i1/oscC.out');
-    if (b && FA.length) assert.ok(parseFloat(b.style.left) >= Math.max(...FA.map(f => f.p.x)) + 14, 'BAL right of the fan');
-  }
+  const b = V().cables.forkBadge && V().cables.forkBadge('i1/oscC.out'), A = P.get('i1/oscC.out');
+  if (b && A) assert.ok(parseFloat(b.style.left) >= A.x + 14, 'BAL right of the jack');
 });
 
 test('(fixer K; review P2-1, P2-2) a mod row\'s amount badge sits on its own settled rope after Tidy — the rope the GL layer draws at rest passes within half the badge\'s height (9 px) of its visible 18 px box — in S1, S2 and S3; a lone cord\'s knob end aimed on the same curve (its last stretch heads into the knob, ≤ 12°); the knob end\'s anchor carries the knob\'s disc (kx, ky, kr: cv-cords cuts the rope at the rim)', async () => {
@@ -1415,28 +1428,22 @@ test('(fixer K; review P2-1, P2-2) a mod row\'s amount badge sits on its own set
   }
 });
 
-test('(fixer K; review P3-12) a cord never strikes through its own jack\'s label: where its rope crosses the label line under the jack, the label is lifted above the cords (the layer\'s top: a chip with its words, centred under the jack) — "OUT" under a modulator, "IN Σ" under an input; a label no rope of its jack crosses stays where it is, no chip', async () => {
-  await scene('S1');
-  const top = LAYER.top(), chips = new Map(kidsOf(top, c => clsOf(c).includes(' rig-jl-top ')).map(c => [c.getAttribute('data-jack'), c]));
-  const G = RU.GRID, y0 = G.jack / 2 + G.jackGap, y1 = y0 + G.jackLab, P = V().ports();
-  const ends = new Map();
-  for (const c of REC.list) for (const e of c.s === 2 ? ['a'] : ['a', 'b']) { const j = String(c[e]).replace(/#\d+$/, ''); if (!ends.has(j)) ends.set(j, []); ends.get(j).push(c); }
-  let lifted = 0, kept = 0;
-  for (const [j, L] of ends) {
-    const J = P.get(j);
-    if (!J) continue;
-    // the rope's centre in the label's line: within the words' half width (3 px a letter, narrower than any face's) → struck; past it by
-    // more than the rope's width and 6 px (5 px a letter: wider than any face's) → clear
-    const words = kidsOf(jackEl(j).parentNode, x => clsOf(x).includes(' rig-jl '))[0].textContent.length;
-    const near = band => L.some(c => { const at = settled(REC.at.get(c.a), REC.at.get(c.b)); for (let i = 0; i <= 240; i++) { const p = at(i / 240); if (Math.abs(p.x - J.x) <= band && p.y >= J.y + y0 - 3 && p.y <= J.y + y1 + 3) return true; } return false; });
-    const ch = chips.get(j);
-    if (near(3 * words)) {
-      assert.ok(!!ch, j + ': its rope crosses its label — lifted');
-      const lab = kidsOf(jackEl(j).parentNode, x => clsOf(x).includes(' rig-jl '))[0];
-      assert.equal(ch.textContent.indexOf(lab.textContent), 0, j + ': the label\'s words');
-      assert.ok(Math.abs(parseFloat(ch.style.left) - J.x) < 1e-6 && Math.abs(parseFloat(ch.style.top) - (J.y + y0)) < 1e-6, j + ': at its place (' + ch.style.left + ', ' + ch.style.top + ')');
-      lifted++;
-    } else if (!near(5 * words + 5.6 + 6)) { assert.equal(ch || null, null, j + ': no rope near its label — not lifted'); kept++; }
+test('(the user, 2026-10-26: "cable should be on top of text here" — the IN Σ label drawn over its cable) a cord passes OVER its jack\'s label like a real cable — no label lifted above the cords (review WC-int P3-12\'s chip retired by design): in S1 and S3 the layer\'s top holds no label chip, every plugged jack\'s label stays in its face (under the cord layer) with its words; no lifted-label code left', async () => {
+  for (const name of ['S1', 'S3']) {
+    await scene(name);
+    const top = LAYER.top();
+    assert.equal(kidsOf(top, c => clsOf(c).includes(' rig-jl-top ') || clsOf(c).includes(' rig-jl ')).length, 0, name + ': no label over the cords');
+    let n = 0;
+    for (const c of REC.list) for (const e of c.s === 2 ? ['a'] : ['a', 'b']) {
+      const el = jackEl(c[e]);
+      if (!el) continue;
+      const lab = kidsOf(el.parentNode, x => clsOf(x).includes(' rig-jl '))[0];
+      if (!lab) continue; // (a Macros tile's knob jack: no label line)
+      assert.ok(String(lab.textContent).length > 0, name + ' ' + c[e] + ': its label in its face, with its words');
+      n++;
+    }
+    assert.ok(n >= 4, name + ': labels checked (' + n + ')');
   }
-  assert.ok(lifted >= 3 && kept >= 1, 'lifted ' + lifted + ', kept ' + kept);
+  const src = f => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  assert.ok(!/rig-jl-top/.test(src('style.css')) && !/rig-jl-top|rigLabels/.test(src('main.js')), 'no lifted-label code');
 });

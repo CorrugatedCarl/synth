@@ -241,9 +241,9 @@ function cssText() {
   margin: calc(var(--rig-jack) / -2) 0 0 calc(var(--rig-jack) / -2); border-radius: 50%; cursor: crosshair; touch-action: none;
   background: radial-gradient(circle, var(--rig-jack-hole, #0b0b0c) 0 6.5px, #000 7px 7.5px, var(--rig-jack-ring, #ebe6d8) 8px 11px, rgba(0, 0, 0, 0.55) 11.5px 12.5px, transparent 13px);
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.55); }
-.rig-face .rig-jack::before { ${HIT} width: calc(var(--rig-hit) + var(--rig-fw, 0px)); height: var(--rig-hit); transform: translate(calc(-50% + var(--rig-fx, 0px)), -50%); border-radius: 999px; }
-/* ((WC, integration fixer K; review P2-3 / B5 and its skeptics) a jack's own hit: the grid's 44 px circle — short of the row above, no
-   wider than its column — stretched sideways over a fan of plugs (--rig-fw its span, --rig-fx its centre's offset: the host's); the
+.rig-face .rig-jack::before { ${HIT} width: var(--rig-hit); height: var(--rig-hit); border-radius: 999px; }
+/* ((WC, integration fixer K; review P2-3 and its skeptics) a jack's own hit: the grid's 44 px circle — short of the row above, no wider
+   than its column; never stretched (the user, 2026-10-26: several cords stack their plugs on the jack itself — the fan is gone); the
    rest of a jack's reach (22 screen px at Fit, past the face's edge, which clips this circle) is the world's near hook (main.js) */
 .rig-face .rig-jack[data-ro] { cursor: default; }
 .rig-face .rig-jl { position: absolute; left: 50%; top: calc(var(--rig-jack-top) + var(--rig-jack) + var(--rig-jack-gap)); transform: translateX(-50%); height: var(--rig-jack-lab);

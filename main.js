@@ -6483,7 +6483,7 @@ function cvRender() {
   }
   if (cvBodiesDue() && cvView) { cvView.sync(trk()); cvRoom(false); }
   rigRects.clear(); rigMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again
-  rigCtls.clear(); rigDestC.clear(); rigBadgeC.clear(); rigLabInfoC.clear(); // ((fixer K) the jacks' labels: measured once a render
+  rigCtls.clear(); rigDestC.clear(); rigBadgeC.clear();
   if (rigLaid && rigView() && !cvMaster && isRigDev(trk(), curOf(trk())) && typeof cvView.ports === 'function') cvView.cables.layout(cvView.ports()); // ((WC) the knob ends, rings and badges over the view as it now stands (its ports)
   cvModDecor();
   sxLabels(); // ((3) the part modules' titles carry their panels' label drags)
@@ -7473,7 +7473,7 @@ function sxLayParts(t, dev, extra) {
   const fxM = V ? V.modules.get(dev + '/fx') : null, sz = {};
   for (const d of devs) sz[d.key] = { w: d.kind === 'fx' ? (fxM ? fxM.w : cvModule.W_FX) : sxPartW(d.kind === 'inst' ? 'voice' : SE.kindOf(d.part)) };
   if (wm) for (const d of devs) if (d.kind !== 'fx') sz[d.key].h = sxPartH(d.kind === 'inst' ? 'voice' : d.part); // ((WC, review 2 P2-5) the band sits by the faces' heights
-  const td = cvModule.tidy(t, sz, devs, null, wm ? { targets: rigTargetsOf(t, dev, parts), narrow: cvNarrow() } : undefined), x0 = Math.min(...devs.map(d => td[d.key].x)), ox = e.x - x0, oy = e.y - td[dev].y;
+  const td = cvModule.tidy(t, sz, devs, null, wm ? { targets: rigTargetsOf(t, dev, parts), narrow: cvNarrow(), past: rigPast(t, dev, parts) ? { [dev]: true } : {} } : undefined), x0 = Math.min(...devs.map(d => td[d.key].x)), ox = e.x - x0, oy = e.y - td[dev].y;
   const R = {}; // (the group's rects: Tidy's guessed heights)
   for (const d of devs) {
     const o = lay[d.key] || {}, n = { x: cvDot(td[d.key].x + ox), y: cvDot(td[d.key].y + oy) };
@@ -8109,11 +8109,19 @@ function rigTargetsOf(t, dev, parts) {
 }
 // a portrait canvas (the band taller than wide — the iPad upright): a rig's Tidy wraps its chain after the Amplifier
 const cvNarrow = () => { const W = cvW(); let b = null; try { b = W && typeof W.band === 'function' ? W.band() : null; } catch (err) { b = null; } return !!b && b.bottom - b.top > b.right - b.left; };
-// cv-module tidy()'s opts for track t: its rigs' modulator targets, the canvas's shape (ignored on every other canvas)
+// cv-module tidy()'s opts for track t: its rigs' modulator targets, the canvas's shape, (the user's stacked plugs) the rigs past (rigPast)
+// (ignored on every other canvas)
 function rigTidyOpts(t) {
-  const targets = {};
-  for (const dev of sxIds(t)) if (isRigDev(t, dev)) Object.assign(targets, rigTargetsOf(t, dev));
-  return { targets, narrow: cvNarrow() };
+  const targets = {}, past = {};
+  for (const dev of sxIds(t)) if (isRigDev(t, dev)) { Object.assign(targets, rigTargetsOf(t, dev)); if (rigPast(t, dev)) past[dev] = true; }
+  return { targets, narrow: cvNarrow(), past };
+}
+// ((the user, 2026-10-26: stacked plugs) Tidy's air before rig dev's Amplifier: a source straight to it (IN / DIRECT) while a filter stands —
+// its cord rises into the Amplifier's one socket from under the filters (S3's Sub past Filter 2's foot)
+function rigPast(t, dev, parts) {
+  const P = parts || sxPartList(t, dev);
+  if (!P.some(p => SE.FILTERS.includes(p))) return false;
+  return rigEdges(t, dev).some(r => /^voice\.(main|direct)$/.test(String(r.edge.b)) && SE.SRC_PARTS.includes(String(r.edge.a).split('.')[0]));
 }
 // a jack end's words: "Oscillator 1 · OUT", "Amplifier · LEVEL" (the jack rows' labels, rig-core MODULES)
 function rigEndLabel(t, dev, end) {
@@ -8525,17 +8533,18 @@ function rigCtl(key) {
   return L;
 }
 // the cord layer's list and anchors from cv-cables' claimed records and the ports (§4.3), and the claimed badges' places (fixer B2):
-//  · several cords at one jack fan out '<jack>#<i>' (i the records' order) along the jack's row inside its face, RIG_FAN apart (closer,
-//    ≥ RIG_FAN_MIN, where the row is tight), packed round the row's other jacks and fans — each as near centred on its jack as the room
-//    allows, never a second row over the face (integration fixer K, review P3-6) — and its cords on the plugs that cross the fewest
-//    faces and each other (review B1: S3's Filter 1 cord kept off Filter 2; rigFans / rigOrder); a forked source's BAL right of its fan;
+//  · (the user, 2026-10-26: "all cables should overlap at the outlet", "overlap everywhere") several cords at one jack STACK on its socket
+//    like stackable patch cables — every end the jack itself, its centre, the cables diverging from there (fixer K's fan along the row
+//    retired); the stack's top is the last of them in the records' order (cv-cables' claimed records: a cord plugged in this session,
+//    again too, comes last), drawn last (cv-cords draws in the list's order) — a press on a stacked input grabs it (tops: rigNearest), its
+//    "Which cord?" lists it first (rigStack); a forked source's BAL right of its jack;
 //  · a knob end (the user, 2026-10-26: "directly to the back of the knob that it is attached to") is 'knob:<id>' on the knob's rim (its
 //    own disc: cv-module kx / ky / kr) where the rope AT REST arrives radially (rigAim, on the layer's own shape: fixer K, P2-1) — it
 //    goes in behind the knob there (cv-cords s 2; the anchor carries the disc, so the layer cuts the rope at the rim: P2-2) —; several
 //    cords onto one knob spread ≥ RIG_SEP apart round it (rigSpread) and ring it in their colours, each segment facing its cord; a
 //    hidden / folded knob's end: the bar corner, as before;
 //  · a claimed mod row's badge on its rope at rest just outside the rim, off every control and every badge placed before it (rigBadge)
-const RIG_FAN = 32, RIG_FAN_MIN = 16, RIG_FAN_PAD = 16, RIG_SEP = 40 * Math.PI / 180;
+const RIG_SEP = 40 * Math.PI / 180;
 // ((fixer K, review P2-1) the drawn rope AT REST between A and B — the layer's shape(): the settled Studio rope with motion (a rig's cords
 // open there: cv-cords rest), the parabola still / SVG — what badges sit on and knob ends are aimed along; cached by its ends and the
 // layer's quality, cleared at every render)
@@ -8616,134 +8625,6 @@ function rigSpread(g) {
   }
   for (const k of cl) k.L.forEach((r, j) => { r.x.th = k.c + (j - (k.L.length - 1) / 2) * sep; });
 }
-// ((fixer K, review P3-6) one jack row's fans: B — its jacks in x order, { x, n (a fan's plugs; 1 a jack that cannot move: empty or one
-// cord), fixed } — packed between lo and hi (plug centres): the fixed jacks stand, every fan's plugs RIG_FAN apart (the gaps to a
-// neighbour too), squeezed to ≥ RIG_FAN_MIN where the room is short, each fan as near centred on its own jack as the others let it (the
-// pool-adjacent rule: crowding fans share the shift) → each item's first plug x and its spacing (in place: b.x0, b.s); a fan whose jack
-// stands off the walls (off its face: a jack not measured yet, a stale port) centred on its jack, as a folded module's (WC-1 merge fixer)
-function rigPack(B, lo, hi) {
-  const S0 = RIG_FAN;
-  const walls = [{ x: lo - S0 }].concat(B.filter(b => b.fixed && b.x > lo - S0 && b.x < hi + S0), [{ x: hi + S0 }]);
-  for (const b of B) { b.x0 = b.fixed ? b.x : b.x - (b.n - 1) * S0 / 2; b.s = S0; } // (a fan in no room below keeps this: never NaN — its plugs are the sources knob ends are aimed from)
-  for (let w = 0; w + 1 < walls.length; w++) {
-    const L = walls[w].x, R = walls[w + 1].x, mv = B.filter(b => !b.fixed && b.x > L && b.x <= R);
-    if (!mv.length) continue;
-    const slots = mv.reduce((s, b) => s + b.n, 0), a0 = L + S0, a1 = R - S0, room = a1 - a0;
-    const s = slots > 1 ? Math.max(RIG_FAN_MIN, Math.min(S0, room / (slots - 1))) : S0, width = (slots - 1) * s;
-    let cl = [];
-    for (const b of mv) {
-      cl.push({ L: [b], n: b.n, x: b.x - (b.n - 1) * s / 2 });
-      for (let merged = true; merged && cl.length > 1;) { // (merge while the last cluster crowds the one before it)
-        merged = false;
-        const p = cl[cl.length - 2], q = cl[cl.length - 1];
-        if (p.x + p.n * s > q.x + 1e-9) {
-          const M = p.L.concat(q.L);
-          let off = 0, sum = 0;
-          for (const m of M) { sum += m.x - (off + (m.n - 1) / 2) * s; off += m.n; }
-          cl.splice(-2, 2, { L: M, n: p.n + q.n, x: sum / M.length });
-          merged = true;
-        }
-      }
-    }
-    // inside the room: clamped from the right, then the left (a fan that cannot fit overflows to its right, never over a fixed jack's left)
-    for (let i = cl.length - 1; i >= 0; i--) { const c = cl[i], lim = i === cl.length - 1 ? a1 : cl[i + 1].x - s; c.x = Math.min(c.x, lim - (c.n - 1) * s); }
-    for (let i = 0; i < cl.length; i++) { const c = cl[i], lim = i ? cl[i - 1].x + cl[i - 1].n * s : a0; c.x = Math.max(c.x, room >= width ? lim : Math.min(lim, a0 + (room - width) / 2)); }
-    for (const c of cl) { let off = 0; for (const b of c.L) { b.x0 = c.x + off * s; b.s = s; off += b.n; } }
-  }
-}
-// ((fixer K, review B1) a fan's cords on its plugs: the order whose ropes at rest cross the fewest faces (not their own ends', ×2) and
-// each other — every order for five cords or fewer, else pairwise swaps from the records' order; a tie keeps the order it had — kept
-// while its plugs and its cords' other ends stay within RIG_ORDER_MOVE px, and while a module is in the finger (no drag frame decides
-// one; rigOrderOwed asks rigRecords for one relayout once the drag is over: the order at rest is decided where the module was let go)
-const rigOrderC = new Map(), RIG_ORDER_MOVE = 24;
-let rigOrderOwed = false, rigDragNow = false;
-function rigOrder(key, list, slots, at, C, M) {
-  const n = list.length, id = list.map(([c]) => c.id).join(',') + '|' + (C ? String(C.perf || '') + String(C.mode || '') : '');
-  const other = list.map(([c, e]) => at(c.rec[e === 'a' ? 'b' : 'a']));
-  if (other.some(o => !o)) return list.map((_, i) => i);
-  const pos = slots.flatMap(s => [s.x, s.y]).concat(other.flatMap(o => [o.x, o.y]));
-  const hit = rigOrderC.get(key);
-  if (hit && hit.id === id && hit.pos.length === pos.length && hit.pos.every((v, i) => Math.abs(v - pos[i]) <= RIG_ORDER_MOVE)) return hit.order;
-  if (hit && hit.id === id && rigDragNow) { rigOrderOwed = true; return hit.order; }
-  const inM = p => M.filter(m => p.x >= m.x0 && p.x <= m.x1 && p.y >= m.y0 && p.y <= m.y1);
-  const poly = [], face = [];
-  for (let i = 0; i < n; i++) for (let a = 0; a < n; a++) {
-    const e = list[i][1], A = e === 'a' ? slots[a] : other[i], B = e === 'a' ? other[i] : slots[a], s = rigShape(C, A, B), own = new Set(inM(A).concat(inM(B)));
-    const T = [];
-    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-    for (let j = 0; j < s.m; j++) { const x = s.P[2 * j], y = s.P[2 * j + 1]; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; if (j % 3 === 0) T.push(x, y); }
-    T.push(s.P[2 * s.m - 2], s.P[2 * s.m - 1]);
-    let f = 0;
-    for (const m of M) { // (a face it passes over, 3 px in: the drawn rope's segments, not its points — a corner clipped by 8 px counts)
-      if (own.has(m) || bx1 <= m.x0 + 3 || bx0 >= m.x1 - 3 || by1 <= m.y0 + 3 || by0 >= m.y1 - 3) continue;
-      for (let j = 0; j + 1 < s.m; j++) if (rigSegBox(s.P[2 * j], s.P[2 * j + 1], s.P[2 * j + 2], s.P[2 * j + 3], m.x0 + 3, m.y0 + 3, m.x1 - 3, m.y1 - 3)) { f++; break; }
-    }
-    poly[i * n + a] = T; face[i * n + a] = f;
-  }
-  const crossN = (P, Q) => {
-    let c = 0;
-    for (let i = 0; i + 3 < P.length; i += 2) for (let j = 0; j + 3 < Q.length; j += 2) {
-      const ax = P[i], ay = P[i + 1], bx = P[i + 2], by = P[i + 3], cx = Q[j], cy = Q[j + 1], dx = Q[j + 2], dy = Q[j + 3];
-      const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax), d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax), d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx), d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
-      if (d1 * d2 < 0 && d3 * d4 < 0) c++;
-    }
-    return c;
-  };
-  const X = new Map(), cross = (i, a, j, b) => { const k = (i * n + a) * n * n + j * n + b; let v = X.get(k); if (v == null) { v = crossN(poly[i * n + a], poly[j * n + b]); X.set(k, v); } return v; };
-  const cost = o => { let c = 0; for (let i = 0; i < n; i++) { c += 2 * face[i * n + o[i]]; for (let j = i + 1; j < n; j++) c += cross(i, o[i], j, o[j]); } return c; };
-  const was = hit && hit.id === id ? hit.order : null;
-  let best = was || list.map((_, i) => i), bc = cost(best);
-  if (n <= 5) {
-    const used = new Array(n).fill(false), cur = [];
-    const walk = d => {
-      if (d === n) { const c = cost(cur); if (c < bc) { bc = c; best = cur.slice(); } return; }
-      for (let a = 0; a < n; a++) if (!used[a]) { used[a] = true; cur.push(a); walk(d + 1); cur.pop(); used[a] = false; }
-    };
-    if (bc > 0) walk(0);
-  } else {
-    for (let better = true; better && bc > 0;) {
-      better = false;
-      for (let i = 0; i < n && !better; i++) for (let j = i + 1; j < n && !better; j++) { const o = best.slice(); [o[i], o[j]] = [o[j], o[i]]; const c = cost(o); if (c < bc) { bc = c; best = o; better = true; } }
-    }
-  }
-  if (rigOrderC.size > 400) rigOrderC.clear();
-  rigOrderC.set(key, { pos, id, order: best });
-  return best;
-}
-// the jacks holding several cords (use: jack key → [[record, end]]) → Map jack key → { slots: [{x, y}] its plugs left → right, order:
-// list index → plug index }; rows of a folded module (or a module unknown): a centred fan, as before
-function rigFans(use, at, P, C, M) {
-  const out = new Map(), multi = [...use].filter(([k, L]) => L.length > 1 && at(k) && k.indexOf(':') < 0 && k.lastIndexOf('.') > 0);
-  if (!multi.length) return out;
-  const V = rigView(), mods = new Map();
-  for (const [k] of multi) mods.set(k.slice(0, k.lastIndexOf('.')), []);
-  for (const [mk, L] of mods) { // (a fanned module's own jacks: its ports, not the whole map)
-    const m = V && V.modules.get(mk);
-    for (const j of m && typeof m.jackIds === 'function' ? m.jackIds() : []) { const key = mk + '.' + j, p = at(key); if (p && isFinite(p.x) && isFinite(p.y)) L.push({ key, x: p.x, y: p.y }); }
-    for (const [k] of multi) if (k.slice(0, k.lastIndexOf('.')) === mk && !L.some(q => q.key === k)) { const p = at(k); L.push({ key: k, x: p.x, y: p.y }); }
-  }
-  const fan = new Map(multi);
-  const centred = (k, p, n) => ({ x0: p.x - (n - 1) * RIG_FAN / 2, s: RIG_FAN });
-  const placed = new Map();
-  for (const [mod, J] of mods) {
-    const m = V && V.modules.get(mod), r = m && !m.fold ? rigRectOf(mod) : null;
-    for (const [k, L] of multi) {
-      if (k.slice(0, k.lastIndexOf('.')) !== mod || placed.has(k)) continue;
-      const p = at(k);
-      if (!r) { placed.set(k, centred(k, p, L.length)); continue; }
-      const row = J.filter(j => Math.abs(j.y - p.y) < 1).sort((a, b) => a.x - b.x || (a.key < b.key ? -1 : 1));
-      const B = row.map(j => ({ key: j.key, x: j.x, n: fan.has(j.key) ? fan.get(j.key).length : 1, fixed: !fan.has(j.key) }));
-      if (!B.some(b => b.key === k)) B.push({ key: k, x: p.x, n: L.length, fixed: false }), B.sort((a, b) => a.x - b.x);
-      rigPack(B, r.x + RIG_FAN_PAD, r.x + r.w - RIG_FAN_PAD);
-      for (const b of B) if (!b.fixed) placed.set(b.key, { x0: b.x0, s: b.s });
-    }
-  }
-  for (const [k, L] of multi) {
-    const p = at(k), pl = placed.get(k) || centred(k, p, L.length), slots = L.map((_, i) => ({ x: pl.x0 + i * pl.s, y: p.y }));
-    out.set(k, { slots, order: rigOrder(k, L, slots, at, C, M) });
-  }
-  return out;
-}
 // a claimed mod row's badge: its width on the glass (its amount, its tags: cv-cables' text), its visible RIG_BADGE_VH and its RIG_BADGE_H
 // hit, at zoom k in world px — walked back along the rope at rest (the layer's shape, cut at the knob's rim: what is drawn) from its end at
 // E toward the source S, the first place (on the rope, else beside it: the visible badge's half extent off it — fixer K, P2-1) whose hit
@@ -8798,23 +8679,16 @@ function rigBadge(c, S, E, k, O, C, K) {
   return { x: q.x, y: q.y };
 }
 function rigLayer(L, P, k) {
-  const t = trk(), C = cvCords(), A = new Map(P || []), cords = [], rings = [], use = new Map(), knobs = new Map(), badges = new Map(), forks = new Map(), plugs = new Map(), ends = new Map();
+  const t = trk(), C = cvCords(), A = new Map(P || []), cords = [], rings = [], knobs = new Map(), badges = new Map(), forks = new Map(), tops = new Map(), ends = new Map();
   const at = key => (P && typeof P.get === 'function' ? P.get(key) : P ? P[key] : null), kk = k > 0 && isFinite(k) ? k : 1;
   const recs = L.map(c => Object.assign(toCord(c, t), { rec: c }));
-  const endsOf = c => (isKnobEnd(c.rec) ? ['a'] : ['a', 'b']);
-  for (const c of recs) for (const e of endsOf(c)) { const key = c[e]; if (!use.has(key)) use.set(key, []); use.get(key).push([c, e]); }
-  const V0 = rigView();
-  rigDragNow = !!V0 && [...V0.modules.values()].some(m => typeof m.dragging === 'function' && m.dragging()); // (a module in the finger: fans keep their order)
-  const M = rigObs([]).M, fans = rigFans(use, at, P, C, M);
-  for (const [key, F] of fans) {
-    const list = use.get(key), J = [];
-    list.forEach(([c, e], i) => { const fk = key + '#' + i, p = F.slots[F.order[i]]; c[e] = fk; A.set(fk, { x: p.x, y: p.y }); J.push({ id: c.id, x: p.x, y: p.y }); });
-    plugs.set(key, J);
-  }
-  for (const c of recs) { // (a forked source's BAL: right of its fanned plugs)
+  const n = new Map(); // ((the user, 2026-10-26) a stacked input's top: its last cord in the records' order — what a press there grabs
+  for (const c of recs) if (!isKnobEnd(c.rec)) { n.set(c.b, (n.get(c.b) || 0) + 1); tops.set(c.b, c.id); }
+  for (const [j, m] of n) if (m < 2) tops.delete(j);
+  for (const c of recs) { // (a forked source's BAL: right of its jack)
     if (!c.rec.fork || forks.has(c.rec.a)) continue;
-    const p = at(c.rec.a), F = fans.get(c.rec.a);
-    if (p) forks.set(c.rec.a, { x: (F ? Math.max(...F.slots.map(s => s.x)) : p.x) + 14 + 6, y: p.y });
+    const p = at(c.rec.a);
+    if (p) forks.set(c.rec.a, { x: p.x + 14 + 6, y: p.y });
   }
   for (const c of recs) {
     if (!isKnobEnd(c.rec)) continue;
@@ -8854,21 +8728,20 @@ function rigLayer(L, P, k) {
     const a = A.get(c.a), b = A.get(c.b);
     if (a && b) ends.set(c.id, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } });
   }
-  return { cords, anchors: A, rings, badges, forks, plugs, ends, P };
+  return { cords, anchors: A, rings, badges, forks, tops, ends, P };
 }
 // ((WC, integration fixer K; review B5 / P2-3) what a press on rig jack el at p (world px, zoom k) is on (cv-cables' jackAt): the nearest
-// of its module's jack centres — a fanned jack's plugs in its place, an input's each naming its cord (the plug's own, not the most
-// recent) — within max(22 screen px, half the 64 px column) → { el, rec } (rec null: the jack's default), else null (the press keeps el)
+// of its module's jack centres within max(22 screen px, half the 64 px column) → { el, rec } — rec: a stacked input's top cord (the user,
+// 2026-10-26: its plugs on the one socket, the newest on top: what a drag grabs), else null (the jack's default) —, else null (the press
+// keeps el)
 const RIG_HALF = 32; // (half the RIG grid's column: rig-ui GRID.col 64)
 function rigNearest(V, p, k, mod) { // (mod null: every rig jack — data-cv-awake, rig-ui's jack rows)
   const R = rigLast, P = R && R.P ? R.P : V.ports(), get = key => (P && typeof P.get === 'function' ? P.get(key) : P ? P[key] : null);
   let best = null, bd = Math.max(22 / (k > 0 ? k : 1), RIG_HALF);
   for (const J of V.jacks()) {
     if (!J.el || (mod != null ? J.mod !== mod : typeof J.el.getAttribute !== 'function' || J.el.getAttribute('data-cv-awake') == null)) continue;
-    const F = R && R.plugs ? R.plugs.get(J.id) : null;
-    if (F && F.length) { for (const q of F) { const d = Math.hypot(q.x - p.x, q.y - p.y); if (d <= bd) { bd = d; best = { el: J.el, rec: J.dir === 'in' ? q.id : null }; } } continue; }
     const c = get(J.id);
-    if (c && isFinite(c.x)) { const d = Math.hypot(c.x - p.x, c.y - p.y); if (d <= bd) { bd = d; best = { el: J.el, rec: null }; } }
+    if (c && isFinite(c.x)) { const d = Math.hypot(c.x - p.x, c.y - p.y); if (d <= bd) { bd = d; best = { el: J.el, rec: J.dir === 'in' && R && R.tops ? R.tops.get(J.id) || null : null }; } }
   }
   return best;
 }
@@ -8899,118 +8772,6 @@ function rigJackEl(V, key) {
   let el = null;
   try { el = m.jack(key.slice(i + 1)) || null; } catch (err) { el = null; }
   return el ? { el, m } : null;
-}
-const rigLabInfoC = new Map(); // ((fixer K) a render's: the label elements and widths (rigLabels); cleared at every render
-// a fanned jack's target stretched over its plugs (rig-ui's jack hit: --rig-fw the fan's span, --rig-fx its centre's offset, world px)
-let rigFanOn = []; // ([element, span, offset] as last set)
-function rigFanHits(R) {
-  const V = rigView(), want = [];
-  if (V && R && R.plugs && R.plugs.size) {
-    const get = key => (R.P && typeof R.P.get === 'function' ? R.P.get(key) : R.P ? R.P[key] : null);
-    for (const [j, F] of R.plugs) {
-      const q = rigJackEl(V, j), el = q && q.el, J = get(j);
-      if (!el || !J || !F.length || !el.style || typeof el.style.setProperty !== 'function') continue;
-      const x0 = Math.min(...F.map(q => q.x)), x1 = Math.max(...F.map(q => q.x));
-      want.push([el, Math.round(x1 - x0), Math.round((x0 + x1) / 2 - J.x)]);
-    }
-  }
-  if (want.length === rigFanOn.length && want.every((w, i) => w[0] === rigFanOn[i][0] && w[1] === rigFanOn[i][1] && w[2] === rigFanOn[i][2])) return;
-  for (const [e] of rigFanOn) if (!want.some(w => w[0] === e) && e.style && typeof e.style.removeProperty === 'function') { e.style.removeProperty('--rig-fw'); e.style.removeProperty('--rig-fx'); }
-  for (const [e, w, x] of want) { e.style.setProperty('--rig-fw', w + 'px'); e.style.setProperty('--rig-fx', x + 'px'); }
-  rigFanOn = want;
-}
-// ((WC, integration fixer K; review P3-12) a jack's label (the line under it) reads through its own cords: where a rope of the jack's (at
-// rest, as drawn) crosses the label, the label is lifted above the cords — a chip in the layer's top with its words in the face's colours,
-// at its place (the jack's centre, RIG_LAB_DY under it); a label no rope of its jack crosses stays as it is, no chip
-const RIG_LAB_DY = 20, RIG_LAB_H = 12, RIG_ROPE_HW = 5.6; // (rig-ui GRID: jack 28 / 2 + jackGap 6, jackLab 12; cv-cords LOOK.W / 2)
-const rigLabC = new Map(); // (jack key → its chip)
-const rigLabOf = el => { const p = el && el.parentNode; for (const c of (p && p.children) || []) if (c && typeof c.getAttribute === 'function' && /(^|\s)rig-jl(\s|$)/.test(c.getAttribute('class') || (typeof c.className === 'string' ? c.className : ''))) return c; return null; };
-function rigSegBox(ax, ay, bx, by, x0, y0, x1, y1) { // segment a → b meets box [x0, x1] × [y0, y1] (Liang–Barsky)
-  let t0 = 0, t1 = 1;
-  const dx = bx - ax, dy = by - ay;
-  for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]]) {
-    if (p === 0) { if (q < 0) return false; continue; }
-    const r = q / p;
-    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
-  }
-  return true;
-}
-// (a label's struck verdict, kept while its cords' ends stay within RIG_LAB_MOVE px: a module drag decides again every few px, not a frame)
-const rigLabHitC = new Map(), RIG_LAB_MOVE = 12;
-function rigLabels(R) {
-  const C = cvCords(), V = rigView(), top = R && C && typeof C.top === 'function' ? C.top() : null, want = new Map();
-  if (top && V && R) {
-    const get = key => (R.P && typeof R.P.get === 'function' ? R.P.get(key) : R.P ? R.P[key] : null), by = new Map();
-    for (const c of R.cords) for (const e of c.s === 2 ? ['a'] : ['a', 'b']) { const j = String(c[e]).replace(/#\d+$/, ''); if (!by.has(j)) by.set(j, []); by.get(j).push(c); }
-    for (const [j, L] of by) {
-      const J = get(j), q = rigJackEl(V, j);
-      if (!J || !q || q.m.fold) continue; // (a folded module shows no jack row)
-      let info = rigLabInfoC.get(j);
-      if (!info || info.el !== q.el) { // (once a render: the label and its measured line, else its words' estimate)
-        const lab = rigLabOf(q.el), ow = lab ? lab.offsetWidth : 0, oh = lab ? lab.offsetHeight : 0;
-        info = { el: q.el, lab, w: lab ? (ow > 0 && oh > 0 && oh < 40 ? ow : 4 + 6.4 * String(lab.textContent || '').length) : 0 };
-        rigLabInfoC.set(j, info);
-      }
-      if (!info.lab) continue;
-      const pos = [J.x, J.y, info.w];
-      for (const c of L) { const a = R.anchors.get(c.a), b = R.anchors.get(c.b); pos.push(a ? a.x : NaN, a ? a.y : NaN, b ? b.x : NaN, b ? b.y : NaN); }
-      const was = rigLabHitC.get(j);
-      let hit;
-      if (was && was.pos.length === pos.length && was.pos.every((v, i) => Math.abs(v - pos[i]) <= RIG_LAB_MOVE)) hit = was.hit;
-      else {
-        const w = info.w, x0 = J.x - w / 2 - RIG_ROPE_HW, x1 = J.x + w / 2 + RIG_ROPE_HW, y0 = J.y + RIG_LAB_DY - RIG_ROPE_HW, y1 = J.y + RIG_LAB_DY + RIG_LAB_H + RIG_ROPE_HW;
-        hit = L.some(c => {
-          const a = R.anchors.get(c.a), b = R.anchors.get(c.b);
-          if (!a || !b) return false;
-          const s = rigShape(C, a, b);
-          for (let i = 0; i + 1 < s.m; i++) if (rigSegBox(s.P[2 * i], s.P[2 * i + 1], s.P[2 * i + 2], s.P[2 * i + 3], x0, y0, x1, y1)) return true;
-          return false;
-        });
-        if (rigLabHitC.size > 400) rigLabHitC.clear();
-        rigLabHitC.set(j, { pos, hit });
-      }
-      if (hit) want.set(j, { J, lab: info.lab });
-    }
-  }
-  for (const [j, ch] of rigLabC) if (!want.has(j) || ch.parentNode !== top) { try { ch.remove(); } catch (err) { /* gone */ } rigLabC.delete(j); }
-  for (const [j, { J, lab }] of want) {
-    let ch = rigLabC.get(j);
-    if (!ch) {
-      ch = document.createElement('span');
-      ch.className = 'rig-jl-top';
-      ch.setAttribute('data-jack', j);
-      ch.setAttribute('aria-hidden', 'true');
-      top.insertBefore(ch, top.firstChild || null); // (under the badges, the × and BAL of the same layer)
-      rigLabC.set(j, ch);
-    }
-    const txt = String(lab.textContent || '');
-    if (ch.getAttribute('data-t') !== txt) { // its words — the printed normal (KEYS) in its own span — in the face's colours
-      ch.setAttribute('data-t', txt);
-      const cn = lab.childNodes, kids = cn && typeof cn === 'object' && typeof cn[Symbol.iterator] === 'function' ? [...cn] : [];
-      ch.textContent = '';
-      if (kids.length && typeof document.createTextNode === 'function' && kids.every(n => n.nodeType === 3 || n.nodeType === 1)) {
-        for (const n of kids) {
-          if (n.nodeType === 3) { ch.appendChild(document.createTextNode(n.textContent)); continue; }
-          const s = document.createElement('span');
-          s.className = typeof n.className === 'string' ? n.className : '';
-          s.textContent = n.textContent;
-          try { if (typeof getComputedStyle === 'function' && s.style) s.style.color = getComputedStyle(n).color; } catch (err) { /* the CSS's */ }
-          ch.appendChild(s);
-        }
-      }
-      if (String(ch.textContent || '') !== txt) ch.textContent = txt; // (a DOM without text nodes)
-      let cs = null, fs = null;
-      const face = typeof lab.closest === 'function' ? lab.closest('.rig-face') : null;
-      try { cs = typeof getComputedStyle === 'function' ? getComputedStyle(lab) : null; fs = face && typeof getComputedStyle === 'function' ? getComputedStyle(face) : null; } catch (err) { cs = fs = null; }
-      if (cs && ch.style) { ch.style.color = cs.color; ch.style.fontFamily = cs.fontFamily; }
-      if (fs && ch.style) ch.style.background = fs.backgroundColor;
-    }
-    const row = typeof lab.closest === 'function' ? lab.closest('[data-plugged]') : null;
-    if (!!row !== ch.hasAttribute('data-plugged')) { if (row) ch.setAttribute('data-plugged', ''); else ch.removeAttribute('data-plugged'); }
-    const l = J.x + 'px', t = (J.y + RIG_LAB_DY) + 'px';
-    if (ch.style.left !== l) ch.style.left = l;
-    if (ch.style.top !== t) ch.style.top = t;
-  }
 }
 // the knobs a cord goes into wear a ring in its colour (data-rig-cord: the rig chrome's CSS), so the end reads; several cords: a segmented
 // ring, each segment facing its cord (--rig-ring, a conic gradient on the knob's disc; its place in the control measured once); set
@@ -9095,33 +8856,26 @@ function rigLineRings(on) {
 // cv-cables onRecords → the cord layer (cords mode on this canvas) and the claimed badges' places (its answer); leaving it (lines, another
 // track's canvas) clears the rig's cords — lines mode rings the jacks its lines use
 let rigCordsOn = false, rigLast = null, rigLaid = false; // (rigLaid: records came — cvRender lays the view's again once it is the track's)
-// ((fixer K) a fan whose order a module drag held: once no module is in the finger, one relayout decides it (cv-cables lays its records again)
-let rigOrderTm = 0;
-function rigOrderLater() {
-  if (rigOrderTm) clearTimeout(rigOrderTm);
-  rigOrderTm = setTimeout(() => {
-    rigOrderTm = 0;
-    const V = rigView();
-    if (!V || !rigCordsOn || typeof V.ports !== 'function') return;
-    if ([...V.modules.values()].some(m => typeof m.dragging === 'function' && m.dragging())) { rigOrderLater(); return; }
-    V.cables.layout(V.ports());
-  }, 180);
-}
 function rigRecords(L, P, k) {
   rigLaid = true;
   const C = cvCords(), t = trk(), cm = drawMode(t) === 'cords';
   rigLineRings(!cm && !cvMaster && isRigDev(t, curOf(t)));
-  if (!C || !cm) { if (rigCordsOn) { rigCordsOn = false; rigLast = null; if (C && !ptShown()) C.set([]); rigRings([]); rigFanHits(null); rigLabels(null); } return null; }
+  if (!C || !cm) { if (rigCordsOn) { rigCordsOn = false; rigLast = null; if (C && !ptShown()) C.set([]); rigRings([]); } return null; }
   rigCordsOn = true;
-  rigOrderOwed = false;
   const R = rigLayer(Array.isArray(L) ? L : [], P, k > 0 ? k : (cvW() && cvW().k) || 1);
-  if (rigOrderOwed) rigOrderLater();
   rigLast = R;
   C.set(R.cords);
   C.anchors(R.anchors);
   rigRings(R.rings);
-  rigFanHits(R); rigLabels(R); // ((fixer K) a fan's jack target over its plugs (P2-3 / B5); the labels its cords cross lifted (P3-12)
   return { badges: R.badges, forks: R.forks, ends: R.ends }; // ((fixer K) ends: a claimed cord's tag above its own plug (P3-6)
+}
+// ((the user, 2026-10-26: stacked plugs, the newest on top) the rig's records in the stack's order — the cord layer's (the records': a cord
+// plugged in this session, again too, last) where it shows them, else edges()' — so a jack's "Which cord?" lists its top first
+function rigStack(E) {
+  const R = rigCordsOn ? rigLast : null;
+  if (!R || !R.cords.length) return E;
+  const o = new Map(R.cords.map((c, i) => [c.id, i])), n = R.cords.length;
+  return E.map((r, i) => [r, o.has(r.id) ? o.get(r.id) : n + i]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
 }
 // a live rope's look from a rig jack (cv-cables cordLook): the source's colour, a plug in the finger
 function rigLook(jk) {
@@ -9187,7 +8941,7 @@ function rigUiOf(M) {
   const opt = () => { const C = cur(); return C ? rigOpts(C.t, C.dev) : {}; };
   RIGUI = M.rig.rigHost({
     doc: document, world: () => cvW(), cur, view: () => cvView,
-    rec: (t, dev) => rigEdges(t, dev).map(r => Object.assign({}, r, { a: r.edge.a, b: r.edge.b })),
+    rec: (t, dev) => rigStack(rigEdges(t, dev)).map(r => Object.assign({}, r, { a: r.edge.a, b: r.edge.b })), // ((the user, 2026-10-26) a stack's top first in its "Which cord?"
     edit: (t, dev, label, r) => rigEdit(t, dev, label, r, { quiet: true }),
     colour: (t, dev, src, c) => rigColour(t, dev, src, c),
     notice: (text, ms, onTap) => {
@@ -10582,7 +10336,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     wires: mode => { if (mode !== undefined) { rigWiresOv = wiresOk(mode) ? mode : null; cvRender(); ptShow(); } return drawMode(trk()); },
     mode: () => drawMode(trk()), cordOf, toCord: c => toCord(c, trk()), layer: () => rigLast, cordsOn: () => rigCordsOn, ui: () => RIGUI, setUi: v => { RIGUI = v; },
     width: part => rigW(part), height: part => rigHt(part), opts: dev => { const R = rigT(dev); return R ? rigOpts(R.t, R.d) : null; }, envSwap: (dev, a, b) => rigEnvSwap(trk(), dev || curOf(trk()), a, b), envInit: dev => rigEnvInit(trk(), dev || curOf(trk())),
-    aim: rigAim, spread: rigSpread, pack: rigPack, jackAt: rigJackAt, ringCss: rigRingCss, menuLast: () => rigMenuLast, HEAVY: SX_HEAVY,
+    aim: rigAim, spread: rigSpread, jackAt: rigJackAt, ringCss: rigRingCss, menuLast: () => rigMenuLast, HEAVY: SX_HEAVY,
   };
   globalThis.__synthTest.cv.cordsOf = () => cvCords(); // (the world's cord layer: list / anchors / stats / hit through it)
   // (milestone 3, lane D: tests/canvas-3-sim, ui-bench ?m3=1&real=1) the parts hook on cv.parts — cvParts' own fields (home,

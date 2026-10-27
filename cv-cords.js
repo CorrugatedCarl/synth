@@ -12,6 +12,12 @@
 //   the × — never under a rope), c clamped to the eight colours, and hit(p, r) — a pure query over the drawn ropes the world asks through the
 //   host on an empty-canvas press (a tap on a rig cord's body selects it: the lead's decision 2; the 900 Series' stays plugs-only,
 //   the host leaves its ids out). Records without o and with s 0 / 1 write the bytes they always wrote.
+// The user, 2026-10-26 (stacked plugs, "newest on top"; "we need a button that makes cables go behind"): the cords are drawn in the
+//   list's order, the last on top (a stacked jack's newest plug over the rest: a list in another order re-orders the layer); behind(fn)
+//   — the world's toolbar toggle, every cord canvas — draws the rope bodies (the shadow and the cord passes) BEHIND the boxes fn writes
+//   at each draw (the modules' world rects: their fragments discarded inside them; the SVG fallback: a mask), the plugs on top, a knob
+//   end hidden with its rope; the live rope, the cord in the finger and the selected one whole on top; hit() none behind a box. Never
+//   told (the default): no hide uniform is written — today's frames, call for call. onAlloc(on): the host's allocation, told.
 // Where: a second WebGL2 canvas (.cv-cords) after #world in #viewport — above every module, under #overlay / the toolbar / the
 //   trays — never transformed, drawn by cv-world in the same write() that moves #world (the faces' proven path, glued
 //   mid-pinch), with the same camera, device ratio and viewport; its drawing buffer only while it is allocated (alloc: the host's
@@ -78,6 +84,9 @@ export const LOOK = Object.freeze({ W: 11.2, BODY: 7.8, HI: 2.2, HI_DX: -1.68, H
  * mod cords (lighter over the panels) · OFF_ALPHA bypassed / from a module that is off · 0.3 the 24+ fade. A record without o
  * (the 900 Series') writes index 0: the bytes it always wrote. */
 export const ALPHAS = Object.freeze([1, 0.85, LOOK.OFF_ALPHA, 0.3]);
+/** [C] (the user, 2026-10-26: cables behind the modules) the most boxes behind() hides the ropes under (the shaders' uniform array; a
+ * canvas past it: the first HIDE_MAX). */
+export const HIDE_MAX = 64;
 /** A record's o → its ALPHAS index: the nearest of the four; anything but a finite number 0 (alpha 1). */
 export const alphaOf = o => {
   if (typeof o !== 'number' || !isFinite(o)) return 0;
@@ -334,18 +343,23 @@ const KRING7 = [0x8a / 255, 0x8c / 255, 0x90 / 255].map(v => Math.round(v * 1000
 // cord's own alpha al (ALPHA_Q); (fixer B2) + KNOB.FLAG on a knob end's last point: ke 1 there, 0 elsewhere (smooth) — its shadow fades out
 // over its last stretch (no shadow cast onto the knob it goes behind)
 const ALPHA_Q = q => q + '<0.5?' + f1(ALPHAS[0]) + ':' + q + '<1.5?' + f1(ALPHAS[1]) + ':' + q + '<2.5?' + f1(ALPHAS[2]) + ':' + f1(ALPHAS[3]);
+// ((the user, 2026-10-26: cables behind) wq the vertex's world point (the shadow's offset in), fz 1 in a front range fr (the live rope, the
+// cord in the finger, the selected one: by vertex) — the fragments of the rest inside a box hb[0 … nh) are discarded (behind the panel)
+const IN_FR = (v, u) => '(' + [0, 1, 2].map(i => v + '>=' + u + '[' + i + '].x&&' + v + '<' + u + '[' + i + '].y').join('||') + ')';
+const HIDE_FS = (pt, f) => 'if(nh>0&&' + f + '<0.5){for(int i=0;i<' + HIDE_MAX + ';i++){if(i>=nh)break;vec4 b=hb[i];if(' + pt + '.x>b.x&&' + pt + '.x<b.z&&' + pt + '.y>b.y&&' + pt + '.y<b.w)discard;}}';
 const STRIP_VS = '#version 300 es\nlayout(location=0) in vec2 p;layout(location=1) in vec2 n;layout(location=2) in vec3 a;\n'
-  + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 rim[8];uniform vec3 hi[8];\n'
-  + 'out float v;out float hc;out float ke;flat out vec3 cb;flat out vec3 cr;flat out vec3 ch;flat out float sl;flat out float wpx;flat out float al;\n'
+  + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 rim[8];uniform vec3 hi[8];uniform ivec2 fr[3];\n'
+  + 'out float v;out float hc;out float ke;flat out vec3 cb;flat out vec3 cr;flat out vec3 ch;flat out float sl;flat out float wpx;flat out float al;out vec2 wq;out float fz;\n'
   + 'void main(){float kd=cam.z*cam.w;float hw=max(' + f1(HW) + ',' + f1(LOOK.MIN_DPX / 2) + '/kd);float pad=1.0/kd;'
   + 'vec2 w=p+n*a.x*(hw+pad);if(vp.z<0.5)w+=vec2(' + f1(LOOK.SH_DX) + ',' + f1(LOOK.SH_DY) + ');'
+  + 'wq=w;fz=' + IN_FR('gl_VertexID', 'fr') + '?1.0:0.0;'
   + 'v=a.x*(hw+pad)/hw;hc=dot(vec2(' + f1(LOOK.HI_DX) + ',' + f1(LOOK.HI_DY) + '),n)/' + f1(HW) + ';'
   + 'int i=int(a.y+0.5);cb=body[i];cr=rim[i];ch=hi[i];float e=floor(a.z/' + f1(KNOB.FLAG) + '+0.01);float z=a.z-' + f1(KNOB.FLAG) + '*e;ke=e;'
   + 'float q=floor(z/4.0+0.01);sl=z-4.0*q;al=' + ALPHA_Q('q') + ';wpx=hw*kd;'
   + 'vec2 dv=(w*cam.z+cam.xy)*cam.w;gl_Position=vec4(dv.x/vp.x*2.0-1.0,1.0-dv.y/vp.y*2.0,0.0,1.0);}';
-const STRIP_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
-  + 'in float v;in float hc;in float ke;flat in vec3 cb;flat in vec3 cr;flat in vec3 ch;flat in float sl;flat in float wpx;flat in float al;out vec4 o;\n'
-  + 'void main(){float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w*al;'
+const STRIP_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;uniform vec4 hb[' + HIDE_MAX + '];uniform int nh;\n'
+  + 'in float v;in float hc;in float ke;flat in vec3 cb;flat in vec3 cr;flat in vec3 ch;flat in float sl;flat in float wpx;flat in float al;in vec2 wq;in float fz;out vec4 o;\n'
+  + 'void main(){' + HIDE_FS('wq', 'fz') + 'float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w*al;'
   + 'if(vp.z<0.5){o=vec4(0.0,0.0,0.0,' + f1(LOOK.SH_A) + '*cov*(1.0-ke));return;}'
   + 'vec3 c=mix(cr,cb,clamp((' + (LOOK.BODY / LOOK.W).toFixed(6) + '-a)/aa+0.5,0.0,1.0));'
   + 'c=mix(c,ch,clamp((' + (LOOK.HI / LOOK.W).toFixed(6) + '-abs(v-hc))/aa+0.5,0.0,1.0)*' + f1(LOOK.HI_A) + ');'
@@ -356,21 +370,22 @@ const STRIP_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
 // over: shadow, ring, body, the S plug's parting line, highlight, the selected ring
 const PLUG_EXT = 22;
 const PLUG_VS = '#version 300 es\nlayout(location=0) in vec2 q;layout(location=1) in vec4 ins;layout(location=2) in float fl;\n'
-  + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 ring[8];\n'
-  + 'out vec2 lp;flat out vec3 cb;flat out vec3 cr;flat out vec3 ck;flat out float shp;flat out float px;flat out float sl;flat out float al;\n'
+  + 'uniform vec4 cam;uniform vec4 vp;uniform vec3 body[8];uniform vec3 ring[8];uniform ivec2 fp[3];\n'
+  + 'out vec2 lp;flat out vec3 cb;flat out vec3 cr;flat out vec3 ck;flat out float shp;flat out float px;flat out float sl;flat out float al;flat out vec2 pc;flat out float pz;\n'
   + 'void main(){float kd=cam.z*cam.w;float R=' + f1(PLUG_EXT) + '+2.0/kd;vec2 w=ins.xy+q*R;lp=q*R;int i=int(ins.z+0.5);'
+  + 'pc=ins.xy;pz=' + IN_FR('gl_InstanceID', 'fp') + '?1.0:0.0;' // ((the user, 2026-10-26: cables behind) a knob end hides with its rope
   + 'cb=body[i];cr=ring[i];ck=i==7?vec3(' + KRING7.map(f1).join(',') + '):cb;shp=ins.w;px=1.0/kd;float g=floor(fl/4.0+0.01);sl=fl-4.0*g;'
   + 'al=ins.w<2.5&&g>0.5&&g<1.5?1.0:(' + ALPHA_Q('g') + ');' // ((fixer K, review P3-13) a rig's own row (0.85): its plug opaque, its rope and knob end lighter
   + 'vec2 dv=(w*cam.z+cam.xy)*cam.w;gl_Position=vec4(dv.x/vp.x*2.0-1.0,1.0-dv.y/vp.y*2.0,0.0,1.0);}';
-const PLUG_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;\n'
-  + 'in vec2 lp;flat in vec3 cb;flat in vec3 cr;flat in vec3 ck;flat in float shp;flat in float px;flat in float sl;flat in float al;out vec4 o;\n'
+const PLUG_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;uniform vec4 hb[' + HIDE_MAX + '];uniform int nh;\n'
+  + 'in vec2 lp;flat in vec3 cb;flat in vec3 cr;flat in vec3 ck;flat in float shp;flat in float px;flat in float sl;flat in float al;flat in vec2 pc;flat in float pz;out vec4 o;\n'
   + 'float cv(float sd){return clamp(0.5-sd/px,0.0,1.0);}\n'
   + 'float rb(vec2 p,vec2 b,float r){vec2 d=abs(p)-b+r;return length(max(d,0.0))+min(max(d.x,d.y),0.0)-r;}\n'
   + 'vec4 ov(vec4 s,vec4 d){return s+d*(1.0-s.a);}\n'
   + 'void main(){'
   // ((WC, fixer B2) the KNOB end: no plug — at the rim the rope goes in behind the knob: the knob's shade on its last SHADE px (black,
   // 0 → SHADE_A, nothing past the rim), the knob's ring (its colour ck: the cord's, black lifted as the ring's CSS) across its end)
-  + 'if(shp>2.5){float an=(shp-3.0)*6.2831853;vec2 d=vec2(cos(an),sin(an));float a=dot(lp,d),cw=abs(dot(lp,vec2(-d.y,d.x)));'
+  + 'if(shp>2.5){' + HIDE_FS('pc', 'pz') + 'float an=(shp-3.0)*6.2831853;vec2 d=vec2(cos(an),sin(an));float a=dot(lp,d),cw=abs(dot(lp,vec2(-d.y,d.x)));'
   + 'float sh=' + f1(KNOB.SHADE_A) + '*clamp((a+' + f1(KNOB.SHADE) + ')/' + f1(KNOB.SHADE) + ',0.0,1.0)*cv(a)*cv(cw-' + f1(HW) + ');'
   + 'float rm=cv(abs(a+' + f1(KNOB.RIM / 2) + ')-' + f1(KNOB.RIM / 2) + ')*cv(cw-' + f1(HW + 0.5) + ');'
   + 'vec4 c=vec4(0.0,0.0,0.0,sh);c=ov(vec4(ck,1.0)*' + f1(KNOB.RIM_A) + '*rm,c);o=c*vp.w*al;return;}'
@@ -406,6 +421,7 @@ const anchorIn = (A, k) => { const p = A ? (typeof A.get === 'function' ? A.get(
 const fin = v => typeof v === 'number' && isFinite(v);
 
 /* ---------------------------------------------------------------- the layer */
+let MASK_N = 0; // ((the user, 2026-10-26: cables behind) the SVG fallback's mask ids, one a layer
 /**
  * The cord layer over `viewport` (#viewport; o.world = #world: the canvas goes right after it). o: { world, doc, win, now(),
  * onWake() (asks the world for a frame), mode: 'gl' (default) | 'svg' (?nogl) | 'under', under() → the host's WebGL2 context
@@ -450,6 +466,20 @@ export function createCords(viewport, o) {
     try { if (t !== tpT) { tpT = t; TP.style.transform = t; } if (topOwed) { topOwed = false; TP.style.visibility = ''; } } catch (err) { /* inert */ }
   }
   const E4 = new Float64Array(4);
+  // ((the user, 2026-10-26: cables behind) the host's boxes (behind(fn): world px x0 y0 x1 y1, asked at each draw), their count; the front
+  // ranges (the live rope, the cord in the finger, the selected one: strip vertices FR, plug instances FP)
+  let hideFn = null, nHB = 0;
+  const HB = new Float32Array(4 * HIDE_MAX), FR = new Int32Array(6), FP = new Int32Array(6), HBV = []; // (HBV: HB's first n boxes, a view made once a count)
+  function boxes() {
+    nHB = 0;
+    if (!hideFn) return 0;
+    let n = 0;
+    try { n = hideFn(HB, HIDE_MAX) | 0; } catch (err) { console.error(err); n = 0; }
+    nHB = Math.max(0, Math.min(HIDE_MAX, n));
+    return nHB;
+  }
+  const behindAt = (x, y) => { for (let i = 0; i < 4 * nHB; i += 4) if (x > HB[i] && x < HB[i + 2] && y > HB[i + 1] && y < HB[i + 3]) return true; return false; };
+  const front = c => !!c && (c === LV || (c.id != null && (c.id === sel || (GB && GB.id === c.id))));
   // (P-1 (c)) the strip's layout: lay = the drawn cords in draw order (the cords' Map order, the live rope last: one strip's
   // order), cord j at vertex off(j) — its lead join (j > 0: its first vertex again), its 2·PTS, its trail join (not the last:
   // its last vertex again) — and plug instances 2j, 2j + 1 (the probe after them); layV its version (a cord's lv), layOK
@@ -542,6 +572,8 @@ export function createCords(viewport, o) {
     const pr = (a, b) => { const p = g.createProgram(), x = sh(g.VERTEX_SHADER, a), y = sh(g.FRAGMENT_SHADER, b); g.attachShader(p, x); g.attachShader(p, y); g.linkProgram(p); g.deleteShader(x); g.deleteShader(y); if (!g.getProgramParameter(p, g.LINK_STATUS)) { const l = typeof g.getProgramInfoLog === 'function' ? g.getProgramInfoLog(p) : ''; g.deleteProgram(p); throw new Error('cv-cords: link ' + (l || 'failed')); } return p; };
     const ps = pr(STRIP_VS, STRIP_FS), pp = pr(PLUG_VS, PLUG_FS), Q = { g, ps, pp };
     for (const [p, k] of [[ps, 's'], [pp, 'p']]) { Q[k + 'Cam'] = g.getUniformLocation(p, 'cam'); Q[k + 'Vp'] = g.getUniformLocation(p, 'vp'); }
+    Q.sHb = g.getUniformLocation(ps, 'hb'); Q.sNh = g.getUniformLocation(ps, 'nh'); Q.sFr = g.getUniformLocation(ps, 'fr'); Q.sn = 0; // ((the user, 2026-10-26) cables behind:
+    Q.pHb = g.getUniformLocation(pp, 'hb'); Q.pNh = g.getUniformLocation(pp, 'nh'); Q.pFr = g.getUniformLocation(pp, 'fp'); Q.pn = 0; // nh 0 as linked: none written while off
     g.useProgram(ps);
     g.uniform3fv(g.getUniformLocation(ps, 'body'), CT.body); g.uniform3fv(g.getUniformLocation(ps, 'rim'), CT.rim); g.uniform3fv(g.getUniformLocation(ps, 'hi'), CT.hi);
     g.useProgram(pp);
@@ -749,6 +781,22 @@ export function createCords(viewport, o) {
     }
     upV = builtV;
   }
+  // ((the user, 2026-10-26: cables behind) the front ranges: the live rope, the cord in the finger, the selected one — cord j's strip
+  // vertices (its joins in) and its two plug instances; [0, 0) none
+  function fronts() {
+    FR.fill(0); FP.fill(0);
+    const L = lay.length, one = (c, k) => {
+      if (!c || c.lv !== layV || !(c.j >= 0) || c.j >= L || lay[c.j] !== c) return;
+      FR[2 * k] = off(c.j); FR[2 * k + 1] = c.j < L - 1 ? off(c.j + 1) : nStrip; FP[2 * k] = 2 * c.j; FP[2 * k + 1] = 2 * c.j + 2;
+    };
+    one(LV && !LV.taken ? LV : null, 0); one(GB ? cords.get(GB.id) : null, 1); one(sel != null ? cords.get(sel) : null, 2);
+  }
+  // a program's hide uniforms: the count (0: nothing hidden), the boxes and the front ranges while some
+  function hideU(g, hb, nl, fl, F, n) {
+    if (typeof g.uniform1i !== 'function') return;
+    g.uniform1i(nl, n);
+    if (n) { g.uniform4fv(hb, HBV[n] || (HBV[n] = HB.subarray(0, 4 * n))); g.uniform2iv(fl, F); }
+  }
   // one frame at the camera (≤ 3 draw calls: the shadows, the cords, the plugs); 'under': into cv-gl's frame, no clear
   function glFrame(cam, vw, vh, d) {
     const under = mode === 'under', g = under ? ctxOf() : gl;
@@ -760,6 +808,8 @@ export function createCords(viewport, o) {
     const W = under ? Math.max(0, Math.round(vw * d)) : BW, H = under ? Math.max(0, Math.round(vh * d)) : BH;
     if (builtV !== geomV) build();
     if (!under && !nStrip && !nPlug && blank) return true; // (nothing drawn, nothing to clear)
+    const nh = boxes();
+    if (nh) fronts();
     const t0 = now();
     upload(g);
     if (!under) { g.viewport(0, 0, W, H); g.clear(g.COLOR_BUFFER_BIT); }
@@ -767,11 +817,13 @@ export function createCords(viewport, o) {
     U.vp[0] = W; U.vp[1] = H; U.vp[3] = dimOn ? LOOK.OFF_ALPHA : 1;
     if (nStrip) {
       g.useProgram(P.ps); g.bindVertexArray(P.sv); g.uniform4fv(P.sCam, U.cam);
+      if (nh || P.sn) { hideU(g, P.sHb, P.sNh, P.sFr, FR, nh); P.sn = nh; }
       U.vp[2] = 0; g.uniform4fv(P.sVp, U.vp); g.drawArrays(g.TRIANGLE_STRIP, 0, nStrip);
       U.vp[2] = 1; g.uniform4fv(P.sVp, U.vp); g.drawArrays(g.TRIANGLE_STRIP, 0, nStrip);
     }
     if (nPlug) {
       g.useProgram(P.pp); g.bindVertexArray(P.pv); g.uniform4fv(P.pCam, U.cam); g.uniform4fv(P.pVp, U.vp);
+      if (nh || P.pn) { hideU(g, P.pHb, P.pNh, P.pFr, FP, nh); P.pn = nh; }
       g.drawArraysInstanced(g.TRIANGLE_STRIP, 0, 4, nPlug);
     }
     g.bindVertexArray(null);
@@ -861,7 +913,43 @@ export function createCords(viewport, o) {
         if (LV && !LV.taken) want.add(LV);
         for (const [c, e] of els) if (!want.has(c) || e.c !== (c.c | 0) || e.s !== (c.s | 0)) { e.g.remove(); els.delete(c); }
         for (const c of want) SV.path(c, els.get(c) || SV.add(c));
+        // ((the user, 2026-10-26: stacked plugs) the groups in the list's order, the last on top
+        const G = [...want].map(c => els.get(c).g), K = root.children, now = [];
+        for (let i = 0; K && i < K.length; i++) if (K[i] !== SV.defs) now.push(K[i]);
+        if (G.length !== now.length || G.some((g, i) => g !== now[i])) for (const g of G) root.append(g);
+        SV.hide();
         try { root.style.opacity = dimOn ? String(LOOK.OFF_ALPHA) : ''; } catch (err) { /* inert */ }
+      },
+      // ((the user, 2026-10-26: cables behind) the boxes as a mask (white, each box black) over each rope's strokes and a knob end — never
+      // a plug; the live rope, the cord in the finger and the selected one unmasked; none (off): no mask left, the markup as before
+      defs: null, mask: null,
+      hide() {
+        const n = boxes();
+        if (!n) {
+          if (SV.defs) { SV.defs.remove(); SV.defs = SV.mask = null; }
+          for (const e of els.values()) SV.mask1(e, null);
+          return;
+        }
+        if (!SV.defs) {
+          SV.defs = mk('defs', {});
+          SV.mask = mk('mask', { id: 'cv-cords-hide-' + (++MASK_N), maskUnits: 'userSpaceOnUse', x: -1e6, y: -1e6, width: 2e6, height: 2e6 });
+          SV.mask.append(mk('rect', { x: -1e6, y: -1e6, width: 2e6, height: 2e6, fill: 'white' }));
+          SV.defs.append(SV.mask);
+          root.insertBefore(SV.defs, root.firstChild || null);
+        }
+        const R = SV.mask.children.filter ? SV.mask.children.filter(x => x.localName === 'rect') : [...SV.mask.children];
+        for (let i = R.length - 1; i > n; i--) R.pop().remove();
+        for (let i = 0; i < n; i++) {
+          const r = R[i + 1] || SV.mask.appendChild(mk('rect', { fill: 'black' })), x0 = HB[4 * i], y0 = HB[4 * i + 1];
+          for (const [k, v] of [['x', x0], ['y', y0], ['width', HB[4 * i + 2] - x0], ['height', HB[4 * i + 3] - y0]]) { const t = String(v); if (r.getAttribute(k) !== t) r.setAttribute(k, t); }
+        }
+        const url = 'url(#' + SV.mask.getAttribute('id') + ')';
+        for (const [c, e] of els) SV.mask1(e, front(c) ? null : url);
+      },
+      mask1(e, v) {
+        if (e.mk === v) return;
+        e.mk = v;
+        for (const q of e.s === 2 ? e.p.concat([e.gb]) : e.p) { if (v) q.setAttribute('mask', v); else q.removeAttribute('mask'); }
       },
     };
   }
@@ -888,6 +976,13 @@ export function createCords(viewport, o) {
         place(c);
       }
       for (const id of [...cords.keys()]) if (!seen.has(id)) { cords.delete(id); if (GB && GB.id === id) GB = null; if (sel === id) sel = null; }
+      { // ((the user, 2026-10-26: stacked plugs, the newest on top) drawn in the list's order, the last on top: another order re-orders the
+        // layer (relist: one new layout), every cord kept as it is
+        const it = seen.values();
+        let same = true;
+        for (const id of cords.keys()) if (id !== it.next().value) { same = false; break; }
+        if (!same) { const was = new Map(cords); cords.clear(); for (const id of seen) cords.set(id, was.get(id)); }
+      }
       if (n && mode === 'gl') ensure();
       if (mode === 'svg' && !SV) buildSvg();
       relist(); dirty(); changed(); wakeW();
@@ -903,7 +998,7 @@ export function createCords(viewport, o) {
       if (placed) { relist(); dirty(); wakeW(); }
       if (probeKey) dirty();
       changed();
-      if (SV && SV.dirty) SV.paint();
+      if (SV && (SV.dirty || hideFn)) SV.paint(); // ((the user, 2026-10-26) behind: the boxes may have moved
     },
     /** A new cord's rope in flight: { a: the fixed jack's point, b: the finger's, c, s } (world px) — seeded awake at the first
      * call, its ends moved after; null: gone (a commit's set took it over, or the drag was cancelled). */
@@ -933,12 +1028,23 @@ export function createCords(viewport, o) {
     move(p) { if (dead || !GB || !p || !fin(p.x) || !fin(p.y)) return; GB.p.x = p.x; GB.p.y = p.y; dirty(); changed(); if (SV) SV.paint(); },
     /** The pulled end let go: it springs to its jack's anchor (after a re-patch's set: the new jack; a cancel: its own). */
     drop() { if (dead || !GB) return; GB = null; dirty(); changed(); if (SV) SV.paint(); },
+    /** (the user, 2026-10-26: "we need a button that makes cables go behind") fn(out, max) → n: the boxes (world px, x0 y0 x1 y1 into
+     * out, at most max) the rope bodies go behind — asked at each draw (a module in the finger) —, the plugs on top; null: on top again,
+     * the default (no hide uniform written). */
+    behind(fn) {
+      if (dead) return;
+      const f = typeof fn === 'function' ? fn : null;
+      if (f === hideFn) return;
+      hideFn = f; owedF = true; wakeW();
+      if (SV) SV.paint();
+    },
     /** The selected cord (its menu open): a light outline; null none. */
     sel(id) { const v = id == null ? null : String(id); if (v === sel || dead) return; mark(cords.get(sel)); sel = v; mark(cords.get(v)); dirty(); wakeW(); if (SV) SV.paint(); },
     /** The drawing buffer while a patched instrument is shown (the host's; also while any cord exists) — 0 × 0 otherwise. */
     alloc(on) {
       if (dead) return;
       allocOn = !!on;
+      if (typeof o.onAlloc === 'function') { try { o.onAlloc(allocOn); } catch (err) { console.error(err); } } // ((the user, 2026-10-26) the world's toggle
       if (allocOn && mode === 'gl') ensure();
       if (!bufOn()) { bufSize(0, 0, 1); freeGeom(); } else { owedF = true; wakeW(); }
     },
@@ -1029,6 +1135,7 @@ export function createCords(viewport, o) {
      * press (a tap there selects the cord: parity with a line). Allocates nothing. */
     hit(p, r, ok) {
       if (dead || !p || !fin(p.x) || !fin(p.y) || !fin(r) || !(r > 0)) return null;
+      const hide = boxes() > 0; // ((the user, 2026-10-26) cables behind: a rope behind a box is the panel's there
       const svgM = mode === 'svg' || mode === 'none', still = svgM || !motion(), N = svgM ? STUDIO.N : CQ.N, SUB = svgM ? STUDIO.SUB : CQ.SUB, px = p.x, py = p.y;
       let best = null, bd = r * r;
       for (const c of cords.values()) {
@@ -1041,7 +1148,7 @@ export function createCords(viewport, o) {
         for (let i = 0; i < m - 1; i++) {
           const ax = hP[2 * i], ay = hP[2 * i + 1], dx = hP[2 * i + 2] - ax, dy = hP[2 * i + 3] - ay, L = dx * dx + dy * dy;
           const u = L > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0, ex = ax + dx * u - px, ey = ay + dy * u - py, d = ex * ex + ey * ey;
-          if (d <= bd) { bd = d; best = c.id; }
+          if (d <= bd && !(hide && !front(c) && behindAt(ax + dx * u, ay + dy * u))) { bd = d; best = c.id; }
         }
       }
       return best;
