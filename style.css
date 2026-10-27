@@ -1650,8 +1650,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    switch changes no box, only colour and font pixels), every block the same variables in the same order. Scoped by rig-ui applySkin's
    attribute on #world to a rig module (its bar inherits), and again to the two elements that declare tokens of their own: .sx-root
    (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face; (the FX look, 2026-10-26) to every FX module
-   (its bar inherits) and its rack's root (.fxr-root declares the kit's tokens itself: wk.js); outside #world the ⚙ drawer and a stacked
-   jack's count (.cv-jn, the cord layer's top) carry the attribute themselves. A new skin: a SKINS entry + one block. */
+   (its bar inherits) and its rack's root (.fxr-root declares the kit's tokens itself: wk.js); outside #world the ⚙ drawer, a stacked
+   jack's count (.cv-jn, the cord layer's top) and the kit's popups opened from a skinned module (.wk-ctx menus, .wk-pop lists — main.js
+   wkPopSkin) carry the attribute themselves. A new skin: a SKINS entry + one block. */
 /* charcoal (WC-1, SKIN_DEFAULT): the cord lab's colours (docs/canvas/ref/cord-lab.html) — charcoal faces, cream engraving in the narrow
    face, black knobs with cream pointers and arcs, cream-ringed jacks, warm grey screws, the app's amber; a warm red for a negative amount */
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig],
@@ -1660,7 +1661,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-fx],
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-fx] .fxr-root,
 .rig-drawer[data-cv-skin="charcoal"],
-.cv-jn[data-cv-skin="charcoal"] {
+.cv-jn[data-cv-skin="charcoal"],
+.wk-ctx[data-cv-skin="charcoal"],
+.wk-pop[data-cv-skin="charcoal"] {
   --sx-bg: #1f2023; --sx-panel: #1f2023; --sx-panel2: #141518; --sx-line: #2c2e32; --sx-graph: #ebe6d8; --sx-ink: #ebe6d8; --sx-mute: #9c978a;
   --sx-accent: #e8a33d; --sx-neg: #ec6a4c; --text: #ebe6d8; --mute: #9c978a;
   --rig-case: #17181a; --rig-face: #1f2023; --rig-bar: #1f2023; --rig-title: #ebe6d8; --rig-line: #2c2e32; --rig-font: 'Archivo Narrow', Inter, var(--ui);

@@ -1611,7 +1611,7 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   // the skins: one block per SKINS id, the three scopes (the module — its bar inherits —, .sx-root where the kit declares its tokens, .rig-face), last in the file
   const skins = rules.filter(r => r.sel.includes('[data-cv-skin='));
   // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too)
-  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
+  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
   assert.equal(SKIN_DEFAULT, 'charcoal');
   assert.ok(skins.every(r => rules.every(q => q === r || skins.includes(q) || q.at < r.at)), 'the skin blocks are the last rules of the file');
   const V = {};

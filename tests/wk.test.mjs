@@ -4166,3 +4166,33 @@ test('(FR §7.3) haloPainter reuses its arc list (no filter / sort array per pai
   k.setMod(null);
   assert.equal(shown().length, 0);
 });
+
+test('popSkin: a context menu (every level) and a menu\'s popup list wear the skin the host names for their anchor; none without a hook or a name', () => {
+  const d = fresh();
+  const a = d.createElement('div'), b = d.createElement('div');
+  d.body.append(a, b);
+  wk.popSkin(el => (el === a ? 'charcoal' : null));
+  try {
+    const m = wk.contextMenu(10, 10, [{ label: 'Sub', sub: [{ label: 'X', action() {} }] }], { anchor: a });
+    assert.equal(m.el.getAttribute('data-cv-skin'), 'charcoal');
+    const row = m.el.children[0];
+    row._rect = { left: 10, top: 10, width: 180, height: 24 };
+    fire(row, 'pointerenter', { bubbles: false }); advance(400);
+    const lv = byCls(d.body, 'wk-ctx');
+    assert.equal(lv.length, 2, 'the submenu opened');
+    assert.deepEqual(lv.map(x => x.getAttribute('data-cv-skin')), ['charcoal', 'charcoal']);
+    m.close();
+    const n = wk.contextMenu(10, 10, [{ label: 'Y', action() {} }], { anchor: b });
+    assert.equal(n.el.getAttribute('data-cv-skin'), null);
+    n.close();
+    const k = wk.menu({ label: 'TYPE', items: () => [{ v: 0, label: 'A' }, { v: 1, label: 'B' }], get: () => 0, set() {} });
+    a.appendChild(k.el);
+    wk.popSkin(el => (a.contains(el) ? 'charcoal' : null));
+    fire(one(k.el, 'wk-mbtn'), 'click');
+    assert.equal(byCls(d.body, 'wk-pop')[0].getAttribute('data-cv-skin'), 'charcoal');
+    wk.popSkin(null);
+    const o = wk.contextMenu(10, 10, [{ label: 'Z', action() {} }], { anchor: a });
+    assert.equal(o.el.getAttribute('data-cv-skin'), null);
+    o.close();
+  } finally { wk.popSkin(null); }
+});

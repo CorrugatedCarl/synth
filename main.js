@@ -29,7 +29,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
+import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -8318,6 +8318,13 @@ function rigSkin() {
   const v = RC.SKINS.some(s => s.id === id) ? id : RC.SKIN_DEFAULT;
   if (el.getAttribute('data-cv-skin') !== v) el.setAttribute('data-cv-skin', v);
 }
+// (the skins on the kit's popups) a ⋯ / right-click menu or a dropdown list opened from a skinned module (a rig part, an FX module — the
+// world's attribute) or from the ⚙ drawer (its own) wears that skin: they live on <body>, style.css scopes each skin block to them too
+wkPopSkin(el => {
+  if (!el || typeof el.closest !== 'function') return null;
+  const m = el.closest('.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]'), at = m ? m.closest('[data-cv-skin]') : el.closest('.rig-drawer[data-cv-skin]');
+  return at ? at.getAttribute('data-cv-skin') : null;
+});
 // every rig module — the Amplifier and its parts; not its FX panel, nor OUT (§13) — carries data-cv-rig (the skin's chrome, the screws);
 // the FX modules carry their own mark (fxMark: the FX look on every track, 2026-10-26)
 function rigMark() {

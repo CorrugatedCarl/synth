@@ -35,6 +35,16 @@ const KIND_ORDER = { other: 0, neg: 1, sel: 2 }; // draw order: the selected sou
 let uid = 0;
 let active = null; // close() of the open popup list or context menu (one at a time)
 let lastInput = 'pointer'; // modality of the last input: 'key' → menus focus their first item, tooltips show on focus
+// (the skins) popSkin(fn): the host names the skin a popup opened from `el` wears — fn(el) → an id or null; the context menu's levels
+// and a menu's popup list carry it as data-cv-skin (they live on <body>, outside the skinned module whose colours they should wear)
+let POP_SKIN = null;
+export function popSkin(fn) { POP_SKIN = typeof fn === 'function' ? fn : null; }
+function skinTo(el, from) {
+  if (!POP_SKIN || !from) return;
+  let v = null;
+  try { v = POP_SKIN(from); } catch (e) { v = null; }
+  if (v) el.setAttribute('data-cv-skin', v);
+}
 
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const call = v => typeof v === 'function' ? v() : v;
@@ -658,6 +668,7 @@ export function menu(o) {
     takeOver(close);
     const cur = indexOfV(list, o.get()), grouped = list.some(it => it.group);
     const root = h('div', 'wk-pop' + (grouped ? ' wk-grouped' : ''));
+    skinTo(root, btn);
     root.id = nid('lb');
     root.setAttribute('role', 'listbox');
     root.setAttribute('aria-label', o.label || 'Options');
@@ -3225,6 +3236,7 @@ export function contextMenu(x, y, items, opts) {
 
   function level(list, px, py, parent) {
     const m = h('div', 'wk-ctx');
+    skinTo(m, anchor);
     m.setAttribute('role', 'menu');
     m.tabIndex = -1;
     const L = { el: m, list, nodes: [], act: -1, parent, sub: null };
