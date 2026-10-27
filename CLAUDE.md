@@ -66,6 +66,9 @@ The user's Mac crashed twice from test memory blowups (one full run peaked at 47
   /Applications/Google Chrome.app makes macOS hand the user's own Chrome launch to it — no window opens; the user, 2026-10-26):
   `.claude/test-browser/156.0.8078.47/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
   (gitignored; Google's official build), always with its own `--user-data-dir` in the scratchpad; kill it when done.
+  **Block downloads** in every such session (CDP `Browser.setDownloadBehavior {behavior: 'deny'}`, or `allow` with a `downloadPath` in the
+  scratchpad): an agent pressing the app's Export / Save once filled the user's ~/Downloads with ~40 WAVs (2026-10-26). Measure a bounce
+  from the render buffer, never from a downloaded file.
 - Local preview: `.claude/launch.json` config `synth` (`node .claude/serve.mjs`, port 8817, no-store). Check desktop (1440×900) and iPad
   sizes (1366×1024, 1024×1366); reset viewport emulation afterwards.
 - Long background work stops if the Mac sleeps (closed lid): ask the user to keep it plugged in with the lid open.
