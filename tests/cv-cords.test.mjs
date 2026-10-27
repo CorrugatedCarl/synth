@@ -1299,3 +1299,29 @@ test('(FR §3 A2, P3-10) the layer owes a draw only when a rope stepped or an en
   while (S.L.wants() && m++ < 8000) { S.L.step(S.tick(1000 / 240), false); if (S.L.owed()) S.L.draw(cam, 1000, 600, 2); }
   eq([S.L.wants(), S.L.owed()], [false, false], 'then quiet');
 });
+
+test('(the user, 2026-10-27: cords jump on a track switch) a cord seeded at rest re-hangs at rest when its ends move within SNAP_MS (the modules still building) — asleep, no swing; after it, or once grabbed, it swings as before', () => {
+  assert.equal(C.SNAP_MS, 500);
+  const sim = { last: 0, acc: 0 }, A = [100, 100, 300, 120], B = [100, 400, 300, 430];
+  const r = C.seedRest(C.makeRope(), ...A);
+  r.snapTo = 1000 + C.SNAP_MS;
+  let E = A;
+  const ends = (q, e) => { e[0] = E[0]; e[1] = E[1]; e[2] = E[2]; e[3] = E[3]; return true; };
+  sim.last = 1000; E = B;
+  const out = C.advance(sim, [r], 1016, ends, {});
+  const want = C.seedRest(C.makeRope(), ...B);
+  assert.equal(r.awake, false, 'asleep: no swing');
+  assert.equal(out.moved, true, 'drawn again');
+  assert.deepEqual([...r.X], [...want.X]);
+  assert.deepEqual([...r.Y], [...want.Y]);
+  assert.deepEqual([r.A0x, r.A0y, r.B0x, r.B0y], B);
+  // past the window: an end moved wakes it (the drag's swing)
+  E = A;
+  C.advance(sim, [r], 1600, ends, {});
+  assert.equal(r.awake, true);
+  // a rope without the mark (a new cord from a drag, seeded awake) swings at once
+  const q = C.seed(C.makeRope(), ...A, false);
+  sim.last = 2000; E = B;
+  C.advance(sim, [q], 2016, ends, {});
+  assert.equal(q.awake, true);
+});

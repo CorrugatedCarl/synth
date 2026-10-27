@@ -205,6 +205,7 @@ export function advance(sim, ropes, t, ends, o) {
     r.skip = !ends(r, E);
     if (r.skip) continue;
     r.A1x = E[0]; r.A1y = E[1]; r.B1x = E[2]; r.B1y = E[3];
+    if (r.snapTo > t && !r.awake && Math.abs(r.A1x - r.A0x) + Math.abs(r.A1y - r.A0y) + Math.abs(r.B1x - r.B0x) + Math.abs(r.B1y - r.B0y) > S.WAKE_PX) { seedRest(r, E[0], E[1], E[2], E[3]); moved = true; r.mv = true; continue; } // (SNAP_MS)
     if (Math.abs(r.A1x - r.A0x) + Math.abs(r.A1y - r.A0y) + Math.abs(r.B1x - r.B0x) + Math.abs(r.B1y - r.B0y) > S.WAKE_PX) { r.awake = true; moved = true; r.mv = true; }
     else if (r.A1x !== r.A0x || r.A1y !== r.A0y || r.B1x !== r.B0x || r.B1y !== r.B0y) { moved = true; r.mv = true; }
     if (r.awake) awake++;
@@ -267,6 +268,10 @@ export function along(P, m, t) {
  * bracketed), Σ h/r_j fixes h (bisection on ln h). A chain whose fold must go slack (a near-vertical chord: no taut equilibrium
  * closes within REST_TOL px) from REST_STEPS Studio steps of the seeded rope instead (300 steps settle it to < 0.1 px). Pure. */
 export const REST_STEPS = 300, REST_TOL = 0.5;
+/** (the user, 2026-10-27: "when i swap from one instrument and back to wavecraft all the cable jump") a cord seeded at rest re-hangs at
+ * rest — asleep, no swing — when its ends move within SNAP_MS of its seeding (r.snapTo: the modules still building their faces, the
+ * layout settling); after it, or once grabbed, an end moved wakes it as before (a drag's swing). */
+export const SNAP_MS = 500;
 export function rest(ax, ay, bx, by, X, Y, n = STUDIO.N) {
   const dx = bx - ax, dy = by - ay, D = Math.hypot(dx, dy), m = n - 1, s = ((1 + STUDIO.SLACK) * D + STUDIO.EXTRA) / m;
   const hx = Math.abs(dx) / s, vy = dy / s, sg = dx < 0 ? -1 : 1;
@@ -534,7 +539,7 @@ export function createCords(viewport, o) {
       const A = same ? [q.A0x, q.A0y, q.B0x, q.B0y] : [q.B0x, q.B0y, q.A0x, q.A0y];
       r.A0x = r.A1x = A[0]; r.A0y = r.A1y = A[1]; r.B0x = r.B1x = A[2]; r.B0y = r.B1y = A[3];
       L.taken = true; relist();
-    } else if (c.rest) seedRest(r, E4[0], E4[1], E4[2], E4[3]); // ((fixer K, P2-1) a rig's cord: asleep where it would settle
+    } else if (c.rest) { seedRest(r, E4[0], E4[1], E4[2], E4[3]); r.snapTo = now() + SNAP_MS; } // ((fixer K, P2-1) a rig's cord: asleep where it would settle — re-hung at rest while the layout settles (SNAP_MS)
     else seed(r, E4[0], E4[1], E4[2], E4[3], false);
     c.seeded = true;
     return true;
@@ -1023,6 +1028,7 @@ export function createCords(viewport, o) {
     grab(id, end, p) {
       if (dead || !cords.has(String(id)) || (end !== 'a' && end !== 'b') || !p || !fin(p.x) || !fin(p.y)) return;
       GB = { id: String(id), end, p: { x: p.x, y: p.y } };
+      { const r = cords.get(String(id)).r; if (r) r.snapTo = 0; } // (SNAP_MS: a grabbed cord swings at once)
       dirty(); changed(); if (SV) SV.paint();
     },
     move(p) { if (dead || !GB || !p || !fin(p.x) || !fin(p.y)) return; GB.p.x = p.x; GB.p.y = p.y; dirty(); changed(); if (SV) SV.paint(); },
