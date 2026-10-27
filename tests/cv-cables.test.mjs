@@ -1720,6 +1720,29 @@ test('(WC, fixer B2; review 2 P2-3) o.top: a claimed mod row\'s badge, a claimed
   N.L.destroy();
 });
 
+test('(the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on the socket") o.onRecords may answer counts: Map jack → {x, y, n, to} — a span.cv-jn per stacked jack in the layer above the cords (its number, aria-hidden, data-to, the world\'s skin), moved / renumbered in place, removed when the answer leaves it out (or says one cord) or gives none; without o.top: none; destroy: none left', () => {
+  let N = new Map([['i1/filter.in', { x: 309.9, y: 140.1, n: 2, to: 'r' }], ['i1/lfo1.out', { x: 90.1, y: 490.1, n: 3, to: 'l' }]]);
+  const R = cordLayers({ withTop: true, onRecords: () => (N ? { counts: N } : null) }), P = RIG_P(), T = R.TOP;
+  R.W.setAttribute('data-cv-skin', 'charcoal');
+  R.L.layout(P);
+  const seen = () => T.childNodes.filter(n => n.getAttribute && n.getAttribute('class') === 'cv-jn').map(n => [n.getAttribute('data-of'), n.textContent, n.style.left, n.style.top, n.getAttribute('data-to'), n.getAttribute('aria-hidden'), n.getAttribute('data-cv-skin')]);
+  assert.deepEqual(seen(), [['i1/filter.in', '2', '309.9px', '140.1px', 'r', 'true', 'charcoal'], ['i1/lfo1.out', '3', '90.1px', '490.1px', 'l', 'true', 'charcoal']], 'one count a stacked jack, above the cords');
+  const e = R.L.count('i1/filter.in');
+  N = new Map([['i1/filter.in', { x: 320, y: 150, n: 3 }], ['i1.main', { x: 1, y: 2, n: 1 }]]); R.L.layout(P);
+  assert.deepEqual(seen(), [['i1/filter.in', '3', '320px', '150px', 'r', 'true', 'charcoal']], 'moved and renumbered; left out, or one cord: gone');
+  assert.equal(R.L.count('i1/filter.in') === e, true, 'the same element');
+  N = null; R.L.layout(P);
+  assert.deepEqual([seen().length, R.L.count('i1/filter.in')], [0, null], 'no answer (lines mode, another canvas): none');
+  N = new Map([['i1/filter.in', { x: 1, y: 2, n: 2 }]]); R.L.layout(P);
+  assert.equal(seen().length, 1);
+  R.L.destroy();
+  assert.equal(T.childNodes.length, 0, 'destroy: nothing left above');
+  const W = cordLayers({ onRecords: () => ({ counts: new Map([['i1/filter.in', { x: 1, y: 2, n: 2 }]]) }) });
+  W.L.layout(P);
+  assert.equal(all(W.doc.body).some(n => n.getAttribute && n.getAttribute('class') === 'cv-jn'), false, 'without o.top: none (a count never lies under a rope)');
+  W.L.destroy();
+});
+
 test('(WC, fixer B2; review 2 P2-4: the regret path) lines mode — a press on a rig input a line arrives at grabs that line\'s end (the most recent: re-patch by drag, parity with cords): its source fixed, the inputs that take it lit, dropped on one → o.onRepatch(id, out, in); let go elsewhere → nothing (a line\'s rule: its × removes it); an input with no line: a new cable backwards as today', () => {
   const R = cordRig({ lines: true, live: undefined, grab: undefined, cordHit: undefined });
   R.press('i1/filter.in', 300, 250); R.mv(340, 300);

@@ -5354,5 +5354,67 @@ class Master extends AudioWorkletProcessor {
   }
 }
 
+// The safety limiter 'synth-safe': the last stage before the browser's output (live: the Volume's output and the metronome bus,
+// summed into its one stereo input → destination). The engine's Limiter (−1 dBFS, ~1 ms look-ahead, 120 ms release), then a clamp at
+// its threshold — the browser never sees a sample over −1 dBFS, so it never hard-clips the sum (N tracks each at their −1 dBFS cap ×
+// fader pass 0 dBFS together). Below −1 dBFS its gain is exactly 1 (L·(1/L) = 1 at every device rate's L): the output is the input
+// delayed by lat = L − 1 frames, bit for bit — the host adds lat to its clock (audioclock pipe). Off: the input itself (no delay, no
+// limiting — today's output); the limiter keeps running (warm when it comes back); each change a 5 ms linear crossfade (integer
+// steps: exact at both ends). In: {t: 'on', v} · {t: 'bye'}. Out (on, while it reduces gain): {t: 'safe', gr} every ≥ 0.1 s of audio
+// — gr the dB over −1 dBFS of that window's loudest input sample (the reduction at the peak). processorOptions {on} (absent: on).
+// MASTER's meters see the unprotected mix (the Master row still shows an overload).
+class Safe extends AudioWorkletProcessor {
+  constructor(opt) {
+    super();
+    const po = (opt && opt.processorOptions) || {};
+    this.on = po.on === false ? 0 : 1;
+    this.lim = new Limiter(sampleRate);
+    this.lat = this.lim.L - 1;
+    this.A = new Float64Array(128); this.B = new Float64Array(128);
+    this.XN = Math.ceil(0.005 * sampleRate); this.xn = this.on === 1 ? this.XN : 0; // (the crossfade: xn / XN of the limiter's output)
+    this.gr = 0; this.grF = 0; this.rep = 0.1 * sampleRate; this.ending = 0;
+    this.port.onmessage = (ev) => this.msg(ev.data);
+  }
+  msg(d) {
+    if (this.ending === 1 || !d) return;
+    if (d.t === 'on') this.on = d.v ? 1 : 0;
+    else if (d.t === 'bye') this.ending = 1;
+  }
+  process(inputs, outputs) {
+    const out = outputs[0], Lo = out[0], Ro = out[1] || out[0];
+    if (!Lo) return true;
+    const n = Lo.length;
+    if (this.ending === 1) { Lo.fill(0); if (Ro !== Lo) Ro.fill(0); return false; }
+    const inp = inputs && inputs[0], Li = inp && inp.length > 0 ? inp[0] : null, Ri = inp && inp.length > 1 ? inp[1] : Li;
+    const A = this.A, B = this.B, thr = this.lim.thr, on = this.on, XN = this.XN;
+    let pk = 0;
+    if (Li === null) for (let i = 0; i < n; i++) { A[i] = 0; B[i] = 0; }
+    else for (let i = 0; i < n; i++) { const a = Li[i], b = Ri[i], u = a < 0 ? -a : a, v = b < 0 ? -b : b; A[i] = a; B[i] = b; if (u > pk) pk = u; if (v > pk) pk = v; }
+    this.lim.process(A, B, n);
+    let xn = this.xn;
+    if (on === 1 && xn === XN) {
+      for (let i = 0; i < n; i++) { const a = A[i], b = B[i]; Lo[i] = a > thr ? thr : a < -thr ? -thr : a; if (Ro !== Lo) Ro[i] = b > thr ? thr : b < -thr ? -thr : b; }
+    } else if (on === 0 && xn === 0) {
+      if (Li === null) { Lo.fill(0); if (Ro !== Lo) Ro.fill(0); } else for (let i = 0; i < n; i++) { Lo[i] = Li[i]; if (Ro !== Lo) Ro[i] = Ri[i]; }
+    } else {
+      for (let i = 0; i < n; i++) {
+        xn += on === 1 ? (xn < XN ? 1 : 0) : (xn > 0 ? -1 : 0);
+        const a0 = A[i], b0 = B[i], a = a0 > thr ? thr : a0 < -thr ? -thr : a0, b = b0 > thr ? thr : b0 < -thr ? -thr : b0;
+        const dl = Li === null ? 0 : Li[i], dr = Li === null ? 0 : Ri[i], x = xn / XN;
+        Lo[i] = xn === XN ? a : xn === 0 ? dl : dl + x * (a - dl);
+        if (Ro !== Lo) Ro[i] = xn === XN ? b : xn === 0 ? dr : dr + x * (b - dr);
+      }
+      this.xn = xn;
+    }
+    if (on === 1 && pk > thr) { const g = 20 * Math.log10(pk / thr); if (g > this.gr) this.gr = g; }
+    if ((this.grF += n) >= this.rep) {
+      this.grF = 0;
+      if (this.gr > 0) { this.port.postMessage({ t: 'safe', gr: this.gr }); this.gr = 0; }
+    }
+    return true;
+  }
+}
+
 registerProcessor('synth-master', Master);
+registerProcessor('synth-safe', Safe);
 registerProcessor('synth-engine', Track);

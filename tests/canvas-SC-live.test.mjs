@@ -11,6 +11,8 @@
 // the proof is circular): extract it into the scratchpad (git archive a87b915 | tar -x -C <dir>), then
 //   REC=<dir> node --max-old-space-size=2048 --test tests/canvas-SC-live.test.mjs
 // (the app modules and main-sim are imported from <dir>; this file only writes tests/ref-SC/live-p1.sha).
+// The safety limiter ('synth-safe', after the Volume — later than the base, tests/safe-sim) is not in the frozen record: its node is
+// left out of the hashed list (the others keep their creation order) and checked on its own — one, nothing out of it over −1 dBFS.
 import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,14 +38,15 @@ async function scene(root) {
   await step(4096);                                            // the warm-up render (the first quanta of a fresh node), discarded
   $('#tPlay').onclick();
   const out = await step(FRAMES), ctx = s.ctx();
-  const lines = [];
+  const lines = [], safe = [];
   let i = 0, peak = 0;
   for (const [n, o] of out) {
+    if (n.name === 'synth-safe') { safe.push(o); continue; }
     lines.push([i++, n.name, (n.po && n.po.trackId) || '-', f32(o.L), f32(o.R)].join(' '));
     for (let k = 0; k < o.L.length; k++) peak = Math.max(peak, Math.abs(o.L[k]), Math.abs(o.R[k]));
   }
   assert.ok(peak > 1e-3, 'it sounds (peak ' + peak.toFixed(4) + ')');
-  return { lines, frames: FRAMES, sr: ctx.sampleRate, peak: +peak.toFixed(6) }; // (peak: for the eye; it follows from the hashes)
+  return { lines, frames: FRAMES, sr: ctx.sampleRate, peak: +peak.toFixed(6), safe }; // (peak: for the eye; it follows from the hashes)
 }
 const text = r => ['v 1 from a87b915 (the contract commit; every .js file as 91a859a): project-p1, ▶ from the start, per node SHA-256 of L and R',
   ...r.lines, 'frames ' + r.frames + ' sr ' + r.sr + ' peak ' + r.peak].join('\n') + '\n';
@@ -61,4 +64,7 @@ test('SC G1: the base build\'s live run of project-p1 — every node\'s output (
   assert.equal(got.at(-1), ref.at(-1), 'frames, rate and peak');
   assert.deepEqual(got.slice(1, -1).map(l => l.split(' ').slice(0, 3).join(' ')), ref.slice(1, -1).map(l => l.split(' ').slice(0, 3).join(' ')), 'the nodes: creation order, processor name, track id');
   for (let k = 1; k < ref.length - 1; k++) assert.equal(got[k], ref[k], 'node ' + ref[k].split(' ').slice(0, 3).join(' ') + ': L and R bit for bit');
+  let sp = 0;
+  for (const o of r.safe) for (let k = 0; k < o.L.length; k++) sp = Math.max(sp, Math.abs(o.L[k]), Math.abs(o.R[k]));
+  assert.deepEqual([r.safe.length, sp > 0.5, sp <= Math.fround(Math.pow(10, -1 / 20))], [1, true, true], 'one safety limiter, nothing out of it over −1 dBFS (' + sp + ')');
 });

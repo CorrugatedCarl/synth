@@ -1199,6 +1199,7 @@ function tileDrag(d, o, b, id, T) {
     scrollAxis: 'y',
     autoScroll: false,
     begin: i => {
+      done(); // (never two ghosts: no orphan)
       if (T.off && T.off()) return; // ((2a) a placed modulator tile: no drag)
       G = { type: i.pointerType, over: null, key: null, at: i.t, left: false, trayR: o.tray ? rectOf(o.tray) : null, ghost: null };
       G.ghost = mkGhost(i.pointerType);

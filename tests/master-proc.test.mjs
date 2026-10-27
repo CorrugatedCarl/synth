@@ -102,7 +102,7 @@ function sameBits(a, b, off = 0) { for (let i = 0; i < a.length; i++) if (!Objec
 const peak = a => { let m = 0; for (let i = 0; i < a.length; i++) { const v = Math.abs(a[i]); if (v > m) m = v; } return m; };
 
 test('engine.js registers synth-master before synth-engine: the last registration (six harnesses\' Proc) stays the Track; dsp-scope captures both by name', () => {
-  assert.deepEqual([...SC.names], ['synth-master', 'synth-engine']);
+  assert.deepEqual([...SC.names], ['synth-master', 'synth-safe', 'synth-engine']); // (the safety limiter beside MASTER: tests/safe-proc)
   const D = dspScope({ engine: true, fast: true, console: quiet });
   assert.equal(D.Proc, D.procs['synth-engine']);
   assert.ok(D.procs['synth-master'] && D.procs['synth-master'] !== D.Proc);

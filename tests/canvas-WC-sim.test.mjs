@@ -1447,3 +1447,79 @@ test('(the user, 2026-10-26: "cable should be on top of text here" — the IN Σ
   const src = f => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
   assert.ok(!/rig-jl-top/.test(src('style.css')) && !/rig-jl-top|rigLabels/.test(src('main.js')), 'no lifted-label code');
 });
+
+// (the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on the socket") a stacked jack's
+// count — the cord layer's top's .cv-jn children by jack (data-of): their text, their place (strings and numbers only into assert)
+const nTop = () => { const top = LAYER && LAYER.top(); return ((top && top.children) || []).filter(c => c && c.getAttribute && clsOf(c).includes(' cv-jn ') && !c.hidden); };
+const counts = () => Object.fromEntries(nTop().map(c => [c.getAttribute('data-of'), String(c.textContent)]));
+test('(the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on the socket") STACKED COUNT — every jack holding several cords, outputs and Σ inputs alike, wears a small count ("2", "3" …) at its plug\'s upper-right rim (upper-left where a BAL stands right of it: a forked source), in the cord layer\'s top (above every rope, "Cables behind modules" on too), in the world\'s skin; none on a single cord\'s jack; it follows plug / pull / undo / redo / re-patch and the ∿ modes (the cords drawn); none in lines mode, none on another canvas (a Juno, a 900 Series)', async () => {
+  await fresh(RIG.ID);
+  assert.deepEqual(counts(), {}, 'the starter: one cord a jack — no count');
+  RG.add(null, 'osc'); await settle(2); // (Oscillator 2: AUTOPLUG into the Filter's IN Σ)
+  RG.add(null, 'lfo'); await settle(2);
+  rigGeometry(); await settle(2);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2' }, 'two cords at the Filter\'s IN Σ: "2"');
+  ['f.cutoff', 'f.level'].forEach(d => cv.mod.connect('i1/lfo1.out', 'i1:' + d)); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'an LFO\'s OUT with two cords: "2"');
+  cv.mod.connect('i1/lfo1.out', 'i1:f.res'); await settle(3);
+  RG.add(null, 'noise'); await settle(2); // (into the Filter's IN Σ too: three)
+  rigGeometry(); await settle(2);
+  assert.deepEqual(counts(), { 'i1/filter.in': '3', 'i1/lfo1.out': '3' }, 'three at the LFO\'s OUT, three at the Filter\'s IN Σ');
+  const place = what => {
+    const P = V().ports(), top = LAYER.top();
+    for (const c of nTop()) {
+      const j = c.getAttribute('data-of'), Q = P.get(j), x = parseFloat(c.style.left), y = parseFloat(c.style.top);
+      assert.deepEqual([c.parentNode === top, c.getAttribute('data-to'), x > Q.x, y < Q.y, Math.round(Math.hypot(x - Q.x, y - Q.y))], [true, 'r', true, true, 14], what + ' ' + j + ': in the layer\'s top, at its plug\'s upper-right rim (' + x + ', ' + y + ' · the jack ' + Q.x + ', ' + Q.y + ')');
+      assert.deepEqual([c.getAttribute('aria-hidden'), c.getAttribute('data-cv-skin')], ['true', RC.SKIN_DEFAULT], what + ' ' + j + ': no word of its own (the jack\'s menu lists the cords), the world\'s skin');
+    }
+  };
+  place('three');
+  // undo / redo, one step at a time
+  cv.undo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '3' }, 'undo the Noise: "2" at the Filter\'s IN');
+  cv.undo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'undo LFO 1 → RES: "2" at the LFO\'s OUT');
+  cv.undo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2' }, 'undo LFO 1 → LEVEL: one cord at the LFO\'s OUT — its count goes');
+  cv.redo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'redo: "2" again');
+  // pull, re-patch
+  cv.mod.opts.onPull(rigRec('oscB.out', 'filter.in').id); await settle(3);
+  assert.deepEqual(counts(), { 'i1/lfo1.out': '2' }, 'Oscillator 2 pulled: one cord at the Filter\'s IN — no count');
+  cv.undo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'undo the pull');
+  cv.mod.opts.onRepatch(rigRec('oscB.out', 'filter.in').id, 'i1/oscB.out', 'i1.main'); await settle(3);
+  assert.deepEqual(counts(), { 'i1.main': '2', 'i1/lfo1.out': '2' }, 'Oscillator 2 re-patched to the Amplifier\'s IN Σ (the Filter\'s OUT there): "2" moves with it');
+  rigGeometry(); await settle(2);
+  place('re-patched');
+  cv.undo(); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'undo the re-patch');
+  // cables behind modules: the counts stay whole in the layer's top
+  LAYER.behind((out, max) => { let n = 0; for (const m of V().modules.values()) { if (n >= max) break; out.set([m.x, m.y, m.x + m.w, m.y + m.rect().h], 4 * n++); } return n; });
+  try {
+    rigGeometry(); await settle(2);
+    assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'cables behind: the counts as before');
+    place('behind');
+  } finally { LAYER.behind(null); }
+  // the ∿ modes: a mod cord hidden (Never) has no plug on the socket — the count is of the cords drawn
+  W0.w.setModsMode('never'); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2' }, '∿ Never: the LFO\'s cords hidden — no count there');
+  W0.w.setModsMode('always'); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, '∿ Always: back');
+  // lines mode: none; cords again: back
+  RG.wires('lines'); await settle(3);
+  assert.deepEqual(counts(), {}, 'lines mode: no count (its jacks\' rings count the lines)');
+  RG.wires('cords'); await settle(3);
+  assert.deepEqual(counts(), { 'i1/filter.in': '2', 'i1/lfo1.out': '2' }, 'cords again: the counts back');
+  // a forked source (S3's Oscillator 3: both Filters, its BAL right of its jack): its count at the upper-left rim
+  await scene('S3');
+  const N = counts(), P = V().ports();
+  assert.deepEqual([N['i1/filter.in'], N['i1.main']], ['4', '3'], 'S3: the Filter\'s IN Σ "4", the Amplifier\'s IN Σ "3"');
+  for (const c of nTop()) {
+    const j = c.getAttribute('data-of'), Q = P.get(j), x = parseFloat(c.style.left), y = parseFloat(c.style.top), fk = !!(V().cables.forkBadge && V().cables.forkBadge(j));
+    assert.deepEqual([c.getAttribute('data-to'), fk ? x < Q.x : x > Q.x, y < Q.y, Math.round(Math.hypot(x - Q.x, y - Q.y))], [fk ? 'l' : 'r', true, true, 14], 'S3 ' + j + (fk ? ' (forked: its BAL right of it)' : '') + ': at its plug\'s upper rim');
+  }
+  assert.ok(nTop().some(c => c.getAttribute('data-to') === 'l'), 'S3: a forked source counted, on its left');
+  // no count on another canvas (the 900 Series keeps today's look: its stacked jacks too)
+  for (const m of ['juno60', 'm900']) { await fresh(m); assert.deepEqual(counts(), {}, m + ': no count'); }
+});

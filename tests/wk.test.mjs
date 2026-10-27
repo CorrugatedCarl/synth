@@ -2545,6 +2545,65 @@ test('dragSource: a lostpointercapture bubbling from a child (the implicit touch
   } finally { mock.timers.reset(); }
 });
 
+// (the user, on Windows: "Swap · OSC A" stuck on a Wavecraft canvas — reproduced in Chrome for Testing: cv-module's bar grabs the
+// pointer at the press, so the title's label drag never heard the release; the next hover over the title, no button down, started a
+// drag whose ghost nothing ended)
+test('dragSource never orphans a drag: a press whose release el never hears (an ancestor took the pointer, a mouse let go off el inside the slop, a pointercancel elsewhere) is abandoned at the document — a later hover with no button starts nothing; a live drag ends cancelled, once, when el is removed (Chrome\'s lostpointercapture at the document), on a move while el is out of the document, on a release elsewhere, on the window\'s blur and on a hidden page; the watch goes with the gesture', () => {
+  const d = fresh(), win = d.defaultView;
+  const bar = d.createElement('div'), lab = d.createElement('span'), other = d.createElement('div');
+  bar.append(lab); d.body.append(bar, other);
+  const grab = e => bar.setPointerCapture(e.pointerId); // (cv-module's bar: the press's events go to it from then on)
+  bar.addEventListener('pointerdown', grab);
+  const log = [];
+  const src = wk.dragSource(lab, { data: 'oscA', begin: () => log.push('begin'), move: () => log.push('move'), drop: () => log.push('drop'), cancel: () => log.push('cancel') });
+  const hover = x => fire(lab, 'pointermove', { clientX: x, clientY: 10, buttons: 0 }); // a mouse over the title, no button down
+  const watching = () => ['pointerup', 'pointercancel', 'lostpointercapture', 'pointermove', 'visibilitychange', 'keydown'].map(t => d.listenerCount(t)).concat(win.listenerCount('blur')).join(',');
+  const idle = watching();
+  // a click on the title: Chrome sends its release to the bar
+  ptr(lab, 'pointerdown', 10, 10); ptr(bar, 'pointerup', 10, 10);
+  hover(30); hover(60);
+  assert.deepEqual([log.join(), src.active()], ['', false]);
+  // the bar's own drag (the module moved), let go over another element
+  ptr(lab, 'pointerdown', 10, 10); ptr(bar, 'pointermove', 40, 10); ptr(other, 'pointerup', 40, 10);
+  hover(30); hover(60);
+  assert.equal(log.join(), '');
+  bar.removeEventListener('pointerdown', grab);
+  // a mouse let go off el inside the slop; a pointercancel elsewhere
+  ptr(lab, 'pointerdown', 10, 10); ptr(lab, 'pointermove', 12, 10); ptr(other, 'pointerup', 12, 10); hover(40);
+  ptr(lab, 'pointerdown', 10, 10); ptr(other, 'pointercancel', 10, 10); hover(40);
+  assert.equal(log.join(), '');
+  assert.equal(watching(), idle, 'nothing left watching after an abandoned press');
+  // another pointer's release elsewhere is not this press's: the drag still starts and drops
+  ptr(lab, 'pointerdown', 10, 10); ptr(other, 'pointerup', 10, 10, { pointerId: 5 }); ptr(lab, 'pointermove', 30, 10); ptr(lab, 'pointerup', 30, 10);
+  assert.equal(log.join(), 'begin,move,drop');
+  const live = () => { log.length = 0; ptr(lab, 'pointerdown', 10, 10); ptr(lab, 'pointermove', 30, 10); assert.equal(src.active(), true); };
+  const ended = what => { assert.deepEqual([log.join(), src.active()], ['begin,move,cancel', false], what); assert.equal(watching(), idle, what); };
+  // removed mid-drag (a re-render): Chrome fires lostpointercapture at the document; then nothing more
+  live(); lab.remove(); fire(d, 'lostpointercapture', { pointerId: 1, cancelable: false });
+  ptr(other, 'pointermove', 50, 10); ptr(other, 'pointerup', 50, 10);
+  ended('removed');
+  // out of the document and no lostpointercapture: its next move anywhere ends it
+  bar.append(lab); live(); lab.remove(); ptr(other, 'pointermove', 50, 10); ptr(other, 'pointerup', 50, 10);
+  ended('disconnected');
+  // a release el did not hear: a cancel, never a drop; el's own late pointerup finds no drag
+  bar.append(lab); live(); ptr(other, 'pointerup', 50, 10); ptr(lab, 'pointerup', 50, 10);
+  ended('released elsewhere');
+  // a lostpointercapture of el's child (the implicit touch capture handed to el) or of another pointer goes on
+  live(); fire(d, 'lostpointercapture', { pointerId: 4, cancelable: false }); ptr(lab, 'pointermove', 40, 10); ptr(lab, 'pointerup', 40, 10);
+  assert.equal(log.join(), 'begin,move,move,drop');
+  // the window's blur (Alt-Tab), the page hidden: cancelled at once, the release after it nothing
+  live(); fire(win, 'blur', { bubbles: false, cancelable: false }); ptr(lab, 'pointerup', 30, 10);
+  ended('blur');
+  live(); d.visibilityState = 'hidden'; fire(d, 'visibilitychange'); d.visibilityState = 'visible'; ptr(lab, 'pointerup', 30, 10);
+  ended('hidden');
+  // a pending press: the blur abandons it too
+  log.length = 0; ptr(lab, 'pointerdown', 10, 10); fire(win, 'blur', { bubbles: false, cancelable: false }); hover(40);
+  assert.equal(log.join(), '');
+  // destroy mid-press and mid-drag: nothing left watching
+  ptr(lab, 'pointerdown', 10, 10); src.destroy();
+  assert.equal(watching(), idle);
+});
+
 // iPad Safari event order for one finger: pointerdown, touchstart, then per move pointermove + touchmove; when Safari
 // starts a native pan it sends pointercancel (and no longer lets a touchmove be cancelled).
 function touchRig(o = {}) {
@@ -3046,18 +3105,21 @@ test('dragSource auto-scroll: drop, cancel, Escape, destroy and a hidden page st
       T('pointerup', 600, 560, 9100);
       html.scrollTop = 1500;
     }
-    // hidden mid-drag: the frames stop, the drag goes on; the next move starts them again (the ramp anew)
+    // hidden mid-drag: the frames stop and the drag ends cancelled (was: it went on — but no release comes back to a hidden page's
+    // drag, so it was an orphan, its ghost never ended: the user's "Swap · OSC A"); a move after it neither moves nor scrolls
+    log.length = 0;
     go(10000);
+    const top = html.scrollTop;
     d.visibilityState = 'hidden';
     fire(d, 'visibilitychange');
     assert.equal(raf.pending, 0);
     d.visibilityState = 'visible';
-    assert.ok(src.active());
+    assert.deepEqual([src.active(), log.at(-1)[0], log.filter(x => x[0] === 'cancel').length], [false, 'cancel', 1]);
+    const n = log.length;
     T('pointermove', 600, 561, 10200);
-    assert.equal(raf.pending, 1);
-    const top = html.scrollTop;
-    frames(1, 20000);
-    assert.equal(html.scrollTop, top);               // first frame of the new episode: no time yet
+    frames(2, 20000);
+    assert.deepEqual([raf.pending, html.scrollTop, log.length], [0, top, n]);
+    T('pointerup', 600, 561, 10300);
     src.destroy();
     assert.equal(raf.pending, 0);
     assert.equal(d.listenerCount('visibilitychange'), 0);

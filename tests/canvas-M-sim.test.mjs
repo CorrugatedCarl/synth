@@ -95,7 +95,7 @@ while (P().tracks.length < 2) api.addTrack(MOOG);
 await settle(4);
 api.selectTrack(P().tracks[0].id); await settle(4);
 
-test('§1.1 the live graph: one MASTER, made in powerOn before every track node; each pan → MASTER (+ its two analysers); MASTER → an (8192), the O1 splitter (two 2048 analysers), the Mono stage → the Volume (settings.master) → destination', () => {
+test('§1.1 the live graph: one MASTER, made in powerOn before every track node; each pan → MASTER (+ its two analysers); MASTER → an (8192), the O1 splitter (two 2048 analysers), the Mono stage → the Volume (settings.master) → the safety limiter → destination', () => {
   const c = sim.ctx(), ws = c.nodes.filter(n => n.kind === 'worklet');
   assert.deepEqual([ws.filter(n => n.name === 'synth-master').length, ws[0].name], [1, 'synth-master'], 'one MASTER, the first worklet of the context');
   const mn = MN(), G = M.graph();
@@ -109,7 +109,8 @@ test('§1.1 the live graph: one MASTER, made in powerOn before every track node;
   assert.deepEqual([...mn.outs].map(n => n.kind).sort(), ['an', 'gain', 'split']);
   assert.deepEqual([G.an.fftSize, [...mn.outs].includes(G.an), [...mn.outs].includes(G.mono), [...mn.outs].includes(G.split)], [8192, true, true, true]);
   assert.deepEqual([...G.split.outs].map(n => n.kind + ':' + n.fftSize), ['an:2048', 'an:2048'], 'O1: the image scope\'s L / R analysers');
-  assert.deepEqual([[...G.mono.outs].length, [...G.mono.outs][0] === G.level, G.level.gain.value === api.settings().master, [...G.level.outs][0].kind], [1, true, true, 'dest']);
+  assert.deepEqual([[...G.mono.outs].length, [...G.mono.outs][0] === G.level, G.level.gain.value === api.settings().master, [...G.level.outs].map(n => n.kind + ':' + (n.name || '')).join(), [...G.safe.outs].map(n => n.kind).join()],
+    [1, true, true, 'worklet:synth-safe', 'dest']); // (the safety limiter, the last stage: tests/safe-sim)
   assert.equal(G.mono.gain.value, 1, 'the Mono stage: × 1 (exact)');
   assert.equal(M.rec().ready, true, 'its ready came (whenReady waits for it)');
 });

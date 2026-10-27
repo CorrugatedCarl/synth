@@ -3200,12 +3200,20 @@ export class SerumHost {
       offs.forEach(f => f());
       ghost.remove();
       try { el.releasePointerCapture(D.id); } catch (err) { /* released */ }
-      if (ev.type === 'pointercancel') this.eatClick = null;   // no click follows a cancelled pointer
+      if (ev.type !== 'pointerup') this.eatClick = null;   // no click follows a cancelled / lost pointer
       else if (this.eatClick) this.eatClick.t = Date.now();   // a long depth drag: the click comes at release
       if (twoF(ev)) { D.a = D.a0; this.edit(s => core.setModAmount(s, slot, D.a), { label: 'Mod depth', phase: 'move' }); }   // two-finger rollback
       this.edit(s => core.setModAmount(s, slot, D.a), { label: 'Mod depth', phase: 'end' });
     };
-    const offs = [on(el, 'pointermove', move), on(el, 'pointerup', up), on(el, 'pointercancel', up)];
+    // the ends at the document (capture): the release / cancel wherever it lands, a capture lost where el cannot hear it (its view root
+    // gone mid-drag: Chrome fires it at the document; the touched knob's implicit one, handed to el, is not), the window's blur, a hidden
+    // page — the ghost never stays (wk.dragSource's guard: the user's stuck "Swap · OSC A")
+    const d = this.d, w = d.defaultView, gone = () => up({ type: 'pointercancel', pointerId: D.id });
+    const has = () => { try { return el.isConnected !== false && typeof el.hasPointerCapture === 'function' && el.hasPointerCapture(D.id); } catch (err) { return false; } };
+    const offs = [on(el, 'pointermove', move), on(d, 'pointerup', up, true), on(d, 'pointercancel', up, true),
+      on(d, 'lostpointercapture', ev => { if ((ev.target === el || !el.contains(ev.target)) && !has()) up(ev); }, true),
+      on(d, 'visibilitychange', () => { if (d.visibilityState === 'hidden') gone(); })];
+    if (w && typeof w.addEventListener === 'function') offs.push(on(w, 'blur', ev => { if (!ev || ev.target === w || ev.target === d) gone(); }));
   }
   // Alt-click on a matrix SOURCE menu (reassign every row with that source) or on the INV cell (bypass)
   onCapClick(e) {
@@ -3849,7 +3857,7 @@ export class SerumHost {
     const clear = () => { if (ghost) { ghost.remove(); ghost = null; } if (over) { over.classList.remove('sx-droptgt'); over = null; } };
     const ds = wk.dragSource(name, {
       data: module,
-      begin: i => { ghost = mk(this.d, 'div', 'sx-ghost' + (i.pointerType === 'touch' ? ' sx-ghost-touch' : ''), label(i, null)); this.d.body.appendChild(ghost); },
+      begin: i => { clear(); ghost = mk(this.d, 'div', 'sx-ghost' + (i.pointerType === 'touch' ? ' sx-ghost-touch' : ''), label(i, null)); this.d.body.appendChild(ghost); }, // (never two: no orphan)
       move: i => {
         const h = find(i), t = h ? h.el : null, touch = i.pointerType === 'touch', n = touch && h ? this.hitName(h) : '';
         if (ghost) ghostAt(ghost, i.x, i.y, touch, label(i, h) + (n ? ' → ' + n : ''));

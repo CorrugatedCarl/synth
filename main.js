@@ -121,13 +121,17 @@ const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
 const GUARDS = !!globalThis.__synthTest || /[?&]dev=1(&|$)/.test((globalThis.location && location.search) || '');
 const adopt = p => CMOD.adopt(p, { guard: GUARDS });
 
-// lat: the user's "Output latency" offset in ms (header Latency control, R5) — playhead, recording and host.latency
-const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0 }, store.get('synth.settings', {}));
+// lat: the user's "Output latency" offset in ms (header Latency control, R5) — playhead, recording and host.latency; safe: the safety
+// limiter (engine.js 'synth-safe', after the Volume) — this device's, like the Volume it follows: it guards what this device plays (the
+// same project at a lower Volume is never limited), never in a project or a bounce
+const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0, safe: true }, store.get('synth.settings', {}));
 settings.lat = clamp(Math.round(+settings.lat) || 0, -50, 400);
+settings.safe = settings.safe !== false;
 let ctx = null, an = null, master = null, metroBus = null, powering = null;
 // (IMPL-M §1.1, §2.1) the master: mnode MASTER's record (beside `nodes`, never in it); mono the Mono stage; master (above) the
-// Volume — the listening level; mSplit / anL / anR the stereo image scope's analysers (O1)
-let mnode = null, mono = null, mSplit = null, anL = null, anR = null;
+// Volume — the listening level; mSplit / anL / anR the stereo image scope's analysers (O1); safeN the safety limiter's node (the
+// last stage before the speakers: the Volume and the metronome into it)
+let mnode = null, mono = null, mSplit = null, anL = null, anR = null, safeN = null;
 let octave = 0, sustain = false;
 // one ClassicPanel (classic-panel.js) per mounted classic instrument (classicPanels, 'trackId/dev'); curPanel(): the selected
 // track's current instrument's, or null (a Serum, not built) — (milestone 3, R6) read, never a global
@@ -1025,18 +1029,21 @@ async function powerOn() {
       }
       // (IMPL-M §1.1, §3) the mix: every track's pan → MASTER ('synth-master': the master FX rack and the meters; made once, here,
       // before any track node — held on WebKit) → the Mono stage → the Volume (settings.master: the listening level, never in a
-      // file) → destination; `an` (8192: the master OUT's scope) and O1's splitter (two 2048 analysers: its image) off MASTER's
-      // output — what is exported, pre-Mono, pre-Volume. The metronome stays outside the mix
+      // file) → the safety limiter → destination; `an` (8192: the master OUT's scope) and O1's splitter (two 2048 analysers: its
+      // image) off MASTER's output — what is exported, pre-Mono, pre-Volume. The metronome stays outside the mix (into the limiter)
       mnode = makeMaster(c);
       mono = c.createGain(); master = c.createGain(); master.gain.value = settings.master;
       an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
-      mnode.node.connect(an); mnode.node.connect(mono); mono.connect(master); master.connect(c.destination);
+      // the safety limiter ('synth-safe'): the last stage — after the Volume (it can't push the output over) and the metronome, so
+      // the browser never hard-clips their sum; under −1 dBFS an exact copy L − 1 frames late (the clock allows for it: safePipe)
+      safeN = makeSafe(c);
+      mnode.node.connect(an); mnode.node.connect(mono); mono.connect(master); master.connect(safeN); safeN.connect(c.destination);
       if (typeof c.createChannelSplitter === 'function') {
         mSplit = c.createChannelSplitter(2); anL = c.createAnalyser(); anR = c.createAnalyser(); anL.fftSize = anR.fftSize = 2048;
         mnode.node.connect(mSplit); mSplit.connect(anL, 0); mSplit.connect(anR, 1);
       }
       monoApply();
-      metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(c.destination);
+      metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(safeN);
       ctx = c; pendCtx = null; failMsg = ''; hotT = 0;
       const ready = hold ? whenReady(3000) : null;
       masterSync(); // (its rack, its subscriptions, the A/B as the session has them — before the tracks: §1.1)
@@ -1048,6 +1055,7 @@ async function powerOn() {
       if (pendCtx === c) pendCtx = null;
       if (ctx === c) { ctx = null; an = master = metroBus = null; nodes.clear(); masterGone(); }
       else if (!ctx && mnode && mnode.node.context === c) masterGone();
+      if (safeN && safeN.context === c) safeN = null;
       quiet(c.close());
       if (mine) { meterRun(null); playbackSession(false); if (err.message !== 'cancelled') audioFail('Audio engine failed to start: ' + err.message); powerUI(); }
       throw err;
@@ -1064,7 +1072,7 @@ function powerOff() {
   if (!c) return Promise.resolve();
   if (T.playing) stop();
   previewStop(); previewEnd(); // (the kept preview node belongs to this context)
-  ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null;
+  ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null; safeN = null;
   nodes.clear(); masterGone(); meterRun(null);
   if (cvView) for (const m of cvView.modules.values()) if (m.setCpu) m.setCpu(null); // (no engine: no module CPU)
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
@@ -1531,6 +1539,38 @@ function abShown(on, g, lim) {
 // R1-3: a project change (Open, New, an undo of either) ends the A/B — its frozen match belongs to the old project's rack: the new
 // one would play its bypassed signal that many dB off
 function abEnd() { if (mstate.ab) abSet(false); }
+/* the safety limiter (engine.js 'synth-safe'): the last stage before the speakers — on by default; settings.safe (this device's) */
+// its delay in frames at rate sr: the engine's Limiter's look-ahead, L − 1 (L = round(sr / 1000), at least 4)
+const safeLat = sr => Math.max(4, Math.round(sr * 0.001)) - 1;
+const SAFE_TXT = 'The mix is too loud — the safety limiter is catching it; pull some faders down', SAFE_TELL = 1; // (dB: the notice from 1 dB of reduction)
+let safeTold = false; // (the notice: once per session)
+function makeSafe(c) {
+  const n = new AudioWorkletNode(c, 'synth-safe', {
+    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+    processorOptions: { on: settings.safe },
+  });
+  n.port.onmessage = e => { if (n === safeN) safeMsg(e.data); };
+  safePipe(c);
+  return n;
+}
+// the clock allows for its delay while it is on (the playhead, recording, host.latency: audioclock pipe)
+function safePipe(c = ctx || pendCtx) { CLK.pipe = c && settings.safe ? safeLat(c.sampleRate) / c.sampleRate : 0; }
+// {t: 'safe', gr}: it is reducing gain (gr dB at the window's loudest sample) — the row and the OUT show it; the notice once per session
+function safeMsg(d) {
+  if (!d || d.t !== 'safe' || !settings.safe) return;
+  const g = +d.gr;
+  if (!(g > 0)) return;
+  if (mrow) mrow.setLimit(g);
+  if (mout) mout.setLimit(g);
+  if (!safeTold && g >= SAFE_TELL) { safeTold = true; notice(SAFE_TXT, 10000); }
+}
+function safeSet(on) {
+  settings.safe = !!on; persist();
+  if (safeN) safeN.port.postMessage({ t: 'on', v: settings.safe });
+  safePipe();
+  if (mrow) mrow.setSafe(settings.safe);
+  if (mout) mout.setSafe(settings.safe);
+}
 /* status: the Power LED shows a context that is actually running; a suspended/interrupted one asks for a tap */
 // The notice line: a timed message (notice), else the sticky one (audio problems), else the factory generation progress
 // (genProgress, §9.7). The progress text alone carries the tap-to-cancel action.
@@ -2109,7 +2149,7 @@ function latRead() {
   const I = AC.clockInfo(CLK, ctx, performance.now());
   el.textContent = [`engine    ${eng}`, `output    ${I.out == null ? 'not reported' : ms(I.out)}`, `base      ${ms(I.base)}`,
     `stamp     ${ms(I.stamp)} behind currentTime`, CLK.webkit ? `ring      ${ms(I.ring)} (estimate)` : '',
-    `stalls    ${ms(I.stall)}${CLK.webkit ? '' : ' (not added here)'}`, `IO step   ${ms(I.io)}`,
+    `stalls    ${ms(I.stall)}${CLK.webkit ? '' : ' (not added here)'}`, `IO step   ${ms(I.io)}`, I.pipe ? `limiter   ${ms(I.pipe)} (the safety limiter's look-ahead)` : '',
     `heard     ${ms(outLatency())} after render`, `allowed   ${ms(I.auto)} auto + ${ms(I.user)} yours`].filter(Boolean).join('\n');
 }
 function initLatency() {
@@ -6854,7 +6894,7 @@ function mMount(key, b) {
     const P = moutPref();
     mout = MUI.createMasterOut(b, { doc: document, target: mTarget(), mode: MUI.MODES.includes(P.mode) ? P.mode : 'wave', read: mRead,
       onReset: () => postTo({ id: MASTER }, { t: 'mreset' }), onBypass: on => abSet(on), onMono: on => monoSet(on),
-      onTarget: t => moutSet('target', t), onMode: m => moutSet('mode', m) });
+      onTarget: t => moutSet('target', t), onMode: m => moutSet('mode', m), safe: settings.safe, onSafe: on => safeSet(on) });
     mout.setMono(mstate.mono); mout.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim);
     if (moutOff) moutOff();
     moutOff = monitors.sub(MASTER, 'meters', { live: () => mOutLive(), deliver: d => { if (mout) mout.update(d); } });
@@ -6998,7 +7038,7 @@ function mAddEffect(type) {
 function initMasterRow() {
   const el = $('#mfoot');
   if (!el || mrow) return;
-  mrow = MUI.createMasterRow(el, { doc: document, open: () => masterOpen(), onBypass: on => abSet(on), onMono: on => monoSet(on) });
+  mrow = MUI.createMasterRow(el, { doc: document, open: () => masterOpen(), onBypass: on => abSet(on), onMono: on => monoSet(on), safe: settings.safe });
   mrow.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim); mrow.setMono(mstate.mono); mrow.setActive(cvMaster);
   monitors.sub(MASTER, 'meters', { live: () => !!mrow && mrow.state().live, deliver: d => { if (mrow) mrow.update(d); } });
 }
@@ -8537,7 +8577,9 @@ function rigCtl(key) {
 //    like stackable patch cables — every end the jack itself, its centre, the cables diverging from there (fixer K's fan along the row
 //    retired); the stack's top is the last of them in the records' order (cv-cables' claimed records: a cord plugged in this session,
 //    again too, comes last), drawn last (cv-cords draws in the list's order) — a press on a stacked input grabs it (tops: rigNearest), its
-//    "Which cord?" lists it first (rigStack); a forked source's BAL right of its jack;
+//    "Which cord?" lists it first (rigStack); a forked source's BAL right of its jack; (the user, 2026-10-26: "on a socket with multiple
+//    outs lets just put a discreet number of how many outs on the socket") a jack with ≥ 2 cords drawn wears their count at its plug's
+//    upper-right rim — upper-left where its BAL stands right of it — (counts: cv-cables puts it in the layer's top, above every rope);
 //  · a knob end (the user, 2026-10-26: "directly to the back of the knob that it is attached to") is 'knob:<id>' on the knob's rim (its
 //    own disc: cv-module kx / ky / kr) where the rope AT REST arrives radially (rigAim, on the layer's own shape: fixer K, P2-1) — it
 //    goes in behind the knob there (cv-cords s 2; the anchor carries the disc, so the layer cuts the rope at the rim: P2-2) —; several
@@ -8545,6 +8587,9 @@ function rigCtl(key) {
 //    hidden / folded knob's end: the bar corner, as before;
 //  · a claimed mod row's badge on its rope at rest just outside the rim, off every control and every badge placed before it (rigBadge)
 const RIG_SEP = 40 * Math.PI / 180;
+// (a stacked count's place: its plug's rim 30° above the horizontal, world px — the chip centred on it vertically (style.css .cv-jn), so
+// zoomed out to Fit, where its 9 screen px outgrow the rim, it grows along the jack row beside the plug, not up over the row above)
+const RIG_RIM = { x: cvCordsMod.LOOK.PLUG_R * Math.cos(Math.PI / 6), y: cvCordsMod.LOOK.PLUG_R * Math.sin(Math.PI / 6) };
 // ((fixer K, review P2-1) the drawn rope AT REST between A and B — the layer's shape(): the settled Studio rope with motion (a rig's cords
 // open there: cv-cords rest), the parabola still / SVG — what badges sit on and knob ends are aimed along; cached by its ends and the
 // layer's quality, cleared at every render)
@@ -8679,7 +8724,7 @@ function rigBadge(c, S, E, k, O, C, K) {
   return { x: q.x, y: q.y };
 }
 function rigLayer(L, P, k) {
-  const t = trk(), C = cvCords(), A = new Map(P || []), cords = [], rings = [], knobs = new Map(), badges = new Map(), forks = new Map(), tops = new Map(), ends = new Map();
+  const t = trk(), C = cvCords(), A = new Map(P || []), cords = [], rings = [], knobs = new Map(), badges = new Map(), forks = new Map(), tops = new Map(), ends = new Map(), counts = new Map();
   const at = key => (P && typeof P.get === 'function' ? P.get(key) : P ? P[key] : null), kk = k > 0 && isFinite(k) ? k : 1;
   const recs = L.map(c => Object.assign(toCord(c, t), { rec: c }));
   const n = new Map(); // ((the user, 2026-10-26) a stacked input's top: its last cord in the records' order — what a press there grabs
@@ -8723,12 +8768,19 @@ function rigLayer(L, P, k) {
     if (q) badges.set(c.id, q);
   }
   for (const id of rigBadgeC.keys()) if (!seen.has(id)) rigBadgeC.delete(id);
+  const n2 = new Map(); // ((the user, 2026-10-26) the cords drawn at each jack — a knob end is its own
   for (const c of recs) {
     cords.push({ id: c.id, a: c.a, b: c.b, c: c.c, s: c.s, o: c.o, rest: true }); // ((fixer K, P2-1) a rig's cord opens at rest: where its badge is aimed
     const a = A.get(c.a), b = A.get(c.b);
-    if (a && b) ends.set(c.id, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } });
+    if (!a || !b) continue;
+    ends.set(c.id, { a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } });
+    for (const j of isKnobEnd(c.rec) ? [c.a] : [c.a, c.b]) n2.set(j, (n2.get(j) || 0) + 1);
   }
-  return { cords, anchors: A, rings, badges, forks, tops, ends, P };
+  for (const [j, m] of n2) { // (a stacked jack's count at its plug's upper rim — its left one beside its BAL)
+    const p = A.get(j), l = forks.has(j);
+    if (m >= 2 && p && isFinite(p.x) && isFinite(p.y)) counts.set(j, { x: p.x + (l ? -RIG_RIM.x : RIG_RIM.x), y: p.y - RIG_RIM.y, n: m, to: l ? 'l' : 'r' });
+  }
+  return { cords, anchors: A, rings, badges, forks, tops, ends, counts, P };
 }
 // ((WC, integration fixer K; review B5 / P2-3) what a press on rig jack el at p (world px, zoom k) is on (cv-cables' jackAt): the nearest
 // of its module's jack centres within max(22 screen px, half the 64 px column) → { el, rec } — rec: a stacked input's top cord (the user,
@@ -8867,7 +8919,7 @@ function rigRecords(L, P, k) {
   C.set(R.cords);
   C.anchors(R.anchors);
   rigRings(R.rings);
-  return { badges: R.badges, forks: R.forks, ends: R.ends }; // ((fixer K) ends: a claimed cord's tag above its own plug (P3-6)
+  return { badges: R.badges, forks: R.forks, ends: R.ends, counts: R.counts }; // ((fixer K) ends: a claimed cord's tag above its own plug (P3-6); (the user, 2026-10-26) counts: a stacked jack's number
 }
 // ((the user, 2026-10-26: stacked plugs, the newest on top) the rig's records in the stack's order — the cord layer's (the records': a cord
 // plugged in this session, again too, last) where it shows them, else edges()' — so a jack's "Which cord?" lists its top first
@@ -10304,7 +10356,8 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
   };
   // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers
   globalThis.__synthTest.master = {
-    rec: () => mnode, graph: () => ({ an, mono, level: master, split: mSplit, anL, anR }), on: () => cvMaster, open: masterOpen,
+    rec: () => mnode, graph: () => ({ an, mono, level: master, split: mSplit, anL, anR, safe: safeN, metro: metroBus }), on: () => cvMaster, open: masterOpen,
+    safe: () => safeN, safeSet, safeLat, // (the safety limiter: tests/safe-sim)
     off: () => { if (cvMaster) { masterOff(); renderViews(); tabTrackUI(); ptShow(); } }, fx: masterFx, edit: masterEdit, host: mfxHost, ui: mfxRec,
     state: () => Object.assign({}, mstate), ab: abSet, mono: monoSet, row: () => mrow, out: () => mout, chain: masterChain, n: masterN,
     latBound, addEffect: mAddEffect, menu: mMenu, view: masterRec, read: mRead, normMode, playRate,

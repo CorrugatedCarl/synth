@@ -516,15 +516,18 @@ export { routeLabel };
  * ports, k) after every set / layout / zoom (rezoom) and when the visibility changes: the claimed records shown (∿ Never: no mod
  * ones; On select: those touching the selection; past MOD_FADE_N a copy with fade: true) and the ports the host turns into the
  * layer's anchors; it may answer { badges: Map id → {x, y}, forks: Map jack → {x, y} } (world px: the claimed badges' and BAL's
- * places). (fixer B2; review 2 P2-3) o.top() → the layer above the cords (cv-cords top()): a claimed mod row's badge, a claimed
- * cord's ×, a claimed fork's BAL go there — never under a rope — its --ik the world's (copied at each layout / zoom). A claimed mod
+ * places) and (the user, 2026-10-26: "a discreet number of how many outs on the socket") counts: Map jack → {x, y, n, to} — a jack
+ * holding n ≥ 2 cords: a small span.cv-jn (its number, aria-hidden, no press) at (x, y), growing to its to side ('r' | 'l'), in the
+ * world's skin (data-cv-skin copied: the top layer is outside #world); none answered: none shown. (fixer B2; review 2 P2-3) o.top() →
+ * the layer above the cords (cv-cords top()): a claimed mod row's badge, a claimed cord's ×, a claimed fork's BAL, a count go there —
+ * never under a rope — its --ik the world's (copied at each layout / zoom). A claimed mod
  * badge's drag is the knob end's (setBadgeDrag: createCableDrag's re-patch / pull) — never a pan. o.cords absent: today's DOM
  * byte for byte (W7).
  * @param {HTMLElement} worldEl  #world
  * @param {{doc?: Document, onSelect?: (id: string | null, by?: string) => void, onAction?: (id: string, action: string) => void,
  *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string,
  *   ignore?: (target: Element) => boolean, cords?: ((c: Cable) => boolean) | null,
- *   onRecords?: (records: Cable[], ports: Map<string, {x: number, y: number}> | null, k: number) => void | {badges?: Map<string, {x: number, y: number}>, forks?: Map<string, {x: number, y: number}>},
+ *   onRecords?: (records: Cable[], ports: Map<string, {x: number, y: number}> | null, k: number) => void | {badges?: Map<string, {x: number, y: number}>, forks?: Map<string, {x: number, y: number}>, counts?: Map<string, {x: number, y: number, n: number, to?: string}>},
  *   cordSel?: (id: string | null) => void, cordPoint?: (id: string, t: number) => {x: number, y: number} | null,
  *   top?: () => HTMLElement | null}} [o]  (top: the layer above the cords — the claimed badges, ×, BAL)
  *   ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
@@ -549,6 +552,7 @@ export function createCables(worldEl, o) {
   let mode = MOD_MODES.includes(O0.mods) ? O0.mods : 'always', hinted = false;
   const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my, kd, mod, cord}; (2a) a mod cable: og (over twin), end, badge, amt, ptag; (3) htag; (WC) a claimed one: no paths, no twin, ntag, xp (the ×'s tap point)
   const forks = new Map(); // (milestone 3) a forked source's jack → its BALANCE badge {id, b, x, y, off}
+  const nums = new Map(); // ((the user, 2026-10-26) a stacked jack → its count {e, x, y, n, to} (the host's counts)
   const isMod = it => !!it && !!it.mod;
   const kOf = () => { let k = 1; try { k = typeof O0.k === 'function' ? +O0.k() : 1; } catch (err) { k = 1; } return k > 0 && isFinite(k) ? k : 1; };
   let kNow = kOf();
@@ -861,6 +865,33 @@ export function createCables(worldEl, o) {
       const it = items.get(Fb.id), q = it && it.cord ? get(F, a) : null;
       if (q && fin(q.x) && fin(q.y)) { Fb.hp = false; forkAt(Fb, q.x, q.y); Fb.hp = true; } else if (Fb.hp) { Fb.hp = false; const A = ports ? (typeof ports.get === 'function' ? ports.get(a) : ports[a]) : null; if (A && fin(A.x)) forkAt(Fb, A.x + 22, A.y); }
     }
+    counted(R && typeof R === 'object' ? R.counts : null);
+  }
+  // ((the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on the socket") the host's
+  // counts (Map | object: jack → {x, y, n, to}, world px): a span.cv-jn each in the layer above the cords (made / moved / renumbered only
+  // when they change), the world's skin on it; the rest removed — no answer (lines mode, another canvas): none
+  function counted(N) {
+    const want = new Map(), H = N && typeof N === 'object' ? topOf() : null;
+    if (H) for (const [j, q] of typeof N.entries === 'function' && typeof N.get === 'function' ? N.entries() : Object.entries(N)) if (q && fin(q.x) && fin(q.y) && q.n >= 2) want.set(String(j), q);
+    for (const [j, M] of nums) if (!want.has(j)) { M.e.remove(); nums.delete(j); }
+    if (!want.size) return;
+    const sk = worldEl && typeof worldEl.getAttribute === 'function' ? worldEl.getAttribute('data-cv-skin') : null;
+    for (const [j, q] of want) {
+      let M = nums.get(j);
+      if (!M) {
+        const e = doc.createElement('span');
+        e.className = 'cv-jn';
+        e.setAttribute('aria-hidden', 'true'); e.setAttribute('data-of', j);
+        M = { e, x: NaN, y: NaN, n: 0, to: '' };
+        nums.set(j, M);
+      }
+      if (M.e.parentNode !== H) H.append(M.e);
+      if (sk) { if (M.e.getAttribute('data-cv-skin') !== sk) M.e.setAttribute('data-cv-skin', sk); } else if (M.e.hasAttribute('data-cv-skin')) M.e.removeAttribute('data-cv-skin');
+      const n = Math.floor(q.n), to = q.to === 'l' ? 'l' : 'r', x = r2(q.x), y = r2(q.y);
+      if (n !== M.n) { M.n = n; M.e.textContent = String(n); }
+      if (to !== M.to) { M.to = to; M.e.setAttribute('data-to', to); }
+      if (x !== M.x || y !== M.y) { M.x = x; M.y = y; M.e.style.left = x + 'px'; M.e.style.top = y + 'px'; }
+    }
   }
   function setModsVisible(m) {
     if (!MOD_MODES.includes(m)) return mode;
@@ -1041,6 +1072,8 @@ export function createCables(worldEl, o) {
     setModsVisible, modsVisible: () => mode, rezoom, badge: id => { const it = items.get(id); return it && it.badge ? it.badge : null; },
     /** (milestone 3) a forked source's BALANCE badge by its jack ('i1/oscB.out'), null without one */
     forkBadge: a => { const F = forks.get(a); return F ? F.b : null; },
+    /** ((the user, 2026-10-26) a stacked jack's count by its jack ('i1/lfo1.out'): its span.cv-jn, null without one */
+    count: a => { const M = nums.get(a); return M ? M.e : null; },
     /** (WC) is cable `id` claimed by the cords predicate (drawn by the cord layer)? The claimed records, in the list's order (all of
      * them, whatever the visibility shows: the drag's "the most recent cord at this input") */
     claimed: id => { const it = items.get(id); return !!it && !!it.cord; },
@@ -1076,6 +1109,8 @@ export function createCables(worldEl, o) {
       for (const it of items.values()) if (it.badge) { it.bOff(); it.badge.remove(); }
       for (const F of forks.values()) { F.off(); F.b.remove(); }
       forks.clear();
+      for (const M of nums.values()) M.e.remove();
+      nums.clear();
       U.e.remove(); O.e.remove(); items.clear(); list = []; ports = null;
     },
   };

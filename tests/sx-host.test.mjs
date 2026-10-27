@@ -162,6 +162,52 @@ test('the label-drag host guard: only this host\'s module labels are swap / copy
   one.X.destroy(); Y.destroy();
 });
 
+// (the user, on Windows: a "Swap · OSC A" ghost stuck on a Wavecraft canvas — reproduced in Chrome for Testing: a click on Oscillator 1's
+// bar title, then the mouse moved over it with no button down)
+test('no orphaned drag ghost: a press on a canvas bar title whose release goes to the bar (cv-module\'s grab) leaves nothing armed — a later hover over the title, no button down, makes no "Swap · OSC A" ghost; a label drag\'s ghost goes when its title goes mid-drag and on the window\'s blur; the Alt depth drag\'s goes when its view root goes (lostpointercapture at the document) and on the blur', async () => {
+  const { doc, box, host, X, s } = parts();
+  const Va = M.mountPart(X, 'oscA', box), Vb = M.mountPart(X, 'oscB', box);
+  await flush(doc);
+  const bar = doc.createElement('div'), ta = doc.createElement('span'), barB = doc.createElement('div'), tb = doc.createElement('span');
+  bar.append(ta); barB.append(tb); doc.body.append(bar, barB);
+  bar.addEventListener('pointerdown', e => bar.setPointerCapture(e.pointerId)); // (cv-module's bar: the press's events go to it)
+  Va.labelDrag(ta); Vb.labelDrag(tb);
+  const ghosts = () => doc.body.querySelectorAll('.sx-ghost').map(g => g.textContent).join('|');
+  const hover = x => fire(ta, 'pointermove', { clientX: x, clientY: 10, buttons: 0 });
+  ptr(ta, 'pointerdown', 10, 10); ptr(bar, 'pointerup', 10, 10);
+  hover(30); hover(60);
+  assert.equal(ghosts(), '', 'a click on the title, then a hover');
+  ptr(ta, 'pointerdown', 10, 10); ptr(bar, 'pointermove', 60, 40); ptr(doc.body, 'pointerup', 60, 40);
+  hover(30);
+  assert.equal(ghosts(), '', 'the bar\'s own drag (the module moved), then a hover');
+  // a live label drag (OSC B's title, no grab): its title re-rendered away mid-drag
+  ptr(tb, 'pointerdown', 10, 10); ptr(tb, 'pointermove', 40, 10);
+  assert.equal(ghosts(), 'Swap · OSC B');
+  tb.remove(); fire(doc, 'lostpointercapture', { pointerId: 1, cancelable: false });
+  assert.equal(ghosts(), '', 'title removed');
+  barB.append(tb);
+  ptr(tb, 'pointerdown', 10, 10); ptr(tb, 'pointermove', 40, 10); fire(doc.defaultView, 'blur', { bubbles: false, cancelable: false });
+  assert.equal(ghosts(), '', 'blur');
+  ptr(tb, 'pointerup', 40, 10);
+  // the Alt depth drag on a knob of OSC A's face
+  core.addMod(s(), host.st.fx, 'lfo2', 'a.pan', { amt: 0.3 });
+  const knob = byDest(Va.root, 'a.pan');
+  ptr(knob, 'pointerdown', 100, 100, { altKey: true, pointerId: 3 });
+  assert.match(ghosts(), /^LFO 2/);
+  const root = Va.root, par = root.parentNode;
+  root.remove(); fire(doc, 'lostpointercapture', { pointerId: 3, cancelable: false });
+  assert.equal(ghosts(), '', 'the view root removed mid-drag');
+  assert.equal(host.log.filter(x => x[1] === 'Mod depth').at(-1)[2], 'end');
+  par.appendChild(root);
+  ptr(knob, 'pointerdown', 100, 100, { altKey: true, pointerId: 4 });
+  assert.match(ghosts(), /^LFO 2/);
+  fire(doc.defaultView, 'blur', { bubbles: false, cancelable: false });
+  assert.equal(ghosts(), '', 'blur mid depth drag');
+  assert.equal(host.log.filter(x => x[1] === 'Mod depth').at(-1)[2], 'end');
+  ptr(root, 'pointerup', 100, 50, { pointerId: 4 });
+  X.destroy();
+});
+
 /* ================================================================ bare panels */
 test('bare: the canvas bar\'s chrome goes (power → View.power, no name / lock mark / chevron / ENV tabs), every own head control stays in the head row; the bar ⏻ keeps its menu and halo', async () => {
   const { doc, box, X, s } = parts();

@@ -2193,6 +2193,14 @@ before its code: d07118b), then the change. No DSP file in the diff.
   filter stands — rigTidyOpts and sxLayParts pass it) and gives that rig's Amplifier **one grid row (DOT) more air** before it (the rope
   26 px clear at GAP + DOT; the Amplifier, its FX, OUT, Envelope 1 over it follow; upright the wrapped row follows too). S1 0, S2 0, S3 1
   (the accepted `o:i1:1 × i1/oscA`); a rig with no such source lays exactly as before (cv-module's position pins unchanged).
+- **(1b) The stacked count** (the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on
+  the socket") — `rigLayer` counts the cords drawn at each jack (a knob end its own; ∿ Never's hidden rows not drawn, not counted) and
+  answers `counts` (jack → {x, y, n, to}: the plug's rim 30° up on its right, on its left where a BAL stands right of the jack); cv-cables
+  keeps a `span.cv-jn` per jack with n ≥ 2 in the layer's top (above every rope, cables behind too; under the badges / BAL / ×), aria-hidden,
+  no press, the world's skin on it (`.cv-jn[data-cv-skin]` joins the skin block, as the drawer did); none without an answer (lines mode,
+  another canvas: the ref-WC record matches). style.css: a dark chip, the narrow face, the cream muted toward the case, a world 10 px held
+  between 9 and 12 screen px, centred on the rim so at Fit it grows beside the plug (off the row above and the label); hidden while
+  patching. Tests: canvas-WC-sim (2 / 3 / 4, undo / redo / pull / re-patch, ∿, behind, lines, a fork, Juno / 900 Series), cv-cables.
 - **(2) Cables over the jack labels** — "cable should be on top of text here". Review WC-int P3-12's lifted label is retired: `rigLabels`
   (+ `rigLabC` / `rigLabInfoC` / `rigLabHitC` / `rigLabOf` / `rigSegBox` / `RIG_LAB_*`) and style.css `.cv-cords-top > .rig-jl-top` are
   gone; a jack's label stays in its face, under the cord canvas, so a rope crossing it passes over it (the physical look); a label no rope

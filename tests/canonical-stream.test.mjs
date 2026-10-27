@@ -16,7 +16,9 @@
 // equals tests/fixtures/stream-master.json (recorded from the Master stage's build: STREAM_REC_MASTER=1 — never from main,
 // which has no master); any other processor name fails. Compared separately, not left out. Structural, with no fixture: one
 // live MASTER per live context, made before that context's first track node; its transport / panic stream is the one the
-// context's first track node received (postAll's forwarding: the same anchors, the same order).
+// context's first track node received (postAll's forwarding: the same anchors, the same order). The safety limiter
+// ('synth-safe', the last stage before destination: tests/safe-sim) — its own part, structural: one per live context, made after
+// MASTER and before the first track node, built {on: true}, no message to it in this session (its switch is not touched).
 // Run: node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
 // Re-record (only from main's tree, never from canvas code): extract the merge base into the scratchpad
 // (git archive a02ab5d | tar -x -C <dir>), then STREAM_REC=<dir> node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
@@ -108,9 +110,10 @@ async function session(root) {
   const ctxs = s.live.map(c => {
     const ws = c.nodes.filter(n => n.kind === 'worklet'), m = ws.filter(n => n.name === 'synth-master'), t0 = ws.findIndex(n => n.name === 'synth-engine');
     const tp = n => (n ? n.posted.map(x => x.m).filter(q => q && (q.t === 'transport' || q.t === 'panic')).map(sha) : null);
-    return { masters: m.length, mFirst: m.length ? ws.indexOf(m[0]) : -1, t0, mTp: tp(m[0]), tTp: tp(ws[t0]) };
+    const sf = ws.filter(n => n.name === 'synth-safe');
+    return { masters: m.length, mFirst: m.length ? ws.indexOf(m[0]) : -1, t0, mTp: tp(m[0]), tTp: tp(ws[t0]), safes: sf.length, sFirst: sf.length ? ws.indexOf(sf[0]) : -1 };
   });
-  return { engine: part('synth-engine'), master: part('synth-master'), names: [...new Set(all.map(n => n.name))].sort(), ctxs };
+  return { engine: part('synth-engine'), master: part('synth-master'), safe: part('synth-safe'), names: [...new Set(all.map(n => n.name))].sort(), ctxs };
 }
 
 test('a canonical track posts exactly main\'s message stream (§5.5): the scripted p1 session, node for node, message for message', async () => {
@@ -122,7 +125,7 @@ test('a canonical track posts exactly main\'s message stream (§5.5): the script
   }
   const ref = JSON.parse(readFileSync(FIX, 'utf8')), R = await session(HERE), r = R.engine;
   // (stage M) the partition: no processor name but the two; the master part = its own fixture; the structure
-  assert.deepEqual(R.names, ['synth-engine', 'synth-master'], 'only the Track and the master (any other processor name fails)');
+  assert.deepEqual(R.names, ['synth-engine', 'synth-master', 'synth-safe'], 'only the Track, the master and the safety limiter (any other processor name fails)');
   if (process.env.STREAM_REC_MASTER) writeFileSync(FIX_M, JSON.stringify({ v: 1, from: 'the Master stage (IMPL-M lane A)', skip: [...SKIP], nodes: R.master.nodes, stream: R.master.stream }) + '\n');
   const refM = JSON.parse(readFileSync(FIX_M, 'utf8'));
   assert.deepEqual(R.master.nodes, refM.nodes, 'the master part: its nodes and processorOptions');
@@ -132,7 +135,11 @@ test('a canonical track posts exactly main\'s message stream (§5.5): the script
     if (c.t0 < 0) continue; // (a probe context: no track node)
     assert.deepEqual([c.masters, c.mFirst < c.t0], [1, true], 'live context ' + k + ': one MASTER, made before its first track node');
     assert.deepEqual(c.mTp, c.tTp, 'live context ' + k + ': MASTER\'s transport / panic stream = its first track\'s');
+    assert.deepEqual([c.safes, c.mFirst < c.sFirst, c.sFirst < c.t0], [1, true, true], 'live context ' + k + ': one safety limiter, made after MASTER, before its first track node');
   }
+  assert.ok(R.safe.nodes.length >= 2);
+  assert.deepEqual(R.safe.nodes.map(n => n[3]), R.safe.nodes.map(() => sha({ on: true })), 'the safety limiter: built on');
+  assert.deepEqual(R.safe.stream, [], 'the safety limiter: no message to it in this session');
   assert.ok(ref.stream.length > 100, 'the reference holds a real session: ' + ref.stream.length);
   assert.deepEqual(r.nodes, ref.nodes, 'every node and its processorOptions (the initial patch, song, sequencer)');
   const n = Math.min(r.stream.length, ref.stream.length);

@@ -1485,6 +1485,10 @@ button.mo-n:hover { border-color: #3a3c42; }
 .mo-ab[aria-pressed="true"] { background: #3a3326; color: #f2c23a; border-color: #6b5a26; }
 .mo-ab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mo-mono[aria-pressed="true"] { background: #1c3324; color: #7cffb5; border-color: #2d5a42; }
+/* the safety limiter's switch (engine.js synth-safe): on is the plain state; off struck through (the output can clip); limiting: amber, lit */
+.mo-safe { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.mo-safe[aria-pressed="false"] { color: #e0806a; text-decoration: line-through; }
+.mo-safe.act { background: #3a2a14; color: #ffb347; border-color: #8a5a20; box-shadow: 0 0 6px rgba(255, 140, 40, 0.55); text-decoration: none; }
 .mo-target { display: flex; align-items: center; justify-content: space-between; color: var(--mute); font-size: 11px; }
 .mo-target::after { content: '\25BE'; opacity: 0.7; }
 .mo-target[aria-expanded="true"] { border-color: var(--hot); color: var(--hot); }
@@ -1515,6 +1519,11 @@ button.mo-n:hover { border-color: #3a3c42; }
 .mr-ab[aria-pressed="true"] { background: #3a3326; color: #f2c23a; border-color: #6b5a26; }
 .mr-ab { white-space: nowrap; } /* "A/B +2.1*": the match rides on the button */
 .mr-mono[aria-pressed="true"] { background: #1c3324; color: #7cffb5; border-color: #2d5a42; }
+/* the safety limiter's indicator: "−2.5 LIM" in the LUFS number's place while it acts (the row .limiting) — the same width, amber */
+.mr-lim { flex: 0 0 auto; box-sizing: border-box; display: flex; align-items: baseline; gap: 3px; min-width: 7ch; padding: 3px 6px; border-radius: 5px; background: #3a2a14; box-shadow: 0 0 6px rgba(255, 140, 40, 0.55); color: #ffb347; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mr-lim[hidden], .cv-mastrow.limiting .mr-lufs { display: none; }
+.mr-limv { font: 600 13px var(--mono); }
+.mr-limu { font: 700 8.5px var(--ui); letter-spacing: 0.08em; }
 .mr-open { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--mute); -webkit-tap-highlight-color: transparent; }
 .mr-open svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .mr-open:hover, .cv-mastrow.on .mr-open { color: var(--hot); }
@@ -1585,6 +1594,19 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 .cv-cords-top > * { pointer-events: auto; }
 #viewport[data-cv-busy] > .cv-cords-top { will-change: transform; } /* (a camera burst: its own layer, as #world's) */
 #world[data-cv-patching] ~ .cv-cords-top .cv-mbadge, #world[data-cv-patching] ~ .cv-cords-top .cv-fork { pointer-events: none; }
+/* (WC; the user, 2026-10-26: "on a socket with multiple outs lets just put a discreet number of how many outs on the socket") a stacked
+   jack's count (cv-cables, the host's counts): a small dark chip on its plug's upper-right rim (data-to "l": upper-left, a BAL right of
+   the jack), centred on it vertically and growing outward along the jack row (zoomed out it outgrows the rim: beside the plug, off the
+   row above and the label under the jack), above every rope and under the badges / BAL / ×; the skin's narrow face, its cream muted
+   toward the case (the count carries the skin: the top layer is outside #world); a world 10 px between 9 screen px (legible at Fit) and
+   12 (discreet zoomed in); never a press (the jack's); hidden while a cord is patched (a plug in the finger leaves its stack: one off
+   until the drop) */
+.cv-cords-top > .cv-jn { position: absolute; box-sizing: border-box; min-width: 1.4em; height: 1.4em; padding: 0 0.28em; border-radius: 0.7em; transform: translate(-15%, -50%);
+  font: 600 clamp(calc(9px * var(--ik, 1)), 10px, calc(12px * var(--ik, 1))) / 1.4 var(--rig-font, var(--ui)); font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap;
+  color: color-mix(in srgb, var(--rig-title, #ebe6d8) 75%, var(--rig-case, #17181a)); background: var(--rig-case, #17181a); box-shadow: 0 0 0 calc(1px * var(--ik, 1)) var(--rig-line, #2c2e32);
+  pointer-events: none; user-select: none; -webkit-user-select: none; }
+.cv-cords-top > .cv-jn[data-to="l"] { transform: translate(-85%, -50%); }
+#world[data-cv-patching] ~ .cv-cords-top > .cv-jn { visibility: hidden; }
 /* (WC, lane H; fixer B2 — the user, 2026-10-26: a cord onto a socket-less knob goes "directly to the back of the knob that it is attached
    to") the knob a cord goes into wears a thin ring in the cord's colour (the rope ends at its rim and the ring crosses it there: cv-cords
    s 2) — the cord palette (cv-cords PALETTE; its black lifted to read on a dark face); main.js sets data-rig-cord="<colour index>" on the
@@ -1607,13 +1629,15 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    of the file. One block per rig-core SKINS id and nothing but colour and font custom properties (no number, no other property: a
    switch changes no box, only colour and font pixels), every block the same variables in the same order. Scoped by rig-ui applySkin's
    attribute on #world to a rig module (its bar inherits), and again to the two elements that declare tokens of their own: .sx-root
-   (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face. A new skin: a SKINS entry + one block. */
+   (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face; outside #world the ⚙ drawer and a stacked
+   jack's count (.cv-jn, the cord layer's top) carry the attribute themselves. A new skin: a SKINS entry + one block. */
 /* charcoal (WC-1, SKIN_DEFAULT): the cord lab's colours (docs/canvas/ref/cord-lab.html) — charcoal faces, cream engraving in the narrow
    face, black knobs with cream pointers and arcs, cream-ringed jacks, warm grey screws, the app's amber; a warm red for a negative amount */
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig],
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig] .sx-root,
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig] .rig-face,
-.rig-drawer[data-cv-skin="charcoal"] {
+.rig-drawer[data-cv-skin="charcoal"],
+.cv-jn[data-cv-skin="charcoal"] {
   --sx-bg: #1f2023; --sx-panel: #1f2023; --sx-panel2: #141518; --sx-line: #2c2e32; --sx-graph: #ebe6d8; --sx-ink: #ebe6d8; --sx-mute: #9c978a;
   --sx-accent: #e8a33d; --sx-neg: #ec6a4c; --text: #ebe6d8; --mute: #9c978a;
   --rig-case: #17181a; --rig-face: #1f2023; --rig-bar: #1f2023; --rig-title: #ebe6d8; --rig-line: #2c2e32; --rig-font: 'Archivo Narrow', Inter, var(--ui);

@@ -11,7 +11,8 @@
 // advance its read position on an underrun), so the ring lead grows to the largest stall seen. The stall meter below
 // measures those catch-ups from the main thread.
 //   delay = WebKit: outputLatency (smoothed) + RING + stalls (+ baseLatency when unstamped) ; other: 0 stamped, else
-//           outputLatency + baseLatency (the Phase-1 fallback) — both + the user's "Output latency" offset (settings.lat)
+//           outputLatency + baseLatency (the Phase-1 fallback) — both + the graph's own delay after the engine (C.pipe, s: the
+//           safety limiter's look-ahead, main.js) + the user's "Output latency" offset (settings.lat)
 
 export const RING = 256;        // frames: WebKit's IO buffer + GPU-process ring lead — a guess (not measurable from JS)
 export const STAMP_CAP = 100;   // ms a timestamp is extrapolated at most (a stale stamp: suspended, interrupted, GPU process gone)
@@ -20,9 +21,9 @@ const DECAY = 1e-3;             // s/s the meter's recent lag maximum sinks (abo
 const WIN = 0.25, WARM = 5;     // s per jitter window; windows seen before a stall is counted
 
 export function createClock(webkit, user = 0) { return resetClock({ webkit: !!webkit, user: +user || 0 }); }
-// a new context: no stalls, no smoothed latency yet
+// a new context: no stalls, no smoothed latency yet, no graph delay (the host sets C.pipe once its output stage is built)
 export function resetClock(C) {
-  C.outLat = 0; C.outLatT = -Infinity; C.stall = 0; C.stall0 = 0; C.warnAt = DRIFT; C.settled = false;
+  C.outLat = 0; C.outLatT = -Infinity; C.stall = 0; C.stall0 = 0; C.warnAt = DRIFT; C.settled = false; C.pipe = 0;
   C.M = { pw: null, top: 0, ws: 0, hi: 0, lo: 0, wn: 0, rs: [], J: -1, cand: 0 };
   return C;
 }
@@ -60,7 +61,7 @@ export function outDelay(C, ctx, stamped, now) {
     }
     auto = C.outLat + RING / ctx.sampleRate + C.stall + (stamped ? 0 : base);
   }
-  return auto + C.user / 1000;
+  return auto + C.pipe + C.user / 1000;
 }
 // the frame heard at performance time ts
 export function outFrame(C, ctx, ts, now) {
@@ -110,7 +111,7 @@ export function meterSample(C, wall, ctxT, running) {
   return true;
 }
 
-// the readout (s): engine, outputLatency (null: not reported), baseLatency, ring estimate (WebKit), stalls, render →
+// the readout (s): engine, outputLatency (null: not reported), baseLatency, ring estimate (WebKit), stalls, the graph's delay, render →
 // stamp (currentTime − contextTime), the automatic delay, the user offset, the total, the meter's currentTime step
 // jitter J (≈ the IO buffer when that is longer than the sampling interval; null: not measured yet)
 export function clockInfo(C, ctx, now) {
@@ -118,7 +119,7 @@ export function clockInfo(C, ctx, now) {
   const stamped = renderTime(ctx, now, now)[1], total = outDelay(C, ctx, stamped, now);
   return {
     webkit: C.webkit, out: typeof ctx.outputLatency === 'number' ? ctx.outputLatency : null, base: +ctx.baseLatency || 0,
-    ring: C.webkit ? RING / ctx.sampleRate : 0, stall: C.stall, stamp: o && o.contextTime > 0 ? ctx.currentTime - o.contextTime : null,
+    ring: C.webkit ? RING / ctx.sampleRate : 0, stall: C.stall, pipe: C.pipe, stamp: o && o.contextTime > 0 ? ctx.currentTime - o.contextTime : null,
     stamped, auto: total - C.user / 1000, user: C.user / 1000, total, io: C.M.J >= 0 ? C.M.J : null,
   };
 }

@@ -2217,6 +2217,8 @@ modifierBar.consume = consumeLatches;
 // the hold), t (the event's timeStamp; performance.now() without one), scrolled (below), target (the element under the
 // pointer: document.elementFromPoint — a drag ghost needs pointer-events: none) }. The click that ends a drag is
 // swallowed; Escape cancels; the latches are consumed when a drag ends. Returns { active() → bool, cancel(), destroy() }.
+// No orphaned drag (guard below): the press's pointerup / pointercancel anywhere outside el (an ancestor that grabbed the pointer),
+// el leaving the document mid-drag, the window's blur and a hidden page abandon a pending press and cancel a live drag — once.
 // Edge auto-scroll (payload.autoScroll !== false; vertical only): while a drag is live, a pen or touch pointer in the
 // AS_EDGE zone at the top / bottom of the visible part of a scroll container — the innermost one under the pointer that
 // can still scroll that way (CSS overflow-y auto / scroll), else the page — scrolls it on animation frames, faster the
@@ -2229,7 +2231,7 @@ modifierBar.consume = consumeLatches;
 // a zone does not scroll at once). Each frame that scrolled calls move(info) again at the same x, y (targets move under
 // a still finger; t = the last event's time + the frames since); info.scrolled = ms since the last auto-scroll step
 // (Infinity: none), so a consumer can ask a drop to rest on a target that a scroll brought. Stops before the drop /
-// cancel callbacks (a scroll would close a menu the drop opens) and while the page is hidden. Inside the canvas world
+// cancel callbacks (a scroll would close a menu the drop opens) and while the page is hidden (which ends the drag). Inside the canvas world
 // ([data-cv-world]) with a setEdgeHook hook: what no DOM scroller takes pans the camera (hook.pan(pointer | null): both
 // axes, its band; edgePan2's law), and each camera step re-fires move at the same x, y with scrolled 0.
 const AS_EDGE = { mouse: 0, pen: 72, touch: 72 }, AS_MAX = { mouse: 1200, pen: 1200, touch: 1200 }; // zone depth (px), top speed (px/s)
@@ -2327,6 +2329,29 @@ export function dragSource(el, payload) {
     return (G.axis === 'x' ? dy > dx : dx > dy) ? 'drag' : 'scroll';
   }
   const unwatch = G => { if (G && G.docOff) { G.docOff(); G.docOff = null; } };
+  // No orphaned drag (the user's "Swap · OSC A" ghost stuck on a rig: cv-module's bar grabs the pointer at the press, so its
+  // title never heard the release, and the next hover over the title, no button down, started a drag nothing ended): from the press
+  // to the end the document hears the press's pointer — its pointerup / pointercancel outside el (el's own listeners take the ones
+  // inside it), a lostpointercapture el cannot hear (el gone: Chrome fires it at the document), a move while el is out of the
+  // document — and the window's blur and a hidden page: a pending press is abandoned, a live drag ends cancelled (once: end() and
+  // abandon() clear g first, and every listener here asks for the same g)
+  function guard(G) {
+    const d = el.ownerDocument || D(), w = d && d.defaultView;
+    if (!d || typeof d.addEventListener !== 'function') return; // (a document that takes no listeners — a test's stub — has no guard)
+    const inEl = n => !!n && (n === el || (typeof el.contains === 'function' && el.contains(n)));
+    const has = () => { try { return el.isConnected !== false && typeof el.hasPointerCapture === 'function' && el.hasPointerCapture(G.id); } catch (err) { return false; } };
+    const stop = (e, c) => { if (g !== G) return; if (G.on) end(e, c); else abandon(); };
+    const offs2 = [
+      listen(d, 'pointerup', e => { if (g === G && e.pointerId === G.id && !inEl(e.target)) stop(e, true); }, true),
+      listen(d, 'pointercancel', e => { if (g === G && e.pointerId === G.id && !inEl(e.target)) stop(e, true); }, true),
+      listen(d, 'lostpointercapture', e => { if (g === G && G.on && e.pointerId === G.id && !inEl(e.target) && !has()) stop(null, true); }, true), // (no position of its own: the last move's)
+      listen(d, 'pointermove', e => { if (g === G && e.pointerId === G.id && el.isConnected === false) stop(null, true); }, true),
+      listen(d, 'visibilitychange', () => { if (d.visibilityState === 'hidden') stop(null, true); }),
+    ];
+    if (w && typeof w.addEventListener === 'function') offs2.push(listen(w, 'blur', e => { if (!e || e.target === w || e.target === d) stop(null, true); }));
+    G.guardOff = () => { for (const f of offs2) f(); };
+  }
+  const unguard = G => { if (G && G.guardOff) { G.guardOff(); G.guardOff = null; } };
   /* ---- edge auto-scroll (asEdge above); A = { G, d, w, root, insets, pad, css, carry, cancel, prev, t0, arm, y0, rootT, off,
    * hook, camOff } */
   function asBegin(e) {
@@ -2437,6 +2462,7 @@ export function dragSource(el, payload) {
   function abandon() { // a pending (not started) gesture
     if (g.timer) clearTimeout(g.timer);
     unwatch(g);
+    unguard(g);
     el.classList.remove('wk-armed');
     g = null;
   }
@@ -2465,6 +2491,7 @@ export function dragSource(el, payload) {
     asEnd(); // before any callback: no scroll after the drop (a scroll closes the menu a drop may open)
     if (G.timer) clearTimeout(G.timer);
     unwatch(G);
+    unguard(G);
     if (keyOff) { keyOff(); keyOff = null; }
     try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-armed', 'wk-dragging');
@@ -2502,7 +2529,8 @@ export function dragSource(el, payload) {
       if (touch && e.isPrimary === false) return; // a second finger (a pinch, a two-finger scroll): never a drag
       g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, ax: e.clientX, ay: e.clientY, type: e.pointerType || 'mouse',
         on: false, armed: !touch, quick: false, timer: 0, docOff: null, m: modsOf(e), axis: touch ? axisOf() : null,
-        tEv: 0, fT: -1, st: null, over: undefined, held: false }; // (auto-scroll: event time, its first frame, last step, target, a move held back)
+        tEv: 0, fT: -1, st: null, over: undefined, held: false, guardOff: null }; // (auto-scroll: event time, its first frame, last step, target, a move held back)
+      guard(g);
       if (!touch) return;
       g.timer = setTimeout(() => { if (g && !g.on) { g.timer = 0; g.armed = true; g.ax = g.x; g.ay = g.y; el.classList.add('wk-armed'); } }, hold);
       // another pointer down anywhere before the drag starts (a second finger off el): abandoned

@@ -108,7 +108,7 @@ test('the lead\'s fixture check (§11 phase 2): an 808 from the Sources tray\'s 
   // behind the last one rendered
   await settle(2);
   const S = DR().state().S, heard = heardF();
-  assert.ok(Math.abs(sim.ctx().frames - heard - 0.2 * sr) < 2, 'the clock: 200 ms heard behind render');
+  assert.ok(Math.abs(sim.ctx().frames - heard - 0.2 * sr - 47) < 2, 'the clock: 200 ms (+ the safety limiter\'s 47-frame look-ahead, tests/safe-sim) heard behind render');
   const last = posts.filter(q => q.F <= heard + sr / 60).at(-1);
   assert.equal(!!S.pos && posts.at(-1).F > heard + sr / 60, true, 'a post shown, the newest still ahead of the ear');
   assert.deepEqual([S.pos.M, S.pos.s], [last.M, last.s], 'the panel at the heard post');

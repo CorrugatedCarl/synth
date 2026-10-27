@@ -486,6 +486,8 @@ test('page simulation: with a fixed sample rate (synth.settings.sr) sim.ctx() is
 const IPAD = { ua: 'Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1',
   platform: 'MacIntel', touch: true, vendor: 'Apple Computer, Inc.', clock: 'webkit', baseLat: 128 / 48000 };
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
+// the safety limiter's look-ahead at 48 kHz (engine.js synth-safe, L − 1 = 47 frames; on by default): part of the audible clock (tests/safe-sim)
+const SAFE = 47 / 48000;
 // the tick heard at sim.ms + dms: the stamp less the output path d (s), on the anchor (after its frame)
 function heardAt(s, d, dms = 0) {
   const c = s.ctx(), a = s.api.transport().a, o = c.getOutputTimestamp();
@@ -539,8 +541,8 @@ test('R5 WebKit (Bluetooth): the playhead, a recorded note and host.latency use 
   assert.deepEqual(tp().map(m => [m.seek, m.fresh]), [[true, true]], 'Play: seek + fresh');
   assert.equal(api.curTick(), 0, 'before the start is heard: the start tick, never one before it');
   s.run(48000); s.raf();
-  let d = 0.18 + 256 / sr;
-  near(api.curTick(), heardAt(s, d), 1e-6, 'playhead = render stamp − (outputLatency + ring)');
+  let d = 0.18 + 256 / sr + SAFE;
+  near(api.curTick(), heardAt(s, d), 1e-6, 'playhead = render stamp − (outputLatency + ring + the safety limiter)');
   assert.equal(s.$('#tBBT').textContent, S.fmtBBT(proj, Math.round(heardAt(s, d))), 'the position display');
   near(api.sxHost(tr).latency(), d, 1e-9, 'host.latency: the same delay');
   // the Latency setting moves all three by exactly its amount
@@ -595,11 +597,11 @@ test('R5 Chromium: the speaker-stamped clock is used as it is (only the Latency 
   api.project().metronome.countIn = 0;
   s.$('#tPlay').click(); await s.settle(2);
   s.run(48000); s.raf();
-  near(api.curTick(), heardAt(s, 0), 1e-6, 'the stamp is the heard time');
-  near(api.sxHost(tr).latency(), 0.04, 1e-9, 'host.latency: currentTime − the heard time');
+  near(api.curTick(), heardAt(s, SAFE), 1e-6, 'the stamp is the heard time (less the safety limiter\'s look-ahead)');
+  near(api.sxHost(tr).latency(), 0.04 + SAFE, 1e-9, 'host.latency: currentTime − the heard time');
   s.$('#latR').value = '50'; s.$('#latR').oninput();
-  near(api.curTick(), heardAt(s, 0.05), 1e-6, '+50 ms');
-  near(api.sxHost(tr).latency(), 0.09, 1e-9);
+  near(api.curTick(), heardAt(s, 0.05 + SAFE), 1e-6, '+50 ms');
+  near(api.sxHost(tr).latency(), 0.09 + SAFE, 1e-9);
   s.$('#tPlay').click();
   assert.equal(T.playing, false);
 });
@@ -635,7 +637,7 @@ test('R5 the Bluetooth preset tops the delay the clock already allows up to abou
   s.run(4800); s.raf(); // a running read of outputLatency
   s.api.latPreset('bt');
   assert.deepEqual([s.api.settings().lat, s.api.settings().latBT, s.api.clock().user, s.$('#lat').textContent], [20, true, 20, 'Bluetooth']);
-  near(s.api.outLatency(), 0.2 + 256 / 48000, 1e-6, 'about 200 ms in all (+ the ring)');
+  near(s.api.outLatency(), 0.2 + 256 / 48000 + SAFE, 1e-6, 'about 200 ms in all (+ the ring, the safety limiter)');
   s.$('#latR').value = '40'; s.$('#latR').oninput();
   assert.deepEqual([s.api.settings().lat, s.api.settings().latBT, s.$('#lat').textContent], [40, false, '+40 ms']);
   s.api.latPreset('bt'); s.api.latPreset('0');
@@ -696,7 +698,7 @@ test('R5 a burst of re-anchors while playing (a loop-end drag, a held BPM spinne
   proj.metronome.countIn = 0; proj.metronome.on = false; proj.loop.on = false;
   s.$('#tPlay').click(); await s.settle(2);
   s.run(48000); s.raf();
-  const a0 = Object.assign({}, T.a), d = 0.18 + 256 / sr;
+  const a0 = Object.assign({}, T.a), d = 0.18 + 256 / sr + SAFE;
   const line = () => { const o = c.getOutputTimestamp(), F = (o.contextTime + (s.ms - o.performanceTime) / 1000 - d) * sr; return a0.tick + (F - a0.frame) / a0.fpt; };
   for (let k = 0; k < 8; k++) {
     host.setLoop(0, 30720 + 960 * k); // (each snapped step of the drag re-anchors)
@@ -747,8 +749,8 @@ test('R5 a Latency setting past the clock\'s own delay (Chromium, 40 ms stamp la
   s.$('#tPlay').click(); await s.settle(2);
   s.run(48000); s.raf();
   s.$('#latR').value = '-50'; s.$('#latR').oninput();
-  near(api.curTick(), heardAt(s, -0.05), 1e-6, 'the playhead: 50 ms later than the stamp');
-  near(api.sxHost(tr).latency(), -0.01, 1e-9, 'host.latency: the same delay, signed');
+  near(api.curTick(), heardAt(s, -0.05 + SAFE), 1e-6, 'the playhead: 50 ms later than the stamp (less the safety limiter\'s look-ahead)');
+  near(api.sxHost(tr).latency(), -0.01 + SAFE, 1e-9, 'host.latency: the same delay, signed');
   s.$('#tPlay').click();
 });
 

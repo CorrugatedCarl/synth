@@ -174,6 +174,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 19. **(2026-10-26.)** **Cable look + screws deployed** (holding branch `wt-C`): the user's three asks — plugs STACK on every jack (outputs and
    Σ inputs; no fan), cables pass OVER jack labels, a "Cables behind modules" toolbar toggle on cord canvases (Wavecraft + 900 Series; pref
    `synth.cv.behind`, off = today) — and the screws drawn as one SVG each (slot centred at every display scale; it was off on Windows).
+20. **(2026-10-27.)** **Safety limiter + stuck drag label + cable count deployed** (holding branch `wt-N`): the user's Windows static was
+   the master sum clipping (measured: heavy Wavecrafts + drums +1.5 / +2.2 dBFS; no master limiter) → 'synth-safe' after Volume (and the
+   metronome) before the speakers, −1 dBFS / 1 ms look-ahead, gain exactly 1 below it, on by default, "Safety limiter" on the Master OUT
+   (an app setting), "Limiting −x dB" + a once-per-session hint; bounces unchanged (the user: overloaded exports are scaled down as before);
+   47 frames in the audio clock. The "Swap · OSC A" ghost: a press whose release the title never heard (the bar's pointer capture) — wk
+   dragSource now guards at the document. A discreet count on stacked jacks. Test browsers block downloads (CLAUDE.md).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

@@ -3,11 +3,16 @@
 // createMasterOut(el, o) → the master OUT's body: a scope (wave / spectrum / IMAGE — a rotated M/S dot cloud), the loudness
 //   numbers M / S / I / LRA with the short-term bar and the target tick (a menu: −9 / −14 / −16 / −23 / off), true peak L / R
 //   bars with the max-hold number (red ≥ −1 dBTP; a tap resets), the correlation bar (red below 0), A/B (shows the match gain)
-//   and Mono. Returns { el, update(summary), clear(), setBypass(on, gainDb, lim), setMono(on), setLive(on), draw(t?),
-//   drawImage(L, R), setMode(m), mode(), setTarget(t), target(), state(), destroy() }.
+//   and Mono, the safety limiter. Returns { el, update(summary), clear(), setBypass(on, gainDb, lim), setMono(on), setSafe(on),
+//   setLimit(gr), setLive(on), draw(t?), drawImage(L, R), setMode(m), mode(), setTarget(t), target(), state(), destroy() }.
 // createMasterRow(el, o) → the Master row of the track list's footer (§5.1): "Master", a stereo peak meter, the short-term
-//   LUFS number, A/B, Mono, the open chevron. Returns { el, update(summary), clear(), setBypass(on, gainDb, lim), setMono(on),
-//   setActive(on), setLive(on), destroy() }.
+//   LUFS number (the safety limiter's "−2.5 LIM" in its place while that acts), A/B, Mono, the open chevron. Returns { el,
+//   update(summary), clear(), setBypass(on, gainDb, lim), setMono(on), setSafe(on), setLimit(gr), setActive(on), setLive(on),
+//   destroy() }.
+// The safety limiter (engine.js 'synth-safe', after the Volume): o.safe its state at build (absent: on); the OUT's button is its
+// switch (o.onSafe(on) a tap); setSafe(on) silent; setLimit(gr) its report {t: 'safe', gr} (dB of reduction) — "limiting" with the
+// reduction for LIM_MS after the last report (the OUT: "Limiting −2.5 dB", the row: "−2.5 LIM"), amber; ignored while off; clear()
+// drops it.
 // The A/B's match as MASTER's { t: 'ab', on, g, lim } has it: g null = pending ("A/B …": no valid match yet), a number = the
 // frozen gain in dB ("A/B +2.1 dB"), lim = the boost was capped by the input's headroom ("(peak-limited)"; the row abbreviates
 // to "A/B +2.1*" and spells it in its title). clear() = silence at once (the engine went off): readouts "—", bars empty.
@@ -44,6 +49,8 @@ export const LU_LO = -40, LU_HI = 0, TP_LO = -48, TP_HI = 3, TP_RED = -1, PK_LO 
 export const RED = '#ff4a2a';
 /** How fast the true-peak bars fall (dB per second); the row's peak bars fall at the same pace. */
 export const TP_REL = 24;
+/** How long "limiting" shows after the safety limiter's last report (ms; engine.js synth-safe reports every ≥ 0.1 s while it acts). */
+export const LIM_MS = 1000;
 
 const MINUS = '−', DASH = '—';
 const GREEN = '#7cffb5', AMBER = '#f2a33a', TRACK = '#050607', TICK = 'rgba(233,231,226,0.3)', GRID = 'rgba(124,255,181,0.07)';
@@ -70,6 +77,20 @@ export const abFull = (g, lim) => (g === null ? 'A/B …' : fin(g) ? 'A/B ' + fm
 export const abShort = (g, lim) => (g === null ? 'A/B …' : fin(g) ? 'A/B ' + fmtGain(g) + (lim ? '*' : '') : 'A/B');
 const AB_TIP = 'A/B: hear the mix without the master effects, level-matched';
 const abTip = (g, lim) => (g === null ? AB_TIP + ' (waiting for enough signal to match)' : fin(g) ? 'A/B ' + fmtGain(g) + ' dB' + (lim ? ' (peak-limited: the boost stops short of full scale)' : '') + ': the mix without the master effects, level-matched' : AB_TIP);
+/** The safety limiter's reduction gr (dB, > 0) as the row shows it ("−2.5" — any report reads as a cut) and as the OUT spells it. */
+export const limShort = gr => MINUS + (Math.round(Math.abs(gr) * 10) / 10).toFixed(1);
+export const limFull = gr => 'Limiting ' + limShort(gr) + ' dB';
+const SAFE_ON = 'Safety limiter: on — nothing over −1 dBFS reaches the speakers (a mix over 0 dBFS would crackle). Tap to turn it off';
+const SAFE_OFF = 'Safety limiter: off — a mix over 0 dBFS clips at the output (crackles, pops). Tap to turn it on';
+const limTip = gr => 'Safety limiter: limiting ' + fmtDb(gr) + ' dB — the mix is too loud; pull some faders down';
+const safeTip = (on, gr) => (!on ? SAFE_OFF : fin(gr) ? limTip(gr) + '. Tap to turn it off' : SAFE_ON);
+// the limiter's state as the buttons show it: on, the last report (gr) and until when it shows; limiting(T) — on and within the hold
+function limState(on) {
+  const L = { on: on !== false, gr: NaN, until: -Infinity };
+  L.at = T => (L.on && T < L.until ? L.gr : NaN);
+  L.set = (gr, T) => { if (!L.on || typeof gr !== 'number' || !(gr > 0) || !isFinite(gr)) return false; L.gr = gr; L.until = T + LIM_MS; return true; };
+  return L;
+}
 /** The setBypass arguments as state: undefined keeps; null pending; a number the match (lim only with one); anything else plain. */
 const abGain = g => (g === null ? null : fin(g) ? g : NaN);
 /** The correlation, signed with two decimals ("+0.82", "−1.00"); "—" for NaN (a side is silent). */
@@ -194,6 +215,7 @@ export function createMasterOut(host, o) {
   const abBtn = at(button(d, 'mo-btn mo-ab', 'A/B'), 10, 198, 200, 28), monoBtn = at(button(d, 'mo-btn mo-mono', 'Mono'), 218, 198, 70, 28); // (A/B: room for "A/B +2.1 dB (peak-limited)")
   abBtn.setAttribute('aria-pressed', 'false'); monoBtn.setAttribute('aria-pressed', 'false');
   monoBtn.title = 'Mono check: both ears hear the sum of left and right';
+  const safeBtn = at(button(d, 'mo-btn mo-safe', 'Safety limiter'), 296, 198, 114, 28), LS = limState(O.safe); // (the safety limiter: after the Volume, before the speakers)
   const menu = at(mk(d, 'div', 'mo-menu'), 276, 34, 134, 150);
   menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Loudness target'); menu.hidden = true;
   const items = TARGETS.map(t => {
@@ -201,7 +223,7 @@ export function createMasterOut(host, o) {
     b.setAttribute('role', 'menuitemradio'); b.setAttribute('aria-checked', 'false'); b._t = t;
     menu.append(b); return b;
   });
-  root.append(mt, modes, box, corrLab, corr.el, rm.el, rs.el, ri.el, rl.el, tgBtn, tpLab, hold.el, labL, labR, abBtn, monoBtn, menu);
+  root.append(mt, modes, box, corrLab, corr.el, rm.el, rs.el, ri.el, rl.el, tgBtn, tpLab, hold.el, labL, labR, abBtn, monoBtn, safeBtn, menu);
   const hostEl = host && typeof host.appendChild === 'function' ? host : null;
   if (hostEl) hostEl.appendChild(root);
 
@@ -217,6 +239,14 @@ export function createMasterOut(host, o) {
     const tt = 'Target ' + targetText(target);
     if (sig.tg !== tt) { sig.tg = tt; tgBtn.textContent = tt; }
     for (const b of items) { const on = b._t === target; attr(b, 'aria-checked', on); flag(b, 'on', on); }
+    syncSafe(live ? now() : -Infinity);
+  };
+  // the safety limiter's button: on / off, and "Limiting −2.5 dB" (amber) while a report is within its hold — written live only
+  const syncSafe = T => {
+    const g = LS.at(T), txt = fin(g) ? limFull(g) : 'Safety limiter', tip = safeTip(LS.on, g);
+    attr(safeBtn, 'aria-pressed', LS.on); flag(safeBtn, 'act', fin(g));
+    if (sig.sf !== txt) { sig.sf = txt; safeBtn.textContent = txt; }
+    if (sig.sft !== tip) { sig.sft = tip; safeBtn.title = tip; }
   };
   sync();
 
@@ -248,6 +278,7 @@ export function createMasterOut(host, o) {
   /* ---- the controls */
   control(abBtn, () => { bypass = !bypass; if (!bypass) { gain = NaN; limited = false; } sync(); safe(O.onBypass, bypass); }, offs);
   control(monoBtn, () => { mono = !mono; sync(); safe(O.onMono, mono); }, offs);
+  control(safeBtn, () => { LS.on = !LS.on; sync(); safe(O.onSafe, LS.on); }, offs);
   const reset = () => {
     cur.i = cur.tpMax = cur.lra = -Infinity;
     dirty = textDirty = true; lastText = -Infinity;
@@ -387,6 +418,7 @@ export function createMasterOut(host, o) {
     if (dead) return;
     cur = norm(null); accTp = [-Infinity, -Infinity]; tpLv = [TP_LO, TP_LO]; lastTp = -Infinity;
     dirty = textDirty = true; lastMeter = lastText = -Infinity;
+    LS.until = -Infinity; syncSafe(-Infinity);
   }
   function setLive(on) {
     if (dead) return;
@@ -399,6 +431,7 @@ export function createMasterOut(host, o) {
     if (dead || !live) return false;
     const T = typeof t === 'number' ? t : now();
     let did = false;
+    syncSafe(T); // (the limiter's hold runs out on a frame)
     if ((dirty || !(mt.width > 0)) && T - lastMeter >= METER_MS) { dirty = false; lastMeter = T; paintMeters(T); did = true; }
     if ((scopeDirty || reader || !(sc.width > 0)) && T - lastScope >= SCOPE_MS) { lastScope = T; if (scopeFrame()) did = true; }
     if (textDirty && T - lastText >= TEXT_MS) { textDirty = false; lastText = T; writeText(); }
@@ -424,10 +457,13 @@ export function createMasterOut(host, o) {
       sync();
     },
     setMono(on) { if (dead) return; mono = !!on; sync(); },
+    // the safety limiter: on / off as the host has it (silent); setLimit(gr) — its report, dB of reduction (ignored while off)
+    setSafe(on) { if (dead) return; LS.on = !!on; sync(); },
+    setLimit(gr) { if (dead) return; const T = now(); if (LS.set(gr, T) && live) syncSafe(T); },
     setLive, draw, drawImage, setMode, setTarget,
     mode: () => mode,
     target: () => target,
-    state: () => ({ live, bypass, gain, limited, mono, mode, target, menu: menuOpen }),
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, mode, target, menu: menuOpen, safe: LS.on, limiting: fin(g), gr: g }; },
     destroy() {
       if (dead) return;
       closeMenu(false); dead = true; live = false;
@@ -467,16 +503,31 @@ export function createMasterRow(host, o) {
   const lufs = mk(d, 'span', 'mr-lufs'), lval = mk(d, 'span', 'mr-lv', DASH), lunit = mk(d, 'span', 'mr-lu', 'LUFS');
   lunit.setAttribute('aria-hidden', 'true'); lufs.title = 'Short-term loudness (3 s)';
   lufs.append(mk(d, 'span', 'cv-sr', 'Short-term loudness'), lval, lunit);
+  // the safety limiter's indicator (no switch here: its switch is on the OUT — the row has no room for a fourth button at 44 px
+  // touch targets): "−2.5 LIM" in the LUFS number's place while it acts, so the row's width never changes
+  const lim = mk(d, 'span', 'mr-lim'), limv = mk(d, 'span', 'mr-limv'), limu = mk(d, 'span', 'mr-limu', 'LIM'), LS = limState(O.safe);
+  limu.setAttribute('aria-hidden', 'true'); lim.hidden = true;
+  lim.append(mk(d, 'span', 'cv-sr', 'Safety limiter, limiting'), limv, limu);
   const ab = button(d, 'mr-btn mr-ab', 'A/B'), mo = button(d, 'mr-btn mr-mono', 'Mono'), open = button(d, 'mr-open', '', 'Open the master canvas');
   ab.setAttribute('aria-pressed', 'false'); mo.setAttribute('aria-pressed', 'false'); open.setAttribute('aria-expanded', 'false'); open.appendChild(chevron(d));
   ab.title = AB_TIP; mo.title = 'Mono check: both ears hear the sum of left and right';
-  root.append(name, meter, lufs, ab, mo, open);
+  root.append(name, meter, lufs, lim, ab, mo, open);
   if (host && typeof host.appendChild === 'function') host.appendChild(root);
 
   const doOpen = () => safe(O.open);
   control(name, doOpen, offs); control(open, doOpen, offs);
   control(ab, () => { bypass = !bypass; if (!bypass) { gain = NaN; limited = false; } sync(); safe(O.onBypass, bypass); }, offs);
   control(mo, () => { mono = !mono; sync(); safe(O.onMono, mono); }, offs);
+  // the indicator: shown (the LUFS number hidden: the row .limiting) while a report is within its hold — written only while live
+  const syncSafe = T => {
+    const g = LS.at(T), on = fin(g);
+    if (lim.hidden === on) lim.hidden = !on;
+    flag(root, 'limiting', on);
+    if (!on) return;
+    const v = limShort(g), tip = limTip(g) + ' (its switch: on the master canvas)';
+    if (sig.lm !== v) { sig.lm = v; limv.textContent = v; }
+    if (sig.lmt !== tip) { sig.lmt = tip; lim.title = tip; }
+  };
   const sync = () => {
     attr(ab, 'aria-pressed', bypass); flag(ab, 'on', bypass); attr(mo, 'aria-pressed', mono); flag(mo, 'on', mono);
     const txt = bypass ? abShort(gain, limited) : 'A/B', tip = bypass ? abTip(gain, limited) : AB_TIP;
@@ -486,7 +537,9 @@ export function createMasterRow(host, o) {
     if (sig.abl !== lab) { sig.abl = lab; if (lab === null) ab.removeAttribute('aria-label'); else ab.setAttribute('aria-label', lab); }
     flag(root, 'on', active); attr(open, 'aria-expanded', active);
     if (active) name.setAttribute('aria-current', 'true'); else name.removeAttribute('aria-current');
+    syncSafe(live ? now() : -Infinity);
   };
+  syncSafe(-Infinity);
   const renderBars = T => {
     const dt = clamp((T - lastBar) / 1000, 0, 1) || 0, rel = isFinite(lastBar) ? TP_REL * dt : 1e3;
     for (let c = 0; c < 2; c++) {
@@ -507,6 +560,7 @@ export function createMasterRow(host, o) {
     const T = now();
     if (T - lastBar >= BAR_MS) renderBars(T);
     if (textDirty && T - lastText >= TEXT_MS) { textDirty = false; lastText = T; renderText(); }
+    syncSafe(T); // (the limiter's hold runs out on a refresh)
   };
 
   return {
@@ -529,10 +583,13 @@ export function createMasterRow(host, o) {
     clear() {
       if (dead) return;
       cur = norm(null); accPk = [-Infinity, -Infinity]; accTp = -Infinity; lv = [PK_LO, PK_LO]; overUntil = 0;
-      lastBar = lastText = -Infinity; textDirty = true;
-      if (live) run();
+      lastBar = lastText = -Infinity; textDirty = true; LS.until = -Infinity;
+      if (live) run(); else syncSafe(-Infinity);
     },
     setActive(on) { if (dead) return; active = !!on; sync(); },
+    // the safety limiter: on / off as the host has it (silent); setLimit(gr) — its report, dB of reduction (ignored while off)
+    setSafe(on) { if (dead) return; LS.on = !!on; sync(); },
+    setLimit(gr) { if (dead) return; const T = now(); if (LS.set(gr, T) && live) syncSafe(T); },
     setLive(on) {
       if (dead) return;
       on = !!on;
@@ -540,7 +597,7 @@ export function createMasterRow(host, o) {
       live = on;
       if (on) { lastText = -Infinity; textDirty = true; run(); }
     },
-    state: () => ({ live, bypass, gain, limited, mono, active }),
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, active, safe: LS.on, limiting: fin(g), gr: g }; },
     destroy() {
       if (dead) return;
       dead = true; live = false;
