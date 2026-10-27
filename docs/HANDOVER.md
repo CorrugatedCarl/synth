@@ -186,6 +186,15 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    IMPL-WC §14 "the FX look" (+ the skeptics' round: rebased on ffb64fd, the SVG screws shared, rows centred, focus / inert / touch
    fixes; then the list's name fills its row: a mouse press anywhere on a row's name selects it). **Open**: the user picks names for the Serum-derived effect / parameter names (IMPL-WC §14 "Names to choose": each with 2–3
    generic alternatives) before any sale — not renamed yet.
+22. **(2026-10-27.)** **Master modulators deployed** (ROADMAP 22; contract IMPL-MM; holding branch `wt-MM`): LFO / Macro / CC / Chaos on the
+   master canvas, cabled to any knob of the master's effects (incl. the Ducker, splitter branches); MASTER runs the tracks' ModCore
+   (`project.master.mdev / mods / mid`, schema 17; `MREC` a session constant with a Proxy `dev`); `FXRack.modsJump()` snaps the master's
+   modulated knobs and the units' own smoothing at ▶ so export = playback (438 / 444 knob × source cases exact; phs.poles / rev.type
+   under a free LFO differ for < 1 s — recorded). Also for tracks: a badge keeps its press unless it sits on its own knob (FX-look
+   panels), moved drops come into view. **For the user**: the lead's first guesses (no envelope / Mod Wheel on the master — an LFO in
+   ENV one-shot mode is a song envelope; CC drives a master CC module whatever track is selected); the track-side BPM-LFO tempo gap
+   (canvas BPM LFOs on tracks run at 120 with ANCHOR off or while stopped — fixing changes those tracks' sound: needs the user's OK).
+
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

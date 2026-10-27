@@ -183,6 +183,12 @@ function ctxEv(e) {
   if (E) { try { return new E('contextmenu', init); } catch (err) { /* a plain copy */ } }
   return Object.assign({}, e, init, { type: 'contextmenu', isTrusted: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
 }
+// ((MM UI fixer) a control's device: its closest [data-dev], else its module's data-cv-mod device (createCableDrag devAt's rule)
+function devUp(n) {
+  for (let q = n; q && typeof q.getAttribute === 'function'; q = q.parentNode) { const d = q.getAttribute('data-dev'); if (d != null) return d; }
+  for (let q = n; q && typeof q.getAttribute === 'function'; q = q.parentNode) { const m = q.getAttribute('data-cv-mod'); if (m != null) return m.split('/')[0]; }
+  return null;
+}
 // (U2) the topmost element at a client point that is no badge (document.elementsFromPoint; null without it)
 function beneath(doc, x, y, skip) {
   let L = null;
@@ -498,9 +504,10 @@ export { routeLabel };
  * the under layer (no hit: CSS) and whose last END_PX screen px (o.k(): the world's zoom; rezoom() after a zoom) are a
  * twin g in the over layer; the amount badge button.cv-mbadge[data-cable] (+ span.cv-ptag "preset") in worldEl is the only
  * part taking a press: a tap selects (o.onSelect(id), again on a selected one: the inspector), long-press / right-click
- * the menu — unless a [data-dest] control lies beneath the badge (elementsFromPoint): then the press AND the contextmenu
- * are handed to that control (2b U1: a long-press / right-click on a cabled knob always opens the KNOB's menu; the
- * badge's own long-press never arms). No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
+ * the menu — unless the cable's OWN destination control lies beneath the badge (elementsFromPoint; its [data-dest] under the
+ * [data-dev] — else data-cv-mod — of its b end): then the press AND the contextmenu are handed to that control (2b U1: a
+ * long-press / right-click on a cabled knob always opens the KNOB's menu; the badge's own long-press never arms); over any
+ * other control (an FX-look rack's next knob: MM UI fixer, review MM-2 P1-1) the badge keeps both. No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
  * the selection (highlight ids, the selected cable), Never none; Always all, and past MOD_FADE_N visible ones those not
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
  * (review 2) A selection a pointer tap made calls o.onSelect(id, pointerType) (none otherwise): the tap's click is still to
@@ -599,10 +606,15 @@ export function createCables(worldEl, o) {
     const id = () => it.c.id;
     // (U2) a knob beneath the badge wins: the press is handed to it (the badge's own stops here); (U4) else it is the
     // canvas's press (cv-module isBackground: a pan) and a tap — its lift followed on the document — selects
+    // ((MM UI fixer, review MM-2 P1-1) only the cable's OWN destination: its [data-dest] under the [data-dev] (else the module's
+    // data-cv-mod device) of its b end — an FX-look rack's badge lies over the NEXT knob, which must never take its tap / menu)
     const knob = e => {
       const n = beneath(doc, e.clientX, e.clientY, x => x === U.e || x === O.e);
-      for (let q = n; q && q !== worldEl && typeof q.getAttribute === 'function'; q = q.parentNode) if (q.getAttribute('data-dest') != null) return n;
-      return null;
+      let q = n;
+      for (; q && q !== worldEl && typeof q.getAttribute === 'function'; q = q.parentNode) if (q.getAttribute('data-dest') != null) break;
+      if (!q || q === worldEl || typeof q.getAttribute !== 'function') return null;
+      const dv = devUp(q);
+      return dv && dv + ':' + q.getAttribute('data-dest') === it.c.b ? n : null;
     };
     // (2b U1) the menu too: a right-click's contextmenu on the badge goes to the control beneath as a synthetic one (its
     // own listeners open ITS menu: the control's, never the cable's); a touch press handed to the control arms the

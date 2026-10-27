@@ -24,7 +24,7 @@ import * as CG from '../cv-graph.js?v=9';
 import { irEntry } from '../smpwork.js?v=9';
 import { convShapeOf } from '../assets.js?v=9';
 import * as CPU from './cpu-gate.mjs';
-import { scenarios, masterInput } from './bench-scenarios.mjs';
+import { scenarios, masterInput, measure } from './bench-scenarios.mjs';
 
 const quiet = { log() {}, info() {}, debug() {}, warn() {}, error() {} };
 const ENGINE = source('engine.js');
@@ -382,7 +382,7 @@ test('stop: rack.reset(true) when the FXP says silence (the preference), not oth
   }
 });
 
-test('monitors: {t: mon, ids} — meters → mmon every ≥ 33 ms of audio ({m, s, i, lra, tp, tpMax, pk, pkMax, corr, lat}); mfx → smon {c: mfx, gr, fxph, ftap}; fxph → {v, c: mfx}; fxtap → the rack\'s tap; stats every 0.25 s {load, lat, per: [{id: mfx}]}', () => {
+test('monitors: {t: mon, ids ⊆ [meters, mfx, mods]} — meters → mmon every ≥ 33 ms of audio ({m, s, i, lra, tp, tpMax, pk, pkMax, corr, lat}); mfx → smon {c: mfx, gr, fxph, ftap}; fxph → {v, c: mfx}; fxtap → the rack\'s tap; stats every 0.25 s {load, lat, per: [{id: mfx}]} (mods: tests/master-mods and the MM1 case below)', () => {
   const p = mk(SC);
   p.msg(Object.assign({ t: 'chain' }, chain(RACK6)));
   p.msg({ t: 'mon', ids: ['meters'] });
@@ -544,21 +544,73 @@ test('G4: the warm-up\'s first 32 quanta after construction (live, the app\'s or
   assert.ok(w1 < Q_MS && w2 < Q_MS);
 });
 
-test('G4 node gates: the bench rows master-empty, master-meters, master-rack5 ≤ 1.5 × their targets (calibrated)', async (t) => {
+// IMPL-MM §6.2 (MM1): no master modulator = today — the messages that build no ModCore leave the audio path byte for byte; a 'mods'
+// monitor id without a ModCore posts nothing (no mc message, no mo on the rack's smon, the shape unchanged); FXRack.modsJump() on a
+// rack without mods is a no-op bit for bit (golden-fx proves no Track calls it)
+test('MM1 (IMPL-MM §6.2): {t: mods, off: true}, an empty payload, a payload with no rows and a stray mval build no ModCore — mc stays null and the output ≡ the no-message run bit for bit; {t: mon, ids: [mods]} without a ModCore posts nothing; beside mfx the rack\'s smon keeps its shape (no mo); FXRack.modsJump() on a rack without mods is a no-op bit for bit', () => {
+  const sig = program(SR), runs = [];
+  for (const mode of ['none', 'msgs', 'jump']) {
+    const p = mk(SC);
+    p.msg(Object.assign({ t: 'chain' }, chain(RACK6)));
+    if (mode === 'msgs') p.msg({ t: 'mon', ids: ['mods'] });
+    const n0 = p.port.msgs.length;
+    const out = render(SC, p, SR, feedAt(sig, 0), o => {
+      if (mode === 'msgs') {
+        if (o === 10 * Q) p.msg({ t: 'mods', i: 'master', off: true });
+        if (o === 20 * Q) p.msg({ t: 'mods', i: 'master' });
+        if (o === 30 * Q) p.msg({ t: 'mods', i: 'master', key: 'k0', cp: { ver: 2 }, rows: [], ext: [], vals: [] });
+        if (o === 40 * Q) p.msg({ t: 'mval', k: 0, v: 1 });
+      }
+      if (mode === 'jump') p.c.rack.modsJump();
+    });
+    assert.equal(p.mc, null, mode + ': no ModCore'); assert.equal(p.c.mcOn, 0); assert.equal(p.snap, 0);
+    if (mode === 'msgs') assert.equal(p.port.msgs.slice(n0).filter(m => m.t === 'smon' || m.t === 'modsErr').length, 0, 'no mc post, no modsErr');
+    runs.push(out);
+  }
+  assert.ok(peak(runs[0].L) > 0.05);
+  for (const k of [1, 2]) { assert.equal(sameBits(runs[0].L, runs[k].L), -1, k + ' L'); assert.equal(sameBits(runs[0].R, runs[k].R), -1, k + ' R'); }
+  const p = mk(SC);
+  p.msg(Object.assign({ t: 'chain' }, chain(RACK6)));
+  p.msg({ t: 'mon', ids: ['mfx', 'mods'] });
+  render(SC, p, SR / 4, feedAt(program(SR / 4), 0));
+  const sm = posted(p, 'smon');
+  assert.ok(sm.length >= 6 && sm.length <= 9, sm.length + ' smon per quarter second');
+  for (const m of sm) assert.deepEqual(Object.keys(m).sort(), ['c', 'ftap', 'fxph', 'gr', 't']);
+});
+
+test('G4 node gates: the bench rows master-empty, master-meters, master-rack5, master-mods ≤ 1.5 × their targets (calibrated); master-mods-d — the ModCore\'s cost on MASTER, rack5 + mods minus rack5 interleaved per block in one process (IMPL-MM §6.3 (b)) — ≤ 1.5 × its target', async (t) => {
   const rows = scenarios().filter(s => s.kind === 'master');
-  assert.deepEqual(rows.map(s => s.id), ['master-empty', 'master-meters', 'master-rack5']);
+  assert.deepEqual(rows.map(s => s.id), ['master-empty', 'master-meters', 'master-rack5', 'master-mods', 'master-mods-d']);
+  let k = 1;
   for (const s of rows) {
     const target = CPU.BENCH.targets[s.id];
     assert.ok(target && target.node === s.node && target.jsc === s.jsc && target.ipad === s.ipad, s.id + ': bench.json targets');
+    if (s.base) continue;                                          // (the delta row: below)
     const S = scope({ meters: s.meters !== false }), B = s.build(), p = mk(S);
     if (B.fxp) p.msg({ t: 'chain', fxr: B.fxp, fxrT: B.fxt });
-    assert.equal(p.c.rack.U.length, s.id === 'master-rack5' ? 5 : 0, s.id + ': its rack');
+    if (B.mods) p.msg(B.mods);
+    assert.equal(p.c.rack.U.length, s.id === 'master-rack5' || s.id === 'master-mods' ? 5 : 0, s.id + ': its rack');
+    assert.equal(p.mc !== null, s.id === 'master-mods', s.id + ': its ModCore');
+    if (p.mc !== null) assert.deepEqual([p.mc.rows.length, p.mc.shim.bpm, p.mc.fxKey.mfx === p.c.rack.key], [8, 140, true], 'the payload: 8 fx rows at 140 BPM on the rack\'s layout key');
     const out = [[new Float32Array(Q), new Float32Array(Q)]], inp = masterInput();
-    const sec = () => { for (let k = 0; k < SR / Q; k++) { p.process(inp(), out); S.ctx.currentFrame += Q; } };
+    const sec = () => { for (let q = 0; q < SR / Q; q++) { p.process(inp(), out); S.ctx.currentFrame += Q; } };
     const best = await CPU.gateLoad(sec, s.node);
+    if (s.id === 'master-rack5') k = best.k;
     t.diagnostic(`${s.id}: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt}) — target ${s.node}`);
     assert.ok(best.load <= 1.5 * s.node, `${s.id}: ${best.load} > 1.5 × ${s.node}`);
   }
+  // the delta: bench-scenarios' measure() alternates the row and its base per 1 s block in one process (the median of the per-pair
+  // differences — P3-5: a difference of two separately measured rows cannot resolve 0.004), calibrated by rack5's k
+  const d = rows.find(s => s.id === 'master-mods-d'), S = scope();
+  const env = { mk: po => new S.Track({ processorOptions: po }), advance: n => { S.ctx.currentFrame += n; }, FXDSP: S.D.global('FXDSP'), SxBase: S.D.global('SxBase'), mkMaster: po => mk(S, po) };
+  let best = null;
+  for (let a = 1; a <= 3; a++) {
+    const r = measure(d, env, { runs: 9 }), load = r.load * k;
+    if (!best || load < best.load) best = { load, raw: r.load, attempt: a };
+    if (best.load <= 1.5 * d.node) break;
+  }
+  t.diagnostic(`master-mods-d: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, k ${k.toFixed(3)}, attempt ${best.attempt}) — target ${d.node}`);
+  assert.ok(best.load <= 1.5 * d.node, `master-mods-d: ${best.load} > 1.5 × ${d.node}`);
 });
 
 /* ------------------------------------------------------------------ stage M review 1 (R1-1, R1-2, R1-4) */

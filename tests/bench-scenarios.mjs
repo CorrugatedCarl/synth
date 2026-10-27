@@ -30,6 +30,8 @@ import { SLOT } from '../cv-mods.js?v=9';
 import * as DC from '../drum-core.js?v=9';
 import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
+import { compileMods } from '../cv-graph.js?v=9'; // (IMPL-MM §6.3: the master's payload — the host's compile on a track-shaped record)
+import { normModDev } from '../song.js?v=9';
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);
@@ -471,15 +473,31 @@ export function masterInput() {
   return () => { for (let i = 0; i < 128; i++) { L[i] = noise[(pos + i) & 4095]; R[i] = noise[(pos + 2048 + i) & 4095]; } pos = (pos + 128) & 4095; return io; };
 }
 // a mastering chain of five: EQ → compressor (multiband) → Distortion (light saturation) → Utility (width) → compressor (Limit)
-function master5() {
-  return fxScn(fx => {
-    fxInst(fx, 'eq', { gainL: 0.6, gainH: 0.55 });
-    fxInst(fx, 'cmp', { mb: 1 });
-    fxInst(fx, 'dist', { drive: 0.15, mix: 0.3 });
-    fxInst(fx, 'util', { width: 0.15 });
-    fxInst(fx, 'cmp', { ratio: 1, att: 0.3 });
-  });
+function master5make(fx) {
+  fxInst(fx, 'eq', { gainL: 0.6, gainH: 0.55 });
+  fxInst(fx, 'cmp', { mb: 1 });
+  fxInst(fx, 'dist', { drive: 0.15, mix: 0.3 });
+  fxInst(fx, 'util', { width: 0.15 });
+  fxInst(fx, 'cmp', { ratio: 1, att: 0.3 });
 }
+const master5 = () => fxScn(master5make);
+// IMPL-MM §6.3: the master's modulators on rack5 — the host's payload (a track-shaped record as main.js's MREC, cv-graph.compileMods
+// + bpm, §4.2; never a hand-built CP): 4 GLOBAL LFOs (BPM 1/4 anchored, BPM 1/8, Hz RETRIG, Hz FREE), a mono chaos, a macro module;
+// 8 fx rows onto the five units' knobs (every dst.chain 'mfx'), 140 BPM
+const mrow = (id, src, dst, amt, bi) => ({ id, src, dst, amt, bi, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 });
+export function masterPayload(fx) {
+  const lad = core.LFO_LADDER, ladN = label => lad.findIndex(x => x.label === label) / (lad.length - 1), [eq, cmpM, dist, util] = fx.racks[0].mods.map(I => I.id);
+  const lfo = (mode, bpm, anchor, rate) => normModDev({ kind: 'lfo', lfo: { mono: 1, mode, bpm, anchor }, rate });
+  const t = { id: 'master', dev: { mfx: { kind: 'panel', fx }, l1: lfo('free', 1, 1, ladN('1/4')), l2: lfo('free', 1, 0, ladN('1/8')), l3: lfo('retrig', 0, 0, 0.35), l4: lfo('free', 0, 0, 0.6),
+    h1: normModDev({ kind: 'chaos', chaos: { mono: 1, sh: 0 }, rate: 0.5 }), m1: normModDev({ kind: 'macro', v: [0.5, 0.25, 0.75, 0, 0, 0, 0, 0] }) }, mid: 9,
+    mods: [mrow('r1', 'l1.out', `mfx:fx.${eq}.gainL`, 0.3, 1), mrow('r2', 'l2.out', `mfx:fx.${eq}.gainH`, 0.3, 1), mrow('r3', 'l3.out', `mfx:fx.${dist}.drive`, 0.3, 0), mrow('r4', 'l4.out', `mfx:fx.${dist}.freq`, 0.3, 0),
+      mrow('r5', 'h1.out', `mfx:fx.${util}.width`, 0.2, 0), mrow('r6', 'm1.k1', `mfx:fx.${cmpM}.thr`, 0.3, 0), mrow('r7', 'm1.k2', `mfx:fx.${dist}.mix`, 0.3, 0), mrow('r8', 'm1.k3', `mfx:fx.${util}.lpf`, 0.3, 0)] };
+  const pay = compileMods(t, { bpm: 140, perf: { wheel: null }, tracks: [], pads: [] }, { smooth: 1, qr: null, ultra: 0 });
+  if (!pay || pay.rows.length !== 8) throw new Error('bench master-mods: the payload compiles ' + (pay ? pay.rows.length : 'no') + ' rows');
+  pay.bpm = 140;
+  return pay;
+}
+function masterMods() { const B = fxScn(master5make); B.mods = masterPayload(B.fx); return B; }
 
 export function scenarios() {
   const A = () => assets();
@@ -625,6 +643,12 @@ export function scenarios() {
       kind: 'master', build: () => ({}) },
     { id: 'master-rack5', label: 'Master: EQ → compressor (multiband) → Distortion → Utility → compressor (Limit) + the meters', node: 0.03, ipad: 0.025, jsc: 0.03,
       kind: 'master', build: () => master5() },
+    // IMPL-MM §6.3 G4: the master's modulators — rack5 + a ModCore payload (4 GLOBAL LFOs, a mono chaos, a macro module; 8 fx rows onto its
+    // knobs, 140 BPM): the row itself, and its cost over rack5 measured interleaved in one process (the row minus its base per block)
+    { id: 'master-mods', label: 'Master: master-rack5 + a ModCore payload (4 GLOBAL LFOs, a mono chaos, a macro module; 8 fx rows onto its knobs, 140 BPM) + the meters', node: 0.034, ipad: 0.029, jsc: 0.034,
+      kind: 'master', build: () => masterMods() },
+    { id: 'master-mods-d', label: 'Master: master-mods minus master-rack5, interleaved (the ModCore\'s cost on MASTER: its span, setMods, the units\' coefficient updates for knobs that move)', node: 0.004, ipad: 0.006, jsc: 0.005,
+      kind: 'master', base: () => master5(), build: () => masterMods() },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -694,6 +718,7 @@ function prepare(B, kind, env, now) {
     if (typeof env.mkMaster !== 'function') throw new Error('bench: env.mkMaster (the synth-master class) is missing');
     const p = env.mkMaster({}, B.meters === false), inp = masterInput(), L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
     if (B.fxp) p.msg({ t: 'chain', fxr: B.fxp, fxrT: B.fxt });
+    if (B.mods) p.msg(B.mods);                    // (IMPL-MM: the master's {t: 'mods'} payload, after its chain as the host posts it)
     return api(() => { p.process(inp(), out); env.advance(128); track(L, 128); }, () => -1);
   }
   const rack = new env.FXDSP.FXRack(SR);

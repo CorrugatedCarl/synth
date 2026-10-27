@@ -2671,6 +2671,27 @@
         }
         if (ch === 1) this.calm = 0;
       }
+      // the snap (IMPL-MM §3.4): every modulation offset's ramp start ← its target (md ← mdT, the globals and every unit), so the
+      // next call starts each parameter at b + mdT instead of ramping there from the previous call's target (span(): s = b + md;
+      // it recomputes eS / eD from md at every call); then, for each running unit with an offset, the enable path's recipe
+      // (states(): targets from bs + mdT, modUpd, modSnap, mixUpd, gD0 / gW0 ← gD1 / gW1) — the unit's own slews (the dry / wet
+      // ramp, the Delay's dL → tL, Rev2's pre-delay, the Utility's w0 / gL0 / gR0, the Chorus' taps) start at the target too, not
+      // on the pre-▶ trajectory (live: the payload's lifetime; offline: the pre-roll). u.dirty stays set: the next states() re-runs
+      // modUpd (idempotent) and sees a topology request. MASTER alone calls it, once, in the first part after ▶ / a seek — live
+      // and offline at the same moment, both after transport()'s re-seed of the ModCore, so the start is exact (MM2); a seek
+      // while sound flows steps these controls as it steps md. No Track calls it. A no-op on a unit without offsets
+      modsJump() {
+        const gm = this.gm, gT = this.gmT, U = this.U;
+        for (let g = 0; g < NG; g++) gm[g] = gT[g];
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], md = u.md, T = u.mdT, bs = u.bs, en = u.en, ev = u.ev, law = u.law, lo = u.lo, hi = u.hi;
+          let any = 0;
+          for (let p = 0; p < u.n; p++) { if (T[p] !== 0 || md[p] !== 0) any = 1; md[p] = T[p]; }
+          if (any === 0 || u.st === 0 || u.has !== 1) continue;             // (no offset on this unit, or it is off / unallocated: nothing to snap)
+          for (let p = 0; p < u.n; p++) { const n = clamp01(bs[p] + T[p]); if (n !== en[p]) { en[p] = n; ev[p] = lawU(law[p], lo[p], hi[p], n); u.dirty = 1; } }
+          this.modUpd(u); this.modSnap(u); this.mixUpd(u); u.gD0 = u.gD1; u.gW0 = u.gW1;   // (the enable path's recipe, states())
+        }
+      }
       // key-tracking pitch (§8.1; engine, once per span: Serum's recent gliding pitch, other models the last note-on,
       // none 60): the Key Track rows of the S2 Distortion / Filter variants read the factor 2^((pitch − 60)/12)
       setNote(pitch) {

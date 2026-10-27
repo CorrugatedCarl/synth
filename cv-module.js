@@ -1054,6 +1054,8 @@ export function createModule(o, env) {
  * y}} relative to their instrument's top-left (patch-core rackLayout's rows above it); host.onRelay(ports) after every
  * relayout (the cord layer's anchors: cv-cords); host.members(key) → [keys] outlined with a selected module (a driver's).
  * (WC, review 2 P2-5) host.tidyOpts(track) → tidy()'s opts (a rig's modulator targets, a portrait canvas) for the modules Tidy places.
+ * (MM UI fixer, review MM-2 P2-2) an 'fx' entry with noIn: true has no left 'in' jack (the master rack: its input is the mix, never
+ * patched — a modulator's cable passing under the rack must not read as plugged into it); its 'out' as ever.
  * @param {object|null} world  cv-world World (null: modules still lay out in host.root at k = 1)
  * @param {{id: string, model: string, name: string, color: string, lay?: Lay}} track
  * @param {object} host
@@ -1130,7 +1132,7 @@ export function createTrackView(world, track, host) {
     if (kind === 'part') return partJacks(partOf(key).part, title, wm);
     if (kind === 'pm') return faceJacks(key);
     if (kind === 'inst') return (wm ? rigJacks('amp', title, wm) : isParts(key) ? voiceJacks(title) : [{ id: 'out', side: 'right', kind: 'audio', label: (title || 'Instrument') + ' out' }]).concat(faceJacks(key));
-    if (kind === 'fx') return [{ id: 'in', side: 'left', kind: 'audio', label: (title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (title || 'FX') + ' out' }];
+    if (kind === 'fx') return (DEV && (DM.get(key) || {}).noIn ? [] : [{ id: 'in', side: 'left', kind: 'audio', label: (title || 'FX') + ' in' }]).concat({ id: 'out', side: 'right', kind: 'audio', label: (title || 'FX') + ' out' }); // ((MM UI fixer, review MM-2 P2-2) noIn: the master rack — nothing is patched into it
     if (kind === 'mod') { const J = entryJacks(key); return J || modJacks(mkOf(key), title); } // ((2b) a macro: k1…k8 at its knob rows; (3) inline on its tiles; (8) the entry's)
     return [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
   };

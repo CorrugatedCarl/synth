@@ -818,13 +818,14 @@ test('(U2) a mod drag looks through the amount badges: a badge over a knob is sk
 });
 
 test('(U2, U4) a press on a badge: a knob beneath it wins (the press handed to the knob: the world never sees the badge\'s); else the canvas pans from it (no stopPropagation) and a tap — its lift wherever the world captured it — selects (again: the inspector); a pan selects nothing and opens no menu; keyboard clicks still select', () => {
-  const R = modLayers(), b = R.badge('r1'), seen = [], knob = R.doc.createElement('div'), cap = R.doc.createElement('span');
-  knob.setAttribute('data-dest', 'a.pan'); knob.append(cap); R.W.append(knob);
+  const R = modLayers(), b = R.badge('r1'), seen = [], knob = R.doc.createElement('div'), cap = R.doc.createElement('span'), pnl = R.doc.createElement('div');
+  // ((MM UI fixer, P1-1) the knob beneath is the cable's own destination — r1's b end 'i2:a.semi': a [data-dest] inside its [data-dev])
+  pnl.setAttribute('data-dev', 'i2'); knob.setAttribute('data-dest', 'a.semi'); knob.append(cap); pnl.append(knob); R.W.append(pnl);
   const other = R.doc.createElement('div'); R.doc.body.append(other);
   R.W.addEventListener('pointerdown', e => seen.push('world ' + (e.target === b ? 'badge' : e.target === cap ? 'cap' : '?')));
   const kn = [];
   knob.addEventListener('pointerdown', e => kn.push(e.pointerId + '@' + e.clientX + ',' + e.clientY + (e.target === cap ? ' cap' : '')));
-  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, R.W];
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, pnl, R.W];
   const p = ptr(b, 'pointerdown', 40, 50, { pointerId: 5, pointerType: 'touch' });
   assert.deepEqual([kn, seen, p._stop], [['5@40,50 cap'], ['world cap'], true], 'the knob\'s press (its cap), the badge\'s own never the world\'s');
   ptr(other, 'pointerup', 40, 50, { pointerId: 5, pointerType: 'touch' });
@@ -853,13 +854,13 @@ test('(U2, U4) a press on a badge: a knob beneath it wins (the press handed to t
 
 test('(2b fixer C, U1) a long-press / right-click on a badge over a [data-dest] control opens the CONTROL\'s menu, never the cable\'s: a right-click\'s contextmenu is handed to the control beneath (a synthetic one, its own listeners decide); a touch press handed to the control arms the control\'s long-press alone (the badge\'s never), and the browser\'s late trusted contextmenu on the badge is dropped; with nothing beneath the cable menu as before', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const R = modLayers(), b = R.badge('r1'), knob = R.doc.createElement('div'), cap = R.doc.createElement('span'), got = [];
-  knob.setAttribute('data-dest', 'a.pan'); knob.append(cap); R.W.append(knob);
+  const R = modLayers(), b = R.badge('r1'), knob = R.doc.createElement('div'), cap = R.doc.createElement('span'), got = [], pnl = R.doc.createElement('div');
+  pnl.setAttribute('data-dev', 'i2'); knob.setAttribute('data-dest', 'a.semi'); knob.append(cap); pnl.append(knob); R.W.append(pnl); // ((MM UI fixer, P1-1) the cable's own knob)
   knob.addEventListener('contextmenu', e => { got.push((e.isTrusted ? 'trusted' : 'synthetic') + '@' + e.clientX + ',' + e.clientY + (e.target === cap ? ' cap' : '')); if (e.preventDefault) e.preventDefault(); });
   wk.menuSource(knob, { keys: false }); // (a classic / Serum knob is a menu source of its own)
   const other = R.doc.createElement('div'); R.doc.body.append(other);
   // a right-click: the pointerdown (button 2) is nobody's; the contextmenu lands on the badge and goes to the control beneath
-  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, R.W];
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, pnl, R.W];
   ptr(b, 'pointerdown', 40, 50, { pointerId: 3, button: 2, buttons: 2 });
   const e1 = fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true });
   assert.deepEqual([got, menuLabels(R.doc), e1.defaultPrevented, R.L.selected()], [['synthetic@40,50 cap'], [], true, null], 'the control\'s menu path, no cable menu, no selection');
@@ -876,6 +877,58 @@ test('(2b fixer C, U1) a long-press / right-click on a badge over a [data-dest] 
   R.doc.elementsFromPoint = () => [b.childNodes[0], b, R.W];
   fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true });
   assert.deepEqual([got.length, menuLabels(R.doc)[0], R.L.selected()], [1, 'Disconnect', 'r1']);
+  R.L.destroy();
+});
+
+test('(MM UI fixer, review MM-2 P1-1) a badge lying over ANOTHER control keeps its press: only the cable\'s own destination beneath (its [data-dest] under the [data-dev] — else the module\'s data-cv-mod device — of its b end) takes the press and the menu; over a neighbour (an FX-look rack\'s next knob, the same parameter of another device) a tap selects (again: the inspector), a right-click and a touch long-press open the CABLE\'s menu, and the neighbour hears none of it', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const R = modLayers(), b = R.badge('r1'), other = R.doc.createElement('div'), got = [];
+  R.doc.body.append(other);
+  const knobIn = (dev, dest, attr = 'data-dev') => {
+    const pnl = R.doc.createElement('div'), k = R.doc.createElement('div'), cap = R.doc.createElement('span');
+    pnl.setAttribute(attr, dev); k.setAttribute('data-dest', dest); k.append(cap); pnl.append(k); R.W.append(pnl);
+    const tag = attr + ' ' + dev + ':' + dest;
+    k.addEventListener('pointerdown', () => got.push('down ' + tag));
+    k.addEventListener('contextmenu', e => { got.push('ctx ' + tag); if (e.preventDefault) e.preventDefault(); });
+    return { pnl, k, cap };
+  };
+  const under = K => { R.doc.elementsFromPoint = () => [b.childNodes[0], b, K.cap, K.k, K.pnl, R.W]; };
+  const seen = [];
+  let ts = 5000; // (event times 1 s apart, past wk-dom's NOW: a native contextmenu is no duplicate of a synthetic one, a later long-press arms — as in a browser)
+  R.W.addEventListener('pointerdown', e => seen.push(e.target === b ? 'badge' : 'other'));
+  for (const K of [knobIn('i2', 'a.pan'), knobIn('i3', 'a.semi'), knobIn('i2/oscA', 'a.pan', 'data-cv-mod')]) {
+    under(K);
+    got.length = 0; seen.length = 0; R.sel.length = 0; R.L.select(null); R.sel.length = 0;
+    // a tap: the badge's (the canvas's press, a tap selects), the neighbour never pressed
+    const p = ptr(b, 'pointerdown', 40, 50, { pointerId: 5, pointerType: 'touch' });
+    ptr(other, 'pointerup', 41, 51, { pointerId: 5, pointerType: 'touch' });
+    assert.deepEqual([got, seen, p._stop, R.sel, R.L.selected()], [[], ['badge'], false, ['r1'], 'r1'], 'a tap selects the cable: ' + K.k.getAttribute('data-dest'));
+    // a right-click: the cable's menu, never the neighbour's
+    R.L.select(null); R.sel.length = 0;
+    ptr(b, 'pointerdown', 40, 50, { pointerId: 6, button: 2, buttons: 2, timeStamp: ts += 1000 });
+    fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true, timeStamp: ts += 1000 });
+    ptr(other, 'pointerup', 40, 50, { pointerId: 6, button: 2, buttons: 0, timeStamp: ts += 1000 });
+    assert.deepEqual([got, menuLabels(R.doc)[0], R.L.selected()], [[], 'Disconnect', 'r1'], 'a right-click: the cable\'s menu');
+    for (const m of all(R.doc.body).filter(n => n.getAttribute && /wk-ctx/.test(n.getAttribute('class') || ''))) m.remove();
+    // a touch long-press: the badge's own (its menuSource), the cable's menu
+    R.L.select(null); R.sel.length = 0;
+    ptr(b, 'pointerdown', 40, 50, { pointerId: 7, pointerType: 'touch', isPrimary: true, timeStamp: ts += 1000 }); // (after the right-click's native contextmenu: wk's ctxGuard)
+    t.mock.timers.tick(520);
+    assert.deepEqual([got, menuLabels(R.doc)[0], R.L.selected()], [[], 'Disconnect', 'r1'], 'a long-press: the cable\'s menu');
+    ptr(other, 'pointerup', 40, 50, { pointerId: 7, pointerType: 'touch' });
+    for (const m of all(R.doc.body).filter(n => n.getAttribute && /wk-ctx/.test(n.getAttribute('class') || ''))) m.remove();
+    K.pnl.remove();
+  }
+  // its own knob beneath — by data-dev or by its module's data-cv-mod device —: handed over as before (2b U1)
+  for (const own of [knobIn('i2', 'a.semi'), knobIn('i2/oscA', 'a.semi', 'data-cv-mod')]) {
+    under(own); got.length = 0; seen.length = 0;
+    const p = ptr(b, 'pointerdown', 40, 50, { pointerId: 8, pointerType: 'touch' });
+    ptr(other, 'pointerup', 40, 50, { pointerId: 8, pointerType: 'touch' });
+    fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2 });
+    const tag = (own.pnl.getAttribute('data-dev') ? 'data-dev i2' : 'data-cv-mod i2/oscA') + ':a.semi';
+    assert.deepEqual([got, seen, p._stop], [['down ' + tag, 'ctx ' + tag], ['other'], true], 'its own knob: the press and the menu handed to it');
+    own.pnl.remove();
+  }
   R.L.destroy();
 });
 

@@ -5033,23 +5033,34 @@ class Track extends Facade {
 // The master (IMPL-M §1; lane D): the mix's processor 'synth-master' — one stereo input (the tracks' sum; none connected:
 // [] → silence, never a throw), one stereo output (live: MASTER → the mono stage → the Volume → destination, `an` on its
 // output; the bounce: bus → MASTER → destination). Effects and analysis only: one FX rack (Chain 'mfx': MAIN, no buses,
-// no ModCore, no notes — RETRIG and key tracking idle) and the meters (MASTERDSP.Meters, read here: without master-dsp.js
-// it passes audio and posts no meters). M1: a calm rack (empty, every instance off) COPIES its input (float32 → float32,
-// no arithmetic; the A/B too). A start (seek, or from a stop) is applied at its frame by the Track's rule (the first
-// 4-frame point ≥ frame − 0.5: two rack calls around it, rack.transport() between; from a stop the meters restart there);
-// nothing else splits a quantum. The A/B (§3): its own 5 ms crossfade between the rack's output and the input delayed by
-// the rack's pathLat() (time-aligned), the rack running throughout; the bypassed signal × the gain frozen at the tap
-// (Q3: the meters' short-term out − in, ±24 dB; review R1-4: while either is ≤ −70 LUFS the match is pending — 0 dB,
-// re-measured until both have been valid for 3 s, then frozen and glided in over 5 ms). Messages in: chain {fxr, fxrT} ·
-// transport · panic · mon {ids ⊆ ['meters', 'mfx']} · fxtap {id} · fxph · bypass {on, g: true (match) | dB | absent
-// (0 dB)} · mreset · the store messages wt / wtf / wtdel / smp / smpdel (as a Track: the scope's stores, every rack
-// told) · bye. Out: ready (live, after its warm-up) · stats {load, lat, per: [{id: 'mfx', load}]} every 0.25 s · fxover
-// {ids} · mmon (every ≥ 33 ms of audio while 'meters' is subscribed: Meters.summary() + lat) · smon {c: 'mfx', gr, fxph,
-// ftap} ('mfx') · fxph {v, c: 'mfx'} · ab {on, g: dB, null while the match is pending; lim: the boost was capped to keep
+// no notes — RETRIG and key tracking idle) and the meters (MASTERDSP.Meters, read here: without master-dsp.js it passes
+// audio and posts no meters). M1: a calm rack (empty, every instance off) COPIES its input (float32 → float32, no
+// arithmetic; the A/B too). A start (seek, or from a stop) is applied at its frame by the Track's rule (the first 4-frame
+// point ≥ frame − 0.5: two rack calls around it, rack.transport() between; from a stop the meters restart there); nothing
+// else splits a quantum. The A/B (§3): its own 5 ms crossfade between the rack's output and the input delayed by the
+// rack's pathLat() (time-aligned), the rack running throughout; the bypassed signal × the gain frozen at the tap (Q3: the
+// meters' short-term out − in, ±24 dB; review R1-4: while either is ≤ −70 LUFS the match is pending — 0 dB, re-measured
+// until both have been valid for 3 s, then frozen and glided in over 5 ms).
+// Stage MM (IMPL-MM §3): the master's modulators — the Track's ModCore glue, by the same names (mc / mcMon, modsMsg /
+// modsOff, mval, chainMods, 'mods' in watch, postMon's mc / mcx and the rack's mo) on a shim-compatible self (trackId
+// 'master', wheel / at / bendRaw 0, songBeat() from its own clock: the Track's tp, the pend stored by transportMsg and applied
+// by start(), the wrap / end re-based at part boundaries on tp.play — never this.play, which the meters and the stop
+// branch read); only fx rows ever reach it (every dst.chain 'mfx'); with a ModCore the rack path is always taken, the
+// first part after ▶ / a seek snaps the rack's mod ramps (FXRack.modsJump, §3.4: live ≡ bounce from the first sample); the
+// payload's bpm runs its BPM LFOs at the project tempo while stopped. MM1: mc === null until a {t: 'mods'} with rows arrives —
+// one null test per part, everything else byte for byte as before. Messages in: chain {fxr, fxrT} · transport (play, frame,
+// seek — and tick, fpt, loop, ls, le, end, fresh into the pend) · panic · mon {ids ⊆ ['meters', 'mfx', 'mods']} · mods
+// {cp, ct, rows, xfer, ext, vals, keep, bpm, key} | {off: true} · mval {k, v} · fxtap {id} · fxph · bypass {on, g: true
+// (match) | dB | absent (0 dB)} · mreset · the store messages wt / wtf / wtdel / smp / smpdel (as a Track: the scope's
+// stores, every rack told) · bye. Out: ready (live, after its warm-up) · stats {load, lat, per: [{id: 'mfx', load}]} every
+// 0.25 s · fxover {ids} · mmon (every ≥ 33 ms of audio while 'meters' is subscribed: Meters.summary() + lat) · smon {c:
+// 'mfx', gr, fxph, ftap, mo?} ('mfx'; mo only with a ModCore) · smon {mc, mcx} ('mods', with a ModCore) · modsErr {i:
+// 'master', key} · fxph {v, c: 'mfx'} · ab {on, g: dB, null while the match is pending; lim: the boost was capped to keep
 // B ≤ −1 dBFS (review 2 F1)} (each bypass message, and a pending match's freeze) · offline: mlat {lat} (constructor) and
 // mfinal {i, tpMax, pk, lra} (once output frame lat + frames is reached: the meters over [lat, lat + frames) only).
-// Offline processorOptions: { offline, fxr, fxrT, transport, frames } (live: none; bypass is never an export option,
-// Q2); an offline rack first hears its pre-roll of exact zeros (preroll(): a live rack's silent history, review R1-2).
+// Offline processorOptions: { offline, fxr, fxrT, transport, frames, mods? } (live: none; bypass is never an export option,
+// Q2; mods only when the master has a payload); an offline rack first hears its pre-roll of exact zeros (preroll(): a live
+// rack's silent history, review R1-2 — its ModCore running through it, §3.4).
 // The integrated value and LRA accumulate while the transport plays (review 2 F4; with none since the last restart too).
 const M_DLAT = 15;                                                           // fx-dsp's DIST_LAT (a Distortion's delay)
 class Master extends AudioWorkletProcessor {
@@ -5061,6 +5072,13 @@ class Master extends AudioWorkletProcessor {
     const c = new Chain(this.base);
     c.id = 'mfx';
     this.c = c;
+    // IMPL-MM §3.1: ModCore's host fields (mod-core.js's shim reads trackId — the seed salt —, offline, wheel / at / bendRaw,
+    // songBeat()), the ModCore (null: no rows, MM1), its meters subscribed (mcMon: a 'mods' monitor id), the song clock (the
+    // Track's tp, field for field: transportMsg stores the pend, start() applies it, clock() wraps / ends it), pF0 the first
+    // frame of the current part (songBeat's), snap: the first part after ▶ / a seek snaps the rack's mod ramps (§3.4)
+    this.trackId = 'master'; this.wheel = 0; this.at = 0; this.bendRaw = 0; this.mc = null; this.mcMon = false;
+    this.tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, end: null, wrap: false, pend: null };
+    this.pF0 = 0; this.snap = 0;
     // the meters (none without master-dsp.js); Mi: the A/B match's input meter (short-term only, live); Po / Pi: a pending
     // match's pair (R1-4: the rack's output and the input, from the tap on, fed only while pending)
     const MD = globalThis.MASTERDSP;
@@ -5087,6 +5105,7 @@ class Master extends AudioWorkletProcessor {
     ALL.add(this);
     if (!this.offline) { try { this.warm(); } catch (err) { /* a failed warm-up only costs speed */ } }
     if (po.fxr) this.chainMsg({ fxr: po.fxr, fxrT: po.fxrT });
+    if (po.mods && typeof po.mods === 'object') this.modsMsg(po.mods); // (IMPL-MM §3.4: a bounce's rows — after the rack, before its pre-roll)
     if (this.offline && po.fxr && c.rack !== null) this.preroll();
     if (po.transport) this.transportMsg(po.transport);
     if (this.offline) {
@@ -5127,10 +5146,16 @@ class Master extends AudioWorkletProcessor {
   // quanta of 128 before frame 0 — the silent history a live MASTER's rack always has before ▶ — so a fresh rack's
   // start-up transients (a splitter's alignment glide from 0, a compressor's first block, the 5 ms fades) are over at
   // the song's start, as live. Not output: frame 0, mlat and the meters' window are unchanged; the start's
-  // rack.transport() is then a quiet re-seed, as live after ≥ 0.25 s of zeros
+  // rack.transport() is then a quiet re-seed, as live after ≥ 0.25 s of zeros. IMPL-MM §3.4: a ModCore runs through it too (its
+  // span, then the vector into the rack, per quantum; songBeat() null: not playing), so the rack's mod targets stand where a live
+  // rack's do before ▶ — rows running on a settled rack, not targets at 0 —, and the start's snap makes frame 0 exact
   preroll() {
-    const c = this.c, r = c.rack, L = c.oL, R = c.oR, N = r.settleN();
-    for (let o = 0; o < N; o += 128) { L.fill(0); R.fill(0); r.process(L, R, 128); }
+    const c = this.c, r = c.rack, L = c.oL, R = c.oR, N = r.settleN(), MC = this.mc;
+    for (let o = 0; o < N; o += 128) {
+      L.fill(0); R.fill(0);
+      if (MC !== null) { MC.span(0, 128, 32); this.chainMods(c, r); }
+      r.process(L, R, 128);
+    }
   }
   msg(d) {
     if (this.ending === 1 || !d) return;
@@ -5139,6 +5164,9 @@ class Master extends AudioWorkletProcessor {
       case 'transport': this.transportMsg(d); break;
       case 'panic': { const r = this.c.rack; if (r !== null) r.reset(false); if (this.dl !== null) this.dl.fill(0); break; } // (tails cleared at once)
       case 'mon': this.watch(d.ids); break;
+      // IMPL-MM §3.2: the master's modulation rows (ModCore) and one value of its table — the Track's two cases
+      case 'mods': this.modsMsg(d); break;
+      case 'mval': if (this.mc !== null) this.mc.ctl(d.k, d.v); break;
       case 'fxtap': { const r = this.c.rack; if (r !== null) r.setTap(typeof d.id === 'string' ? d.id : ''); break; }
       case 'fxph': { const r = this.c.rack; this.port.postMessage({ t: 'fxph', v: r !== null ? r.phases() : null, c: 'mfx' }); break; }
       case 'bypass': this.bypass(d); break;
@@ -5177,40 +5205,121 @@ class Master extends AudioWorkletProcessor {
     if (k) this.port.postMessage({ t: 'fxover', ids: o.slice() });
   }
   assets() { const r = this.c.rack; if (r !== null) { try { r.assets(); this.over(); } catch (err) { /* a failed rack keeps its old IR */ } } }
+  // {t: 'mods', i: 'master', cp, ct, rows, xfer, ext, vals, keep, bpm, key} (IMPL-MM §3.2): the Track's modsMsg minus handRows (no
+  // Insts: fx rows alone, every dst.chain 'mfx'); built on the first payload with rows, setRows after; {off: true} or an empty
+  // payload → no ModCore (MM1: nothing on the audio path); a payload the ModCore rejects → {t: 'modsErr', i: 'master', key}, the
+  // previous rows keep running (a first payload builds nothing). The payload's bpm (the host's project.bpm, §4.2) is what the shim
+  // runs its BPM LFOs at while stopped and with ANCHOR off
+  modsMsg(d) {
+    const MCM = globalThis.ModCore;
+    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0));
+    if (empty) { this.modsOff(); return; }
+    let MC = this.mc;
+    try {
+      if (MC === null) MC = MCM.create(this, this.base, S_N);
+      MC.setRows(d);
+      if (this.mc === null) MC.watch(this.mcMon);                          // (a first payload while 'mods' is subscribed: the monitor fields on)
+    } catch (err) {
+      if (this.mc === null || this.mc.ok === 0) this.modsOff();
+      this.port.postMessage({ t: 'modsErr', i: 'master', key: typeof d.key === 'string' ? d.key : '' });
+      return;
+    }
+    this.mc = MC;
+  }
+  // leaving: the rack unmodulated at once (setMods(null) once while rows had reached it — the calm copy path may follow, so
+  // the next part's chainMods would not get there), the snap pending for nothing cleared
+  modsOff() {
+    if (this.mc === null) return;
+    this.mc = null; this.snap = 0;
+    const c = this.c;
+    if (c.mcOn !== 0) { if (c.rack !== null) c.rack.setMods(null); c.mcOn = 0; }
+  }
+  // the Track's two lines (engine.js chainMods): ModCore's FX-context vector for this span into the rack (the layout key the rows
+  // were compiled against: a stale key leaves the rack unmodulated, FXRack.setMods), or setMods(null) once when the rows have gone
+  chainMods(c, r) {
+    const MC = this.mc, v = MC !== null ? MC.fxv[c.id] : undefined;
+    if (v !== undefined) { r.setMods(v, MC.fxKey[c.id]); c.mcOn = 1; } else if (c.mcOn !== 0) { r.setMods(null); c.mcOn = 0; }
+  }
+  // the song clock (IMPL-MM §3.1 — the Track's tickAt / songBeat, engine.js): the position in beats at the start of the current
+  // part, or null when stopped (ModCore's shim: the BPM LFOs' anchor, SxMod begin)
+  tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
+  songBeat() { const tp = this.tp; return tp.play ? this.tickAt(this.pF0) / 960 : null; }
+  // the clock at the first frame F of a part (the Track's songEvents' wrap and end, engine.js — at part boundaries here, §3.1: no
+  // new quantum split, MM1): a loop wrap re-bases frame / tick (the multi-wrap while), the song end stops the clock (tp.play false
+  // — never this.play: start()'s cold test, the stop branch's tails and the meters' integrate read that) and tells the ModCore
+  clock(F) {
+    const tp = this.tp;
+    if (!tp.play) return;
+    let t = this.tickAt(F);
+    if (tp.wrap && t >= tp.le) {
+      const L = tp.le - tp.ls;
+      let Fb = tp.frame + (tp.le - tp.tick) * tp.fpt;
+      while (F - Fb >= L * tp.fpt) Fb += L * tp.fpt;
+      tp.frame = Fb; tp.tick = tp.ls;
+      t = this.tickAt(F);
+    }
+    if (tp.end != null && t >= tp.end) { tp.play = false; if (this.mc !== null) this.mc.transport(false); }
+  }
   // the Track's pend / apply rule (golden-harness: a start's frame; a stop clears it): a start (seek, or from a stop) re-seeds
-  // the rack at its frame; a stop silences the tails when the FXP says so; a re-anchor without seek and a loop wrap re-seed nothing
+  // the rack at its frame; a stop silences the tails when the FXP says so; a re-anchor without seek and a loop wrap re-seed nothing.
+  // IMPL-MM §3.1: the whole anchor is kept as the Track's pend (tick, fpt, loop, ls, le, end, fresh beside the frame and seek
+  // the rack reads) and applied by start(); a stop stops the clock and the ModCore
   transportMsg(d) {
+    const tp = this.tp;
     if (!d.play) {
-      this.pF = NaN;
+      this.pF = NaN; tp.pend = null;
       if (this.play) {
         this.play = false;
         const c = this.c;
         if (c.rack !== null && c.fxr && c.fxr.silence) c.rack.reset(true);
         if (this.M !== null) this.M.integrate(false);                         // (review 2 F4: I / LRA hold at ■)
       }
+      if (tp.play) { tp.play = false; if (this.mc !== null) this.mc.transport(false); }
       return;
     }
     const F = +d.frame;
     this.pF = F === F ? F : 0; this.pS = d.seek !== false ? 1 : 0;
+    tp.pend = { frame: this.pF, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: this.pS === 1, end: d.end == null ? null : d.end, fresh: !!d.fresh };
   }
+  // at the start's frame (process: pF0 is that frame): the pend applied as the Track's songEvents applies it (tp.wrap as
+  // engine.js: a start past the loop end plays on), the rack's re-seed under its own condition (a seek, or from a stop — this.play),
+  // the ModCore's under the Track's (`P.seek || !tp.play`: a seek, or the clock was stopped — by ■ or by the song's end) with the
+  // snap of the first part after it (§3.4)
   start() {
-    const cold = !this.play;
+    const cold = !this.play, tp = this.tp, P = tp.pend, mcStart = this.pS === 1 || !tp.play;
     this.pF = NaN; this.play = true;
+    if (P !== null) {
+      tp.pend = null;
+      tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
+      tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
+    }
     if (this.pS === 1 || cold) { const r = this.c.rack; if (r !== null) r.transport(); }
+    if (mcStart && this.mc !== null) { this.mc.transport(true); this.snap = 1; }
     if (cold) this.restart();
   }
   // the integrated value, LRA and the holds (from a stop at the start's frame, the OUT's reset tap); the input meter's
   // sub-block phase with them (an empty rack's A/B match then reads exactly 0 dB). Review 2 F4: I / LRA accumulate while
   // the transport plays — and, with no transport since this restart (a keyboard jam: power-on, the reset tap), as before
   restart() { if (this.M !== null) { this.M.restart(); this.M.integrate(true); } if (this.Mi !== null) this.Mi.restart(); }
+  // {t: 'mon', ids ⊆ ['meters', 'mfx', 'mods']} (IMPL-MM §3.2: 'mods' — the master's modulator bodies, the Track's id; it gates the
+  // posts on its own, P2-2: an LFO body on screen with the OUT and the rack off screen still gets them)
   watch(ids) {
     const has = id => Array.isArray(ids) && ids.indexOf(id) >= 0;
-    this.mm = has('meters'); this.mx = has('mfx'); this.c.mon = this.mx; this.monF = 0;
-    if (this.mm || this.mx) this.postMon();
+    this.mm = has('meters'); this.mx = has('mfx'); this.mcMon = has('mods'); this.c.mon = this.mx; this.monF = 0;
+    if (this.mc !== null) this.mc.watch(this.mcMon);
+    if (this.mm || this.mx || this.mcMon) this.postMon();
   }
+  // mo (IMPL-MM §3.2, the Track's 2b halos): a ModCore with rows on the rack posts their FX-context offsets with the rack's message —
+  // the host's live dot of a rack knob; the shape is unchanged without a ModCore. {t: 'smon', mc, mcx} (the Track's message, the
+  // same ≈ 29 Hz gate): ModCore's source slots and its LFO phase / ENV fields for a 'mods' subscription
   postMon() {
     if (this.mm && this.M !== null) { const s = this.M.summary(this.sm); s.lat = this.lat; this.port.postMessage(s); }
-    if (this.mx) { const r = this.c.rack; this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null }); }
+    if (this.mx) {
+      const r = this.c.rack, mo = this.mc !== null ? this.mc.fxMon('mfx') : null;
+      if (mo !== null) this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null, mo });
+      else this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null });
+    }
+    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
   }
   // {t: 'bypass', on, g}: the A/B target; turning on freezes the bypassed signal's gain — g true: the level match (the
   // output's short-term − the input's, the moment of the tap; R1-4: while either is ≤ −70 LUFS the match is pending at
@@ -5259,7 +5368,7 @@ class Master extends AudioWorkletProcessor {
     let s = n;
     if (this.pF === this.pF) { const d = this.pF - F0; s = d <= 0.5 ? 0 : Math.ceil((d - 0.5) / 4) * 4; if (s > n) s = n; } // (≥ frame − 0.5)
     for (let o = 0; o < s; o += 128) this.part(Li, Ri, Lo, Ro, o, s - o < 128 ? s - o : 128, F0);
-    if (s < n) { this.start(); for (let o = s; o < n; o += 128) this.part(Li, Ri, Lo, Ro, o, n - o < 128 ? n - o : 128, F0); }
+    if (s < n) { this.pF0 = F0 + s; this.start(); for (let o = s; o < n; o += 128) this.part(Li, Ri, Lo, Ro, o, n - o < 128 ? n - o : 128, F0); } // (pF0: songBeat() of the start, IMPL-MM §3.1)
     if (this.abP === 1) {                                                     // (R1-4: a pending match)
       const so = this.Po.short(), si = this.Pi.short();
       if (!(so > -70 && si > -70)) this.abV = 0;
@@ -5268,7 +5377,7 @@ class Master extends AudioWorkletProcessor {
         this.port.postMessage({ t: 'ab', on: true, g: this.abDb, lim: this.abLim === 1 });
       }
     }
-    if ((this.mm || this.mx) && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
+    if ((this.mm || this.mx || this.mcMon) && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
     if (this.w1 !== Infinity && this.fin === 0 && F0 + n >= this.w1 && this.M !== null) {
       this.fin = 1;
       const S = this.M.summary(this.sm);
@@ -5279,10 +5388,13 @@ class Master extends AudioWorkletProcessor {
     if (this.statN >= this.base * 0.25) this.stats();
     return true;
   }
-  // frames [o, o + m) of the quantum (m ≤ 128): a calm rack copies, else the rack in Float64 (+ the A/B); then the meters
+  // frames [o, o + m) of the quantum (m ≤ 128): a calm rack copies, else the rack in Float64 (+ the A/B); then the meters.
+  // IMPL-MM §3.2: with a ModCore the rack path is always taken (the vector must land; the rack's own calm flag follows setMods) —
+  // the clock, MC.span (m is a multiple of 4: 128, or the start split's 4-frame point), chainMods, the snap of the first part
+  // after ▶ / a seek (§3.4), then the rack, all inside the mfx timer (P3-14: the module's CPU slot shows the modulation's cost)
   part(Li, Ri, Lo, Ro, o, m, F0) {
-    const c = this.c, r = c.rack;
-    if (r === null || (r.calm === 1 && r.nConv === 0 && this.wf === 0)) {
+    const c = this.c, r = c.rack, MC = this.mc;
+    if (r === null || (MC === null && r.calm === 1 && r.nConv === 0 && this.wf === 0)) {
       if (Li === null) for (let j = 0; j < m; j++) { Lo[o + j] = 0; Ro[o + j] = 0; }
       else for (let j = 0; j < m; j++) { Lo[o + j] = Li[o + j]; Ro[o + j] = Ri[o + j]; }
       if (this.dl !== null) this.dry(Li, Ri, null, null, o, m);
@@ -5295,6 +5407,13 @@ class Master extends AudioWorkletProcessor {
       const s = r.sc;                                                       // (IMPL-SC §4.4) the master's Ducker: every track's ring (MASTER runs after them all), no key input
       if (s !== undefined) { s.q = F0; s.F = F0 + o; s.reg = SCREG; s.kL = null; s.kR = null; }
       const tf = Date.now();
+      if (MC !== null) {
+        const F = F0 + o;
+        this.pF0 = F; this.clock(F);
+        MC.span(F, m, m >> 2);
+        this.chainMods(c, r);
+        if (this.snap !== 0) { this.snap = 0; r.modsJump(); }
+      }
       r.process(L, R, m);
       c.t += Date.now() - tf;
       this.lat = Math.round(r.pathLat());

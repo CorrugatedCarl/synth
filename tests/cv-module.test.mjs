@@ -1974,3 +1974,15 @@ test('integration fixer L, review WC-int P3-11 (after its second check, 2026-10-
   const T = { 'i1/env1': ['i1'], 'i1/lfo1': ['i1/fx', 'i1'] }, NB = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1']), null, { targets: T, narrow: true }), WB = M.tidy({}, RIGS, RIGD(['oscA', 'filter', 'env1', 'lfo1']), null, { targets: T });
   assert.deepEqual(['i1/env1', 'i1/lfo1'].map(k => NB[k].x), ['i1/env1', 'i1/lfo1'].map(k => WB[k].x), 'over the Amplifier, as wide');
 });
+
+test('(MM UI fixer, review MM-2 P2-2) a device entry with noIn: true (the master rack: nothing is ever patched into it) draws no left "in" jack — its OUT alone, no port "<key>.in"; every other FX module keeps both; a flip of the flag rebuilds the jacks', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t(), flag = { on: true };
+  const R = dview(t, W, doc, { devices: x => M.devicesOf(x).map(d => (d.key === 'fx1' && flag.on ? Object.assign({}, d, { noIn: true }) : d)) });
+  const jk = k => R.V.modules.get(k).jackIds().join(), P = () => R.V.ports();
+  assert.deepEqual([jk('fx1'), jk('fx2'), jk('i2/fx')], ['out', 'in,out', 'in,out']);
+  assert.deepEqual([P().has('fx1.in'), P().has('fx1.out'), P().has('fx2.in')], [false, true, true]);
+  assert.equal(all(R.V.modules.get('fx1').el).filter(n => n.getAttribute && n.getAttribute('data-cv-jack')).map(n => n.getAttribute('data-cv-jack')).join(), 'fx1.out', 'one jack element');
+  flag.on = false; R.sync(t);
+  assert.equal(jk('fx1'), 'in,out', 'the flag gone: both again');
+  R.V.destroy();
+});

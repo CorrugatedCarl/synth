@@ -1734,3 +1734,177 @@ test('style.css (WC, the user 2026-10-26): each corner screw is one SVG image �
     assert.deepEqual([stops[0]['stop-color'], stops[1]['stop-color'], P.fill], [v['--rig-screw'], v['--rig-screw-lo'], v['--rig-jack-hole']], S.id + ': the screw image in the skin\'s colours');
   }
 });
+
+/* ---------------------------------------------------------------- (MM, IMPL-MM §7.3; lane U) the Sources tray on the master canvas */
+// The master has no notes: its tray shows the Modulators section with the four tiles it takes (LFO, Macro, CC, Chaos) and a short note.
+// setMaster(on) is the host's call (main.js srcModeUI: cvMaster && mode !== 'track'); the view the user chose is kept underneath.
+const MASTER_NOTE_TXT = 'The master has no notes: its modulators are LFOs, Macros, CC and Chaos. Drop one on the canvas and cable its jack to any knob of the master rack.';
+// the tray as main.js builds it (index.html's boxes: the view host, the sections of #srcScroll, #srcNote), every tile row on
+function mastRig(o = {}) {
+  const d = fresh();
+  raf.install();
+  const tray = mkEl(d, 'aside', 'srcTray'), host = d.createElement('div'), list = d.createElement('div'), scroll = d.createElement('div'), note = d.createElement('p'), layer = mkEl(d, 'div', 'ov');
+  const sec = id => { const s = d.createElement('section'), b = d.createElement('div'); s.hidden = true; s.append(b); scroll.append(s); return { s, b, id }; };
+  scroll.append(list);
+  const parts = sec('parts'), notes = sec('notes'), mods = sec('mods'), ctls = sec('ctls');
+  tray.append(host, scroll, note);
+  place(tray, 0, 100, 284, 600);
+  const log = [], picks = [];
+  const S = T.sourcesTray(list, Object.assign({
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), layoutEl: host, secEl: scroll, noteEl: note, view: 'serum',
+    mods: T.MOD_TILES, modsEl: mods.b, modsSec: mods.s, modPick: (id, mode) => picks.push('mod ' + id + ':' + mode),
+    ctls: T.CTL_TILES, ctlsEl: ctls.b, ctlsSec: ctls.s, ctlPick: (id, mode) => picks.push('ctl ' + id + ':' + mode),
+    parts: true, partsEl: parts.b, partsSec: parts.s, notesEl: notes.b, notesSec: notes.s, moog: T.MOOG_TILES, sets: T.SET_TILES,
+    overOf: (t, x, y) => (y < 100 ? 'tracks' : x > 300 ? 'canvas' : null), canvasGhost: () => true, toWorld: (x, y) => ({ x: x * 2, y: y - 100 }),
+    drag: {}, modDrag: {
+      begin: (id, i) => log.push('begin ' + id + (i.mod ? ' mod' : '')), move() {},
+      drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.mod ? ' mod' : '') + (i.at ? ' @' + i.at.x + ',' + i.at.y : '')); return !!i.over; }, cancel: id => log.push('cancel ' + id) },
+  }, o));
+  return { d, tray, host, list, scroll, note, layer, mods, ctls, parts, notes, S, log, picks };
+}
+const mnoteOf = R => R.mods.s.children.find(c => c.className === 'cv-tnote cv-mnote') || null;
+// everything the tray shows, as one comparable value: the hidden flags of every tile row, section and heading, the view host and the note lines
+function trayShape(R) {
+  const S = R.S, h = bs => bs.map(b => (b.hidden ? 0 : 1)).join(''), mn = mnoteOf(R);
+  return { models: h(S.tiles()), sets: h(S.setTiles()), moog: h(S.moogTiles()), mods: h(S.modTiles()), ctls: h(S.ctlTiles()), parts: h(S.partTiles()),
+    secs: R.scroll.children.map(c => (c.hidden ? 0 : 1)).join(''), host: R.host.hidden ? 0 : 1, note: R.note.textContent, mnote: mn ? (mn.hidden ? 0 : 1) : -1 };
+}
+const modIds = S => S.modTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-mod'));
+const noneShown = s => !/1/.test(s);
+
+test('sourcesTray (MM): the constants — MASTER_MODS (LFO, Macro, CC, Chaos: no envelope, no notes on the master), MASTER_NOTE, MASTER_SRC; every master tile is a multi tile of MOD_TILES', () => {
+  assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos']);
+  assert.ok(Object.isFrozen(T.MASTER_MODS));
+  assert.equal(T.MASTER_NOTE, MASTER_NOTE_TXT);
+  assert.equal(T.MASTER_SRC, 'The master takes effects (the rack’s +) and modulators (Sources ▸ Modulators)');
+  assert.ok(T.MASTER_MODS.every(id => { const m = T.MOD_TILES.find(x => x.id === id); return m && m.multi; }), 'multi tiles of the Modulators list');
+});
+
+test('sourcesTray (MM): setMaster(true) — the view menu is hidden, every model tile / section and the Controllers row are hidden, the Modulators section shows only LFO, Macro, CC, Chaos with the master\'s note; from every view; master() says so', () => {
+  for (const view of ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']) {
+    const R = mastRig({ view });
+    assert.deepEqual([R.S.master(), R.list.hasAttribute('data-master'), R.tray.classList.contains('cv-mside')], [false, false, false], view + ': off at the start');
+    R.S.setMaster(true);
+    const sh = trayShape(R);
+    assert.deepEqual([R.S.master(), R.list.getAttribute('data-master'), R.tray.classList.contains('cv-mside'), R.S.view()], [true, '1', true, view], view + ': on; the chosen view kept underneath');
+    assert.deepEqual([sh.models, sh.sets].map(noneShown), [true, true], view + ': no model or set tile shown (the rows in sections: the sections below)');
+    assert.deepEqual([R.mods.s.hidden, R.ctls.s.hidden, R.parts.s.hidden, R.notes.s.hidden, R.host.hidden], [false, true, true, true, true], view + ': the Modulators section alone; the view menu\'s host hidden');
+    assert.deepEqual(modIds(R.S), ['lfo', 'macro', 'cc', 'chaos'], view + ': four tiles, in the Modulators\' order');
+    assert.deepEqual(R.scroll.children.filter(c => c !== R.list && c !== R.mods.s).map(c => c.hidden), R.scroll.children.filter(c => c !== R.list && c !== R.mods.s).map(() => true), view + ': every other section of the scroller hidden (Moog, placeholders, parts, Controllers)');
+    assert.deepEqual([sh.mnote, R.note.textContent], [1, ''], view + ': the master\'s note shown, the view\'s own note cleared');
+    const mn = mnoteOf(R);
+    assert.deepEqual([mn.tagName, mn.textContent, R.mods.s.children.indexOf(mn) > R.mods.s.children.indexOf(R.mods.b)], ['P', MASTER_NOTE_TXT, true], view + ': the note under the tiles, in the section');
+    R.S.destroy();
+  }
+});
+
+test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was (the hidden flags of tiles, sections, the view menu, the view\'s note); the Modulators\' other tiles are back in the Serum view; calling it twice changes nothing', () => {
+  for (const view of ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']) {
+    const R = mastRig({ view }), before = trayShape(R);
+    assert.equal(before.mnote, -1, view + ': no master note in the other canvases\' tray before the first visit (node for node as it was)');
+    R.S.setMaster(true); R.S.setMaster(true);
+    R.S.setMaster(false);
+    assert.deepEqual(trayShape(R), Object.assign({}, before, { mnote: 0 }), view + ': as it was (the master\'s note made at the first visit, hidden now)');
+    assert.deepEqual([R.S.master(), R.list.hasAttribute('data-master'), R.tray.classList.contains('cv-mside'), R.S.view(), R.list.getAttribute('data-view')], [false, false, false, view, view]);
+    R.S.setMaster(false);
+    assert.deepEqual(trayShape(R), Object.assign({}, before, { mnote: 0 }), view + ': off twice');
+    R.S.destroy();
+  }
+  const R = mastRig({ view: 'serum' });
+  assert.equal(modIds(R.S).length, 10, 'the Serum view: all ten tiles (their section shows)');
+  R.S.setMaster(true);
+  assert.equal(modIds(R.S).length, 4);
+  R.S.setMaster(false);
+  assert.deepEqual([modIds(R.S).length, R.mods.s.hidden], [10, false], 'ENV, Velocity, Aftertouch, Bend, Note, Mod Wheel are back');
+  R.S.setView('hw');
+  assert.equal(R.mods.s.hidden, true, 'Hardware: no Modulators (as before)');
+  R.S.destroy();
+});
+
+test('sourcesTray (MM): while the master canvas shows, a view restore (setView — the stored pref, a menu pick) keeps the master state; leaving it shows the view that was set meanwhile', () => {
+  const R = mastRig({ view: 'serum' });
+  R.S.setMaster(true);
+  R.S.setView('hw');
+  const sh = trayShape(R);
+  assert.deepEqual([R.S.view(), R.list.getAttribute('data-view'), noneShown(sh.models), modIds(R.S), R.mods.s.hidden, sh.mnote, R.host.hidden], ['hw', 'hw', true, ['lfo', 'macro', 'cc', 'chaos'], false, 1, true]);
+  R.S.setView('ctl');
+  assert.deepEqual([R.S.view(), R.ctls.s.hidden, R.mods.s.hidden, modIds(R.S).length], ['ctl', true, false, 4], 'the Controllers view underneath: its row stays hidden');
+  R.S.setMaster(false);
+  assert.deepEqual([R.S.view(), R.ctls.s.hidden, R.mods.s.hidden, R.host.hidden], ['ctl', false, true, false], 'the Controllers row is back, the Modulators gone');
+  R.S.destroy();
+});
+
+test('sourcesTray (MM): the master\'s tiles work as the Modulators\' — a tap → modPick(id, mode); a drag onto the canvas → modDrag (info.mod, the world point, "+ Add Macro"); the other tiles stay hidden (no envelope, no performance source, no note source)', () => {
+  const R = mastRig(), tp = { pointerType: 'touch' };
+  R.S.setMaster(true);
+  R.S.modTile('lfo').click();
+  R.S.setMode('track');
+  R.S.modTile('chaos').click();
+  assert.deepEqual(R.picks, ['mod lfo:replace', 'mod chaos:track']);
+  const t = R.S.modTile('macro');
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 112, 302, at(tp)); ptr(t, 'pointermove', 400, 300, at(tp));
+  assert.equal(R.layer.children[0].children[1].textContent, '+ Add Macro');
+  TS += 150;
+  ptr(t, 'pointermove', 402, 301, at(tp)); ptr(t, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual(R.log, ['begin macro mod', 'drop macro canvas mod @804,201']);
+  assert.deepEqual(['env', 'wheel', 'velo', 'at', 'bend', 'note'].map(id => R.S.modTile(id).hidden), [true, true, true, true, true, true]);
+  R.S.destroy();
+});
+
+test('sourcesTray (MM): o.masterMods / o.masterNote — a host list narrows the tiles (an unknown id is ignored; the Modulators\' order wins), its note replaces the default; an empty list hides the section and the note; no list / an empty note: the defaults', () => {
+  const R = mastRig({ masterMods: ['chaos', 'lfo', 'nope'], masterNote: 'Only these.' });
+  R.S.setMaster(true);
+  const mn = mnoteOf(R);
+  assert.deepEqual([modIds(R.S), mn.textContent, mn.hidden, R.mods.s.hidden], [['lfo', 'chaos'], 'Only these.', false, false]);
+  R.S.destroy();
+  const E = mastRig({ masterMods: [] });
+  E.S.setMaster(true);
+  assert.deepEqual([modIds(E.S), E.mods.s.hidden, (mnoteOf(E) || { hidden: true }).hidden], [[], true, true], 'nothing to offer: the section hidden, no note shown');
+  E.S.destroy();
+  const D2 = mastRig({ masterMods: undefined, masterNote: '' });
+  D2.S.setMaster(true);
+  assert.deepEqual([modIds(D2.S), mnoteOf(D2).textContent], [['lfo', 'macro', 'cc', 'chaos'], MASTER_NOTE_TXT]);
+  D2.S.destroy();
+});
+
+test('sourcesTray (MM): an open view menu closes when the master canvas comes up; no o.mods (no Modulators in this tray): setMaster hides everything and throws nothing; destroy gives back what it changed (the view host shown, the tray\'s class, the data attribute, the note)', () => {
+  const R = mastRig({ view: 'hw' }), btn = R.host.children[0];
+  btn.click();
+  assert.equal(R.S.viewOpen(), true);
+  R.S.setMaster(true);
+  assert.deepEqual([R.S.viewOpen(), R.host.hidden], [false, true], 'closed, then hidden');
+  R.S.destroy();
+  assert.deepEqual([R.host.hidden, R.tray.classList.contains('cv-mside'), R.list.hasAttribute('data-master'), R.mods.s.children.filter(c => c.className === 'cv-tnote cv-mnote').length], [false, false, false, 0], 'destroy: as it found it');
+  const d = fresh(), list = d.createElement('div'), S2 = T.sourcesTray(list, { models: MODELS.slice(0, 3), pick() {}, drag: {} });
+  S2.setMaster(true);
+  assert.deepEqual([S2.master(), S2.tiles().filter(b => !b.hidden).length, list.children.length], [true, 0, 3], 'no Modulators: the synths hidden, nothing added');
+  S2.setMaster(false);
+  assert.equal(S2.tiles().filter(b => !b.hidden).length, 3);
+  S2.destroy();
+});
+
+test('sourcesTray (MM): without a section element (a flat list) the heading "Modulators" and the four tiles show, the note follows the tiles, the rest is hidden; leaving restores the view\'s rule; the note goes with destroy', () => {
+  const d = fresh(), list = d.createElement('div');
+  d.body.append(list);
+  const S = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: T.MOD_TILES, ctls: T.CTL_TILES, pick() {}, drag: {}, view: 'serum' });
+  const names = () => list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.tagName === 'P' ? 'p' : n.getAttribute('data-model') || n.getAttribute('data-mod') || n.getAttribute('data-ctl')) + (n.hidden ? '!' : ''));
+  assert.equal(list.children.length, 2 + 1 + 10 + 1 + 1, 'before the first visit: the synths, the Modulators\' heading and ten tiles, the Controllers\' heading and tile — no note');
+  S.setMaster(true);
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'wheel!', 'velo!', 'at!', 'bend!', 'note!', 'lfo', 'env!', 'macro', 'cc', 'chaos', 'p', '#Controllers!', 'pads!']);
+  S.setMaster(false);
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'p!', '#Controllers!', 'pads!']);
+  S.destroy();
+  assert.equal(list.children.filter(n => n.tagName === 'P').length, 0, 'the note goes with the tray');
+});
+
+test('index.html / style.css (MM, IMPL-MM §7.3): the .cv-mside rule is narrowed in place — it hides #srcLayout and #srcNote only, never #srcScroll (the Modulators section is the master\'s tray); the master note has its rule; the skins stay the last rules of the file', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\n#srcTray\.cv-mside #srcLayout, #srcTray\.cv-mside #srcNote \{ display: none; \}\n/, 'the rule, in place, two selectors');
+  assert.ok(!/#srcTray\.cv-mside #srcScroll/.test(css), 'no #srcScroll in it');
+  assert.equal(css.split('\n').filter(l => l.includes('cv-mside')).length, 1, 'one line of the file mentions cv-mside: that rule');
+  assert.match(css, /\n\.cv-mnote \{[^}]*font-size: 11px[^}]*color: var\(--mute\)/, 'the note\'s look: the placeholder notes\'');
+  assert.match(css, /\n\.cv-mnote\[hidden\] \{ display: none; \}/);
+  assert.ok(css.indexOf('\n.cv-mnote {') > css.indexOf('#srcTray.cv-mside #srcLayout') && css.indexOf('\n.cv-mnote {') < css.indexOf('the rig\'s modules (stage WC'), 'next to the rule, before the rig\'s block');
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>/, 'the section\'s heading is the HTML\'s: "Modulators" on the master too');
+});

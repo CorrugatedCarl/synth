@@ -433,6 +433,89 @@ test('slot host chaos: one chaos row (RATE, BPM, MONO, S&H) with its label as th
   assert.deepEqual(calls.map(c => c[1]), [{ chaos: { mono: 1, sh: 1 } }, { bpm: 1 }]);
 });
 
+/* ================================================================ (MM, IMPL-MM §7.2; lane U) the MONO lock: the master has no notes */
+// The slot-host option lock: { mono: 1 } (cv-mods-ui slotBody passes it): an LFO's and a Chaos row's MONO switch (GLOBAL / PER NOTE) reads
+// GLOBAL, is disabled and ignores a tap — the master's pseudo-voice never runs, a per-note LFO there would go dead. Presentation only (the host
+// forces the field back too); a Serum's own panel and a canvas module without the option are unchanged node for node.
+const monoOf = root => root.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'MONO');
+// a panel as one string: tags, attributes, text (the host's unique ids numbered away)
+const shapeOf = n => '<' + n.localName + [...n._a].filter(([k]) => k !== 'style').map(([k, v]) => ' ' + k + '=' + String(v).replace(/sx\d+/g, 'sxN')).sort().join('') + '>'
+  + (n.children.length ? n.children.map(shapeOf).join('') : n.textContent) + '</>';
+
+test('(MM) the MONO lock — lock: { mono: 1 }: an LFO\'s and a Chaos row\'s MONO switch reads GLOBAL (pressed) whatever the device says, is disabled (aria-disabled, wk-dis) with the lock tip, and a tap changes nothing — no live, no edit; the other switches still edit; an outside change (sync) keeps it locked', async () => {
+  assert.equal(M.MONO_LOCK_TIP, 'The master’s modulators are global (it has no notes)');
+  for (const [kind, rec, field] of [['lfo', { lfo: { mono: 0 }, rate: 0.5 }, 'lfo'], ['chaos', { chaos: { mono: 0, sh: 0 }, rate: 0.3 }, 'chaos']]) {
+    const R = slot(kind, rec, { lock: { mono: 1 } });
+    await flush(R.doc);
+    const m = monoOf(R.V.root);
+    assert.deepEqual([m.getAttribute('aria-pressed'), m.getAttribute('aria-disabled'), m.classList.contains('wk-dis'), m.classList.contains('wk-on'), m.title, R.dev.r[field].mono],
+      ['true', 'true', true, true, M.MONO_LOCK_TIP, 0], kind + ': GLOBAL, disabled, the tip; the device itself untouched');
+    fire(m, 'click'); fire(m, 'click');
+    ptr(m, 'pointerdown', 5, 5); ptr(m, 'pointerup', 5, 5);
+    assert.deepEqual([R.calls, R.dev.r[field].mono], [[], 0], kind + ': a tap changes nothing (no live, no edit)');
+    // every other switch of the panel works as before
+    const other = R.V.root.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'BPM');
+    assert.equal(other.getAttribute('aria-disabled'), null, kind + ': BPM not disabled');
+    fire(other, 'click');
+    assert.deepEqual(R.calls.map(c => c[0]), ['edit'], kind + ': BPM = one edit');
+    // an outside change (undo / redo / a load) writing a mono 0 back: still shown GLOBAL and locked
+    R.dev.r = song.normModDev(Object.assign({ kind }, rec));
+    R.X.sync();
+    assert.deepEqual([monoOf(R.V.root).getAttribute('aria-pressed'), monoOf(R.V.root).getAttribute('aria-disabled')], ['true', 'true'], kind + ': after sync');
+    R.X.destroy();
+  }
+});
+
+test('(MM UI fixer, review MM-2 P3-2) a tap on a locked MONO says why — one notice (the host\'s notify) with MONO_LOCK_TIP per tap, still no live / edit; an unlocked MONO notifies nothing', async () => {
+  for (const [kind, rec] of [['lfo', { lfo: { mono: 0 } }], ['chaos', { chaos: { mono: 0, sh: 0 } }]]) {
+    const said = [], R = slot(kind, rec, { lock: { mono: 1 }, notify: t => said.push(t) });
+    await flush(R.doc);
+    fire(monoOf(R.V.root), 'click');
+    assert.deepEqual([said, R.calls], [[M.MONO_LOCK_TIP], []], kind + ': the notice, nothing written');
+    fire(monoOf(R.V.root), 'click');
+    assert.equal(said.length, 2, kind + ': each tap');
+    R.X.destroy();
+    const said2 = [], U = slot(kind, rec, { notify: t => said2.push(t) });
+    await flush(U.doc);
+    fire(monoOf(U.V.root), 'click');
+    assert.deepEqual([said2, U.calls.map(c => c[0])], [[], ['edit']], kind + ': unlocked — an edit, no notice');
+    U.X.destroy();
+  }
+});
+
+test('(MM) the MONO lock is the option\'s alone — no lock, lock: {} / { mono: 0 } / null: the LFO\'s and the Chaos row\'s panel node for node as before (MONO enabled, its old tip, one edit on a tap); the lock changes the MONO switch alone; an ENV or a Macro panel ignores it', async () => {
+  for (const kind of ['lfo', 'chaos']) {
+    const rec = { chaos: { mono: 1, sh: 0 }, lfo: { mono: 1 } };
+    const base = slot(kind, rec);
+    await flush(base.doc);
+    const want = shapeOf(base.V.root);
+    for (const lock of [undefined, null, {}, { mono: 0 }, { other: 1 }]) {
+      const R = slot(kind, rec, { lock });
+      await flush(R.doc);
+      assert.equal(shapeOf(R.V.root), want, kind + ' lock ' + JSON.stringify(lock) + ': unchanged');
+      R.X.destroy();
+    }
+    const m = monoOf(base.V.root);
+    assert.deepEqual([m.getAttribute('aria-disabled'), m.classList.contains('wk-dis'), m.title], [null, false, kind === 'lfo' ? 'MONO: one LFO for every voice' : '']);
+    fire(m, 'click');
+    assert.deepEqual([base.calls.length, base.calls[0][0]], [1, 'edit'], kind + ': a tap edits as always');
+    // locked vs unlocked: the MONO switch alone differs
+    const L = slot(kind, rec, { lock: { mono: 1 } }), U = slot(kind, rec);
+    await flush(L.doc); await flush(U.doc);
+    const rest = R => R.V.root.querySelectorAll('.wk-tog').filter(b => b.textContent.trim() !== 'MONO').map(shapeOf).join('');
+    assert.equal(rest(L), rest(U), kind + ': the other switches unchanged');
+    assert.ok(shapeOf(monoOf(L.V.root)) !== shapeOf(monoOf(U.V.root)), kind + ': the MONO switch differs');
+    base.X.destroy(); L.X.destroy(); U.X.destroy();
+  }
+  for (const kind of ['env', 'macro']) {
+    const a = slot(kind, {}), b = slot(kind, {}, { lock: { mono: 1 } });
+    await flush(a.doc); await flush(b.doc);
+    assert.equal(shapeOf(b.V.root), shapeOf(a.V.root), kind + ': no MONO there: the option is ignored');
+    a.X.destroy(); b.X.destroy();
+  }
+  assert.equal(H.HOST_OPTS.monoLock, undefined, 'HOST_OPTS (a Serum\'s own host) unchanged: the lock is a slot host\'s option');
+});
+
 /* ================================================================ budgets, VOICE, CLIP twins */
 test('budgets (IMPL-3 §1.4): one Serum-faithful modulator ≤ 160 elements and ≤ 2 canvases', async () => {
   for (const kind of ['lfo', 'env', 'macro', 'chaos']) {

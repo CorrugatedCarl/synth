@@ -1237,8 +1237,9 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-cable.cv-cable-live.cv-mlive { stroke-width: calc(2px * var(--ik, 1)); }
 /* the amount badge at the knob end, just before the end drawn above the modules (its right edge there: never over the knob a
    cable arrives at — they always come in from the left); the only part of a mod cable taking a press: 44 screen px tall via
-   ::before, never wider than itself (U2: the knobs beside it keep their presses; a knob under it wins: cv-cables), none
-   while patching (a drag looks through it); a press on it pans the canvas, a tap selects (U4) */
+   ::before, never wider than itself (U2: the knobs beside it keep their presses; its own knob under it wins — any other control
+   under it does not, MM review 2 P1-1: cv-cables), none while patching (a drag looks through it); a press on it pans the canvas,
+   a tap selects (U4) */
 .cv-mbadge { position: absolute; z-index: 10001; transform: translate(-100%, -50%); margin-left: calc(-2px * var(--ik, 1)); display: inline-flex; align-items: center; gap: calc(4px * var(--ik, 1));
   height: calc(18px * var(--ik, 1)); padding: 0 calc(6px * var(--ik, 1)); border-radius: calc(9px * var(--ik, 1)); border: calc(1px * var(--ik, 1)) solid var(--cc, #8d8b86);
   background: #101215; color: var(--cc, #c9c6bf); font: 700 calc(10.5px * var(--ik, 1))/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -1534,13 +1535,18 @@ button.mo-n:hover { border-color: #3a3c42; }
    lane A — after lane U's block, none of its rules touched). The footer #mfoot sits under #arrwrap inside #studio (a column now): outside
    the rows' scroller, so it never scrolls away and the heads / lanes rows stay aligned; its row under the heads column (the lanes' part of
    the footer left empty); at ≤ 900 px (250 px heads: the row's controls would not fit) the row spans the footer. No footer at the
-   collapsed stop (.cv-top.collapsed .studio hides it with the rows). The Sources tray on the master canvas: its line, no tiles. */
+   collapsed stop (.cv-top.collapsed .studio hides it with the rows). The Sources tray on the master canvas: its line, and (stage MM,
+   IMPL-MM §7.3) the Modulators section with the master's four tiles and a note under them — the view menu and the view's own note go. */
 .cv-top .studio { flex-direction: column; }
 .cv-top .studio > .arrwrap { min-height: 0; } /* (a column: the rows shrink and scroll above the footer) */
 .cv-mfoot { flex: none; display: flex; min-width: 0; height: 44px; background: #0f1013; box-shadow: inset 0 1px 0 var(--line); }
 .cv-mfoot > .cv-mastrow { flex: 0 0 auto; width: 372px; border-right: 1px solid var(--line); }
 @media (max-width: 900px) { .cv-mfoot > .cv-mastrow { flex: 1 1 auto; width: auto; border-right: 0; } }
-#srcTray.cv-mside #srcLayout, #srcTray.cv-mside #srcScroll, #srcTray.cv-mside #srcNote { display: none; }
+#srcTray.cv-mside #srcLayout, #srcTray.cv-mside #srcNote { display: none; }
+/* (MM, IMPL-MM §7.3; lane U) the master's note under its Modulators tiles (cv-tray masterNote: made at the first visit); the placeholder notes' look.
+   Here, not appended last: the skins stay the last rules of the file (a pinned invariant, tests/cv-tray.test.mjs) */
+.cv-mnote { margin: 8px 12px 10px; font-size: 11px; line-height: 1.4; color: var(--mute); }
+.cv-mnote[hidden] { display: none; }
 .cv-tpi.cv-tpm { padding-left: 6px; }
 .dlgbody .bnorm { display: inline-flex; gap: 6px; }
 .dlgbody .bnorm select[hidden] { display: none; }

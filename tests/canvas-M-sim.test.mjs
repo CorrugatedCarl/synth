@@ -22,6 +22,7 @@ import * as FC from '../fx-core.js?v=9';
 import * as S from '../song.js?v=9';
 import * as cvTray from '../cv-tray.js?v=9';
 import * as MUI from '../master-ui.js?v=9';
+import * as cvModule from '../cv-module.js?v=9'; // ((MM, phase 0) devicesOf / tidy on the master's track-shaped record)
 import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
@@ -333,22 +334,22 @@ test('§2.2 assets: the master rack is a state (users name "Master"); an IR on i
   M.edit(fx => { fx.racks[0].mods.length = 0; }); await settle(2);
 });
 
-test('schema 16 (§2.3; 14 at stage M, 15 since SC, 16 since WC): a save says 16 and carries project.master; an untouched master writes no key; a load reads it back; Save as classic names the master effects it loses', async () => {
-  assert.equal(CM.SCHEMA, 16);
+test('schema 17 (§2.3; 14 at stage M, 15 since SC, 16 since WC, 17 since MM): a save says 17 and carries project.master; an untouched master writes no key; a load reads it back; Save as classic names the master effects it loses', async () => {
+  assert.equal(CM.SCHEMA, 17);
   delete P().master;
   const t0 = JSON.parse(await cv.projectFile());
-  assert.deepEqual([t0.schema, 'master' in t0], [16, false], 'no master key');
+  assert.deepEqual([t0.schema, 'master' in t0], [17, false], 'no master key');
   M.edit(fx => { FC.newInstance(fx, 'eq', { rack: 0 }); FC.newInstance(fx, 'cmp', { rack: 0 }); }); await settle(1);
   const o = JSON.parse(await cv.projectFile());
-  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [16, 2]);
+  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [17, 2]);
   const p = cv.loadProject(JSON.stringify(o), { file: true });
   assert.equal(JSON.stringify(p.master.fx.racks[0].mods.map(I => I.type)), JSON.stringify(['eq', 'cmp']));
   const r = CM.toV1(o);
   assert.equal(r.lost.includes('the master effects (2)'), true, JSON.stringify(r.lost));
   assert.equal('master' in r.p, false);
   assert.equal(S.normMaster({ fx: 3, lay: { mfx: { x: 'a' } } }), undefined, 'nothing valid: no key');
-  const n = JSON.parse(JSON.stringify(o)); n.schema = 17;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 17, 'a schema-17 file: read-only');
+  const n = JSON.parse(JSON.stringify(o)); n.schema = 18;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 18, 'a schema-18 file: read-only');
   M.edit(fx => { fx.racks[0].mods.length = 0; }); await settle(1);
 });
 
@@ -397,8 +398,8 @@ test('§5.2 the master canvas: its own view (the rack, the OUT), selTrack kept �
   assert.equal(cv.drop('prophet5', null), true, 'a drop: refused (handled)');
   sh.srcPick('juno60', 'replace'); await settle(1);
   assert.equal(sh.srcDrag.drop('cs80', { over: 'canvas', x: 400, y: 300 }), true);
-  assert.equal(cv.mod.add('lfo', null), null, 'no modulator');
-  assert.match(sim.$('#notice').textContent, /^The master takes effects — add them with the rack’s \+/);
+  assert.equal(cv.mod.add('env', null), null, 'no ENV (the master has no notes; (MM) LFO / Macro / CC / Chaos it takes: tests/canvas-MM-sim)');
+  assert.match(sim.$('#notice').textContent, /^The master takes effects \(the rack’s \+\) and modulators \(Sources ▸ Modulators\)/); // ((MM, lane H — a pin moved by design: the refusal is lifted for the master's four kinds, the text reworded, IMPL-MM §7.3)
   assert.equal(sim.$('#srcMode').children.join ? true : true, true);
   const nid = cv.fx.addEffect('mfx', 'dly');
   assert.equal(typeof nid === 'string' && P().master.fx.racks[0].mods.some(I => I.id === nid), true, 'the effect hook: the master rack');
@@ -605,4 +606,38 @@ test('R1-8 — no MASTER in a resample or a render-last offline context (renderO
     const B = await bounce();
     assert.deepEqual([B.off.nodes.filter(n => n.name === 'synth-master').length, B.off.nodes[B.off.nodes.length - 1].name], [1, 'synth-master'], 'a bounce: one, last');
   } finally { console.error = ce; }
+});
+
+test('MM phase 0 (IMPL-MM §4.1, §9.0): masterRec() is one session constant, track-shaped — its dev lists mfx (the rack: fx reads masterFx()), out and project.master.mdev; a write / delete lands in mdev (project.master made on the first write only, the rack kept detached); mods / mid / lay forward; JSON.stringify(project) never meets the Proxy; devicesOf / tidy take it; the owner indirection (mOwn, ownerById, ownerNode, shownId)', async () => {
+  const MM = M.mod, R = MM.rec();
+  assert.equal(MM.rec() === R, true, 'one constant');
+  delete P().master;
+  assert.deepEqual([R.id, R.name, Object.keys(R.dev), R.dev.mfx.kind, R.dev.out.kind, 'mfx' in R.dev, 'l1' in R.dev, R.mods, R.mid, R.lay, R.wires.length], ['master', 'Master', ['mfx', 'out'], 'panel', 'out', true, false, undefined, undefined, undefined, 1]);
+  assert.equal(R.dev.mfx.fx === M.fx(), true, 'the rack device: masterFx() (the detached default while the project has none)');
+  assert.equal('master' in P(), false, 'a read makes no key');
+  R.dev.l1 = S.normModDev({ kind: 'lfo', lfo: { mono: 1 } });
+  assert.deepEqual([Object.keys(R.dev), 'l1' in R.dev, R.dev.l1.kind, P().master.mdev.l1 === R.dev.l1, 'fx' in P().master], [['mfx', 'out', 'l1'], true, 'lfo', true, false], 'a write lands in project.master.mdev; the rack stays detached (no empty chain, no key for it)');
+  R.dev.mfx = { kind: 'panel', fx: 1 }; R.dev.out = 2; // (ignored: never on mfx / out)
+  assert.deepEqual([R.dev.mfx.kind, R.dev.out.kind, 'mfx' in P().master.mdev, 'out' in P().master.mdev], ['panel', 'out', false, false]);
+  R.mods = [{ id: 'r1', src: 'l1.out', dst: 'mfx:fx.x.mix' }]; R.mid = 2; R.lay = { l1: { x: 0, y: 0 } };
+  assert.deepEqual([P().master.mods.length, P().master.mid, P().master.lay.l1.x, R.mods === P().master.mods, R.mid, R.lay === P().master.lay], [1, 2, 0, true, 2, true]);
+  const j = JSON.parse(JSON.stringify(P()));
+  assert.deepEqual([Object.keys(j.master).sort(), Object.keys(j.master.mdev)], [['lay', 'mdev', 'mid', 'mods'], ['l1']], 'the project serialises its own data: no mfx / out, no Proxy, no fx');
+  const dd = Object.getOwnPropertyDescriptor(R.dev, 'l1');
+  assert.deepEqual([dd.enumerable, dd.configurable, Object.getOwnPropertyDescriptor(R.dev, 'zz'), Object.getOwnPropertyDescriptor(R.dev, 'mfx').value === R.dev.mfx], [true, true, undefined, true]);
+  assert.deepEqual(cvModule.devicesOf(R).map(d => d.key + ':' + d.kind), ['mfx:fx', 'out:out', 'l1:mod'], 'the view lists the rack, the OUT and the modulators');
+  const lay = cvModule.tidy(R, {}, cvModule.devicesOf(R));
+  assert.deepEqual([Object.keys(lay).sort(), lay.l1.x < 0, lay.mfx.x, lay.out.x > lay.mfx.x], [['l1', 'mfx', 'out'], true, 0, true], 'Tidy: the modulator column left of the rack');
+  delete R.dev.l1;
+  assert.deepEqual([Object.keys(R.dev), 'l1' in P().master.mdev, Object.keys(P().master.mdev)], [['mfx', 'out'], false, []]);
+  // the owner indirection (lane H adopts it; the hooks reach it now)
+  assert.deepEqual([MM.own() === T(), MM.byId('master') === R, MM.byId(T().id) === T(), MM.byId('trk_zz'), MM.node(R) === M.rec(), MM.node(T()) === api.nodes.get(T().id), MM.shown()], [true, true, true, null, true, true, P().selTrack]);
+  M.open(); await settle(1);
+  assert.deepEqual([M.on(), MM.own() === R, MM.shown()], [true, true, 'master']);
+  M.off(); await settle(1);
+  assert.deepEqual([M.on(), MM.own() === T(), MM.shown()], [false, true, P().selTrack]);
+  // the record outlives the project object: an undo replaces `project`, the getters read the one there now
+  delete P().master;
+  assert.deepEqual([MM.rec() === R, Object.keys(R.dev), R.mods, 'master' in P()], [true, ['mfx', 'out'], undefined, false]);
+  assert.equal(tracksJSON(), tracksJSON(), 'no track written');
 });

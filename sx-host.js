@@ -1541,6 +1541,7 @@ const mkPage = (el, opts) => ({ el: el || null, binds: [], canvases: [], editors
 //   nameMax  macro names' limit (the rename prompt and the tile input)
 //   tiles    'drag' (Serum's source tiles: drag onto a control) | 'jack' (data-jack="k<n>": the canvas cable's start)
 //   srcItems () => extra module-menu items (the LFO / ENV / chaos panels' Bypass / Remove All Destinations)
+//   monoLock (MM; a slot host's with o.lock.mono only — not in HOST_OPTS) an LFO's / a Chaos row's MONO switch locked on (sx-ui-mod)
 export const HOST_OPTS = Object.freeze({ bare: false, nomod: false, links: true, ghosts: true, learn: true, undo: true, lock: true,
   wt2lfo: true, osc: true, nameMax: 24, tiles: 'drag', srcItems: null });
 // knobMenuItems-style items without leading, trailing or doubled separators (after a filter took items out)
@@ -4222,6 +4223,8 @@ const call = (f, ...a) => { try { return typeof f === 'function' ? f(...a) : und
 //   bpm?(), storage? (the app's: preferences, the shape library), notify?(text),
 //   rows?: { count() → n, bypassed() → bool, bypass(on), remove() } the module's track.mods rows (its ⋯ menu's Bypass /
 //          Remove All Destinations, one History step each),
+//   lock?: { mono: 1 }  (MM, IMPL-MM §7.2: the master's modulators — it has no notes) an LFO's and a Chaos row's MONO switch shows
+//          GLOBAL, disabled, its tap ignored (kit.opts.monoLock; a presentation: the host forces the field too); no lock = unchanged,
 //   view?: {} kept by the caller per module for the session (trackId/dev): the editor zoom, grid, tool survive a remount,
 //   devKey?: the module id (data-dev of its root) }.
 // View edits (zoom, LOCK fit, the LFO grid, the drawing tool) never reach the device. The returned host has .kind,
@@ -4278,8 +4281,8 @@ export function slotHost(dev, o) {
       { label: 'Remove All Destinations', disabled: !n, action: () => call(rows && rows.remove) },
     ];
   };
-  const H = new SerumHost(host, { doc: O.doc, wkPrefs: !!O.storage, opts: { bare: true, nomod: true, links: false, ghosts: false, learn: false, undo: false,
-    lock: false, wt2lfo: false, osc: false, nameMax: 16, tiles: 'jack', srcItems } });
+  const H = new SerumHost(host, { doc: O.doc, wkPrefs: !!O.storage, opts: Object.assign({ bare: true, nomod: true, links: false, ghosts: false, learn: false, undo: false,
+    lock: false, wt2lfo: false, osc: false, nameMax: 16, tiles: 'jack', srcItems }, isObj(O.lock) && O.lock.mono ? { monoLock: 1 } : null) });
   if (isObj(V.uiState)) H.uiState = V.uiState; else V.uiState = H.uiState;
   H.kind = kind;
   H.slot = SLOT[kind];

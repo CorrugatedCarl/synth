@@ -640,7 +640,7 @@ test('a project with all three machines (§6): Save, reopen — each track its m
   api.selectTrack(t9.id); sim.raf(); await settle();
   const tr = [t9.id, t8.id, t6.id], pk0 = tr.map(id => sent(byId(id), 'seq').at(-1).s.pk);
   const txt = await cv.projectFile(), o = JSON.parse(txt);
-  assert.deepEqual([o.schema, CM.SCHEMA], [16, 16], 'schema 16 (stage WC: the rig; SC was 15, sidechain ducking; M was 14, the master; P was 13, no artificial caps; stage 9 was 12, patchable modules; stage 8 was 11, the pad controller and the SDS-V)');
+  assert.deepEqual([o.schema, CM.SCHEMA], [17, 17], 'schema 17 (stage MM: the master\'s modulators; WC was 16, the rig; SC was 15, sidechain ducking; M was 14, the master; P was 13, no artificial caps; stage 9 was 12, patchable modules; stage 8 was 11, the pad controller and the SDS-V)');
   const p = acc.loadProject(JSON.parse(txt), { file: true });
   assert.deepEqual(tr.map(id => CMOD.instOf(p.tracks.find(x => x.id === id)).model), ['tr909', 'tr808', 'tr606']);
   assert.deepEqual(tr.map(id => JSON.stringify(CMOD.instOf(p.tracks.find(x => x.id === id)).drum) === JSON.stringify(D(byId(id)))), [true, true, true], 'the three records round-trip');
@@ -652,7 +652,7 @@ test('a project with all three machines (§6): Save, reopen — each track its m
   const idb = fakeIDB(), seed = await AS.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: CM.SCHEMA });
   seed.saveProject(o); await seed.flush(); await seed.close();
   const old = await AS.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 9 });
-  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 16], 'a schema-9 build: read-only');
+  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 17], 'a schema-9 build: read-only');
   await old.close();
   assert.equal(acc.loadProject(Object.assign(JSON.parse(txt), { schema: CM.SCHEMA + 1 }), { file: true }).newerSchema, CM.SCHEMA + 1, 'a newer file opens read-only here');
   api.deleteTrack(byId(t6.id)); sim.raf(); await settle();

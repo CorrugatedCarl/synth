@@ -22,6 +22,10 @@
 // the rig's — Oscillator, Sub oscillator, Noise, Filter, Envelope, LFO, Macros; Arpeggiator and Clip sequencer arrive with the next cut,
 // RIG_CUT, so WC-1's Note tools section is a placeholder), their headings written from the constant into the host's sections, rigFull's
 // "full" texts for setPartPlaced; the Serum view keeps its tile and the modulators.
+// Stage MM (IMPL-MM §7.3; lane U): the Sources tray on the master canvas (sourcesTray setMaster(on)): the master has no notes, so the tray shows
+// the Modulators section alone with the four tiles it takes (MASTER_MODS: LFO, Macro, CC, Chaos) and a short note (MASTER_NOTE); the view
+// menu, every model / set / Moog / rig tile and the Controllers row hide, the view the user chose is kept underneath; MASTER_SRC is the
+// refusal text for an instrument dropped or picked there.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -569,6 +573,11 @@ export function sideTray(el, o) {
 // true, info.over 'canvas' or null, info.at the world point, the ghost hidden over the canvas while o.ctlCanvasGhost (else
 // o.modCanvasGhost)() says the world draws an outline. setPlaced(id, reason | null) greys a tile with its reason (not `multi`: a Pads
 // module's tile greys only at the project's 8th); ctlTiles() / ctlTile(id).
+// (MM, IMPL-MM §7.3) setMaster(on) — the master canvas's tray (master() says): the view menu (o.layoutEl, else o.viewBtn) hides and an open one
+// closes; every model, set, Moog, rig-part and Controllers tile / section hides; the Modulators section shows only the tiles of o.masterMods
+// (ids; default MASTER_MODS) with a note, p.cv-tnote.cv-mnote (o.masterNote; default MASTER_NOTE), under its tiles; o.tray gets the class
+// cv-mside and the list data-master="1"; o.noteEl (the view's note) is cleared. The chosen view is kept: setView still records it, leaving
+// (setMaster(false)) shows that view as it would have been. A tray without o.mods has no master tiles: everything hides, nothing is added.
 // (8) The SDS-V (family 'drums', no sequencer) is a Drums tile like the others: DR_META names it "drum synth".
 const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymbals are our own sounds through its playback circuit, not recordings', // (7c, IMPL-7c §8.2)
   sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
@@ -703,6 +712,13 @@ export const MOD_TILES = Object.freeze([
   { id: 'macro', name: 'Macro', scope: 'track', multi: true }, { id: 'cc', name: 'CC', scope: 'track', multi: true },
   { id: 'chaos', name: 'Chaos', scope: 'track', multi: true },
 ].map(Object.freeze));
+/** (MM, IMPL-MM §7.3) The Modulators the master takes (no notes there: no ENV, Velocity, Aftertouch, Bend, Note, Mod Wheel — an LFO in ENV
+ * mode already runs once from ▶; a CC module is the hardware wheel): ids of MOD_TILES; the host may pass its own as o.masterMods. */
+export const MASTER_MODS = Object.freeze(['lfo', 'macro', 'cc', 'chaos']);
+/** (MM) The note under the master's tiles (o.masterNote overrides): what the master has, in plain words. */
+export const MASTER_NOTE = 'The master has no notes: its modulators are LFOs, Macros, CC and Chaos. Drop one on the canvas and cable its jack to any knob of the master rack.';
+/** (MM) The master canvas's refusal of an instrument (a drop or a pick) and of a modulator it does not take: the one line it says. */
+export const MASTER_SRC = 'The master takes effects (the rack’s +) and modulators (Sources ▸ Modulators)';
 // original monochrome glyphs (stroked with currentColor): a wheel, velocity bars, an aftertouch pad, a bend curve, (2b) a
 // sine with a point, an ADSR, four macro dials, a CC fader, a scribble, a key
 const MOD_GLYPH = {
@@ -721,7 +737,8 @@ const modGlyph = id => MOD_GLYPH[id] || '<svg viewBox="0 0 40 28" aria-hidden="t
 export function sourcesTray(el, o) {
   const d = docOf(o, el);
   const VIEWS = Array.isArray(o.views) && o.views.length ? o.views : SRC_VIEWS, viewOf = v => VIEWS.find(V => V.id === v) || VIEWS[0];
-  let mode = 'replace', cur = null, lay = 'hw', view = viewOf(o.view || o.layout).id;
+  let mode = 'replace', cur = null, lay = 'hw', view = viewOf(o.view || o.layout).id, master = false;
+  const MM = new Set(Array.isArray(o.masterMods) ? o.masterMods.filter(x => typeof x === 'string') : MASTER_MODS); // (MM) the master's tiles
   const tiles = new Map(), offs = [];
   const labelOf = (id, over) => (o.label ? o.label(id, over) : over === 'tracks' ? '+ New track' : '');
   // (9b, IMPL-9b §4.3) the set tiles: one button.cv-tile.cv-stile[data-set] per o.sets item (its art cv-art setArt, the name, "N
@@ -786,7 +803,7 @@ export function sourcesTray(el, o) {
   if (ST) setTiles(o.setsEl || el); // ((9b) in their own box, or after the synths when no patch model is listed)
   // (2a) the Modulators section
   const mtiles = new Map(), placed = new Map();
-  let mhead = null;
+  let mhead = null, mnote = null;
   if (Array.isArray(o.mods) && o.mods.length) {
     const box = o.modsEl || el;
     if (!o.modsEl) { const hd = mk(d, 'h3', 'cv-tgrp cv-mhead', 'Modulators'); el.appendChild(hd); mhead = hd; offs.push(() => hd.remove()); }
@@ -819,6 +836,17 @@ export function sourcesTray(el, o) {
       mtiles.set(id, { b, rs, tip, name, multi: !!m.multi });
       offs.push(() => b.remove());
     }
+  }
+  // (MM) the master's note, made at the first visit of the master canvas (the other canvases' tray is as it was, node for node): under the
+  // tiles, in their section (else right after the last tile in the list); hidden again when the master canvas is left
+  function masterNoteEl() {
+    if (mnote || !mtiles.size) return mnote;
+    mnote = mk(d, 'p', 'cv-tnote cv-mnote', typeof o.masterNote === 'string' && o.masterNote ? o.masterNote : MASTER_NOTE);
+    const home = o.modsSec || (o.modsEl && o.modsEl.parentNode);
+    if (home) home.appendChild(mnote);
+    else { const last = [...mtiles.values()].pop().b, kids = Array.from(el.childNodes || []), at = kids.indexOf(last); el.insertBefore(mnote, at >= 0 ? kids[at + 1] || null : null); }
+    offs.push(() => { mnote.remove(); mnote = null; });
+    return mnote;
   }
   // (8) the Controllers section: a tile row of its own (a Modulators-style one: not the Serum parts' tiles), one tile per o.ctls item
   const ctiles = new Map();
@@ -1041,7 +1069,7 @@ export function sourcesTray(el, o) {
       }), () => P.destroy());
   }
   function setView(v) {
-    const V = viewOf(v), S = V.sections || [], has = id => S.some(x => x && x.id === id);
+    const V = viewOf(v), S = master ? [] : V.sections || [], has = id => S.some(x => x && x.id === id); // (MM) on the master canvas no view's sections: only its Modulators (below)
     view = V.id;
     if (V.layout) lay = V.layout === 'flow' ? 'flow' : 'hw';
     el.setAttribute('data-layout', lay);
@@ -1052,9 +1080,13 @@ export function sourcesTray(el, o) {
       b.hidden = !S.some(x => x && typeof x.models === 'function' && x.models(m));
       if (CLASSIC(m)) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
     }
-    const mods = has('mods') && mtiles.size > 0;
+    const mods = master ? [...mtiles.keys()].some(id => MM.has(id)) : has('mods') && mtiles.size > 0;
     if (o.modsSec) o.modsSec.hidden = !mods;
-    if (mhead) { mhead.hidden = !mods; for (const T of mtiles.values()) T.b.hidden = !mods; }
+    if (mhead) mhead.hidden = !mods;
+    if (master) for (const [id, T] of mtiles) T.b.hidden = !MM.has(id); // (MM) the master's four
+    else if (mhead || modsMasterHid) { for (const T of mtiles.values()) T.b.hidden = mhead ? !mods : false; modsMasterHid = false; }
+    if (master) modsMasterHid = true;
+    if (master && mods) masterNoteEl().hidden = false; else if (mnote) mnote.hidden = true;
     const ctls = has('ctls') && ctiles.size > 0; // ((8) the Controllers row)
     if (o.ctlsSec) o.ctlsSec.hidden = !ctls;
     if (chead) { chead.hidden = !ctls; for (const T of ctiles.values()) T.b.hidden = !ctls; }
@@ -1079,9 +1111,30 @@ export function sourcesTray(el, o) {
       vbtn.title = (V.tip || V.label) + ' — tap for the other views';
     }
     for (const [id, b] of vitems) b.setAttribute('aria-checked', String(id === view));
-    if (o.noteEl) o.noteEl.textContent = V.note || '';
+    if (o.noteEl) o.noteEl.textContent = master ? '' : V.note || '';
   }
+  let modsMasterHid = false; // (MM) the master hid some Modulators tiles one by one: the next normal setView shows them again (a sectioned list never touches its tiles' hidden otherwise)
   setView(view);
+  // (MM) the master canvas's tray: the view's sections give way to the Modulators' four tiles and their note (setView above reads `master`)
+  function setMaster(on) {
+    const m = !!on;
+    if (m === master) return;
+    master = m;
+    if (m && vpop) vpop.close();
+    const vh = host || vbtn;
+    if (vh) vh.hidden = m;
+    if (o.tray && o.tray.classList) o.tray.classList.toggle('cv-mside', m);
+    if (m) el.setAttribute('data-master', '1'); else el.removeAttribute('data-master');
+    setView(view);
+  }
+  offs.push(() => { // (MM) destroy gives the view menu, the tray's class and the attribute back
+    if (!master) return;
+    master = false;
+    const vh = host || vbtn;
+    if (vh) vh.hidden = false;
+    if (o.tray && o.tray.classList) o.tray.classList.remove('cv-mside');
+    el.removeAttribute('data-master');
+  });
   function setPlaced(id, reason) {
     const T = mtiles.get(id) || ctiles.get(id) || gtiles.get(id); // ((8) a Controllers tile too; (9) a Moog module's)
     if (!T || T.multi) return; // ((2b) a multi-instance tile never greys out)
@@ -1140,6 +1193,8 @@ export function sourcesTray(el, o) {
       }
     },
     setMode(m) { mode = m === 'track' ? 'track' : 'replace'; el.setAttribute('data-mode', mode); },
+    /** (MM, IMPL-MM §7.3) The master canvas's tray: on → the Modulators' master tiles and note alone (see above); off → the chosen view again */
+    setMaster, master: () => master,
     mode: () => mode,
     current: () => cur,
     tiles: () => [...tiles.values()],

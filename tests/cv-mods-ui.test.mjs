@@ -251,6 +251,26 @@ test('(milestone 3) body edits: a knob gesture → live per move, ONE edit at th
   for (const R of [L, N, Mc, E]) R.B.destroy();
 });
 
+test('(MM, IMPL-MM §7.2) the MONO lock through the body: lock: { mono: 1 } reaches the slot host — the LFO\'s and the Chaos row\'s MONO switch is lit, disabled, its tap makes no call (no live, no edit); without it (the tracks\' modules) the tap edits as before; the other kinds ignore the option', async () => {
+  await U.ready();
+  const monoOf = B => B.el.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'MONO');
+  for (const [kind, st0, field] of [['lfo', { lfo: { mono: 0 } }, 'lfo'], ['chaos', { chaos: { mono: 0, sh: 0 } }, 'chaos']]) {
+    const L = srig(kind, st0, { lock: { mono: 1 } });
+    const m = monoOf(L.B);
+    sweep.deepEqual([m.getAttribute('aria-pressed'), m.getAttribute('aria-disabled'), m.title], ['true', 'true', 'The master’s modulators are global (it has no notes)'], kind + ': locked');
+    m.click(); m.click();
+    sweep.deepEqual([L.calls, L.st[field].mono], [[], 0], kind + ': a tap changes nothing');
+    L.B.destroy();
+    const T0 = srig(kind, st0);
+    const m0 = monoOf(T0.B);
+    sweep.deepEqual([m0.getAttribute('aria-pressed'), m0.getAttribute('aria-disabled')], ['false', null], kind + ': a track\'s module: as before');
+    m0.click();
+    sweep.deepEqual([T0.calls.length, T0.calls[0][0], T0.st[field].mono], [1, 'edit', 1], kind + ': its tap edits');
+    T0.B.destroy();
+  }
+  for (const kind of ['env', 'macro']) { const R = srig(kind, {}, { lock: { mono: 1 } }); sweep.ok(R.B.host(), kind + ': built'); sweep.equal(monoOf(R.B), undefined, kind + ': no MONO'); R.B.destroy(); }
+});
+
 test('ccBody (2b): the controller numBox (0…127, one edit per key), the channel menu (Omni / 1…16), Learn arms o.learn(true) and shows it (setLearn from the host), the value meter', () => {
   const learns = [];
   const R = rig('cc', { cc: 7, ch: 0, v: 0.5 }, { learn: on => learns.push(on) }), B = R.B;

@@ -435,7 +435,7 @@ test('§1.1 / §6: Save / reload identical (schema 16 since stage WC, 15 at SC, 
   const t = T(), d = dev(t), m993 = midOf('993');
   cv.patch.knobSet(t, d, m993, 'e1', 1); await settle();
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.equal(p2.schema, 16);
+  assert.equal(p2.schema, 17); // ((MM) 17 since the master's modulators)
   for (const x of P().tracks) {
     const u = p2.tracks.find(y => y.id === x.id), k = CMOD.primId(x);
     if (!cv.isPatchDev(x, k)) continue;

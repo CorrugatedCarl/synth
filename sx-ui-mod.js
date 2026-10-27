@@ -18,6 +18,9 @@
 //   partView(part)   'oscB' → { kind: 'osc', k: 1 } … (serum-core MODULE_FIELDS names, 'macros', 'voice')
 //   mountPart(host, part, root, args)   host.mount of a Serum part (args.bare default true: the canvas bar's chrome)
 //   mountSlot(slotHost, root, args)     the panel of a canvas modulator's slot host (cv-mods-ui's bodies)
+//   MONO_LOCK_TIP    (MM, IMPL-MM §7.2) the tip of a locked MONO switch: a slot host made with lock: { mono: 1 } (the master's
+//                    modulators; it has no notes) shows an LFO's / a Chaos row's MONO lit, disabled, its tap ignored — but said:
+//                    the kit's notice with the tip (MM UI fixer, review MM-2 P3-2: touch has no hover tip)
 // The view kinds registered on sx-host (defineView): osc, sub, noise, filter, env, lfo, macros, voicing, chaos, curve,
 // arp, clip, voice, quality, tuning, mpe, vc, outputs, header.
 // Panels reach the host through the kit (kit.sx for the host services VOICE's header and the GLOBAL panels use).
@@ -70,6 +73,10 @@ const COL = { osc: 'O', sub: 'SN', noise: 'SN', filter: 'F', macros: 'C', env: '
 
 /* ================================================================ small helpers */
 const pToggle = (K, o) => K.bind(wk.toggle(Object.assign({ kind: 'led' }, o)));
+/** (MM, IMPL-MM §7.2) The tip of a MONO switch locked on by its slot host (sx-host slotHost o.lock.mono → kit.opts.monoLock). */
+export const MONO_LOCK_TIP = 'The master’s modulators are global (it has no notes)';
+// ((MM UI fixer, review MM-2 P3-2) a locked MONO: its tip, and a tap says it (touch has no hover tip) — the kit's notice
+const monoSay = (K, el) => { el.title = MONO_LOCK_TIP; el.addEventListener('click', e => { if (!e.defaultPrevented) K.notify(MONO_LOCK_TIP); }); };
 const pSeg = (K, o) => K.bind(segField(K.doc, o));
 const pNum = (K, o) => K.bind(numField(K.doc, o));
 const row = (d, ...els) => { const r = mk(d, 'div', 'sx-krow'); r.append(...els.filter(Boolean)); return r; };
@@ -377,9 +384,12 @@ export class LfoPanel {
       get: () => lf().type || 'normal', set: v => { lfoEd(o => { o.type = v; }, 'type'); redraw(K); } }));
     const mode = pSeg(K, { label: 'LFO mode', items: ['FREE', 'RETRIG', 'ENV'], get: () => Math.max(0, LFO_MODES.indexOf(lf().mode)),
       set: i => lfoEd(o => { o.mode = LFO_MODES[i]; }, 'mode') });
+    const monoLock = !!opt(K, 'monoLock', false);   // (MM) a slot host on the master: no notes, so GLOBAL for good — MONO lit, disabled, the tap ignored
     const sw = (label, key, dis, title) => {
-      const w = pToggle(K, { label, kind: 'btn', get: () => lf()[key], disabled: dis, set: v => lfoEd(o => { o[key] = v ? 1 : 0; }, label.toLowerCase()) });
-      if (title) w.el.title = title;
+      const lk = monoLock && key === 'mono';
+      const w = pToggle(K, { label, kind: 'btn', get: lk ? () => 1 : () => lf()[key], disabled: lk ? () => true : dis,
+        set: v => { if (lk) return; lfoEd(o => { o[key] = v ? 1 : 0; }, label.toLowerCase()); } });
+      if (lk) monoSay(K, w.el); else if (title) w.el.title = title;
       return w.el;
     };
     const noBpm = () => !lf().bpm;
@@ -533,9 +543,13 @@ export class ChaosRow {
   }
   // the row alone (the bundled CHAOS (S1) panel holds two): its label, RATE, BPM, MONO, S&H
   static row(K, c, label) {
-    const d = K.doc, P = 'c' + (c + 1);
-    const sw = (lab, k) => pToggle(K, { label: lab, kind: 'btn', get: () => K.s().chaos[c][k],
-      set: v => K.edit(s => { s.chaos[c][k] = v ? 1 : 0; }, { label: 'Chaos ' + (c + 1) + ' ' + lab.toLowerCase() }) }).el;
+    const d = K.doc, P = 'c' + (c + 1), monoLock = !!opt(K, 'monoLock', false);   // (MM) the master's Chaos: mono for good (see LfoPanel)
+    const sw = (lab, k) => {
+      const lk = monoLock && k === 'mono', w = pToggle(K, { label: lab, kind: 'btn', get: lk ? () => 1 : () => K.s().chaos[c][k], disabled: lk ? () => true : undefined,
+        set: v => { if (lk) return; K.edit(s => { s.chaos[c][k] = v ? 1 : 0; }, { label: 'Chaos ' + (c + 1) + ' ' + lab.toLowerCase() }); } });
+      if (lk) monoSay(K, w.el);
+      return w.el;
+    };
     return row(d, label === false ? null : mk(d, 'span', 'sx-txt', typeof label === 'string' ? label : 'CHAOS ' + (c + 1)), K.knob(P + '.rate', { label: 'RATE', size: 'sm' }).el,
       K.toggle(P + '.bpm', { label: 'BPM', kind: 'btn' }).el, sw('MONO', 'mono'), sw('S&H', 'sh'));
   }

@@ -13,7 +13,7 @@
 // input's change, a menu pick); (3) live?(fields): a gesture's moves (the first opens the step, each writes and reposts);
 // cancel?(): a gesture that ended where it began after live writes; set?(k, v): a macro knob's live value per move (the
 // host posts {t:'mval'}: no History, no patch); learn?(on): the CC body's Learn button arms / disarms MIDI learn; bpm?:
-// () => the project tempo; (3) rows?, storage?, notify?, view?, devKey? (slotBody) }. A body reads the state through
+// () => the project tempo; (3) rows?, storage?, notify?, view?, devKey?, (MM) lock? (slotBody) }. A body reads the state through
 // o.get(): after an undo / redo / external edit the host calls sync(). State shapes (IMPL-2b §1.1, mirroring Serum's:
 // the object serum-core normalises plus the p values):
 //   lfo    { kind: 'lfo', lfo: <normLfo shape: mode, mono, bpm, dot, trip, pts, …>, rate: n }  rate = Serum's l<k>.rate n
@@ -266,7 +266,8 @@ export const SLOT_KINDS = Object.freeze(['lfo', 'env', 'macro', 'chaos']);
  * The body of an LFO / ENV / Macro / Chaos module: Serum's panel over a slot host. o = { doc?, get: () => the device
  * record, edit(fields) (one History step), live?(fields), cancel?(), set?(k, v) (macro knob moves), bpm?(), rows?: { count,
  * bypassed, bypass(on), remove } (its ⋯ menu's Bypass / Remove All Destinations), storage?, notify?, view? (kept by the
- * host per module: zoom, grid, tool), devKey? }. → { el, update(v), sync(), menuItems(), host(), view(), destroy() };
+ * host per module: zoom, grid, tool), devKey?, lock?: { mono: 1 } (MM, IMPL-MM §7.2: the master's LFO / Chaos have no notes — their MONO switch
+ * shows GLOBAL, disabled; a presentation, the host forces the field too) }. → { el, update(v), sync(), menuItems(), host(), view(), destroy() };
  * update(v): the monitor — a level, or { v, ph, y, out } (an LFO's phase dot / PATH playhead), { v, stage, t } (an ENV's
  * playhead); a macro body ignores it (its knobs show the values).
  * @param {'lfo'|'env'|'macro'|'chaos'} kind
@@ -278,7 +279,7 @@ export function slotBody(kind, o) {
   const build = () => {
     if (dead || H || !SX) return;
     H = SX.host.slotHost(kind, { get: O.get, live: O.live, edit: O.edit, cancel: O.cancel, set: kind === 'macro' ? O.set : undefined, bpm: O.bpm,
-      rows: O.rows, storage: O.storage, notify: O.notify, view: O.view, devKey: O.devKey, doc: d });
+      rows: O.rows, storage: O.storage, notify: O.notify, view: O.view, devKey: O.devKey, lock: O.lock, doc: d });
     V = SX.mod.mountSlot(H, el);
     if (pend !== null) H.live(pend);
   };

@@ -695,11 +695,35 @@ export function normMods(list) {
 // Stage 2a: project.perf, the project's performance modules (D9): { wheel: { v: 1 } | null } — anything else null
 export const normPerf = x => ({ wheel: isObj(x) && isObj(x.wheel) ? { v: 1 } : null });
 // Stage M (IMPL-M §2.3, schema 14): project.master — { fx: the master FX rack (FX v2; copied as a panel's is: its validation is
-// the host's), lay: the master canvas's module places (normLay) }; nothing valid → undefined (absent = an empty master: no key)
+// the host's), lay: the master canvas's module places (normLay) }; stage MM (IMPL-MM §5, schema 17): + mdev (the master's modulator
+// modules — lfo / macro / cc / chaos, each under its kind's id prefix, normModDev's record with lfo.mono / chaos.mono forced to 1: the
+// master plays no notes, so a per-note mode means nothing there; any other key or kind dropped; DEV_MAX), mods (normMods: their cables
+// onto the master rack's knobs, 'mfx:fx.<inst>.<pid>') and mid (the next row number, a track's rule); nothing valid → undefined
+// (absent = an empty master: no key)
+export const MASTER_MOD_KINDS = Object.freeze(['lfo', 'macro', 'cc', 'chaos']);
+const MASTER_MOD_RE = { lfo: /^l[1-9]\d{0,5}$/, macro: /^m[1-9]\d{0,5}$/, cc: /^c[1-9]\d{0,5}$/, chaos: /^h[1-9]\d{0,5}$/ };
+function normMasterDev(d) {
+  if (!isObj(d)) return undefined;
+  const out = {};
+  let n = 0;
+  for (const k of Object.keys(d)) {
+    if (n >= DEV_MAX) break;
+    const x = d[k];
+    if (k === '__proto__' || !isObj(x) || typeof x.kind !== 'string' || !MASTER_MOD_KINDS.includes(x.kind) || !MASTER_MOD_RE[x.kind].test(k)) continue;
+    const o = normModDev(x);
+    if (o.kind === 'lfo' && isObj(o.lfo)) o.lfo.mono = 1;
+    if (o.kind === 'chaos' && isObj(o.chaos)) o.chaos.mono = 1;
+    out[k] = o; n++;
+  }
+  return n ? out : undefined;
+}
 export function normMaster(m) {
   if (!isObj(m)) return undefined;
-  const o = {}, lay = normLay(m.lay);
+  const o = {}, lay = normLay(m.lay), mdev = normMasterDev(m.mdev), mods = normMods(m.mods);
   if (isObj(m.fx)) o.fx = m.fx;
+  if (mdev) o.mdev = mdev;
+  if (mods.length) o.mods = mods;
+  if (mods.length || (finN(m.mid) && m.mid >= 1)) o.mid = clamp(Math.max(R(num(m.mid, 1)), ...mods.map(x => +x.id.slice(1) + 1), 1), 1, 1e6);
   if (lay) o.lay = lay;
   return Object.keys(o).length ? o : undefined;
 }

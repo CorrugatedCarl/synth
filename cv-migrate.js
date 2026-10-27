@@ -51,6 +51,10 @@
 //      → rig-core normRig) and a Serum shown as parts opens WHOLE: STEPS[15] drops the lay entry's ui 'parts' (its 'iN/*' entries stay for
 //      "Make it a <NAME>") and names the track in upgrade()'s `notes`. A schema-15 build would read 'rig' as a Minimoog (modelById's
 //      fallback), drop `rig` and autosave the loss: it opens a 16 read-only. toV1 saves a rig as a Serum (the same vals.s / fx: the same sound)
+//  17  stage MM (IMPL-MM §5): the master's modulators — project.master.mdev (the modulator modules: lfo / macro / cc / chaos by their id prefix,
+//      song.normMaster), .mods (their cables onto the master rack's knobs, normMods) and .mid: additive, the identity (STEPS[16] changes nothing
+//      stored). A schema-16 build's normMaster whitelists fx and lay only: it would drop all three and autosave the loss — it opens a 17 read-only.
+//      toV1 names them in `lost` (main has no master)
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -110,7 +114,7 @@ import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (sta
 import { RIG } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it)
 
 export { schemaOf };
-export const SCHEMA = 16;
+export const SCHEMA = 17;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -168,6 +172,9 @@ export const STEPS = Object.freeze([
   // "Make it a <NAME>" reuses), the track named in `notes` (partsWhole). Sound-neutral: lay only (IMPL-3 N2). A schema-15 build would read
   // 'rig' as a Minimoog (modelById's fallback), drop `rig` and autosave the loss: it opens a 16 read-only
   (p, notes) => Object.assign(partsWhole(p, notes), { schema: 16 }),
+  // 16 → 17: stage MM (IMPL-MM §5): project.master.mdev / mods / mid — the master's modulator modules and their cables — are additive: the
+  // identity; the bump keeps a schema-16 build from dropping them (its normMaster whitelists fx and lay only) and autosaving the loss
+  p => Object.assign({}, p, { schema: 17 }),
 ]);
 
 export function upgrade(o) {
@@ -288,6 +295,10 @@ export function toV1(p0) {
   if (isObj(p.perf) && p.perf.wheel) lost.push('the Mod Wheel');
   if (Array.isArray(p.pads) && p.pads.length) lost.push(`the Pads controllers (${p.pads.length})`); // (stage 8: main has no pad controller; their mod rows are in each track's cable count)
   { const n = masterCount(p.master); if (n) lost.push(`the master effects (${n})`); } // (stage M: main has no master rack; an empty one says nothing)
+  { // (stage MM, IMPL-MM §5.3: main has no master modulators — their modules and cables go with the master)
+    const m = p.master, d = isObj(m) && isObj(m.mdev) ? m.mdev : null, n = d ? Object.keys(d).filter(k => isObj(d[k])).length : 0, c = isObj(m) && Array.isArray(m.mods) ? m.mods.length : 0;
+    if (n || c) lost.push(`the master modulators (${n} module${n === 1 ? '' : 's'}, ${c} cable${c === 1 ? '' : 's'})`);
+  }
   delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads; delete p.master;
   // (WC, IMPL-WC §2.4) a rig becomes a Serum device with the same vals.s / fx / preset — main opens it as a bundled Serum, the same
   // sound (W2); its `rig` record (cord colours, module ordinals) and its modules' lay entries 'iN/<part>' go ('iN/fx' is a Serum's too: kept)
