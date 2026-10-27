@@ -141,6 +141,16 @@ test('§3.5 the first drop: an Oscillator tile on the Juno REPLACES it — one s
   assert.deepEqual([I().model, ends()], ['rig', 'oscA.out>voice.main']);
 });
 
+test('(the FX look, 2026-10-26: "make this effects panel in the style of wavecraft as well", on every track) every FX module carries data-cv-fx — the rig\'s own FX, a classic track\'s FX panel — and no other module (the Amplifier, a part, OUT); never data-cv-rig; the world wears the skin', async () => {
+  const marks = () => [...cv.view().modules].map(([k, m]) => k + (m.el.hasAttribute('data-cv-fx') ? ':fx' : '') + (m.el.hasAttribute('data-cv-rig') ? ':rig' : '')).sort().join(' ');
+  assert.equal(marks(), 'i1/fx:fx i1/oscA:rig i1:rig out');
+  assert.equal(cv.world().el.getAttribute('data-cv-skin'), 'charcoal');
+  cv.undo(); await settle(3);
+  assert.equal(marks(), 'fx1:fx i1 out', 'the Juno: its FX panel');
+  cv.redo(); await settle(3);
+  assert.equal(marks(), 'i1/fx:fx i1/oscA:rig i1:rig out');
+});
+
 const peak = (x, a = 0, b = x.length) => { let m = 0; for (let i = a; i < b; i++) { const v = Math.abs(x[i]); if (v > m) m = v; } return m; };
 const node = (t = T()) => sim.nodeOf(t.id);
 

@@ -6522,7 +6522,7 @@ function cvRender() {
     monitors.sync();
   }
   if (cvBodiesDue() && cvView) { cvView.sync(trk()); cvRoom(false); }
-  rigRects.clear(); rigMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again
+  rigRects.clear(); rigMark(); fxMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again; (FX look) the FX modules: data-cv-fx
   rigCtls.clear(); rigDestC.clear(); rigBadgeC.clear();
   if (rigLaid && rigView() && !cvMaster && isRigDev(trk(), curOf(trk())) && typeof cvView.ports === 'function') cvView.cables.layout(cvView.ports()); // ((WC) the knob ends, rings and badges over the view as it now stands (its ports)
   cvModDecor();
@@ -6877,7 +6877,7 @@ function masterOff() {
 }
 function cvRenderMaster() {
   const key = project.uid + '/' + MASTER, W = cvW(), R = masterRec();
-  if (cvView && cvViewKey === key) { cvView.sync(R); return; }
+  if (cvView && cvViewKey === key) { cvView.sync(R); fxMark(); rigSkin(); return; } // ((FX look) its FX module marked, the skin on the world — a boot straight into the master too
   if (cvMount) { cvMountEnd(false); const vp = $('#viewport'); if (vp) vp.removeAttribute('data-cv-mounting'); } // (a track's bodies still mounting: dropped)
   cvCamFlush(); // the outgoing view's camera first
   if (cvView) { try { cvView.destroy(); } finally { cvView = null; } }
@@ -6885,6 +6885,7 @@ function cvRenderMaster() {
   cvViewKey = key;
   cvView = cvModule.createTrackView(W, R, cvMasterHost());
   modDrag = null; // (no mod cables on the master)
+  fxMark(); rigSkin();
   cvCamRestore();
   monitors.sync();
 }
@@ -8103,7 +8104,8 @@ function rigSkin() {
   const v = RC.SKINS.some(s => s.id === id) ? id : RC.SKIN_DEFAULT;
   if (el.getAttribute('data-cv-skin') !== v) el.setAttribute('data-cv-skin', v);
 }
-// every rig module — the Amplifier and its parts; not its FX panel, nor OUT (§13) — carries data-cv-rig (the skin's chrome, the screws)
+// every rig module — the Amplifier and its parts; not its FX panel, nor OUT (§13) — carries data-cv-rig (the skin's chrome, the screws);
+// the FX modules carry their own mark (fxMark: the FX look on every track, 2026-10-26)
 function rigMark() {
   if (!cvView) return;
   const t = trk();
@@ -8111,6 +8113,18 @@ function rigMark() {
     if (!m.el || typeof m.el.setAttribute !== 'function') continue;
     const q = CMOD.partOf(k), on = !cvMaster && (q ? isRigDev(t, q.dev) : isRigDev(t, k));
     if (on !== m.el.hasAttribute('data-cv-rig')) { if (on) m.el.setAttribute('data-cv-rig', ''); else m.el.removeAttribute('data-cv-rig'); }
+  }
+}
+// (the FX look, 2026-10-26: the user — "make this effects panel in the style of wavecraft as well", on every track) every FX module —
+// a track's Effects (a Serum's or a rig's own FX), a shared FX panel, the master's — carries data-cv-fx: the skin's chrome and colours
+// (style.css; its rack, fx-ui's .fxr-rig, lays every effect on the RIG grid). Never the Serum complete panel's FX page (an inst module)
+function fxMark() {
+  if (!cvView) return;
+  const t = trk();
+  for (const [k, m] of cvView.modules) {
+    if (!m.el || typeof m.el.setAttribute !== 'function') continue;
+    const on = cvMaster ? k === 'mfx' : !!t && kindOfKey(t, k) === 'fx';
+    if (on !== m.el.hasAttribute('data-cv-fx')) { if (on) m.el.setAttribute('data-cv-fx', ''); else m.el.removeAttribute('data-cv-fx'); }
   }
 }
 // the slots canvas-modulator injections hold in rig dev (cv-graph injectMods' inj: { kind, k }) — envFromAmp / a new Envelope never take one

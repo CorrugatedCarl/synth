@@ -1610,7 +1610,8 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
   // the skins: one block per SKINS id, the three scopes (the module — its bar inherits —, .sx-root where the kit declares its tokens, .rig-face), last in the file
   const skins = rules.filter(r => r.sel.includes('[data-cv-skin='));
-  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
+  // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too)
+  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
   assert.equal(SKIN_DEFAULT, 'charcoal');
   assert.ok(skins.every(r => rules.every(q => q === r || skins.includes(q) || q.at < r.at)), 'the skin blocks are the last rules of the file');
   const V = {};
@@ -1638,7 +1639,7 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
   const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !skins.includes(r));
   assert.deepEqual(chrome.map(r => r.sel), ['.cv-mod[data-cv-rig]', '.cv-mod[data-cv-rig] > .cv-bar', '.cv-mod[data-cv-rig][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-rig] .cv-title', '.cv-mod[data-cv-rig] > .cv-body',
-    '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', '.cv-mod[data-cv-rig] > .cv-body::after',
+    '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', '.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after',
     '.cv-mod[data-cv-rig] .cv-fjack', '#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no']);
   for (const r of chrome) {
     assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
@@ -1648,7 +1649,8 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.match(body('.cv-mod[data-cv-rig] .cv-title'), /^color: var\(--rig-title, var\(--text\)\); font: 600 13px\/1\.2 var\(--rig-font, var\(--ui\)\); letter-spacing: 0\.06em;?$/, 'the bar title: the face font, 600, 0.06 em (uppercase: the bar\'s own), 13 px (§3.8\'s least)');
   assert.match(body('.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab'), /^font-family: var\(--rig-font, var\(--ui\)\);?$/, 'the knob and menu labels in the face font (values keep the mono)');
   // the screws: one pseudo-element (no DOM), never a press — its four images (head and slot in one SVG each) are the next test's pins
-  const sc = body('.cv-mod[data-cv-rig] > .cv-body::after');
+  // ((the FX look, 2026-10-26; moved by design) one rule for a rig module's body and every effect's face: their screws cannot drift)
+  const sc = body('.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after');
   assert.match(sc, /content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;/);
   // the jack: a cream ring round a nut and its hole inside the 28 px jack (≤ 14 px radius); dimmed, not blacked out, while a cord cannot take it
   const jk = body('.cv-mod[data-cv-rig] .cv-fjack');
@@ -1658,6 +1660,20 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   const C0 = css.indexOf('(WC, lane C)'), K0 = css.indexOf('#world[data-cv-skin="charcoal"]');
   assert.ok(C0 > chrome[chrome.length - 1].at && C0 < K0, 'lane C\'s block goes between the chrome and the skins');
   assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
+  // (the FX look, 2026-10-26) the FX modules' chrome: the case, the bar, the title in the face font, the body and its rack's ground, every
+  // effect's face with the rig's four screws — colours only through the skin's variables, no skin variable set, before the skins
+  const fxc = rules.filter(r => r.sel.includes('[data-cv-fx]') && !skins.includes(r));
+  assert.deepEqual(fxc.map(r => r.sel), ['.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after', '.cv-mod[data-cv-fx]', '.cv-mod[data-cv-fx] > .cv-bar', '.cv-mod[data-cv-fx][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-fx] .cv-title',
+    '.cv-mod[data-cv-fx] > .cv-body, .cv-mod[data-cv-fx] .cv-body > .fxtab']);
+  for (const r of fxc) {
+    assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
+    assert.ok(decls(r.body).every(([k]) => !k.startsWith('--') || /^--rig-[a-z]+-g$/.test(k)), r.sel + ': no skin variable set here');
+    assert.ok(r.at < K0, r.sel + ': before the skins');
+  }
+  assert.equal(body('.cv-mod[data-cv-rig] .cv-title'), fxc.find(r => r.sel === '.cv-mod[data-cv-fx] .cv-title').body, 'the FX module\'s title as a rig module\'s');
+  // an effect's face: the rig's screws — the very rule (the SVG screw of ffb64fd, its slot centred at every display scale), never a copy
+  assert.equal(fxc[0], chrome.find(r => r.sel.startsWith('.cv-mod[data-cv-rig] > .cv-body::after')), 'an effect\'s face: the rig\'s screws, the same rule');
+  assert.equal(rules.filter(r => r.sel.includes('fxr-face') && r.sel.includes('::after')).length, 1, 'no other rule draws a face\'s screws');
 });
 
 // (WC, the user 2026-10-26: "the slot in the center is off center" on Windows) Blink rounds each background layer to whole layout px on its
@@ -1668,8 +1684,10 @@ test('style.css (WC, the user 2026-10-26): each corner screw is one SVG image �
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length));
   const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim() }));
   const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
-  const sc = rules.filter(r => r.sel === '.cv-mod[data-cv-rig] > .cv-body::after');
+  const sc = rules.filter(r => r.sel.split(',').map(x => x.trim()).includes('.cv-mod[data-cv-rig] > .cv-body::after'));
   assert.equal(sc.length, 1, 'one rule, one pseudo-element');
+  // ((the FX look, 2026-10-26; moved by design) every effect's face shares this rule: the FX faces get the same SVG screws)
+  assert.deepEqual(sc[0].sel.split(',').map(x => x.trim()), ['.cv-mod[data-cv-rig] > .cv-body::after', '.cv-mod[data-cv-fx] .fxr-face::after']);
   const D = Object.fromEntries(decls(sc[0].body));
   assert.deepEqual(Object.keys(D), ['content', 'position', 'inset', 'z-index', 'pointer-events', '--rig-screw-g', 'background'], 'one image helper, nothing else declared');
   // four layers, one per corner: the same image in an 8 px tile at 5 px from that corner (whole CSS px — no half-px offset to round)

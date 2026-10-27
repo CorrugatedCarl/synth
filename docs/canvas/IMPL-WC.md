@@ -620,7 +620,11 @@ entry + one CSS block (+ a font file if it brings one). Per-instrument skins are
 - **The screens** (skeptic P2-9): sx-ui-osc hard-codes its display palette (`C` sx-ui-osc.js:88, ≈ 20 uses; `OSC_COL` :149 [R]) and a canvas
   repaints only when something changes. **WC-1**: the Oscillator / Filter / Envelope / LFO displays keep the kit's colours (dark, like
   charcoal — acceptable on the one shipped skin; §13). **WC-2** (ivory): the display painters read `wk.theme(el)` (wk.js:2704–2717 [R]) for a
-  rig mount and repaint on a skin change; G6 WC-2 screenshots the Oscillator display on ivory. The FX panel is not skinned (§13).
+  rig mount and repaint on a skin change; G6 WC-2 screenshots the Oscillator display on ivory. ~~The FX panel is not skinned (§13).~~
+  **The FX look (the user, 2026-10-26: "can we make this effects panel in the style of wavecraft as well" — on every track, the full
+  treatment):** every FX module on the canvas (a track's Effects, a shared FX panel, a Serum's own FX, the master's) is marked
+  `[data-cv-fx]` and wears the skin (the block scopes the module and its rack's `.fxr-root`, where the kit declares its tokens); its rack
+  lays every effect on the RIG grid (§14, "Notes — the FX look"). The Serum complete panel's FX page keeps its own look (embedded).
 
 ### 5.3 The narrow face
 **The face font is a skin variable with Inter as its fallback** — `--rig-font: 'Archivo Narrow', Inter, var(--ui)` for a `font: 'narrow'`
@@ -936,7 +940,8 @@ layout check and the contact sheets), lane F. The Serum complete panel is out of
   Mod list names them with a hint.
 - **Cord colours**: a user's pick is stored for rig cords only (`dev.rig.cc`); row cords (modulator → knob) take the rule's colour.
 - **Skins are global** (one pref), not per instrument; the kit's widget text inside the faces keeps Inter where a skin says `font: 'ui'`; the
-  hardware panels, drum machines, the FX panel and the 900 Series are not skinned.
+  hardware panels, drum machines and the 900 Series are not skinned (the FX panels are, since 2026-10-26: §5.2, §14 "the FX look"; the
+  Serum complete panel's FX page is not).
 - **Two looks across tracks** (the user's Q1): a Wavecraft canvas has cords, every other canvas lines (the Moog canvas mixes, as since stage
   9). A rope has no dashes: a per-note row onto the rig's FX panel is thinner with a badge tag; bypass / off = 45 % alpha.
 - **A Wavecraft preset is a Serum preset** (WC-2): sound without layout; "Save with layout" later if wanted. WC-1 has Init only.
@@ -2234,6 +2239,108 @@ before its code: d07118b), then the change. No DSP file in the diff.
   canvas-9-sim 22, canvas-9b-sim 14, canvas-9c-sim 3, cv-shell-sim 19, lint 169, pwa 25; also canvas-3-sim 25, cv-tray 46, ui-bench-wc 5,
   rig-model 11, integration 44, golden-graph 6; `tests/ref-WC/record.mjs`: "the record matches base.json (114 fixtures, 5 sessions)". No
   DSP file in the diff.
+
+### Notes — the FX look (the user, 2026-10-26: "can we make this effects panel in the style of wavecraft as well"; `fx-ui.js`, new `rig-grid.js`, `rig-ui.js` (the grid moved out, re-exported), `main.js` (`fxMark`), `style.css`; `tests/fx-ui`, `cv-tray`, `canvas-WC-sim`, `canvas-M-sim`, new `tests/ui-layout-fx.mjs`)
+The user's answers: on EVERY track (every instrument's canvas Effects panel and the master's), the full treatment — the skin (charcoal,
+corner screws, the narrow cream lettering, black knobs with cream pointers; it follows the skin pref) and the layout (every effect type's
+controls on the RIG grid, §3.8 — the gripe: "everything feels a bit crowded with some text areas not having enough margin … a lot of
+negative space not being properly utilized … a very consistent look … consistent spacing"); NOT the Serum complete panel's FX page.
+Presentation only: no DSP file, every golden bit-identical, every control / data-dest / menu / preset path / MIDI learn as it was.
+- **One grid, one place.** `rig-grid.js` (a leaf) now holds GRID, `rowH`, `faceW`, `layoutOf`, the grid CSS (`#rig-css`) and
+  `gridVars()`; rig-ui re-exports them (its pins unmoved). fx-ui imports the leaf only (not rig-ui: no sx-ui-* in its graph).
+- **Scope.** A standalone FXRackUI (`embedded: false` — main.js's canvas FX modules and the master's) is the FX look by default
+  (`.fxr-rig` on its root; `opts.look: 'classic'` keeps the old look); an embedded rack (serum-ui's FX page) is untouched: the same
+  DOM, the same painter colours, its screenshot byte-identical before / after (Chrome for Testing, 1440 × 900 dpr 2, a Serum shell on
+  its FX page with ten effects and a canvas rack in the same document). Every FX-look rule is `.fxr-rig`-scoped (fx-ui's test reads
+  them); the module chrome is `.cv-mod[data-cv-fx]` (an `inst` module never carries it).
+- **The face** (fx-ui `FX_FACE`, `faceRecipe` / `layFace` / `faceUpd`): one face per instance, 8 columns (64 · 8 + 32 = 544; the
+  module stays 760 = 16 · the list 168 · 16 · 544 · 16, cv-module `W_FX` unchanged), the grid's rows, its 40 px knob cell. The
+  widgets are mod_<type>'s own — built into the old body (a donor), which waits in the face's park (`.rig-park.fxr2-hide`); the
+  recipe takes each widget by `data-dest` or by a named piece (`c.pc`: the MIX / LEVEL knob, the displays by class, pickers, Edit A / B,
+  Load IR…, the branch strip, the GR meter, the multiband bars, the key group); what it does not place stays parked, bound (data-dest
+  parity). A recipe is a function of the instance (a reverb's TYPE, a compressor's MULTIBAND / variant): `faceUpd` (every refresh,
+  after the widgets' updates) re-lays when it changed — the same elements move, never rebuilt — dims a cell whose members are all hidden
+  (STAGES outside Overdrive: never a hole) and prints the face's words (`data-l`: FX_LABEL per pid — TIME L / R, FREQ L / H, CH RATE —,
+  FX_ABBR by text — PRE DELAY → PRE-DLY, SPIN DEPTH → SPIN DP, RECTANGLE → RECT …; a label toggle never).
+- **Placement rules** (one family): the head = ⏻ · NAME · S1 · BYPASSED · the module's choices (its type / mode menu grows when it has
+  one, else the name; source pickers; module-wide switches) · ▾; knobs in knob rows, MIX / LEVEL last and never alone; a sync switch
+  (BPM) a box cell left of the knob it syncs (the Delay's left of TIME L, Convolve's left of PRE-DLY) — in the head only for the
+  reverbs' pre-delay (their rows change with TYPE: the switch stays put);
+  long switches span two columns (MONO INPUT, MONO BASS); displays fill a screen (the transfer curve square), the GR meter a switch row
+  (single band) or the screen beside the H / M / L bars (multiband); the keyed Compressor's `.fxr2-key` group IS its knob row (dimmed
+  in MULTIBAND as before); a splitter's branch strip a switch row (M/S: in its knob row), its branch's faces nested under it (a 3 px
+  accent stripe, no indent); Hyper / Dimension's two groups split by a divider. A long list splits into the fewest balanced rows, an
+  even width first (Vintage 6 + 6; Nitrous 8 + 6: MODE (5 columns) · LO CUT · HI CUT · SIZE, then PRE-DLY · FEED · DIFF · CH RATE ·
+  CH DPTH · MIX). Every knob / switch row is centred on the face (an odd row half a column in) and the rows of one face share one
+  column phase (the skeptics' round, below).
+- **The chrome**: the rack's bar (32: MAIN / BUS 1 / BUS 2 as one 168 px segment, ⤢ ⋯ 28 px), the list (rows 32, a branch's 28,
+  + ADD 28, 12 px narrow caps), the faces 12 px apart with the rig's screws (style.css: the rig body's own rule, both selectors);
+  touch: nothing grows (the kit's 44 px minimum heights undone), the hits grow invisibly (`::after`, 44 px; in the list never past
+  their own row); displays, the GR meters and
+  the curve editors paint on the skin's screen colour (`thm(el)`: the token where they draw; the embedded rack keeps the root's).
+- **Host** (main.js): `fxMark()` beside `rigMark()` (every canvas render) and on the master canvas (with `rigSkin()`: a boot straight
+  into the master gets the skin); docs and comments that said "the FX panel is not skinned" (§5.2, §13, main.js, style.css) updated.
+- **The gate** (`tests/ui-layout-fx.mjs`, G11's sibling; Chrome for Testing; not in the sweep): 43 faces — every type and variant
+  (S1 / S2, Overdrive, X-Shaper, every reverb TYPE, PRE sync, compressor single / MULTIBAND / keyed, a splitter with a nested Chorus,
+  the Ducker bypassed, racks 3 and 1) — at 1440 × 900, 1366 × 1024 touch, 1024 × 1366 touch, dpr 2, each in Inter alone and in Archivo
+  Narrow: widths on the grid, rows against `layoutOf`, every knob 40 × 40 on a column centre and its row's knob line (boxes too), every
+  control inside the inner area, text ≥ 6 px from edges and controls, ≥ 8 px apart, nothing clipped, the font minima (11 / 10 / head
+  12), fill 0.56–0.71 (GRID.fill 0.55–0.85), contrast 13.1 / 5.6, data-dest parity with the classic panel of the same state, the rack's chrome
+  (760 = 168 | 544, bar 32, rows 32 / 28, + ADD 28): **green on all six passes**.
+- **Pins moved by design**: fx-ui's Ducker curve height (96 → the screen's 128 in the FX look; the classic 96 pinned in the new
+  embedded / classic test); cv-tray's skin selector list (+ `.cv-mod[data-cv-fx]`, `.cv-mod[data-cv-fx] .fxr-root`). New tests:
+  fx-ui 5 (FX_FACE's rules, the face structure and parity, the re-lays, the words, the CSS scope), cv-tray (the FX chrome),
+  canvas-WC-sim 1 (the marks), canvas-M-sim (the master's mark). `tests/ref-WC/record.mjs`: unchanged ("the record matches").
+  DOM: an FX module with 3–4 effects paints 11–12 elements more than before (+ its parks: 36–51 elements), far under §9's budgets.
+- **The skeptics' round** (a fixer, 2026-10-26; the failing tests first). *Integration*: rebased onto `ffb64fd` (the build sat on
+  81de426): an effect's face now shares the rig body's screw rule — `.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx]
+  .fxr-face::after`, ffb64fd's one SVG per screw (the slot centred at every display scale) — instead of a copy of the old radial +
+  linear pair (the off-centre slot on Windows was back on every FX face); HANDOVER item 19 → 20. *Centring*: `layoutOf`'s `mid` (the FX
+  faces only; the rig's own faces keep the floor, their pins unmoved): a short row starts at (8 − S) / 2 exactly — an odd row half a
+  column in (`data-half`: its grid shifted by half a column, its cells on whole columns), so the Plate's 7 (the user's own example),
+  the S1 Phaser and reverbs, the EQ S2, Splitter M/S and L/M/H sit centred, never 32 px left with the 8th column empty; one column
+  phase per face — the Distortion S2's LP/BP/HP spans 3 (8 knob columns under its 6 switches: EDIT A / B over DRIVE / STAGES), its S1
+  switches leave a column after OFF / PRE / POST (EDIT A / B over DRIVE / MIX, as in S2), Convolve's BPM leaves the head for its knob
+  row, left of PRE-DLY (6 + 4, not 6 + 3). *Behaviour*: a re-lay keeps the keyboard focus (`layFace`: a moved control gets it back,
+  the scroll kept — a TYPE stepped by ← → re-lays on every step; MULTIBAND then ←); a dimmed cell's member is `inert` (STAGES outside
+  Overdrive, in a branch too: no tab stop, no key, no assistive tech — the classic look's display: none), live again when it shows.
+  *Touch*: the list's hits stay inside their own row (the LED's and the BYP chip's the tile's 32 px, a branch row's name / BYP / + its
+  28 px — a press near a row's edge no longer lands on the next row). *Polish*: the X-Shaper popover covers the face from its screen
+  to its last row (the editor 196 px: never half a knob label); the GR meters', the Filter's PHASE and the EQ handles' canvas text 10 px
+  (the embedded rack keeps 9 / 8); the Distortion's and the Delay's filter knob print FREQ (F → FREQ, FX_LABEL); the branch's "EMPTY"
+  in the narrow capitals. *Gate* (`tests/ui-layout-fx.mjs`): every knob / switch row centred, each knob on its cell's centre (the
+  pitch), a press 1–2 px inside a list row's edge lands in it, and the browser's side of the behaviour (TYPE → × 3 and back with the
+  focus kept, MULTIBAND + ←, a dimmed STAGES takes no focus or key, the X-Shaper popover whole) — each failed on the build before the
+  fix. The embedded rack (Serum's FX page): a byte compare against ffb64fd (every type and variant, a standalone rack in the same
+  document) — identical. *Pins moved by design*: cv-tray's rig chrome list and the screw test's rule lookup (the screw rule's selector
+  names both). Docs: the Delay's BPM is in its knob row (not the head, as this note said); Nitrous's rows spelled out above.
+- **The skeptics' P3** (a fixer, 2026-10-27; the failing tests first): the list row's name — the button that selects it — was 12 px
+  tall in its 32 px row (the head font, line-height 1, no vertical padding): a mouse press 6 px inside a row's edge selected nothing
+  (ffb64fd's 23.2 in 30 left 3.4 px dead). Now `align-self: stretch` (the row's inner 30 px; its text centred as before), its focus
+  ring on the row's own border (`outline-offset: -1px`, never in the 4 px gap). Touch was not affected (the tap adjustment) and its
+  hits are unchanged (the LED's 44 px still takes the name's first 4 px, by design). Gate: a press 6 px inside a list row's top /
+  bottom edge lands on its name across the name's width, and a click there selects the row — 129 failures at 1440 × 900 on f735137,
+  green on all six passes after; a real CDP mouse press (Chrome for Testing, 1440 × 900, the space scene's 11 rows × top / bottom):
+  0 / 22 before, 22 / 22 after. fx-ui: the rule pinned (stretch, no vertical padding, no height, the ring's offset).
+- **Names to choose** (the user asked whether the panel can legally be ours: the names are the part to change before any sale — listed,
+  NOT renamed; the user picks). Names that follow Serum's own (or very close), with generic alternatives:
+  Hyper/Dimension (and its Dimension Size / Mix / Level) → Ensemble / Widen · Unison / Space · Stack / Spread;
+  Bode → Freq Shifter · Shifter · Frequency Shift; Convolve → Convolution · IR Reverb · Impulse;
+  Splitter L/H · L/M/H · M/S → Band Split / 3-Band Split / Mid-Side · Crossover 2 / Crossover 3 / M-S Split (generic words; the trio follows Serum 2);
+  the Distortion's X-Shaper / X-Shaper (Asym) (and EDIT A / B, "X-SHAPER A") → Curve Shaper · Draw Shaper · Custom Curve;
+  Zero-Square → Square Gate · Zero Cross · Hard Square; Lin.Fold / Sin Fold → Linear Fold / Sine Fold · Wavefold A / B;
+  Stomp Box → Pedal · Fuzz Box · Stomp; Diode 1 / Diode 2 → Diode Soft / Hard · Diode A / B (the mode list's order is Serum's too: reorder);
+  the Delay's Tap->Delay → Tap Echo · Multi-Tap · Tap Delay; the Reverb's Nitrous → Dense · Bloom · Cloud; Basin → Pool · Wash · Chamber;
+  Nitrous's MODE Space / Marble / Rectangle / Hexagon / Box → Open / Stone / Square / Hex / Small · Air / Stone / Rect / Hex / Room;
+  the Hall's SPIN / SPIN DEPTH (S1 and S2) → Mod Rate / Mod Depth · Swirl / Swirl Depth · Motion / Motion Depth;
+  the Filter effect's TYPE list (shared with the Serum recreation's filters: a rename touches it too) — MG Low 6…24, MG Ladder, MG Dirty →
+  Ladder Low 6…24 · Warm Low; French LP / German LP → Ladder LP A / B · Smooth LP / Hard LP; Acid Ladder, EMS Ladder, K35 (other
+  makers' names) → Squelch Ladder · Thin Ladder · Sallen-Key 35; Scream LP / BP, Wsp, Add Bass, DJ Mixer, Dist.Comb, SampHold → Howl
+  LP / BP · Breath · Bass Boost · DJ Sweep · Drive Comb · Sample & Hold; the coded families (LH 6 … B/P/N 24, Cmb ±, Flg L6±, Phs 48HL6±,
+  FPhs 12HL6±) → spelled-out names in our own scheme (Low + High 6, Comb +, Flange LP6 +, Phaser 48 HL6 +);
+  the S1 / S2 badges and their words ("Serum 1 module …", "Convert to Serum 2 Module": the gate's words review) → Classic / Modern ·
+  v1 / v2 (Legacy / Current) · Original / Plus. Generic and kept: Distortion, Flanger, Phaser, Chorus, Delay, Compressor, Reverb
+  (Plate, Hall, Vintage), EQ, Filter, Utility, Ducker (ours), and the plain parameter words (RATE, DEPTH, FEED, MIX …).
 
 ## 15. Review log
 

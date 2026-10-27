@@ -295,6 +295,8 @@ test('§2.3 History: an undo of a track edit keeps the master rack (no chain pos
   // a module move on the master canvas is a History step: its undo brings lay back, never the rack
   M.open(); await settle(2);
   const V = cv.view(), m = V.modules.get('mfx'), x0 = m.x;
+  // (the FX look, 2026-10-26) the master's rack is an FX module: data-cv-fx (its skin and chrome), OUT is not; the world wears the skin
+  assert.deepEqual([m.el.hasAttribute('data-cv-fx'), V.modules.get('out').el.hasAttribute('data-cv-fx'), cv.world().el.getAttribute('data-cv-skin')], [true, false, 'charcoal']);
   const h0 = cv.hist.u.length;
   drag(m, 96, 0); await settle(1);
   assert.equal(cv.hist.u.length, h0 + 1, 'one step');

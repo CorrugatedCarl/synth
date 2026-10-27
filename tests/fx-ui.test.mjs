@@ -1863,7 +1863,7 @@ test('IMPL-SC §6.2 Ducker NOTE: Any first; a drum machine source names its lane
 test('IMPL-SC §6.2 Ducker curve: the inline CurveEditor on sub.cv (no zoom: native pinch only) — a touch double-tap adds a point, a touch drag 15 px off it moves it (44 px handles; start / move / end), a double-tap removes it; SHAPE presets one tap away (Custom when none matches)', () => {
   const { rack, st } = mkRack({ fx: fx2([inst('duck', 'duck')]), sc: scStub() });
   const I = () => st.fx.racks[0].mods[0], P = rack.panels.get('duck'), ed = one(P.el, 'gx-curve');
-  assert.equal(ed.style.height, '96px');
+  assert.equal(ed.style.height, '128px');                                               // (FX look, 2026-10-26: its screen's GRID.rows.screenL; the classic look's 96 px is pinned below)
   assert.equal('zp' in P.ed, false);                                                     // no editor zoom
   place(ed, 0, 0, 214, 96);                                                              // plot 200 × 82 (PAD 7)
   const at = (x, y) => [7 + x * 200, 7 + (1 - y) * 82];
@@ -2078,5 +2078,248 @@ test('IMPL-SC §6.3 / §1.3: "Add a sidechain key" (v2 compressors) → v3, no s
   // a library effect chain holding sources loads without them
   fire(more, 'click'); pick(d, 'Load Effect Chain…'); pick(d, 'Foreign');
   assert.deepEqual([st.fx.racks[0].mods.length, [...new Set(srcs(st.fx.racks))]], [4, ['"src":""']]);
+  rack.destroy();
+});
+
+/* ------------------------------------------------------------------ the FX look (the user, 2026-10-26: "make this effects panel in the style of wavecraft as well") */
+// every track's Effects panel on the canvas and the master's (a standalone rack) lays each effect on the RIG grid (rig-grid.js): one face
+// per instance from fx-ui FX_FACE, the very widgets mod_<type> builds; the Serum panel's FX page (embedded) keeps its own look
+const RG = await import('../rig-grid.js?v=9');
+const isIn = (el, root) => { for (let n = el; n; n = n.parentNode) if (n === root) return true; return false; };
+const inPark = el => { for (let n = el; n; n = n.parentNode) if (n.classList && n.classList.contains('rig-park')) return true; return false; };
+const cellCount = items => items.reduce((a, s) => a + (/:(\d+)\*?$/.test(s) ? +/:(\d+)\*?$/.exec(s)[1] : 1), 0);
+test('FX look: FX_FACE — a recipe for every effect type; a head first (⏻ · name · S1 · BYPASSED · … · ▾, one growing item), rows of the grid\'s kinds, no row wider than the 8 columns, MIX / LEVEL the last knob cell (never alone in its row)', () => {
+  const ids = core.FXTYPES.map(T => T.id);
+  assert.deepEqual(Object.keys(F.FX_FACE).sort(), ids.slice().sort());
+  for (const T of core.FXTYPES) for (const v of T.variants) for (const ty of T.id === 'rev' && v === 2 ? [0, 1, 2, 3, 4] : [0]) for (const mb of [0, 1]) {
+    const c = { v, k: pid => (pid === 'type' ? ty : 0), on: pid => (pid === 'mb' ? !!mb : false) }, rows = F.FX_FACE[T.id](c), k = T.id + ' v' + v + ' ' + ty + mb;
+    assert.equal(rows[0].t, 'head', k);
+    assert.deepEqual([rows[0].items[0], rows[0].items.at(-1)], ['#power', '#pre'], k);
+    assert.equal(rows[0].items.filter(s => /\*$/.test(s)).length, 1, k + ': one growing head item');
+    for (const r of rows.slice(1)) {
+      assert.ok(['screen', 'switches', 'knobs'].includes(r.t), k + ' ' + r.t);
+      if (r.t !== 'screen') assert.ok(cellCount(r.items) <= 8, k + ': ' + r.items.join(' '));
+    }
+    const mixAt = rows.findIndex(r => r.items.includes('#mix'));
+    if (mixAt >= 0) { assert.ok(rows[mixAt].items.length > 1, k + ': MIX never alone'); const it = rows[mixAt].items; assert.ok(it.at(-1) === '#mix' || (it.at(-1) === '#mix2' && it[it.indexOf('#mix') + 1] === '#sep'), k + ': MIX the last of its row (Hyper / Dimension: of each group)'); }
+  }
+});
+
+test('FX look: a standalone rack is .fxr-rig — every panel a face (div.rig-face in its section) whose rows are its recipe\'s, every parameter widget of the instance in the section (the face\'s cells or its park), the widgets mod_<type> made (first class kept); the embedded rack (Serum\'s FX page) and look "classic" keep the classic head and body', () => {
+  const types = core.FXTYPES.map(T => T.id);
+  const { rack, root } = mkRack({ fx: fx2(types.slice(0, 16).map(t => inst(t, t)), [inst(types[16], types[16])]) });
+  assert.ok(root.classList.contains('fxr-rig') && root.classList.contains('fxr-root') && root.className.split(' ')[0] === 'fxr-root');
+  const check = () => {
+    for (const P of rack.panels.values()) {
+      const k = P.id;
+      assert.ok(P.face && P.face.classList.contains('rig-face') && P.face.parentNode === P.el, k + ': a face in its section');
+      assert.ok(P.lay && P.lay.layout.w === RG.faceW(8), k + ': 8 columns');
+      const rows = P.face.children.filter(e => e.classList.contains('rig-row'));
+      assert.deepEqual(rows.map(e => e.className.split(' ').find(c => /^rig-(head|screen|knobs|switches)$/.test(c))), P.lay.recipe.rows.map(r => 'rig-' + r.t), k);
+      const head = rows[0].children;
+      assert.ok(head[0].classList.contains('fxr2-pw') && head.at(-1).classList.contains('fxr-pre'), k + ': ⏻ first, ▾ last');
+      assert.equal(one(P.face, 'fxr-mhead'), null, k + ': no classic head');
+      for (const r of TAB(P.type, P.v)) {
+        const id = 'fx.' + k + '.' + r.pid, w = rack.knobs.get(id);
+        if ((P.type === 'cho' && r.pid === 'hp') || (P.type === 'bode' && r.pid === 'retrig')) continue;
+        assert.ok(w && isIn(w.el, P.el), id + ' in its section');
+      }
+      for (const C of P.cells) for (const e of C.el.children) assert.ok(isIn(e, P.face) && !inPark(e), k + ': a cell\'s member shown on the face');
+    }
+  };
+  check();
+  rack.setRack(1);
+  check();
+  rack.setRack(0);
+  // the widget kinds as ever
+  const kind = id => rack.knobs.get(id).el.className.split(' ')[0];
+  assert.deepEqual(['fx.dist.mode', 'fx.dist.lbh', 'fx.cmp.mb', 'fx.phs.poles', 'fx.util.invL'].map(kind), ['wk-menu', 'wk-sl', 'wk-seg', 'wk-nb', 'wk-tog']);
+  rack.destroy();
+  // the Serum panel's FX page (embedded) and a standalone rack asked for the classic look: the classic DOM, untouched
+  for (const embedded of [true, false]) {
+    const b = mkRack({ fx: fx2([inst('dly', 'dly'), inst('duck', 'duck')]), sc: scStub(), embedded });
+    let R2 = b.rack;
+    if (!embedded) { R2.destroy(); R2 = new FXRackUI(b.d.body, b.host, { embedded: false, look: 'classic', dsp: fakeDsp() }); }
+    assert.equal(R2.el.classList.contains('fxr-rig'), false);
+    assert.equal(byCls(R2.el, 'rig-face').length, 0);
+    const P = R2.panels.get('dly');
+    assert.ok(!!one(P.el, 'fxr-mhead') && !!one(P.el, 'fxr-mbody') && P.el.children.length === 2, 'the classic head and body');
+    assert.equal(one(R2.panels.get('duck').el, 'gx-curve').style.height, '96px');
+    R2.destroy();
+  }
+});
+
+test('FX look: a re-lay moves the same widgets (a reverb TYPE: its row of controls; MULTIBAND: the GR meter from a switch row to the screen beside the band bars, the band knobs a row); an all-hidden cell dims (STAGES outside Overdrive); the key row is the .fxr2-key group (dimmed in MULTIBAND)', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('cmp', 'cmp'), inst('dist', 'dist'), inst('cmp2', 'cmp', 3)]), sc: scStub() });
+  const I = id => st.fx.racks[0].mods.find(x => x.id === id);
+  const R = rack.panels.get('rev'), damp = rack.knobs.get('fx.rev.damp').el, decay = rack.knobs.get('fx.rev.decay').el;
+  const rowsOf = P => P.lay.recipe.rows.map(r => r.t[0]).join('');
+  assert.ok(!inPark(damp) && inPark(decay), 'Plate: DAMP on the face, DECAY parked');
+  I('rev').p.type = 1 / 4; rack.refresh();
+  assert.ok(inPark(damp) && !inPark(decay) && rack.knobs.get('fx.rev.decay').el === decay, 'Hall: the same DECAY knob laid');
+  I('rev').p.type = 2 / 4; rack.refresh();
+  assert.equal(rowsOf(R), 'hkk', 'Vintage: two knob rows');
+  assert.deepEqual(R.lay.recipe.rows.slice(1).map(r => cellCount(r.items)), [6, 6]);
+  I('rev').p.type = 3 / 4; rack.refresh();
+  assert.deepEqual(R.lay.recipe.rows.slice(1).map(r => cellCount(r.items)), [8, 6], 'Nitrous: MODE first, an even row first');
+  const C = rack.panels.get('cmp'), gr = C.grCv;
+  assert.equal(rowsOf(C), 'hsk');
+  assert.ok(gr.parentNode.classList.contains('rig-cell') && gr.parentNode.parentNode.classList.contains('rig-switches'));
+  I('cmp').p.mb = 1; rack.refresh();
+  assert.equal(rowsOf(C), 'hskk');
+  assert.ok(gr.parentNode.classList.contains('rig-screen') && C.grCv === gr && !inPark(rack.knobs.get('fx.cmp.xlo').el));
+  // STAGES: shown in Overdrive only — elsewhere its cell shows it dimmed (never a hole)
+  const stg = rack.knobs.get('fx.dist.stages').el;
+  assert.ok(stg.parentNode.hasAttribute('data-dim') && stg.classList.contains('fxr2-hide'));
+  I('dist').p.mode = 16 / 17; rack.refresh();
+  assert.ok(!stg.parentNode.hasAttribute('data-dim'));
+  // keyed: the key's row is its group
+  const KP = rack.panels.get('cmp2'), grp = one(KP.el, 'fxr2-key');
+  assert.ok(grp.classList.contains('rig-row') && grp.classList.contains('rig-knobs') && grp.parentNode === KP.face);
+  for (const id of ['fx.cmp2.ext', 'fx.cmp2.schp', 'fx.cmp2.listen']) assert.ok(isIn(rack.knobs.get(id).el, grp), id + ' in the key row');
+  I('cmp2').p.mb = 1; rack.refresh();
+  assert.ok(grp.classList.contains('fxr2-dim') && grp.parentNode === KP.face);
+  rack.destroy();
+});
+
+test('FX look: the face\'s words — a group the face has no caption for gets its pid\'s words (the Delay\'s TIME L / R), a label wider than the pitch its abbreviation (a label function\'s text too: the S1 reverb\'s PRE DELAY, following its TYPE); the widget\'s own label (its aria name) unchanged; a label toggle never', () => {
+  const R1 = inst('rev', 'rev', 1); R1.sub = { type: 0 };
+  const { rack, st } = mkRack({ fx: fx2([inst('dly', 'dly'), R1, inst('rev2', 'rev')]) });
+  const lab = id => one(rack.knobs.get(id).el, 'wk-lab');
+  assert.deepEqual([lab('fx.dly.timeL').getAttribute('data-l'), lab('fx.dly.timeL').textContent], ['TIME L', 'TIME']);
+  assert.deepEqual([lab('fx.rev.t').textContent, lab('fx.rev.t').getAttribute('data-l')], ['PRE DELAY', 'PRE-DLY']);
+  st.fx.racks[0].mods[1].sub.type = 1; rack.refresh();
+  assert.deepEqual([lab('fx.rev.t').textContent, lab('fx.rev.t').getAttribute('data-l')], ['DECAY', null], 'Hall: DECAY fits');
+  assert.equal(lab('fx.rev.w').getAttribute('data-l'), 'SPIN DP');
+  assert.equal(lab('fx.dly.mix').getAttribute('data-l'), null, 'MIX / LEVEL: a label toggle');
+  st.fx.racks[0].mods[2].p.type = 1 / 4; rack.refresh();
+  assert.equal(lab('fx.rev2.spinr').getAttribute('data-l'), 'SPIN');
+  rack.destroy();
+});
+
+test('FX look: the CSS — the grid\'s (#rig-css) injected before the rack\'s own sheet; the rack\'s grid variables are rig-grid\'s; every FX-look rule scoped to .fxr-rig (never a bare kit or face class: the Serum panel\'s FX page is untouched)', () => {
+  const { rack, d } = mkRack();
+  const kids = d.head.children, ri = kids.findIndex(e => e.id === 'rig-css'), fi = kids.findIndex(e => e.id === 'fxr2-css');
+  assert.ok(ri >= 0 && fi > ri, 'the grid CSS first');
+  const css = d.getElementById('fxr2-css').textContent, at = css.indexOf('/* fx-ui.js — the FX look');
+  assert.ok(at > 0 && css.includes('.fxr-rig { ' + RG.gridVars() + ' }'));
+  const rules = [...css.slice(at).replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*\}/g)].map(m => m[1].trim());
+  assert.ok(rules.length > 40);
+  for (const r of rules) for (const s of r.split(',')) assert.ok(s.trim().startsWith('.fxr-rig') || s.trim().startsWith('.fxr-root.fxr-rig'), 'scoped: ' + s.trim());
+  rack.destroy();
+});
+
+// (the FX look, fixer 2026-10-26: the skeptics' findings — tests first)
+test('FX look: a re-lay keeps the keyboard focus — the reverb\'s TYPE menu stepped by ArrowRight three times (Plate → Hall → Vintage → Nitrous: every step re-lays the knob rows), the Compressor\'s MULTIBAND segment and back by ArrowLeft; the focused control is the same element, never <body>', () => {
+  raf.install();
+  try {
+    const { rack, d, st } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('cmp', 'cmp')]) });
+    const I = id => st.fx.racks[0].mods.find(x => x.id === id);
+    const btn = one(rack.knobs.get('fx.rev.type').el, 'wk-mbtn');
+    btn.focus();
+    assert.ok(d.activeElement === btn);
+    const ty = () => Math.round(I('rev').p.type * 4);
+    for (let k = 1; k <= 3; k++) {
+      key(d.activeElement, 'ArrowRight');
+      raf.flush(2);
+      assert.equal(ty(), k, 'step ' + k);
+      assert.ok(d.activeElement === btn, 'step ' + k + ': the TYPE button keeps the focus (not ' + d.activeElement.className + ')');
+    }
+    const mb = rack.knobs.get('fx.cmp.mb').el, sbs = byCls(mb, 'wk-sb');
+    sbs[1].focus(); sbs[1].click();
+    raf.flush(2);
+    assert.equal(I('cmp').p.mb, 1);
+    assert.ok(d.activeElement === sbs[1], 'MULTIBAND keeps the focus through the re-lay');
+    key(d.activeElement, 'ArrowLeft');
+    raf.flush(2);
+    assert.equal(I('cmp').p.mb, 0, 'ArrowLeft: back to SINGLE');
+    assert.ok(d.activeElement === sbs[0], 'SINGLE has the focus');
+    rack.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('FX look: a dimmed cell\'s member (shown, never a hole) is inert — no tab stop, no keyboard edit, hidden from assistive tech (STAGES outside Overdrive, in a splitter\'s branch too); live again when it shows', () => {
+  const S = inst('sp', 'split2'); S.br[0].push(inst('bd', 'dist'));
+  const { rack, st } = mkRack({ fx: fx2([inst('dist', 'dist'), S]) });
+  for (const id of ['dist', 'bd']) {
+    const I = () => { for (const M of st.fx.racks[0].mods) { if (M.id === id) return M; for (const b of M.br || []) for (const x of b) if (x.id === id) return x; } return null; };
+    const stg = rack.knobs.get('fx.' + id + '.stages').el, p0 = I().p.stages;
+    assert.ok(stg.parentNode.hasAttribute('data-dim') && stg.hasAttribute('inert'), id + ': dimmed and inert');
+    key(one(stg, 'wk-nbv') || stg, 'ArrowUp');
+    I().p.mode = 16 / 17; rack.refresh();
+    assert.ok(!stg.parentNode.hasAttribute('data-dim') && !stg.hasAttribute('inert'), id + ': Overdrive — live');
+    assert.equal(I().p.stages, p0, id + ': the dimmed STAGES took no key');
+    I().p.mode = 0; rack.refresh();
+    assert.ok(stg.hasAttribute('inert'), id + ': Tube — inert again');
+  }
+  rack.destroy();
+});
+
+test('FX look: every knob / switch row is centred on the face (an odd row half a column in: never 32 px left with an empty 8th column) and the rows of one face share one column phase (the Distortion\'s switches over its knobs, Convolve\'s two knob rows); a half-column row carries data-half, its cells on the grid\'s columns', () => {
+  // the geometry: layoutOf's mid option (FX faces) centres exactly; the rig's own faces keep the floor (rig-ui's pins)
+  const seven = { cols: 8, rows: [{ t: 'knobs', items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }] };
+  assert.deepEqual([RG.layoutOf(seven).rows[0].cells[0].col, RG.layoutOf(Object.assign({ mid: true }, seven)).rows[0].cells[0].col], [0, 0.5]);
+  const L7 = RG.layoutOf(Object.assign({ mid: true }, seven)).rows[0].cells;
+  assert.equal(L7[0].cx - RG.GRID.pad - RG.GRID.col / 2, RG.faceW(8) - RG.GRID.pad - RG.GRID.col / 2 - L7[6].cx, 'symmetric about the face\'s centre');
+  const types = core.FXTYPES.map(T => T.id), cases = [];
+  for (const T of core.FXTYPES) for (const v of T.variants) cases.push([T.id, v]);
+  const mods = cases.map(([t, v], k) => { const I = inst('i' + k, t, v); if (t === 'cmp') I.p.mb = k % 2; return I; });
+  const { rack, st } = mkRack({ fx: fx2(mods), sc: scStub() });
+  const check = tag => {
+    for (const P of rack.panels.values()) {
+      const L = P.lay.layout, k = tag + ' ' + P.type + ' v' + P.v, phase = new Set();
+      L.rows.forEach((row, ri) => {
+        if (row.t !== 'knobs' && row.t !== 'switches') return;
+        const S = row.cells.reduce((a, c) => a + c.span, 0), c0 = row.cells[0].col;
+        assert.equal(c0, (8 - S) / 2, k + ' row ' + ri + ': centred (' + S + ' columns from ' + c0 + ')');
+        if (row.cells.length > 1) phase.add(c0 % 1);
+        const re = P.face.children.filter(e => e.getAttribute('data-row') === String(ri))[0];
+        assert.equal(re.hasAttribute('data-half'), c0 % 1 !== 0, k + ' row ' + ri + ': data-half');
+        const ces = re.children.filter(e => e.classList.contains('rig-cell'));
+        ces.forEach((ce, j) => assert.equal(ce.style.gridColumn, (Math.floor(row.cells[j].col) + 1) + ' / span ' + row.cells[j].span, k));
+      });
+      assert.ok(phase.size <= 1, k + ': one column phase across its rows');
+    }
+  };
+  check('');
+  // every reverb TYPE (the S2 rows follow it)
+  const rv = st.fx.racks[0].mods.find(I => I.type === 'rev' && I.v === 2);
+  for (let t = 0; t < 5; t++) { rv.p.type = t / 4; rack.refresh(); check('rev type ' + t); }
+  assert.ok(types.length > 10);
+  rack.destroy();
+});
+
+test('FX look: the words — the Distortion\'s and the Delay\'s filter knob print FREQ (no FILTER caption on the face; the widget\'s label "F" unchanged); the GR meters\' and the displays\' canvas text at the grid\'s 10 px minimum (the embedded rack keeps its 9 px)', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('dist', 'dist'), inst('dly', 'dly'), inst('cmp', 'cmp'), inst('duck', 'duck')]), sc: scStub() });
+  for (const id of ['fx.dist.freq', 'fx.dly.freq']) { const l = one(rack.knobs.get(id).el, 'wk-lab'); assert.deepEqual([l.textContent, l.getAttribute('data-l')], ['F', 'FREQ'], id); }
+  st.gr = new Float32Array(4 * 48); st.gr[0] = 3;
+  for (const id of ['cmp', 'duck']) { const P = rack.panels.get(id); rack.drawGr(P); assert.match(P.grCv.getContext('2d').font, /^600 10px /, id); }
+  rack.destroy();
+  const E = mkRack({ fx: fx2([inst('cmp', 'cmp')]), embedded: true });
+  E.st.gr = new Float32Array(4 * 48);
+  const P = E.rack.panels.get('cmp'); E.rack.drawGr(P);
+  assert.match(P.grCv.getContext('2d').font, /^600 9px /, 'the Serum panel\'s FX page: unchanged');
+  E.rack.destroy();
+});
+
+test('FX look: the list\'s touch hits stay inside their own row (rows 32 / 28 px, 4 px apart: a 44 px hit would reach the next row\'s controls) — the LED, the BYP chip, a branch row\'s name, BYP and +', () => {
+  const { rack, d } = mkRack();
+  const css = d.getElementById('fxr2-css').textContent, at = css.indexOf('/* fx-ui.js — the FX look'), rig = css.slice(at);
+  const rule = sel => { const m = new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\{([^}]*)\\}').exec(rig); return m ? m[1] : null; };
+  assert.match(rule('.fxr-rig .fxr-tile .fxr-led::before, .fxr-rig .fxr-tile .fxr2-chip::before') || '', /top: calc\(50% - var\(--rig-row-head\) \/ 2\); bottom: calc\(50% - var\(--rig-row-head\) \/ 2\);/);
+  assert.match(rule('.fxr-rig .fxr2-brow .fxr2-bname::after, .fxr-rig .fxr2-brow .fxr2-plus::after, .fxr-rig .fxr2-brow .fxr2-bbyp::after') || '', /height: var\(--rig-box\);/);
+  rack.destroy();
+});
+
+// (the FX look, fixer 2026-10-27: the skeptics' P3 — tests first)
+test('FX look: a list row\'s name — the press that selects it — fills its row\'s height (a 12 px name in a 32 px row left 10 px dead above and below it: a mouse press 6 px inside a row\'s edge selected nothing); its focus ring on the row\'s own border, never past it into the gap', () => {
+  const { rack, d } = mkRack();
+  const css = d.getElementById('fxr2-css').textContent, at = css.indexOf('/* fx-ui.js — the FX look'), rig = css.slice(at);
+  const rule = sel => { const m = new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\{([^}]*)\\}').exec(rig); return m ? m[1] : null; };
+  const nm = rule('.fxr-rig .fxr-tile .fxr-tname') || '';
+  assert.match(nm, /align-self: stretch;/, 'the name stretches over the tile\'s height');
+  assert.match(nm, /padding: 0 2px;/, 'no vertical padding: its box is the row\'s inner height');
+  assert.ok(!/(?:^|[;\s])(?:min-|max-)?height:/.test(nm), 'no height of its own');
+  assert.match(rule('.fxr-rig .fxr-tile .fxr-tname:focus-visible') || '', /outline-offset: -1px;/, 'the ring (2 px) over the row\'s 1 px border');
   rack.destroy();
 });

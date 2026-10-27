@@ -41,7 +41,14 @@
 // layer, which then owns their context menus and drops — default = embedded; without it the rack's own control menu
 // (Reset Control, Enter Value…, the control's own items: ctlExtras) answers a right-click / long-press on a control;
 // v2Fx: as the host member, the option wins; cost(type) → '~2 %' | '': the host's load estimate of an effect type on this
-// device, shown at the right of its "+" menu item — read as the menu opens, so it follows the host's measurement).
+// device, shown at the right of its "+" menu item — read as the menu opens, so it follows the host's measurement; look:
+// 'classic' keeps a standalone rack in the old look — a standalone rack (not embedded) is laid in the FX look by default).
+// The FX look (the user, 2026-10-26: "make this effects panel in the style of wavecraft as well" — every track's Effects panel
+// on the canvas and the master's; never Serum's FX page, which is embedded): the rack's root carries .fxr-rig; every instance
+// is one face on the RIG grid (rig-grid.js, IMPL-WC §3.8: 8 columns, the grid's rows, its 40 px knob cell, its head) laid
+// from FX_FACE's recipe over the very widgets mod_<type> builds (a donor body kept, hidden, in the face's park: bindings,
+// data-dest, menus, alternates, label functions, visibility rules and the tests' classes unchanged); the colours are the
+// rig skin's, from the host's [data-cv-skin] (style.css). Nothing of the classic look changes for an embedded rack.
 //
 // State version: the rack edits v2 states. A host that still holds a v1 state (transition) sees its migration
 // (normalizeFx2); edits the v1 shape can hold are written back into the v1 object (writeV1), and the first edit it
@@ -61,6 +68,7 @@ import { knob, numBox, menu, toggle, seg, iconSeg, slider, contextMenu, tooltip,
   saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker, localPoint, localScale, onRescale } from './wk.js?v=9';
 import { CurveEditor, shapeLib } from './graph.js?v=9';
 import * as core from './serum-core.js?v=9';
+import * as RG from './rig-grid.js?v=9';
 
 const { DESTS, DEST_INDEX, FX_MODULES, FX_ORDER_DEFAULT, MODFX_LADDER, DLY_LADDER, DIST_MODES, DLY_MODES, REV_LABELS,
   EQ_TYPES_L, EQ_TYPES_H, CMP_RATIO_DETENTS, FILTERS, fmtParam, lawValue, lawNorm, varLabel } = core;
@@ -534,6 +542,110 @@ function instTitle(fx, id) {
   return String(t).replace(/ \(Bus \d\)$/, '');
 }
 
+/* ================================================================ the FX look: every effect a face on the RIG grid */
+// One face per instance (IMPL-WC §3.8's numbers, rig-grid.js — the rig's own): FX_COLS columns (64 · 8 + 32 = 544; the module's 760 =
+// 16 · the list 168 · 16 · the face · 16, cv-module W_FX unchanged), the grid's rows (head 32 · screen 112 | 128 · switches 32 ·
+// knobs 76), its knob cell (a 40 px knob, its 11 px label and 10 px value), a short row centred at the column pitch, never spread —
+// exactly (layoutOf's mid: an odd row half a column in, data-half; the rows of one face kept on one column phase by their recipes).
+// A recipe per type (FX_FACE[type](c) → rows; c the panel's widget context: its variant and values choose the rows, so a reverb's
+// TYPE or a compressor's MULTIBAND re-lays the face — the same widgets moved, never rebuilt). Items: '@pid' the widget bound to
+// fx.<id>.<pid> · '#name' a named piece (c.pc: the MIX / LEVEL knob, the displays by class, pickers, buttons, the branches) ·
+// 'a|b' alternates sharing a cell (the one shown; every one hidden → the first, dimmed: never a hole) · ':n' a span of n columns ·
+// a trailing '*' the head's growing item · '-' an empty cell (aligns a row with the one under it) · '#sep' a group divider.
+// The head: ⏻ · NAME · S1 · BYPASSED · the type's own (its type / mode menu grows when it has one, else the name) · ▾. Placement
+// rules (one family): the module's choices (type, mode, structure, its source pickers, its module-wide switches) in the head; the
+// knobs in knob rows with MIX / LEVEL last (never alone); a sync switch (BPM) as a box cell left of the knob it syncs (the Delay's
+// left of TIME L, Convolve's left of PRE-DLY) — in the head only for the reverbs' pre-delay (their rows change with TYPE: the
+// switch stays put); a long switch (MONO INPUT, MONO BASS) spans two columns; displays fill a screen; segments and meters a switch
+// row. One column phase per face: the Distortion's LP/BP/HP spans 3 (S2: 8 knob columns under its 6 switches), its S1 switches
+// leave a column under the filter's (EDIT A / B over DRIVE, as in S2).
+const FX_COLS = 8, GD = RG.GRID;
+const XS_CHROME = 2 * 1 + 2 * 6 + GD.box + 6;   // the X-Shaper popover's own: its border, its padding, its head (a 28 px row) and the 6 px under it
+const FX_SIDE = 3 * GD.col - 3 * GD.u;   // the list column: 168 (760 − 544 − 3 · 16)
+const fxRow = (t, items, o) => Object.assign({ t, items }, o || {});
+const fxHead = items => fxRow('head', ['#power', items.some(s => /\*$/.test(s)) ? '#title' : '#title*', '#s1', '#chip', ...items, '#pre']);
+const fxK = (items, o) => fxRow('knobs', items, o), fxW = items => fxRow('switches', items), fxS = (items, L) => fxRow('screen', items, L ? { h: 'L' } : null);
+const spanOf = s => { const m = /:(\d+)\*?$/.exec(s); return m ? +m[1] : 1; };
+// knob rows of a list: one row when it fits the columns, else the fewest rows, balanced by columns (a span never broken) — an even width
+// first (both rows on the columns' own phase: 14 columns → 8 + 6, not 7 + 7)
+function fxRows(items) {
+  const total = items.reduce((a, s) => a + spanOf(s), 0), n = Math.max(1, Math.ceil(total / FX_COLS)), rows = [], p0 = Math.ceil(total / n), per = n > 1 && p0 % 2 && p0 < FX_COLS ? p0 + 1 : p0;
+  let cur = [], w = 0;
+  for (const s of items) {
+    if (cur.length && (w + spanOf(s) > FX_COLS || (w >= per && rows.length < n - 1))) { rows.push(cur); cur = []; w = 0; }
+    cur.push(s); w += spanOf(s);
+  }
+  if (cur.length) rows.push(cur);
+  return rows.map(r => fxK(r));
+}
+export const FX_FACE = Object.freeze({
+  hyper: () => [fxHead([]), fxK(['@rate', '@detune', '@unison', '@retrig', '#mix', '#sep', '@dsize', '#mix2'])],
+  dist: c => [fxHead(['@mode*']), fxS(['#fxr-dfil', '#fxr-xfer']),
+    fxW(c.v === 2 ? ['@filt:3', '@kt', '#xa', '#xb'] : ['@filt:3', '-', '#xa', '#xb']),
+    fxK(c.v === 2 ? ['@freq', '@q', '@lbh:3', '@drive', '@stages', '#mix'] : ['@freq', '@q', '@lbh:2', '@drive', '#mix'])],
+  flg: () => [fxHead([]), fxK(['@bpm', '@rate', '@depth', '@feed', '@phase', '#mix'])],
+  phs: c => (c.v === 2 ? [fxHead(['@poles']), fxK(['@bpm', '@rate', '@depth', '@depth2', '@freq', '@feed', '@phase', '#mix'])]
+    : [fxHead([]), fxK(['@bpm', '@rate', '@depth', '@freq', '@feed', '@phase', '#mix'])]),
+  cho: () => [fxHead(['#mono']), fxK(['@bpm', '@rate', '@dly1', '@dly2', '@depth', '@feed', '@lpf', '#mix'])],
+  dly: c => [fxHead(c.v === 2 ? ['@mode*', '@hq'] : ['@mode']), fxS(['#fxr-dlyf']),
+    fxK(['@bpm', '@timeL', '@offL', '@link', '@timeR', '@offR']), fxK(['@feed', '@freq', '@q', '#mix'])],
+  // single band: the GR meter a switch row; MULTIBAND: GR (its band thresholds dragged) and the H / M / L bars in a screen, the
+  // band knobs a row; keyed (v3, IMPL-SC §6.3): the key's row is its .fxr2-key group (dimmed in MULTIBAND)
+  cmp: c => {
+    const mb = c.on('mb'), rows = [fxHead(c.v === 2 ? ['@mb', '#src'] : ['@mb'])];
+    rows.push(mb ? fxS(['#gr', '#mb']) : fxW(['#gr:8']));
+    rows.push(fxK(['@thr', '@ratio', '@att', '@rel', '@gain', '#mix']));
+    if (mb && c.v >= 2) rows.push(fxK(['@xlo', '@xhi', '@below', '@gH', '@gM', '@gL']));
+    if (c.v === 3) rows.push(fxK(['@ext:2', '#src:2', '@schp', '@listen'], { as: 'key' }));
+    return rows;
+  },
+  // S2: the controls its TYPE shows (fx-core REV_LABELS2, in its order; Nitrous's MODE first), then MIX
+  rev: c => {
+    if (c.v === 1) return [fxHead(['#type']), fxK(['@size', '@t', '@locut', '@c', '@hicut', '@w', '#mix'])];
+    const shown = arr(arr(core.REV_LABELS2)[c.k('type')]), items = shown.includes('nmode') ? ['@nmode:5'] : [];
+    for (const p of shown) if (p !== 'nmode') items.push(p === 'pre' ? '@pre|@prelad' : '@' + p);
+    return [fxHead(['@type*', '@prebpm'])].concat(fxRows(items.concat('#mix')));
+  },
+  eq: c => [fxHead([]), fxS(['#fxr-eqd'], 'L'), fxW(c.v >= 2 ? ['@typeL:3', '@typeH:3', '-'] : ['@typeL:3', '@typeH:3']),
+    fxK(['@freqL', '@qL', '@gainL', '@freqH', '@qH', '@gainH'].concat(c.v >= 2 ? ['@level'] : []))],
+  fil: c => [fxHead(c.v === 2 ? ['@type*', '@kt', '@clean'] : ['@type*']), fxS(['#fxr-fild']), fxK(['@cutoff', '@res', '@drive', '@var', '@pan', '#mix'])],
+  bode: () => [fxHead([]), fxK(['@mono:2', '@shift', '@range', '@dir', '@width']), fxK(['@bpm', '@delay|@dlad', '@feed', '@bal', '@blur', '#mix'])],
+  util: () => [fxHead(['@invL', '@invR']), fxK(['@lpf', '@hpf', '@mbass:2', '@mfreq', '@width', '@pan', '#mix'])],
+  conv: () => [fxHead(['#ir*', '#load', '#emb']), fxS(['#fxr2-ird']), fxK(['@size', '@tone', '@minph', '@att', '@dec', '@damp']),
+    fxK(['@prebpm', '@pre|@prelad', '@irgain', '#mix'])],
+  split2: () => [fxHead([]), fxW(['#brsel:8']), fxS(['#fxr2-spl']), fxK(['@freq', '@level'])],
+  split3: () => [fxHead([]), fxW(['#brsel:8']), fxS(['#fxr2-spl']), fxK(['@freq1', '@freq2', '@level'])],
+  splitms: () => [fxHead([]), fxK(['#brsel:6', '@level'])],
+  duck: () => [fxHead(['#src*', '@note']), fxS(['#curve'], 'L'), fxW(['#shape:5', '#gr:3']), fxK(['@depth', '@bpm', '@len|@lad', '@att', '@smooth', '#mix'])],
+});
+// the face's words (data-l: printed instead, the widget's own label — its aria name, a label function's text — untouched; never a
+// MIX / LEVEL or LPF / HPF label toggle): per type, a pid whose group the face has no caption for (the Delay's LEFT / RIGHT, the EQ's
+// LOW / HIGH, the reverb's CHORUS, the Distortion's and the Delay's FILTER: F → FREQ); everywhere, a label longer than the 64 px pitch
+// holds (≤ 48 px of text, §3.8)
+const FX_LABEL = {
+  dist: { freq: 'FREQ' },
+  dly: { timeL: 'TIME L', offL: 'OFFS L', timeR: 'TIME R', offR: 'OFFS R', freq: 'FREQ' },
+  eq: { freqL: 'FREQ L', qL: 'Q L', gainL: 'GAIN L', freqH: 'FREQ H', qH: 'Q H', gainH: 'GAIN H' },
+  rev: { chr: 'CH RATE', chd: 'CH DPTH' },
+};
+const FX_ABBR = { 'PRE DELAY': 'PRE-DLY', 'LOW CUT': 'LO CUT', 'HIGH CUT': 'HI CUT', 'SPIN RATE': 'SPIN', 'SPIN DEPTH': 'SPIN DP', FEEDBACK: 'FEED',
+  DIFFUSION: 'DIFF', 'SPLIT FREQ': 'SPLIT', RECTANGLE: 'RECT', HEXAGON: 'HEX' };
+const isHid = e => !!e && (e.hidden || (!!e.classList && e.classList.contains('fxr2-hide')));
+// the descendants of root with class cls (a walk: the node tests' DOM has no querySelectorAll)
+function byClass(root, cls) { const out = [], walk = n => { for (const k of n.children || []) { if (k.classList && k.classList.contains(cls)) out.push(k); walk(k); } }; if (root) walk(root); return out; }
+// the first element (roots included) bound to data-dest id — a walk (the node tests' DOM has no querySelector)
+function findDest(roots, id) {
+  const hit = n => !!n.getAttribute && n.getAttribute('data-dest') === id;
+  const walk = n => { if (hit(n)) return n; for (const k of n.children || []) { const e = walk(k); if (e) return e; } return null; };
+  for (const r of roots) {
+    if (!r) continue;
+    if (typeof r.querySelector === 'function') { const e = hit(r) ? r : r.querySelector('[data-dest="' + id + '"]'); if (e) return e; continue; }
+    const e = walk(r);
+    if (e) return e;
+  }
+  return null;
+}
+
 /* ================================================================ styles (v2 additions to wk's .fxr-* rules) */
 
 const CSS = `
@@ -603,11 +715,143 @@ function touchCSS() {
   return '@media (pointer: coarse) {\n' + TOUCH.map(([sel, b]) => '  ' + sel + ' { ' + b + ' }').join('\n') + '\n}\n'
     + TOUCH.map(([sel, b]) => pre(sel) + ' { ' + b + ' }').join('\n') + '\n';
 }
+// The FX look (.fxr-rig; never an embedded rack): the grid's numbers as rig-grid's custom properties (the faces are .rig-face: #rig-css
+// lays their rows and cells — injected first, so these rules follow it), colours through the kit's tokens (the skin sets them on the
+// rack's root: style.css) and --rig-* fallbacks. Every rule here is .fxr-rig's; a face's are .fxr-rig .fxr-face's (above the grid
+// CSS's own .rig-face rules by specificity, whatever the order). Touch: nothing grows (the rows are the grid's) — the kit's 44 px
+// minimum heights are undone and the hits grow invisibly (::after, 44 px), as on the rig's faces.
+function rigCSS() {
+  const F = 'var(--rig-font, var(--ui, system-ui, sans-serif))', R = '.fxr-rig .fxr-face', BOX = 'var(--rig-box)', W = RG.faceW(FX_COLS);
+  const TXT = (size, lh) => 'font: 600 ' + size + ' / ' + (lh || '1') + ' ' + F + '; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;';
+  const LAB = TXT('var(--rig-f-lab)', 'var(--rig-lab)'), SW = TXT('var(--rig-f-sw)'), HD = TXT('var(--rig-f-head)');
+  const CAP = 'order: 1; display: block; flex: none; margin: calc(var(--rig-lab-top) - var(--rig-box-top) - var(--rig-box)) 0 0; height: var(--rig-lab); text-align: center; color: var(--rig-label, var(--sx-ink)); ' + LAB;
+  const HIT = "content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 100%; height: var(--rig-hit);";
+  const HITSQ = "content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: var(--rig-hit); height: var(--rig-hit);";
+  const BTN = 'position: relative; min-height: 0; color: var(--sx-ink); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: var(--rig-radius);';
+  return `
+/* fx-ui.js — the FX look (.fxr-rig): every effect a face on the RIG grid (rig-grid.js), the rack's chrome in the same family */
+.fxr-rig { ${RG.gridVars()} }
+.fxr-root.fxr-rig { grid-template-columns: ${FX_SIDE}px ${W}px; gap: var(--rig-gap) var(--rig-pad); padding: var(--rig-pad); color: var(--sx-ink); background: var(--rig-case, var(--sx-bg)); border-radius: 0; font: 500 var(--rig-f-head) / 1.2 ${F}; }
+.fxr-root.fxr-rig.fxr2-expand { grid-template-columns: minmax(0, 1fr); }
+.fxr-rig .fxr2-bar { height: var(--rig-row-head); gap: var(--rig-u); }
+.fxr-rig .fxr2-tabs { flex: 0 0 ${FX_SIDE}px; gap: 0; }
+.fxr-rig .fxr2-tab { flex: 1 1 0; min-width: 0; height: ${BOX}; padding: 0 2px; color: var(--sx-mute); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-left-width: 0; border-radius: 0; box-shadow: none; ${SW} }
+.fxr-rig .fxr2-tab:first-child { border-left-width: 1px; border-radius: var(--rig-radius) 0 0 var(--rig-radius); }
+.fxr-rig .fxr2-tab:last-child { border-radius: 0 var(--rig-radius) var(--rig-radius) 0; }
+.fxr-rig .fxr2-tab[aria-selected="true"] { color: var(--sx-panel2); background: var(--sx-accent); border-color: var(--sx-accent); box-shadow: none; }
+.fxr-rig .fxr2-tab.fxr2-tbyp { background-image: radial-gradient(circle at calc(100% - 7px) 7px, var(--sx-warn) 0 2.5px, transparent 3px); }
+.fxr-rig .fxr2-title { flex: 0 0 ${FX_SIDE}px; color: var(--sx-mute); ${HD} }
+.fxr-rig .fxr2-bar .fxr-more { ${BTN} width: ${BOX}; height: ${BOX}; min-width: 0; padding: 0; font: 600 14px / 1 var(--ui, system-ui, sans-serif); }
+.fxr-rig .fxr2-bar .fxr2-exp { margin-left: auto; }
+.fxr-rig .fxr2-bar .fxr2-exp.wk-on { color: var(--sx-accent); border-color: var(--sx-accent); }
+.fxr-rig .fxr-side { gap: var(--rig-u); }
+.fxr-rig .fxr-tiles { gap: 4px; }
+.fxr-rig .fxr-tile { position: relative; height: var(--rig-row-head); gap: 6px; padding: 0 2px 0 3px; color: var(--sx-mute); background: var(--rig-face, var(--sx-panel)); border: 1px solid var(--sx-line); border-radius: var(--rig-radius); }
+.fxr-rig .fxr-tile.fxr-sel { border-color: var(--sx-accent); box-shadow: inset 3px 0 0 var(--sx-accent); }
+.fxr-rig .fxr-tile .fxr-led { width: 24px; min-width: 24px; height: 24px; }
+.fxr-rig .fxr-tile .fxr-tname { align-self: stretch; padding: 0 2px; color: var(--sx-mute); ${HD} overflow: hidden; text-overflow: ellipsis; }
+.fxr-rig .fxr-tile .fxr-tname:focus-visible { outline-offset: -1px; }   /* (the name fills the row — a press anywhere on it selects; its ring on the row's border, never in the gap) */
+.fxr-rig .fxr-tile.fxr-on .fxr-tname { color: var(--sx-ink); }
+.fxr-rig .fxr-tile .fxr-grip { width: 24px; height: ${BOX}; padding: 0; line-height: ${BOX}; }
+.fxr-rig .fxr2-d1, .fxr-rig .fxr2-bend { margin-left: 12px; }
+.fxr-rig .fxr2-bend { min-height: 2px; }
+.fxr-rig .fxr2-bend:not(:empty) { height: 20px; padding: 0 0 0 10px; color: var(--sx-mute); border: 0; border-left: 2px solid var(--sx-line); border-radius: 0; font: 500 var(--rig-f-sw) / 20px ${F}; letter-spacing: 0.06em; text-transform: uppercase; }
+.fxr-rig .fxr2-s1, .fxr-rig .fxr2-chip, .fxr-rig .fxr2-emb { height: 18px; padding: 0 4px; font: 700 var(--rig-f-val) / 16px ${F}; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 4px; }
+.fxr-rig .fxr2-brow { height: ${BOX}; margin-left: 12px; padding: 0 2px 0 8px; gap: 4px; color: var(--sx-mute); border-left: 2px solid var(--sx-line); ${SW} }
+.fxr-rig .fxr2-brow.fxr2-bsel { color: var(--sx-ink); border-left-color: var(--sx-accent); }
+.fxr-rig .fxr2-brow .fxr2-bname { padding: 0; color: inherit; ${SW} }
+.fxr-rig .fxr2-plus, .fxr-rig .fxr2-bbyp { min-width: 0; height: 22px; padding: 0 6px; border-radius: 4px; ${SW} }
+.fxr-rig .fxr2-add { ${BTN} align-self: stretch; height: ${BOX}; padding: 0 8px; ${HD} }
+.fxr-rig .fxr-rack { gap: var(--rig-gap); }
+.fxr-rig.fxr2-expand .fxr-rack { align-items: center; }
+.fxr-rig .fxr-empty { width: ${W}px; padding: 24px 16px; color: var(--sx-mute); border: 1px dashed var(--sx-line); border-radius: var(--rig-radius); font: 500 var(--rig-f-head) / 1.4 ${F}; }
+.fxr-rig .fxr-mod { width: ${W}px; background: none; border: 0; border-radius: var(--rig-radius); }
+.fxr-rig .fxr-face { --rig-n: ${FX_COLS}; border-radius: var(--rig-radius); box-shadow: 0 0 0 1px var(--sx-line); }
+.fxr-rig .fxr-mod.fxr-sel > .fxr-face { box-shadow: 0 0 0 1px var(--sx-accent); }
+.fxr-rig .fxr-mod.fxr2-off > .fxr-face > .rig-row:not(.rig-head), .fxr-rig .fxr-mod.fxr-byp > .fxr-face > .rig-row:not(.rig-head) { opacity: 0.45; }
+.fxr-rig .fxr2-brbox { margin: var(--rig-gap) 0 0; padding: 0; gap: var(--rig-gap); border: 0; }
+.fxr-rig .fxr2-brbox > .fxr-mod > .fxr-face { box-shadow: inset 3px 0 0 var(--sx-accent), 0 0 0 1px var(--sx-line); }
+/* the displays, the GR meters and the curve editors on the skin's screen ground (their painters read the token where they draw) */
+.fxr-rig .fxr-disp, .fxr-rig canvas.fxr-gr, .fxr-rig .gx-root { --sx-bg: var(--rig-screen, #141518); }
+/* a face's head: ⏻ · NAME · badges · the type's own · ▾ — 28 px controls, 12 px text */
+${R} .rig-head { gap: var(--rig-u); }
+${R} .rig-head .fxr-mtitle { flex: none; min-width: 0; margin: 0; color: var(--sx-ink); ${HD} line-height: ${BOX}; overflow: hidden; text-overflow: ellipsis; }
+${R} .rig-head .fxr-mtitle.rig-grow { flex: 1 1 auto; }
+${R} .rig-head > .fxr2-pw { display: inline-flex; }
+${R} .rig-head .fxr-pw { width: ${BOX}; height: ${BOX}; min-width: 0; padding: 0; border-radius: 50%; }
+${R} .rig-head .fxr-pre, ${R} .rig-head .fxr-xs { ${BTN} height: ${BOX}; padding: 0 8px; ${HD} }
+${R} .rig-head .fxr-pre { width: ${BOX}; min-width: 0; padding: 0; font: 600 12px / 1 var(--ui, system-ui, sans-serif); }
+${R} .rig-head .fxr2-chip { position: relative; height: ${BOX}; padding: 0 8px; font-size: var(--rig-f-head); line-height: 26px; }
+${R} .rig-head .fxr2-s1, ${R} .rig-head .fxr2-emb { height: 20px; font-size: var(--rig-f-head); line-height: 18px; }
+${R} .rig-head .wk-seg { flex-direction: row; }
+${R} .rig-head .wk-seg > .wk-lab { display: none; }
+${R} .rig-head .wk-sb { height: ${BOX}; padding: 0 8px; ${HD} }
+${R} .rig-head .wk-nb { flex-direction: row; align-items: center; gap: 6px; }
+${R} .rig-head .wk-nb > .wk-lab, ${R} .rig-head .fxr2-pick > .wk-lab { display: inline; color: var(--sx-mute); ${HD} }
+${R} .rig-head .wk-nbv { height: ${BOX}; min-width: var(--rig-box-w); padding: 0 6px; font: 600 var(--rig-f-head) / 1 var(--mono, ui-monospace, monospace); }
+${R} .rig-head .fxr2-pick { flex-direction: row; align-items: center; gap: 6px; }
+${R} .rig-head .fxr2-pick .wk-mbtn { min-width: 0; max-width: none; }
+${R} .rig-head .fxr2-pick.rig-grow > .wk-mrow { flex: 1 1 auto; min-width: 0; }
+/* the knob rows' other cells: a box at the knob's centre line (a toggle, a segment, a picker, a branch strip), its caption in the
+   label line; a slider's track there too (a vertical one in the knob's place); a two-column toggle spans its cell */
+${R} .rig-cell[data-span] > .wk-tog { width: calc(100% - var(--rig-u)); }
+${R} .rig-knobs .rig-cell > .wk-seg, ${R} .rig-knobs .rig-cell > .wk-menu { width: calc(100% - var(--rig-u)); height: auto; flex-direction: column; gap: 0; margin-top: var(--rig-box-top); }
+${R} .rig-knobs .rig-cell > .wk-seg > .wk-segs { order: 0; display: flex; height: ${BOX}; }
+${R} .rig-knobs .rig-cell > .wk-seg .wk-sb { flex: 1 1 0; min-width: 0; height: ${BOX}; padding: 0 2px; ${SW} }
+${R} .rig-knobs .rig-cell > .wk-menu > .wk-mrow { order: 0; height: ${BOX}; }
+${R} .rig-knobs .rig-cell > .wk-menu .wk-mbtn { height: ${BOX}; min-width: 0; max-width: none; font: 500 var(--rig-f-lab) / 1 var(--ui, system-ui, sans-serif); }
+${R} .rig-knobs .rig-cell > .wk-seg > .wk-lab, ${R} .rig-knobs .rig-cell > .wk-menu > .wk-lab { ${CAP} }
+${R} .rig-cell > .wk-sl { width: calc(100% - 2 * var(--rig-u)); height: 100%; flex-direction: column; align-items: stretch; gap: 0; }
+${R} .rig-cell > .wk-sl > .wk-slt { order: 0; flex: none; min-width: 0; height: 10px; margin-top: calc(var(--rig-knob-top) + var(--rig-knob) / 2 - 5px); }
+${R} .rig-cell > .wk-sl.wk-v > .wk-slt { width: 12px; height: var(--rig-knob); min-height: 0; margin: var(--rig-knob-top) auto 0; }
+${R} .rig-cell > .wk-sl > .wk-lab { order: 1; flex: none; margin-top: calc(var(--rig-lab-top) - var(--rig-knob-top) - var(--rig-knob) / 2 - 5px); height: var(--rig-lab); text-align: center; color: var(--rig-label, var(--sx-ink)); ${LAB} }
+${R} .rig-cell > .wk-sl.wk-v > .wk-lab { margin-top: var(--rig-lab-gap); }
+${R} .rig-cell > .wk-sl > .wk-num { order: 2; flex: none; min-width: 0; height: var(--rig-val); text-align: center; color: var(--sx-mute); font: 500 var(--rig-f-val) / var(--rig-val) ${F}; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+${R} .rig-cell > .fxr2-brsel { flex: none; width: calc(100% - var(--rig-u)); height: ${BOX}; flex-wrap: nowrap; gap: var(--rig-u); }
+${R} .rig-knobs .rig-cell > .fxr2-brsel { margin-top: var(--rig-box-top); }
+${R} .fxr2-bpanel { flex: 1 1 0; min-width: 0; height: ${BOX}; gap: 4px; padding: 0 2px 0 6px; background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: var(--rig-radius); }
+${R} .fxr2-bpanel.fxr2-bsel { border-color: var(--sx-accent); }
+${R} .fxr2-bpanel .fxr2-bname { flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; text-align: left; ${SW} }
+${R} .rig-switches .rig-cell > .fxr-xs { ${BTN} width: var(--rig-sw); height: ${BOX}; padding: 0 4px; ${SW} }
+${R} .rig-switches .rig-cell > canvas.fxr-gr { flex: none; width: calc(100% - var(--rig-u)); min-width: 0; height: ${BOX}; border-radius: 4px; }
+${R} .rig-row[data-half] { padding-left: calc(var(--rig-col) / 2); }   /* (an odd row centred: layoutOf mid — its cells on whole columns of a grid half a column in) */
+${R} .fxr-sep { flex: none; width: 1px; height: calc(var(--rig-knob) + var(--rig-lab-gap) + var(--rig-lab)); margin-top: var(--rig-knob-top); background: var(--sx-line); }
+${R} .wk-sb[data-l] { font-size: 0 !important; }
+${R} .wk-sb[data-l]::after { content: attr(data-l); font-size: var(--rig-f-sw); }
+/* a face's screens: its displays side by side at the row's height (a transfer curve square), the GR meter beside the band bars */
+${R} .rig-screen { flex-direction: row; gap: var(--rig-u); }
+${R} .rig-screen > * { flex: 1 1 0; min-width: 0; height: 100%; margin: 0; }
+${R} .rig-screen > .fxr-disp { background: var(--rig-screen, var(--sx-bg)); border: 1px solid var(--sx-line); border-radius: var(--rig-radius); }
+${R} .rig-screen > .fxr-xfer { flex: 0 0 var(--rig-row-screen); }
+${R} .rig-screen > canvas.fxr-gr { border-radius: var(--rig-radius); }
+${R} .rig-screen > .fxr-mb { flex: 0 0 calc(3 * var(--rig-col) - var(--rig-u)); display: flex; flex-direction: column; justify-content: space-around; gap: 0; }
+${R} .fxr-mb .wk-sl { gap: 6px; }
+${R} .fxr-mb .wk-sl > .wk-lab { width: 12px; ${SW} }
+${R} .fxr-mb .wk-sl > .wk-num { min-width: 52px; font: 500 var(--rig-f-val) / 1 ${F}; font-variant-numeric: tabular-nums; color: var(--sx-mute); }
+${R} .rig-screen .gx-root { border-radius: var(--rig-radius); }
+.fxr-rig .fxr-xpop { top: calc(var(--rig-top) + var(--rig-row-head) + var(--rig-gap)); bottom: var(--rig-bottom); left: var(--rig-pad); right: var(--rig-pad); padding: 6px; border-width: 1px; background: var(--rig-face, var(--sx-panel)); border-radius: var(--rig-radius); }
+.fxr-rig .fxr-xhead { height: var(--rig-box); margin: 0 0 6px; }
+.fxr-rig .fxr-xtitle { color: var(--sx-ink); ${HD} }
+.fxr-rig .fxr-x { ${BTN} width: ${BOX}; height: ${BOX}; padding: 0; }
+/* touch: the kit's minimum heights undone (the rows are the grid's), the hits grown invisibly */
+.fxr-rig .fxr-tile, .fxr-rig .fxr-led, .fxr-rig .fxr-more, .fxr-rig .fxr-pre, .fxr-rig .fxr-xs, .fxr-rig .fxr-x, .fxr-rig .fxr2-tab, .fxr-rig .fxr2-bname,
+.fxr-rig .fxr2-plus, .fxr-rig .fxr2-bbyp, .fxr-rig .fxr2-chip, .fxr-rig .wk-sb, .fxr-rig .wk-nbv, .fxr-rig .wk-mbtn, .fxr-rig .wk-arr, .fxr-rig .wk-tog { min-height: 0; }
+.fxr-rig .fxr2-plus, .fxr-rig .fxr2-bbyp, .fxr-rig .fxr2-chip { min-width: 0; }
+.fxr-rig .fxr2-tab, .fxr-rig .fxr2-bname, .fxr-rig .fxr2-plus, .fxr-rig .fxr2-bbyp { position: relative; }
+.fxr-rig .fxr-xs::after, .fxr-rig .fxr2-tab::after, .fxr-rig .fxr2-bname::after, .fxr-rig .fxr2-plus::after, .fxr-rig .fxr2-bbyp::after { ${HIT} }
+.fxr-rig .fxr2-bar .fxr-more::after, .fxr-rig .fxr-pre::after, .fxr-rig .fxr-x::after { ${HITSQ} }   /* (a lone 28 px square: 44 × 44, its neighbours 8 px away) */
+/* the list's hits never past their own row (rows 32 / 28, 4 px apart: a 44 px hit would take a press on the next row's edge) — the LED's
+   and the BYP chip's (the kit's ::before) the tile's height, a branch row's name, BYP and + its own */
+.fxr-rig .fxr-tile .fxr-led::before, .fxr-rig .fxr-tile .fxr2-chip::before { top: calc(50% - var(--rig-row-head) / 2); bottom: calc(50% - var(--rig-row-head) / 2); }
+.fxr-rig .fxr2-brow .fxr2-bname::after, .fxr-rig .fxr2-brow .fxr2-plus::after, .fxr-rig .fxr2-brow .fxr2-bbyp::after { height: var(--rig-box); }
+`;
+}
 function injectFxStyles(d) {
   if (!d || !d.head || (typeof d.getElementById === 'function' && d.getElementById('fxr2-css'))) return;
+  RG.ensureRigCSS(d); // (the grid CSS before this sheet: the FX look's faces are .rig-face)
   const st = d.createElement('style');
   st.id = 'fxr2-css';
-  st.textContent = CSS + touchCSS();
+  st.textContent = CSS + touchCSS() + rigCSS();
   d.head.appendChild(st);
 }
 
@@ -658,6 +902,7 @@ export class FXRackUI {
     this.host = host || {};
     this.opts = opts || {};
     this.embedded = !!this.opts.embedded;
+    this.rig = !this.embedded && this.opts.look !== 'classic';   // the FX look (a standalone rack: the canvas's FX modules)
     this.modOn = this.opts.mod !== undefined ? !!this.opts.mod : this.embedded;
     this.dsp = this.opts.dsp || null;
     injectFxStyles((root && root.ownerDocument) || Doc());
@@ -828,7 +1073,7 @@ export class FXRackUI {
 
   /* ---------------------------------------------------------- DOM: frame */
   build(parent) {
-    const root = this.el = h('div', 'fxr-root fxr2' + (this.embedded ? ' fxr-embedded' : ''));
+    const root = this.el = h('div', 'fxr-root fxr2' + (this.embedded ? ' fxr-embedded' : '') + (this.rig ? ' fxr-rig' : ''));
     root.setAttribute('data-racks', String(this.racksN()));
     const bar = this.bar = h('div', 'fxr2-bar');
     const tabs = this.tabsEl = h('div', 'fxr2-tabs');
@@ -993,14 +1238,16 @@ export class FXRackUI {
   buildPanel(I) {
     const sec = h('section', 'fxr-mod fxr2-mod fxr-m-' + I.type);
     sec.setAttribute('data-inst', I.id);
-    const P = { id: I.id, type: I.type, v: I.v, el: sec, widgets: [], displays: [], upd: [], offs: [], grCv: null, brBox: null };   // offs: the panel's own cleanups (dropPanel)
+    // offs: the panel's own cleanups (dropPanel); pieces: its named parts (c.pc; the FX look lays them by name)
+    const P = { id: I.id, type: I.type, v: I.v, el: sec, widgets: [], displays: [], upd: [], offs: [], grCv: null, brBox: null, pieces: {} };
     const hd = h('div', 'fxr-mhead'), title = h('h3', 'fxr-mtitle', instTitle(this.fx(), I.id));
     P.title = title;
     const pre = btn('fxr-pre', '▾', moduleTitle(I.type) + ' module menu');
     pre.setAttribute('aria-haspopup', 'menu');
     pre.addEventListener('click', () => { const r = pre.getBoundingClientRect(); contextMenu(r.left, r.bottom + 2, this.instMenu(I.id, false), { anchor: pre }); });
     hd.append(title);
-    if (I.v === 1) { const b = h('span', 'fxr2-s1', 'S1'); b.title = s1Tip(I.type); hd.append(b); }
+    let s1 = null, power = null;
+    if (I.v === 1) { s1 = h('span', 'fxr2-s1', 'S1'); s1.title = s1Tip(I.type); hd.append(s1); }
     const chip = btn('fxr2-chip', 'BYPASSED', 'Bypassed (click to clear)');
     chip.addEventListener('click', () => this.clearByp(I.id));
     P.upd.push(() => { const J = this.inst(I.id); show(chip, !!(J && J.byp)); });
@@ -1013,10 +1260,21 @@ export class FXRackUI {
       P.widgets.push(pw);
       this.knobs.set(onId, pw);
       this.tip(pw, () => onId);
-      hd.append(this.altPower(pw.el, I.id));
+      hd.append(power = this.altPower(pw.el, I.id));
     }
     const body = h('div', 'fxr-mbody');
-    sec.append(hd, body);
+    if (this.rig) {
+      // the FX look: the face (div.rig-face.fxr-face, its rows laid from FX_FACE below); the head's parts are named pieces; mod_<type>
+      // builds into the body as ever — a donor, kept in the face's park (hidden): what the recipe does not place stays there, bound
+      Object.assign(P.pieces, { title, s1, chip, pre, power });
+      P.face = h('div', 'rig-face fxr-face');
+      P.face.setAttribute('data-rig-kind', 'fx:' + I.type);
+      P.park = h('div', 'rig-park fxr2-hide');
+      P.park.setAttribute('aria-hidden', 'true');
+      P.park.append(body);
+      P.managed = []; P.cells = []; P.lay = null; P.inert = new Set();
+      sec.append(P.face);
+    } else sec.append(hd, body);
     P.body = body;
     const c = this.ctxFor(P);
     const make = this['mod_' + I.type];
@@ -1025,7 +1283,98 @@ export class FXRackUI {
       else body.append(h('p', 'fxr2-note', 'This module type has no panel.'));
     } catch (err) { warnOnce('panel' + I.type, 'fx-ui: panel failed', I.type, err); }
     if (isSplit(I.type)) { P.brBox = h('div', 'fxr2-brbox'); sec.append(P.brBox); }
+    if (this.rig) {
+      try { this.layFace(P, this.faceRecipe(P, c)); } catch (err) { warnOnce('face' + I.type, 'fx-ui: face failed', I.type, err); }
+      P.faceUpd = () => this.faceUpd(P, c);   // (refresh: after the builder's rules and the widgets' updates — a re-lay, the dims, the words of a label function)
+    }
     return P;
+  }
+  /* ---------------------------------------------------------- the FX look: a panel's face on the RIG grid */
+  // the recipe of P now (FX_FACE[type](c): its variant and values choose the rows), the rows' heights the grid's
+  faceRecipe(P, c) {
+    const f = FX_FACE[P.type], rows = typeof f === 'function' ? f(c) : [fxHead([])];
+    return { cols: FX_COLS, mid: true, rows: rows.map(r => ({ t: r.t, h: RG.rowH(r.t, r.h), items: r.items.slice(), as: r.as || null })) };
+  }
+  // a recipe item's element(s): a named piece ('sep' a divider of the face's own), else the widget bound to fx.<id>.<pid> wherever
+  // it stands (a cell, the park, the donor's rows); '-' an empty cell
+  faceItem(P, a) {
+    if (a.name) {
+      if (a.name === 'sep') return [P.pieces.sep || (P.pieces.sep = h('div', 'fxr-sep'))];
+      const p = P.pieces[a.name];
+      return p ? [p] : [];
+    }
+    const pid = String(a.id).replace(/^@/, '');
+    if (!pid || pid === '-') return [];
+    const e = findDest([P.park, P.face], 'fx.' + P.id + '.' + pid);
+    return e ? [e] : [];
+  }
+  // (re)lays recipe R: every element the face holds goes to the park first, then each row takes its own (the same widgets: their
+  // bindings and state kept); a display in a screen takes the row's height (its drag maths before layout: box()). A row half a column
+  // in (layoutOf mid: an odd row centred) is data-half — its grid shifted by half a column, its cells on whole columns. The keyboard
+  // focus survives (a moved control is detached for a moment: it gets the focus back, the scroll kept — a TYPE stepped by its arrows
+  // re-lays the face on every step); the members a dim made inert are live again until the next dims (faceUpd)
+  layFace(P, R) {
+    const F = P.face, L = RG.layoutOf(R), take = e => { P.managed.push(e); return e; };
+    const doc = F.ownerDocument, act = doc ? doc.activeElement : null, had = act && act !== doc.body && typeof F.contains === 'function' && F.contains(act) ? act : null;
+    for (const e of P.inert) e.removeAttribute('inert');
+    P.inert.clear();
+    for (const e of P.managed) P.park.appendChild(e);
+    P.managed = []; P.cells = [];
+    F.textContent = '';
+    L.rows.forEach((row, ri) => {
+      const spec = R.rows[ri];
+      let re = spec.as ? P.pieces[spec.as] || null : null;
+      if (re) { for (const k of Array.from(re.children)) { if (k.classList && k.classList.contains('rig-cell')) k.remove(); else P.park.appendChild(k); } re.textContent = ''; re.classList.remove('fxr-grp'); re.classList.add('rig-row', 'rig-' + row.t); } else re = h('div', 'rig-row rig-' + row.t);
+      re.setAttribute('data-row', String(ri));
+      if (row.t === 'screen') re.setAttribute('data-h', row.h === GD.rows.screenL ? 'L' : 'S');
+      if (row.t === 'head' || row.t === 'screen') {
+        for (const cell of row.cells) for (const e of this.faceItem(P, cell.alts[0])) { if (e.classList) e.classList.toggle('rig-grow', !!cell.grow); re.appendChild(take(e)); }
+      } else {
+        if (row.cells.length && row.cells[0].col % 1) re.setAttribute('data-half', '');
+        for (const cell of row.cells) {
+          const ce = h('div', 'rig-cell');
+          ce.style.gridColumn = (Math.floor(cell.col) + 1) + ' / span ' + cell.span;
+          if (cell.span > 1) ce.setAttribute('data-span', String(cell.span));
+          const groups = cell.alts.map(a => this.faceItem(P, a)).filter(g => g.length);
+          for (const g of groups) for (const e of g) ce.appendChild(take(e));
+          if (groups.length) P.cells.push({ el: ce, ms: groups.map(g => g[0]) });
+          re.appendChild(ce);
+        }
+      }
+      F.appendChild(re);
+    });
+    F.appendChild(P.park);
+    for (const D of P.displays) {
+      const sc = closest(D.el, F, n => !!n.classList && n.classList.contains('rig-screen'));
+      if (!sc) continue;
+      const hh = GD.rows[sc.getAttribute('data-h') === 'L' ? 'screenL' : 'screen'];
+      D.hgt = hh; D.el.style.height = hh + 'px'; D.last = null;
+    }
+    P.lay = { key: JSON.stringify(R.rows), recipe: R, layout: L };
+    if (had && doc.activeElement !== had && had.isConnected && F.contains(had) && !P.park.contains(had) && typeof had.focus === 'function') {
+      try { had.focus({ preventScroll: true }); } catch (err) { /* (a control that cannot take it back: the focus stays where it fell) */ }
+    }
+  }
+  // every refresh, after the builder's own rules: a re-lay when the recipe changed (TYPE, MULTIBAND), the dims, the face's words
+  faceUpd(P, c) {
+    const R = this.faceRecipe(P, c);
+    if (!P.lay || JSON.stringify(R.rows) !== P.lay.key) this.layFace(P, R);
+    // a cell whose every member is hidden shows its first, dimmed (data-dim; never a hole: #rig-css) — and inert: shown, never live (no
+    // tab stop, no key, no assistive tech: the classic look's display: none)
+    for (const C of P.cells) {
+      const dim = C.ms.every(isHid), m = C.ms[0];
+      if (dim !== C.el.hasAttribute('data-dim')) { if (dim) C.el.setAttribute('data-dim', ''); else C.el.removeAttribute('data-dim'); }
+      if (m && m.setAttribute && dim !== m.hasAttribute('inert')) { if (dim) { m.setAttribute('inert', ''); P.inert.add(m); } else { m.removeAttribute('inert'); P.inert.delete(m); } }
+    }
+    // the words the 64 px pitch holds: FX_LABEL by pid, FX_ABBR by text (data-l; a label toggle never — its text changes)
+    const L = FX_LABEL[P.type] || {}, pre = 'fx.' + P.id + '.';
+    const put = (el, want) => { if (!el || !el.getAttribute) return; if (want) { if (el.getAttribute('data-l') !== want) el.setAttribute('data-l', want); } else if (el.hasAttribute('data-l')) el.removeAttribute('data-l'); };
+    for (const C of P.cells) for (const e of C.el.children) {
+      const lab = Array.from(e.children || []).find(k => k.classList && k.classList.contains('wk-lab')) || null;
+      const d = e.getAttribute ? e.getAttribute('data-dest') || '' : '', pid = d.startsWith(pre) ? d.slice(pre.length) : '';
+      if (lab && !lab.classList.contains('wk-lt')) put(lab, L[pid] || FX_ABBR[lab.textContent] || null);
+      if (e.classList && e.classList.contains('wk-seg')) for (const b of byClass(e, 'wk-sb')) put(b, FX_ABBR[b.textContent] || null);
+    }
   }
   // a power / LED toggle wrapped so that Alt-click (or the Alt latch) toggles every module of the rack
   altPower(el, id) {
@@ -1071,6 +1420,7 @@ export class FXRackUI {
     };
     const c = {
       id, type, v, P, dest, row, reg,
+      pc: (name, el) => { if (el) P.pieces[name] = el; return el; },   // a named piece (the FX look lays it by name)
       val: pid => ui.val(id, pid),
       on: pid => ui.val(id, pid) >= 0.5,
       k: pid => { const r = row(pid), g = stepsOfRow(r); return g ? Math.round(ui.val(id, pid) * g) + (r.lo | 0) : 0; },
@@ -1111,8 +1461,8 @@ export class FXRackUI {
       // MIX knob whose label flips to LEVEL (inst.ui[key], inv A20.2 / B14.1); `knobs` holds both ids, each id's halo
       // kept and drawn only while that id is bound
       mix(key, mixPid, lvlPid) {
-        const K = key || 'lvl', mp = mixPid || 'mix', lp = lvlPid || 'level', mixId = dest(mp), lvlId = dest(lp);
-        if (!row(mp) && row(lp)) return c.kn(lp, 'LEVEL');
+        const K = key || 'lvl', mp = mixPid || 'mix', lp = lvlPid || 'level', mixId = dest(mp), lvlId = dest(lp), nm = K === 'lvl2' ? 'mix2' : 'mix';
+        if (!row(mp) && row(lp)) { const lw = c.kn(lp, 'LEVEL'); if (lw) c.pc(nm, lw.el); return lw; }
         if (!row(mp)) return null;
         const lvl = () => { const I = ui.inst(id); return !!(I && isObj(I.ui) && I.ui[K]); };
         const cur = () => (lvl() ? lp : mp);
@@ -1132,6 +1482,7 @@ export class FXRackUI {
         }
         P.widgets.push(w);
         ui.tip(w, () => dest(cur()));
+        c.pc(nm, w.el);
         return w;
       },
       display: (cls, label, hgt, draw, key, drag) => ui.display(P, cls, label, hgt, draw, key, drag),
@@ -1163,6 +1514,7 @@ export class FXRackUI {
     const r1 = this.row(b);
     const modes = c.v === 2 && Array.isArray(core.DIST_MODES2) ? core.DIST_MODES2 : DIST_MODES;
     const ea = btn('fxr-xs', 'Edit A', 'Edit X-Shaper curve A'), eb = btn('fxr-xs', 'Edit B', 'Edit X-Shaper curve B');
+    c.pc('xa', ea); c.pc('xb', eb);
     ea.addEventListener('click', () => this.openXs(c.P, 'xa', ea));
     eb.addEventListener('click', () => this.openXs(c.P, 'xb', eb));
     c.upd(() => { const on = c.k('mode') === 11 || c.k('mode') === 12; for (const x of [ea, eb]) { x.disabled = !on; x.classList.toggle('wk-dis', !on); } if (!on && this.xs && this.xs.P === c.P) this.closeXs(); });
@@ -1189,6 +1541,7 @@ export class FXRackUI {
     const mono = toggle({ label: 'MONO', kind: 'btn', get: () => { const I = this.inst(c.id); return I && isObj(I.sub) && I.sub.mono ? 1 : 0; },
       set: v => this.edit(fx => this.withInst(fx, c.id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub.mono = v ? 1 : 0; }), instTitle(this.fx(), c.id) + ' Mono') });
     tooltip(mono.el, () => 'Mono: left and right chorus LFOs in phase');
+    c.pc('mono', mono.el);
     c.P.widgets.push(mono);
     // S2: a tap on the filter knob's label switches LPF ↔ HPF (`hp`)
     const lpf = c.v === 2 && c.has('hp')
@@ -1232,6 +1585,7 @@ export class FXRackUI {
     box.append(...this.els(c.sl('mbH', 'H'), c.sl('mbM', 'M'), c.sl('mbL', 'L')));
     c.vis(box, () => c.on('mb'));
     const gr = h('canvas', 'fxr-gr');
+    c.pc('mb', box); c.pc('gr', gr);
     gr.style.touchAction = 'none';   // a drag control (band thresholds): a finger drag must not scroll the rack (§13.1)
     gr.setAttribute('role', 'img');
     gr.setAttribute('aria-label', 'Gain reduction (multiband: drag a band row to set its threshold)');
@@ -1282,6 +1636,7 @@ export class FXRackUI {
     if (c.v < 3) return this.srcPick(c, 'KEY').el;
     const g = h('div', 'fxr-grp fxr2-key'), r = h('div', 'fxr-row');
     g.append(h('div', 'fxr-gt', 'SIDECHAIN'), r);
+    c.pc('key', g);   // (the FX look: the key's row itself)
     const master = () => { const S = this.scs(); return !!S && S.self === null; };
     const ext = c.sg('ext', ['INT', 'EXT'], 'KEY', { disabled: () => master() && !c.on('ext') });
     if (ext) ext.el.title = 'INT: the compressor hears its own input · EXT: the source track’s audio';
@@ -1312,7 +1667,7 @@ export class FXRackUI {
     const box = h('div', 'fxr-dkcv');
     const cv = () => { const I = this.inst(id); return I && isObj(I.sub) && Array.isArray(I.sub.cv) && I.sub.cv.length >= 2 ? I.sub.cv : core.DUCK_DEFAULT || DIAG(); };
     const ed = P.ed = new CurveEditor(box, {
-      kind: 'curve', label: 'Ducker curve', height: 96, shapes: this.shapes, get: cv,
+      kind: 'curve', label: 'Ducker curve', height: this.rig ? GD.rows.screenL : 96, shapes: this.shapes, get: cv,   // (the FX look: its screen's)
       set: (p, ph) => {
         P.cvRef = p; P.cvSig = JSON.stringify(p);
         this.edit(fx => this.withInst(fx, id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub.cv = p; }), instTitle(this.fx(), id) + ' Curve', ph);
@@ -1330,12 +1685,14 @@ export class FXRackUI {
       if (k !== P.cvSig || on !== P.cvOn) { P.cvSig = k; P.cvOn = on; ed.refresh(); }
       P.cvRef = p;
     });
-    this.row(b).append(box);
+    this.row(b).append(c.pc('curve', box));
     const SH = arr(core.DUCK_SHAPES);
     const sh = iconSeg({ label: () => (shapeOf(cv()) < 0 ? 'SHAPE · CUSTOM' : 'SHAPE'), items: SH.map(s => ({ icon: shapeIcon(s.pts), label: s.name })),
       get: () => shapeOf(cv()), set: k => this.setShape(id, k) });
     P.widgets.push(sh);
+    c.pc('shape', sh.el);
     const gr = h('canvas', 'fxr-gr');
+    c.pc('gr', gr);
     gr.setAttribute('role', 'img');
     gr.setAttribute('aria-label', 'Ducking (gain reduction)');
     P.grCv = gr;
@@ -1367,6 +1724,7 @@ export class FXRackUI {
     b.append(txt, car);
     row.append(b);
     el.append(h('span', 'wk-lab', label), row);
+    c.pc('src', el);
     const update = () => {
       const s = this.srcState(c.id);
       if (txt.textContent !== s.text) txt.textContent = s.text;
@@ -1507,7 +1865,7 @@ export class FXRackUI {
       const ty = seg({ label: 'TYPE', items: ['PLATE', 'HALL'], get: () => { const I = this.inst(c.id); return I && isObj(I.sub) && I.sub.type === 0 ? 0 : 1; },
         set: k => this.edit(fx => this.withInst(fx, c.id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub.type = k ? 1 : 0; }), instTitle(this.fx(), c.id) + ' Type') });
       c.P.widgets.push(ty);
-      r1.append(ty.el);
+      r1.append(c.pc('type', ty.el));
       const r2 = this.row(b);
       const lab = slot => () => { const I = this.inst(c.id); return REV_LABELS[I && isObj(I.sub) && I.sub.type === 0 ? 0 : 1][slot]; };
       r2.append(...this.els(c.kn('size', lab(0)), c.kn('t', lab(1)), c.kn('locut', lab(2)), c.kn('c', lab(3)), c.kn('hicut', lab(4)), c.kn('w', lab(5)), c.mix()));
@@ -1577,11 +1935,14 @@ export class FXRackUI {
       set: v => this.setIr(c.id, v) });
     irm.el.classList.add('fxr2-irn');
     c.P.widgets.push(irm);
+    c.pc('ir', irm.el);
     const load = btn('fxr-xs', 'Load IR…', 'Load an impulse response file');
     load.addEventListener('click', () => this.loadIr(c.id));
+    c.pc('load', load);
     // Embed (inv B14.3; deviation 14): user IRs are always embedded in exported presets and projects — a status badge
     const emb = h('span', 'fxr2-emb', 'EMBED');
     emb.title = 'User impulse responses are embedded in exported presets and projects';
+    c.pc('emb', emb);
     c.vis(emb, () => { const I = this.inst(c.id); return !!(I && isObj(I.sub) && /^ir:/.test(String(I.sub.ir || ''))); });
     r1.append(irm.el, load, emb);
     const r2 = this.row(b);
@@ -1599,6 +1960,7 @@ export class FXRackUI {
     const sel = h('div', 'fxr2-brsel');
     sel.setAttribute('role', 'group');
     sel.setAttribute('aria-label', 'Branches');
+    c.pc('brsel', sel);
     const labels = BRANCH_LABELS[c.type] || [];
     labels.forEach((lb, k) => {
       const box = h('div', 'fxr2-bpanel');
@@ -1636,6 +1998,7 @@ export class FXRackUI {
     wrap.style.height = hgt + 'px';
     wrap.append(cv);
     const D = { P, el: wrap, cv, hgt, draw, key, last: null };
+    if (P.pieces) P.pieces[cls] = wrap;   // (a named piece by its class: the FX look's screens)
     if (drag) {
       let g = null;
       const pos = e => { // canvas coordinates: the canvas fills the wrapper's padding box (inside its 1 px border), layout px
@@ -1664,6 +2027,8 @@ export class FXRackUI {
     const el = D.el, r = el.getBoundingClientRect();
     return { w: Math.max(40, el.clientWidth || (r.width ? r.width - 2 : 200)), h: Math.max(16, el.clientHeight || D.hgt - 2) };
   }
+  // a painter's colours: the rack's tokens — in the FX look the ones where it draws (its screen's ground: the rig skin's, .fxr-rig CSS)
+  thm(el) { return theme(this.rig && el ? el : this.el); }
   canvas(D) {
     const b = this.box(D), ctx = fitCanvas(D.cv, b.w, b.h);
     return ctx ? { ctx, w: b.w, h: b.h } : null;
@@ -1730,7 +2095,7 @@ export class FXRackUI {
     const pad = 6;
     return c.display('fxr-dfil', 'Distortion filter response', 74, D => {
       const g = this.canvas(D); if (!g) return;
-      const T = theme(this.el), Y = this.frameAxes(g, T, 24, -36, pad), fr = this.freqs(g.w, pad);
+      const T = this.thm(D.el), Y = this.frameAxes(g, T, 24, -36, pad), fr = this.freqs(g.w, pad);
       const F = c.lv('freq'), Q = c.lv('q'), lbh = c.val('lbh');
       const db = fr.map(f => svfDb(F, Q, lbh, f, FS));
       const active = c.k('filt') > 0;
@@ -1762,7 +2127,7 @@ export class FXRackUI {
     };
     return c.display('fxr-xfer', 'Distortion transfer curve (drag: drive)', 74, D => {
       const g = this.canvas(D); if (!g) return;
-      const T = theme(this.el), { ctx, w, h: H } = g, s = Math.min(w, H) - 8, x0 = (w - s) / 2, y0 = (H - s) / 2;
+      const T = this.thm(D.el), { ctx, w, h: H } = g, s = Math.min(w, H) - 8, x0 = (w - s) / 2, y0 = (H - s) / 2;
       ctx.clearRect(0, 0, w, H); ctx.fillStyle = T.bg; ctx.fillRect(0, 0, w, H);
       ctx.strokeStyle = T.line; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, s, s);
       ctx.beginPath(); ctx.moveTo(x0, y0 + s / 2); ctx.lineTo(x0 + s, y0 + s / 2); ctx.moveTo(x0 + s / 2, y0); ctx.lineTo(x0 + s / 2, y0 + s); ctx.stroke();
@@ -1787,7 +2152,7 @@ export class FXRackUI {
     const pad = 6;
     const D = c.display('fxr-dlyf', 'Delay filter response (double-tap: spectrum)', 74, D2 => {
       const g = this.canvas(D2); if (!g) return;
-      const T = theme(this.el), Y = this.frameAxes(g, T, 6, -36, pad), fr = this.freqs(g.w, pad);
+      const T = this.thm(D2.el), Y = this.frameAxes(g, T, 6, -36, pad), fr = this.freqs(g.w, pad);
       if (this.specId === c.id) this.specDraw(g, T, fr, Y, pad);    // (behind the response curve)
       const dsp = this.dsp;
       if (!dsp || typeof dsp.delayFilterResponse !== 'function') { this.note(g, T, '—'); return; }
@@ -1860,7 +2225,7 @@ export class FXRackUI {
     let grab = null;
     const D = c.display('fxr-eqd', 'EQ response', 110, D2 => {
       const g = this.canvas(D2); if (!g) return;
-      const T = theme(this.el), Y = this.frameAxes(g, T, dbMax, dbMin, pad), fr = this.freqs(g.w, pad), dsp = this.dsp;
+      const T = this.thm(D2.el), Y = this.frameAxes(g, T, dbMax, dbMin, pad), fr = this.freqs(g.w, pad), dsp = this.dsp;
       let db = null;
       if (dsp && typeof dsp.eqResponse === 'function') {
         try {
@@ -1872,10 +2237,10 @@ export class FXRackUI {
       else this.note(g, T, '—');
       const { ctx } = g;
       for (const hd of this.eqHandles(c, g.w, pad, Y)) {
-        ctx.beginPath(); ctx.arc(hd.x, clamp(hd.y, pad, g.h - pad), 6, 0, Math.PI * 2);
+        ctx.beginPath(); ctx.arc(hd.x, clamp(hd.y, pad, g.h - pad), this.rig ? 7.5 : 6, 0, Math.PI * 2);   // (the FX look: a 10 px digit, §3.8)
         ctx.fillStyle = T.bg; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = grab && grab.b === hd.b ? T.accent : T.ink; ctx.stroke();
-        ctx.fillStyle = T.ink; ctx.font = '700 8px ' + T.ui; ctx.textAlign = 'center';
-        if (ctx.fillText) ctx.fillText(hd.b, hd.x, clamp(hd.y, pad, g.h - pad) + 3);
+        ctx.fillStyle = T.ink; ctx.font = (this.rig ? '700 10px ' : '700 8px ') + T.ui; ctx.textAlign = 'center';
+        if (ctx.fillText) ctx.fillText(hd.b, hd.x, clamp(hd.y, pad, g.h - pad) + (this.rig ? 3.5 : 3));
         ctx.textAlign = 'left';
       }
     }, () => ['typeL', 'freqL', 'qL', 'gainL', 'typeH', 'freqH', 'qH', 'gainH'].map(k => c.val(k)).join() + !!this.dsp,
@@ -1943,13 +2308,13 @@ export class FXRackUI {
     const pad = 6;
     const D = c.display('fxr-fild', 'Filter response (right-click: views; Alt-click: next view)', 96, D2 => {
       const g = this.canvas(D2); if (!g) return;
-      const view = this.filtView(c.id), T = theme(this.el), fr = this.freqs(g.w, pad), dsp = this.dsp;
+      const view = this.filtView(c.id), T = this.thm(D2.el), fr = this.freqs(g.w, pad), dsp = this.dsp;
       const Y = view ? this.frameAxes(g, T, 180, -180, pad, 90) : this.frameAxes(g, T, 24, -48, pad);
       const ty = c.k('type'), fam = FILTERS[ty] ? FILTERS[ty].family : '', fc = c.lv('cutoff');
       const { ctx } = g;
       const xc = logX(clamp(fc, 20, 20000), g.w, pad);
       ctx.strokeStyle = T.mute; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(xc, 0); ctx.lineTo(xc, g.h); ctx.stroke();
-      if (view && ctx.fillText) { ctx.fillStyle = T.mute; ctx.font = '600 9px ' + T.ui; ctx.fillText('PHASE', pad + 2, pad + 8); }
+      if (view && ctx.fillText) { ctx.fillStyle = T.mute; ctx.font = (this.rig ? '600 10px ' : '600 9px ') + T.ui; ctx.fillText('PHASE', pad + 2, pad + (this.rig ? 9 : 8)); }
       if (fam === 'ring' || fam === 'snh') { this.note(g, T, fam === 'ring' ? 'Ring Mod' : 'Sample & Hold'); return; }
       if (!dsp || typeof dsp.filterImpulse !== 'function') { this.note(g, T, '—'); return; }
       let imp = null;
@@ -1980,12 +2345,13 @@ export class FXRackUI {
     const f1 = c.type === 'split3' ? 'freq1' : 'freq';
     return c.display('fxr2-spl', 'Splitter band responses', 74, D => {
       const g = this.canvas(D); if (!g) return;
-      const T = theme(this.el), Y = this.frameAxes(g, T, 6, -48, pad), fr = this.freqs(g.w, pad), dsp = this.dsp;
+      const T = this.thm(D.el), Y = this.frameAxes(g, T, 6, -48, pad), fr = this.freqs(g.w, pad), dsp = this.dsp;
       if (!dsp || typeof dsp.splitResponse !== 'function') { this.note(g, T, '—'); return; }
       let out = null;
       try { out = dsp.splitResponse(c.type, c.lv(f1), c.type === 'split3' ? c.lv('freq2') : 0, fr, FS); } catch (err) { out = null; }
       if (!Array.isArray(out)) { this.note(g, T, '—'); return; }
-      out.forEach((db, b) => this.plot(g, fr, db, Y, pad, b === this.branchOf(c.id) ? cols[b % 3] : T.mute, b === this.branchOf(c.id)));
+      const bc = this.rig ? [T.graph, T.accent, T.neg] : cols;   // (the FX look: the skin's colours, not the kit's blue / green / orange)
+      out.forEach((db, b) => this.plot(g, fr, db, Y, pad, b === this.branchOf(c.id) ? bc[b % 3] : T.mute, b === this.branchOf(c.id)));
     }, () => [c.val(f1), c.type === 'split3' ? c.val('freq2') : '', this.branchOf(c.id), !!this.dsp].join(),
     (P0, P, phase, e) => {
       // horizontal drag = a crossover (L/M/H: the nearer of SPLIT 1 / SPLIT 2 at the press), relative like a knob: it
@@ -2019,7 +2385,7 @@ export class FXRackUI {
     const plainOf = () => { const I = this.inst(c.id); return I && isObj(I.sub) ? String(I.sub.ir || '') : ''; };
     const D = c.display('fxr2-ird', 'Impulse response (drop a file to load an IR)', 74, D2 => {
       const g = this.canvas(D2); if (!g) return;
-      const T = theme(this.el), { ctx, w, h: H } = g, id = plainOf(), sid = this.shapedIr(c.id), mid = H / 2;
+      const T = this.thm(D2.el), { ctx, w, h: H } = g, id = plainOf(), sid = this.shapedIr(c.id), mid = H / 2;
       ctx.clearRect(0, 0, w, H); ctx.fillStyle = T.bg; ctx.fillRect(0, 0, w, H);
       ctx.fillStyle = T.graph;
       const shaped = sid ? this.irCached(sid) : null;
@@ -2175,10 +2541,10 @@ export class FXRackUI {
     P.grSig = sig;
     const ctx = fitCanvas(cv, w, H);
     if (!ctx) return;
-    const T = theme(this.el);
+    const T = this.thm(cv);
     ctx.clearRect(0, 0, w, H); ctx.fillStyle = T.bg; ctx.fillRect(0, 0, w, H);
     const rows = mb ? [['H', 3], ['M', 2], ['L', 1]] : [['GR', 0]], rh = (H - 8) / rows.length, x0 = 22, span = w - x0 - 34;
-    ctx.font = '600 9px ' + T.ui;
+    ctx.font = (this.rig ? '600 10px ' : '600 9px ') + T.ui;   // (the FX look: the grid's 10 px minimum, §3.8)
     rows.forEach(([lab, k], j) => {
       const y = 4 + j * rh, v = gv(k), cx = mb ? x0 + span / 2 : x0, scale = mb ? span / 2 / 24 : span / 24;
       ctx.fillStyle = T.panel2; ctx.fillRect(x0, y + 2, span, rh - 4);
@@ -2231,8 +2597,10 @@ export class FXRackUI {
     close.addEventListener('click', () => this.closeXs(true));
     hd.append(close);
     pop.append(hd);
+    // (the FX look: the popover covers the face from its screen to its last row's bottom — never half a knob label — the editor its height)
+    const L = this.rig && P.lay ? P.lay.layout : null, XH = L && L.rows.length > 1 ? L.h - GD.bottom - L.rows[1].top - XS_CHROME : 0;
     const ed = new CurveEditor(pop, {
-      kind: 'xshape', label: 'X-Shaper ' + A, height: 180,
+      kind: 'xshape', label: 'X-Shaper ' + A, height: XH > 120 ? XH : 180,
       get: () => { const I = this.inst(id); return I && isObj(I.sub) && Array.isArray(I.sub[key]) ? I.sub[key] : DIAG(); },
       set: (p, ph) => this.edit(fx => this.withInst(fx, id, I => { I.sub = isObj(I.sub) ? I.sub : {}; I.sub[key] = p; }), 'X-Shaper ' + A, ph),
       grid: () => ({ x: 8, y: 8 }), shapes: this.shapes,
@@ -2894,6 +3262,7 @@ export class FXRackUI {
       if (P.title.textContent !== t) P.title.textContent = t;
       for (const f of P.upd) { try { f(); } catch (err) { warnOnce('upd', 'fx-ui: panel update failed', err); } }
       for (const w of P.widgets) w.update();
+      if (P.faceUpd) { try { P.faceUpd(); } catch (err) { warnOnce('faceupd', 'fx-ui: face update failed', err); } }
     }
     if (this.xs) this.xs.ed.refresh();
     // the overlay's instance went (or is no longer a Delay): the tap is switched off

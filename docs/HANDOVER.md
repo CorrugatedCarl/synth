@@ -180,6 +180,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    (an app setting), "Limiting −x dB" + a once-per-session hint; bounces unchanged (the user: overloaded exports are scaled down as before);
    47 frames in the audio clock. The "Swap · OSC A" ghost: a press whose release the title never heard (the bar's pointer capture) — wk
    dragSource now guards at the document. A discreet count on stacked jacks. Test browsers block downloads (CLAUDE.md).
+21. **(2026-10-27.)** **The FX look** ("can we make this effects panel in the style of wavecraft as well"): every FX module on every
+   track (and the master's) in the rig skin, every effect a face on the RIG grid (fx-ui `FX_FACE`; the grid now in `rig-grid.js`); the
+   Serum complete panel's FX page untouched (byte-identical screenshot). Gate: `tests/ui-layout-fx.mjs` (Chrome for Testing). Notes:
+   IMPL-WC §14 "the FX look" (+ the skeptics' round: rebased on ffb64fd, the SVG screws shared, rows centred, focus / inert / touch
+   fixes; then the list's name fills its row: a mouse press anywhere on a row's name selects it). **Open**: the user picks names for the Serum-derived effect / parameter names (IMPL-WC §14 "Names to choose": each with 2–3
+   generic alternatives) before any sale — not renamed yet.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)
