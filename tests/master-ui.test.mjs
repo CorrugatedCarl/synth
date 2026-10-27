@@ -1,14 +1,15 @@
 import './v8-guard.mjs';
 // master-ui.js (stage M lane U; docs/canvas/IMPL-M.md §3, §5.1, §5.3, §9 O1 / O3): the master OUT and the Master row on
 // tests/wk-dom.mjs — the pure helpers (formats, scales, thresholds, the image mapping), the OUT's DOM and accessibility, the
-// drawing budget (a repaint only for new data, never while not live, ≤ 30 Hz canvases, ≤ 10 Hz text, no shadowBlur, no
-// layout read), the A/B / Mono / reset / target-menu / scope-mode controls and their callbacks, the image mode's point cap,
-// −Infinity / NaN as "—", the red thresholds, dpr and the zoom-end repaint, destroy; then the row.
+// drawing budget (a repaint only for new data or a moving bar, never while not live, the canvases at the frame clock's rate —
+// IMPL-FR §6 —, ≤ 10 Hz text, no shadowBlur, no layout read), the peak bars in time (held PK_HOLD ms, then TP_REL dB/s: the same
+// at 60 and 240 fps), the A/B / Mono / reset / target-menu / scope-mode controls and their callbacks, the image mode's point cap,
+// −Infinity / NaN as "—", the red thresholds, dpr and the zoom-end repaint, destroy; then the row (its own frame-clock client).
 // Never passes fake-DOM nodes to assert.* (strings, numbers and booleans only).
 // Run alone: node --max-old-space-size=2048 --test tests/master-ui.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fresh, all, byAttr, ptr, key, El } from './wk-dom.mjs';
+import { fresh, all, byAttr, ptr, key, El, raf } from './wk-dom.mjs';
 import * as wk from '../wk.js?v=9';
 import * as U from '../master-ui.js?v=9';
 
@@ -57,7 +58,9 @@ test('imports in node without a DOM; the API and the constants', () => {
   for (const k of ['createMasterOut', 'createMasterRow', 'fmtDb', 'fmtGain', 'fmtCorr', 'lufsFrac', 'tpFrac', 'pkFrac', 'isOver', 'zonesFor', 'corrBar', 'imageXY', 'norm']) assert.equal(typeof U[k], 'function', k);
   assert.deepEqual([...U.MODES], ['wave', 'spectrum', 'image']);
   assert.deepEqual([...U.TARGETS], [-9, -14, -16, -23, null]);
-  assert.deepEqual([U.MAX_POINTS, U.METER_MS, U.SCOPE_MS, U.TEXT_MS, U.TP_RED], [2048, 30, 30, 100, -1]);
+  assert.deepEqual([U.MAX_POINTS, U.TEXT_MS, U.TP_RED, U.PK_HOLD], [2048, 100, -1, 50]);
+  // (IMPL-FR §6, pin moved by design) the 30 ms floors are retired: the canvases paint at the frame clock's rate
+  assert.deepEqual(['METER_MS' in U, 'SCOPE_MS' in U], [false, false]);
   assert.ok(U.OUT_W > 0 && U.OUT_H > 0);
 });
 
@@ -152,20 +155,23 @@ test('OUT: update() before live paints nothing and writes no text; the first dra
   assert.ok(n(r.mlog(), 'clearRect') === 1 && n(r.mlog(), 'fillRect') > 5, 'one meters repaint');
 });
 
-test('OUT: a repaint only for new data — draws with no new summary paint nothing; nothing at all while not live (including after setLive(false))', () => {
+// (IMPL-FR §6, moved by design: a true-peak bar that is still falling repaints too — the feed here has silent true peaks, so
+// nothing falls and only new data paints)
+const Q = { tp: [-Infinity, -Infinity] };
+test('OUT: a repaint only for new data or a falling bar — draws with no new summary and no bar falling paint nothing; nothing at all while not live (including after setLive(false))', () => {
   const r = rig();
   r.m.setLive(true);
-  r.m.update(sum({}));
+  r.m.update(sum(Q));
   r.m.draw(0);
   const a = r.mlog().length, b = r.slog().length;
   for (let t = 40; t <= 400; t += 40) r.m.draw(t);
-  assert.deepEqual([r.mlog().length, r.slog().length], [a, b], 'no new data, no new paint (the scope has no source: one idle frame only)');
-  r.m.update(sum({ s: -10 }));
+  assert.deepEqual([r.mlog().length, r.slog().length], [a, b], 'no new data, nothing falling: no new paint (the scope has no source: one idle frame only)');
+  r.m.update(sum(Object.assign({ s: -10 }, Q)));
   r.m.draw(440);
   assert.equal(n(r.mlog(), 'clearRect'), 2, 'a new summary repaints once');
   r.m.setLive(false);
   const c = r.mlog().length, e = r.slog().length;
-  r.m.update(sum({ s: -9 }));
+  r.m.update(sum(Object.assign({ s: -9 }, Q)));
   assert.equal(r.m.draw(500), false);
   assert.deepEqual([r.mlog().length, r.slog().length, val(r.root, 'Short-term loudness')], [c, e, MINUS + '10.0'], 'not live: no paint, no text');
   r.m.setLive(true);
@@ -173,23 +179,77 @@ test('OUT: a repaint only for new data — draws with no new summary paint nothi
   assert.deepEqual([n(r.mlog(), 'clearRect'), val(r.root, 'Short-term loudness')], [3, MINUS + '9.0'], 'live again: the latest is shown at once');
 });
 
-test('OUT: the meters canvas repaints at most every 30 ms (30 Hz) and the numbers change at most every 100 ms (10 Hz)', () => {
+// (IMPL-FR §6, pin moved by design: METER_MS retired) the meters paint at the frame clock's rate: every summary at the next
+// frame, and every frame while a true-peak bar falls — with draw(t) every 8 ms and 29 Hz summaries: 30 to 125 a second
+test('OUT: the meters canvas paints every summary at the next frame and every frame while a true-peak bar falls (≥ 30, ≤ 125 a second at 8 ms frames); the numbers change at most every 100 ms (10 Hz)', () => {
   const r = rig();
   r.m.setLive(true);
   const seen = [];
-  for (let t = 0; t <= 1000; t += 8) {
-    r.m.update(sum({ s: -30 + t / 50, m: -30 + t / 50 }));
+  let next = 0, sums = 0, missed = 0;
+  for (let t = 0; t < 1000; t += 8) {
+    const fresh = t >= next;
+    if (fresh) { r.m.update(sum({ s: -30 + t / 50, m: -30 + t / 50, tp: [-3 - (sums % 5) * 4, -6] })); next += 33; sums++; }
+    const k = n(r.mlog(), 'clearRect');
     r.m.draw(t);
+    if (fresh && n(r.mlog(), 'clearRect') !== k + 1) missed++;
     seen.push(val(r.root, 'Short-term loudness'));
   }
   const paints = n(r.mlog(), 'clearRect'), changes = seen.filter((s, i) => i && s !== seen[i - 1]).length;
-  assert.ok(paints >= 20 && paints <= 34, 'meters repaints in a second: ' + paints);
+  assert.equal(missed, 0, 'every summary is painted at the frame after it');
+  assert.ok(paints > sums && paints >= 30 && paints <= 125, 'meters paints in a second: ' + paints + ' (' + sums + ' summaries)');
   assert.ok(changes >= 5 && changes <= 11, 'text changes in a second: ' + changes);
-  // summaries arriving every 33 ms (the processor's rate) all get painted
+  // summaries arriving every 33 ms (the processor's rate), drawn at the same rate: all painted, nothing more
   const q = rig();
   q.m.setLive(true);
   for (let t = 0; t < 990; t += 33) { q.m.update(sum({ s: -20 - (t % 7) })); q.m.draw(t); }
   assert.equal(n(q.mlog(), 'clearRect'), 30, 'every 33 ms summary is painted');
+});
+
+// (IMPL-FR §6, FR3) the true-peak bars in time, not frames: a new peak at or above the shown level holds PK_HOLD ms (a steady
+// level between two 29 Hz summaries does not saw), then falls TP_REL dB/s on every frame until it rests at TP_LO; the same
+// levels at 60 and at 240 fps; at rest nothing is painted
+test('OUT: a true-peak bar holds PK_HOLD ms after a peak, then falls TP_REL dB/s at the frame rate until it rests at TP_LO — the same levels at 60 and 240 fps; at rest no paint', () => {
+  const at = {};
+  for (const hz of [60, 240]) {
+    const r = rig(), P = 1000 / hz;
+    r.m.setLive(true);
+    r.m.update(sum({ tp: [-3, -9] }));
+    const lv = [];
+    let fallPaints = 0, restPaints = 0;
+    for (let i = 0; i * P <= 2500 + 1e-6; i++) {
+      const t = i * P, k = n(r.mlog(), 'clearRect');
+      if (i && i % Math.round(hz / 30) === 0) r.m.update(sum(Q)); // silence keeps coming at the processor's rate
+      r.m.draw(t);
+      const painted = n(r.mlog(), 'clearRect') > k;
+      if (t > U.PK_HOLD + 1 && t < 1700 && painted) fallPaints++;
+      if (t > 2000 && painted && i % Math.round(hz / 30)) restPaints++;
+      if (i % (hz / 60) === 0) lv.push(r.m.state().tp);
+    }
+    at[hz] = lv;
+    const fr = Math.floor((1700 - U.PK_HOLD - 1) / P);
+    assert.ok(fallPaints >= fr - 1, hz + ' fps: a paint every frame while falling: ' + fallPaints + ' of ' + fr);
+    assert.equal(restPaints, 0, hz + ' fps: at rest, frames without a summary paint nothing');
+    const near = (x, y) => Math.abs(x - y) < 1e-9;
+    const L = t => lv[Math.round(t / (1000 / 60))];
+    assert.ok(near(L(0)[0], -3) && near(L(50)[0], -3) && near(L(550)[0], -15) && near(L(550)[1], -21), hz + ': held, then 24 dB/s: ' + L(550).join());
+    assert.ok(near(L(2500)[0], U.TP_LO) && near(L(2500)[1], U.TP_LO), hz + ': at rest at TP_LO');
+  }
+  assert.equal(at[60].length, at[240].length);
+  for (let j = 0; j < at[60].length; j++) for (const c of [0, 1]) assert.ok(Math.abs(at[60][j][c] - at[240][j][c]) <= 1e-6, 'frame ' + j + ': ' + at[60][j][c] + ' vs ' + at[240][j][c]);
+});
+
+test('OUT: a steady true peak (the same level every 33 ms) holds still between summaries — the bar never saws, only the summaries paint', () => {
+  const r = rig();
+  r.m.setLive(true);
+  let next = 0, sums = 0;
+  const lv = new Set();
+  for (let t = 0; t < 1000; t += 1000 / 120) {
+    if (t >= next) { r.m.update(sum({ tp: [-4, -7] })); next += 33; sums++; }
+    r.m.draw(t);
+    lv.add(r.m.state().tp.join());
+  }
+  assert.deepEqual([...lv], ['-4,-7'], 'held at the summaries\' level');
+  assert.equal(n(r.mlog(), 'clearRect'), sums, 'one paint per summary, none between');
 });
 
 test('OUT: -Infinity, NaN and junk read as "—" (and the bars as empty); the summary may be anything', () => {
@@ -353,7 +413,8 @@ const feed = (calls, sr = 48000, amp = 0.5) => (mode, b) => {
   return sr;
 };
 
-test('scope: the host is read only from draw() while live, once per frame at most every 30 ms, for the mode shown only', () => {
+// (IMPL-FR §6, moved by design: SCOPE_MS retired) the scope at the frame clock's rate — once per draw() while live and sounding
+test('scope: the host is read only from draw() while live, once per frame (the frame clock\'s rate), for the mode shown only', () => {
   const calls = [];
   const r = rig({ read: feed(calls) });
   r.m.update(sum({}));
@@ -362,20 +423,17 @@ test('scope: the host is read only from draw() while live, once per frame at mos
   r.m.setLive(true);
   r.m.draw(200);
   assert.deepEqual(calls, ['wave']);
-  r.m.draw(210); r.m.draw(220);
-  assert.equal(calls.length, 1, 'inside 30 ms: not read again');
-  r.m.draw(231);
-  assert.equal(calls.length, 2);
+  r.m.draw(204.2); r.m.draw(208.3);
+  assert.equal(calls.length, 3, 'every frame (240 fps here): read each time');
   r.m.setMode('image'); r.m.draw(300);
   r.m.setMode('spectrum'); r.m.draw(400);
-  assert.deepEqual(calls, ['wave', 'wave', 'image', 'spectrum']);
-  // a second of 120 Hz frames: at most 34 scope paints
+  assert.deepEqual(calls, ['wave', 'wave', 'wave', 'image', 'spectrum']);
+  // a second of 120 Hz frames: a scope paint each
   const q = rig({ read: feed([]) });
   q.m.setLive(true);
-  for (let t = 0; t < 1000; t += 8.33) q.m.draw(t);
-  assert.ok(n(q.slog(), 'clearRect') + n(q.slog(), 'fillRect') > 0);
+  for (let i = 0; i < 120; i++) q.m.draw(i * 1000 / 120);
   const frames = q.slog().filter(e => e[0] === 'fillRect' && e[3] === U.SCOPE_W && e[4] === U.SCOPE_H).length; // the background fill, one per frame
-  assert.ok(frames >= 25 && frames <= 34, 'scope frames in a second: ' + frames);
+  assert.equal(frames, 120, 'scope frames in a second at 120 fps: ' + frames);
 });
 
 test('scope: wave and spectrum are drawn from the pulled arrays, flat line without a source (a falsy rate), a failing host is survived', () => {
@@ -440,6 +498,20 @@ test('image mode through the host\'s read(): the dots come from bufs.L / bufs.R,
   assert.equal(lab.textContent, 'CORR');
 });
 
+// (IMPL-FR §7.3) a double handed to lineTo is boxed in V8 (≈ 29 KB a frame for the 1 200-point wave, measured in Chrome): the
+// wave and spectrum traces go on a 1/16 px grid in integers under scale(1/16), the stroke width scaled with it
+test('scope traces: wave and spectrum hand only integers to moveTo / lineTo (a 1/16 px grid under scale(1/16), the line 1.6 px)', () => {
+  for (const mode of ['wave', 'spectrum']) {
+    const r = rig({ read: feed([]), mode });
+    r.m.setLive(true); r.m.draw(0);
+    const L = r.slog(), sc = L.findIndex(e => e[0] === 'scale'), pts = L.filter(e => e[0] === 'lineTo' || e[0] === 'moveTo').slice(-100);
+    assert.ok(sc >= 0 && L[sc][1] === 1 / 16 && L[sc][2] === 1 / 16, mode + ': scale(1/16)');
+    assert.ok(L.some(e => e[0] === '=lineWidth' && e[1] === 1.6 * 16), mode + ': the line 1.6 px on the scaled grid');
+    assert.equal(pts.filter(e => !Number.isInteger(e[1]) || !Number.isInteger(e[2])).length, 0, mode + ': integer points');
+    assert.ok(L.findIndex(e => e[0] === 'restore') > sc, mode + ': restored after the stroke');
+  }
+});
+
 test('no shadowBlur anywhere (any mode, meters or scope), and nothing is drawn through a layout read', () => {
   const r = rig({ read: feed([]) });
   r.m.setLive(true);
@@ -490,7 +562,7 @@ test('dpr-aware: the stores follow the device ratio; a zoom end (wk.rescaleCanva
 
 test('a store released at 0 × 0 (wk.releaseCanvases: a body unmounted, then mounted again) is painted again at the next frame, meters and a silent scope included', () => {
   const r = rig({ read: feed([], 48000, 0) });
-  r.m.setLive(true); r.m.update(sum({})); r.m.draw(0);
+  r.m.setLive(true); r.m.update(sum(Q)); r.m.draw(0); // ((IMPL-FR §6, moved by design) silent true peaks: no bar falling, the meters at rest)
   const m0 = n(r.mlog(), 'clearRect'), bg = () => r.slog().filter(e => e[0] === 'fillRect' && e[3] === U.SCOPE_W && e[4] === U.SCOPE_H).length;
   r.m.draw(100);
   assert.deepEqual([n(r.mlog(), 'clearRect'), bg()], [m0, 1], 'at rest: nothing');
@@ -608,11 +680,13 @@ test('row: the peak meter rises at once and falls at TP_REL dB/s; a peak between
   for (const c of cov) { let v = ''; Object.defineProperty(c.style, 'transform', { get: () => v, set: x => { v = x; writes.push(x); } }); }
   r.clock.t = 0; r.m.update(sum({ pk: [-6, -30] }));
   assert.equal(cov[0].style.transform, 'translateX(90%)');
-  r.clock.t = 100; r.m.update(sum({ pk: [-Infinity, -Infinity] })); // 0.1 s: −6 → −8.4
+  r.clock.t = 40; r.m.update(sum({ pk: [-Infinity, -Infinity] })); // (IMPL-FR §6) held PK_HOLD ms: still −6
+  assert.equal(cov[0].style.transform, 'translateX(90%)', 'held');
+  r.clock.t = 150; r.m.update(sum({ pk: [-Infinity, -Infinity] })); // 0.1 s after the hold: −6 → −8.4
   assert.equal(cov[0].style.transform, 'translateX(86%)', '24 dB/s release');
   const k = writes.length;
-  r.clock.t = 110; r.m.update(sum({ pk: [-Infinity, -Infinity] })); // inside 30 ms: nothing
-  assert.equal(writes.length, k, 'no write inside the 30 ms window');
+  r.clock.t = 152; r.m.update(sum({ pk: [-Infinity, -Infinity] })); // −8.448: still 86 %
+  assert.equal(writes.length, k, '(IMPL-FR §6, moved by design: BAR_MS retired) a write only when the rounded level moved');
   // two summaries between refreshes: the louder one is shown
   const q = rig({}, 'row'), qc = clsAll(q.root, 'mr-bar').map(b => b.children[0]);
   q.clock.t = 0; q.m.update(sum({ pk: [-40, -40] }));
@@ -625,6 +699,44 @@ test('row: the peak meter rises at once and falls at TP_REL dB/s; a peak between
   for (const c of c2) { let v = ''; Object.defineProperty(c.style, 'transform', { get: () => v, set: x => { v = x; n2++; } }); }
   for (let t = 0; t < 600; t += 33) { w2.clock.t = t; w2.m.update(sum({ pk: [-Infinity, -Infinity] })); }
   assert.ok(n2 <= 4, 'a silent meter at rest writes nothing more: ' + n2);
+});
+
+// (IMPL-FR §6) the row's bars fall on the frame clock: a client while live and a bar is above the floor or the over shows,
+// added on the first fall, gone when both bars rest; nothing while not live; the same levels at 60 and 240 fps
+test('row: the bars fall on the frame clock between summaries (a client while live and a bar is up or the over shows; gone at rest) — the same levels at 60 and 240 fps', () => {
+  const lvAt = {};
+  for (const hz of [60, 240]) {
+    wk.clock._reset(); wk.clock.config({ display: hz });
+    raf.install();
+    try {
+      const r = rig({}, 'row'), cov = clsAll(r.root, 'mr-bar').map(b => b.children[0]), P = 1000 / hz;
+      const on = () => wk.clock.clients().includes('master-row');
+      assert.equal(on(), false, 'at rest: no client');
+      r.clock.t = 0; r.m.update(sum({ pk: [-6, -12], tp: [-0.5, -3] }));
+      assert.equal(on(), true, 'a bar is up: on the clock');
+      const lv = [];
+      for (let i = 1; i * P <= 3000 + 1e-6; i++) {
+        r.clock.t = i * P;
+        raf.flush(1, r.clock.t);
+        if (i % (hz / 60) === 0) lv.push(r.m.state().pk);
+      }
+      lvAt[hz] = lv;
+      const L = t => lv[Math.round(t / (1000 / 60)) - 1];
+      const near = (x, y) => Math.abs(x - y) < 1e-9;
+      assert.ok(near(L(50)[0], -6) && near(L(550)[0], -18) && near(L(550)[1], -24), hz + ': held, then 24 dB/s with no summary: ' + L(550).join());
+      assert.equal(cov[0].style.transform, 'translateX(0%)', hz + ': fallen to the floor');
+      assert.deepEqual([on(), raf.pending], [false, 0], hz + ': at rest (bars down, the over gone): off the clock, no frame asked');
+      // not live: off the clock; a summary while not live waits for setLive(true)
+      r.clock.t = 3100; r.m.setLive(false); r.m.update(sum({ pk: [-3, -3] }));
+      assert.equal(on(), false, hz + ': not live: no client');
+      r.clock.t = 3200; r.m.setLive(true);
+      assert.deepEqual([cov[0].style.transform, on()], ['translateX(95%)', true], hz + ': live: shown at once, falling on the clock');
+      r.m.destroy();
+      assert.equal(on(), false, hz + ': destroyed: off the clock');
+    } finally { raf.uninstall(); wk.clock._reset(); }
+  }
+  assert.equal(lvAt[60].length, lvAt[240].length);
+  for (let j = 0; j < lvAt[60].length; j++) for (const c of [0, 1]) assert.ok(Math.abs(lvAt[60][j][c] - lvAt[240][j][c]) <= 1e-6, 'frame ' + j);
 });
 
 test('row: red (an over) from −1 dBTP, shown for a moment after the last over; not before', () => {

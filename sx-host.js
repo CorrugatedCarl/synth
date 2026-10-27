@@ -1175,6 +1175,21 @@ function rafOf(doc) {
   const r = (w && w.requestAnimationFrame) || globalThis.requestAnimationFrame;
   return r ? f => r.call(w || globalThis, f) : f => setTimeout(f, 16);
 }
+// (IMPL-FR §3 B3) the period of a canvas' rate class, ms: P = k frames of the frame clock's effective rate E, k = floor(E /
+// maxHz) ≥ 1 — the display's multiple nearest maxHz from above (lead, after review 1's P3-3: the user's 60 minimum — a heavy
+// display never below 60 a second, never 120 or more; not the clock's round(), which ticker caps keep) — less half a display
+// frame, at most P / 4 (a paint lands on some frame: 60 on a 120 / 240 Hz display, 72 on a 144 one, 82.5 at 82.5 or 165,
+// every frame on a 60–119 Hz one; while the clock has not measured the display — no client ran yet: E = D = 60 — the P / 4
+// bound keeps a 60 class ≤ 80 a second on any faster one)
+function rateMs(hz) {
+  const C = wk.clock, E = C && C.eff ? C.eff() : 60, D = C && C.display ? C.display() : 60, P = Math.max(1, Math.floor(E / hz + 1e-9)) * 1000 / E;
+  return P - Math.min(500 / D, P / 4);
+}
+// (§7.3) two keyN keys of n elements: equal element by element (NaN equals NaN)
+function sameKeyN(a, b, n) {
+  for (let i = 0; i < n; i++) { const x = a[i], y = b[i]; if (x !== y && (x === x || y === y)) return false; }
+  return true;
+}
 // Touch long-press (500 ms, ≤ 8 px) on a plain element → fn(x, y); skipped when the browser already fired its
 // own contextmenu for that press (Android) and while el is being dragged (wk.dragSource's wk-dragging: a touch drag can
 // start within the 8 px).
@@ -1578,7 +1593,12 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //   doc                       the panel's document
 //   num(id, o)                destination number box (o.label, o.disabled, o.cls)
 //   bind(w) / custom(fn)      repaint w.update() / fn() with the panel (registered on the page being built)
-//   canvas(cls, key, draw)    a display canvas of the page: drawn when key() changes, sized to its box → { el }
+//   canvas(cls, key, draw, o) a display canvas of the page: drawn when key() changes, sized to its box → { el }. o.keyN(out)
+//                             (IMPL-FR §7.3): the key as numbers (and the state's own strings) written into out — the
+//                             canvas' reused buffer — returning their count; compared element-wise, key() then unused.
+//                             o.maxHz (§3 B3, the rate class): a key change inside 1000 / maxHz waits for the period's
+//                             end (one rAF, then drawn with the newest key) — the heavy displays' work stays bounded
+//                             whatever moves their key; none: every change is drawn (dots, playheads, meters)
 //   panel(title, module, powerId, cls, o)   the module panel shell (power, module menu, lock mark) → { el, head,
 //                             body, name }; o.items() = extra module-menu items appended after the module items
 //                             ([{label, checked?, disabled?, action?, sub?} | {sep: true}], e.g. ✓ Enable Pitch
@@ -1676,8 +1696,9 @@ const NO_OSCD = Object.freeze({ tinfo: () => ({ F: 256, R: 256, interp: 1 }), fo
 
 export class SerumHost {
   // new SerumHost(host, o): host = the main.js host (state, fx, edit, editFx, bpm, storage, notify, dev …, as SerumUI's);
-  // o = { doc, opts (HOST_OPTS overrides) }. start() takes the undo base, subscribes the monitor and loads the DSP
-  // (SerumUI's constructor calls it once its shell is built; createHost / slotHost at once).
+  // o = { doc, opts (HOST_OPTS overrides), now (ms; the canvases' rate class — tests) }. start() takes the undo base,
+  // subscribes the monitor and loads the DSP (SerumUI's constructor calls it once its shell is built; createHost / slotHost
+  // at once).
   constructor(host, o) {
     const O = o || {};
     this.host = host || {};
@@ -1685,6 +1706,8 @@ export class SerumHost {
     this.d = O.doc || globalThis.document;
     this.uid = 'sx' + (++UID);
     this.raf = rafOf(this.d);
+    this.tNow = typeof O.now === 'function' ? O.now : nowMs;
+    this.dueArmed = false;            // a rate-class canvas waits for its period's end: one rAF armed (paintCanvas)
     this.dead = false;
     this.views = [];                  // the mounted views (mount order)
     this.roots = [];                  // the view roots of this host: div.sx-root (the bundled panel's, each part's)
@@ -2318,7 +2341,7 @@ export class SerumHost {
   queue() {
     if (this.queued || this.dead) return;
     this.queued = true;
-    this.raf(() => { this.queued = false; if (!this.dead) this.paint(true); });
+    this.raf(ts => { this.queued = false; if (!this.dead) this.paint(true, ts); });
   }
   refresh() {
     if (this.dead) return;
@@ -2362,7 +2385,8 @@ export class SerumHost {
   }
   // the bundled panel's FX page is the one view with an embedded rack (SerumUI: page 'fx' shown)
   rackShown() { return false; }
-  paint(full) {
+  // (ts: the frame's rAF timestamp when a frame paints — the rate class's time base, paintCanvas)
+  paint(full, ts) {
     const s = this.s();
     if (!s || this.dead) return;
     // C1: a module that went live drops its peek on any page (only the shown page's panels repaint), so powering it
@@ -2395,7 +2419,7 @@ export class SerumHost {
     if (full && this.rackDirty && this.rackShown() && this.rack && this.rack.refresh) { this.rackDirty = false; this.rack.refresh(); }
     if (full) { this.scanMods(); if (!this.prefs.helpTips) this.applyHelp(); }
     this.paintMods(full);
-    this.paintCanvases();
+    this.paintCanvases(ts);
     this.updateVoices();
     this.checkCapture();
     this.updateTouchTip();
@@ -2413,11 +2437,11 @@ export class SerumHost {
     if (wk.reducedMotion && wk.reducedMotion() && now - this.snapT < 100) return;   // §9.1: 10 fps under reduced motion
     this.snapT = now;
     this.ticking = true;
-    this.raf(() => {
+    this.raf(ts => {
       this.ticking = false;
       if (this.dead || !this.s()) return;
       this.paintMods(false);
-      this.paintCanvases();
+      this.paintCanvases(ts);
       this.updateVoices();
       this.checkCapture();
     });
@@ -2519,17 +2543,36 @@ export class SerumHost {
   }
 
   /* ---------------------------------------------------------------- canvases */
+  // extra: { maxHz, keyN } (the kit's canvas(), above); a keyN canvas keeps two key buffers, swapped at each draw (kp = the
+  // drawn key, kn its count; kb the next one): no array, no string per paint
   canvas(cls, key, draw, extra) {
     const c = mk(this.d, 'canvas', 'sx-disp' + (cls ? ' ' + cls : ''));
-    const cv = Object.assign({ el: c, key, draw, last: null, sized: false, w: 0, h: 0, dpr: 1 }, extra);
+    const cv = Object.assign({ el: c, key, draw, last: null, sized: false, w: 0, h: 0, dpr: 1, maxHz: 0, keyN: null }, extra);
+    cv.t = -Infinity; cv.due = false;
+    if (typeof cv.keyN === 'function') { cv.kb = []; cv.kp = []; cv.kn = -1; } else cv.keyN = null;
     (this.bp || this.headPage).canvases.push(cv);
     if (this.ro) this.ro.observe(c);
     return cv;
   }
-  paintCanvases() {
-    for (const P of this.shownPages()) for (const cv of P.canvases) this.paintCanvas(cv);
+  paintCanvases(ts) {
+    for (const P of this.shownPages()) for (const cv of P.canvases) this.paintCanvas(cv, ts);
   }
-  paintCanvas(cv) {
+  // a rate-class canvas whose change came inside its period: painted by one rAF (re-armed until the period ends; a hidden
+  // page's canvases wait for the full paint that shows them)
+  paintLater(cv) {
+    cv.due = true;
+    if (this.dueArmed || this.dead) return;
+    this.dueArmed = true;
+    this.raf(ts => {
+      this.dueArmed = false;
+      if (this.dead) return;
+      for (const P of this.shownPages()) for (const c of P.canvases) if (c.due) { c.due = false; this.paintCanvas(c, ts); }
+    });
+  }
+  // ts: the frame's rAF timestamp when a frame paints it — the rate class's time base (review 2, P3-2: performance.now(), read
+  // wherever in its frame the paint ran, jittered the gaps below the period: 54 / s of a 60 class on a 60 Hz display); else
+  // (an edit's synchronous paint, a timer's frame) o.now / performance.now()
+  paintCanvas(cv, ts) {
     if (!cv.sized) {
       const r = cv.el.getBoundingClientRect();
       cv.sized = true;
@@ -2550,10 +2593,24 @@ export class SerumHost {
       cv.w = w; cv.h = h; cv.dpr = q; cv.last = null;
     }
     if (cv.hid) return;
-    let k;
-    try { k = cv.key(); } catch (err) { k = Math.random(); }
-    if (k === cv.last) return;
-    cv.last = k;
+    // the key (keyN: element-wise against the drawn one; a throwing key always differs) — then the rate class: a change
+    // inside the period waits for its end (a re-measured canvas, its store cleared, draws at once)
+    const force = cv.last === null;
+    let k = null, n = 0;
+    if (cv.keyN) {
+      try { n = cv.keyN(cv.kb) | 0; } catch (err) { n = -1; }
+      if (!force && n >= 0 && n === cv.kn && sameKeyN(cv.kb, cv.kp, n)) return;
+    } else {
+      try { k = cv.key(); } catch (err) { k = Math.random(); }
+      if (k === cv.last) return;
+    }
+    if (cv.maxHz > 0) {
+      const t = ts > 0 ? ts : this.tNow();
+      if (!force && t - cv.t < rateMs(cv.maxHz)) { this.paintLater(cv); return; }
+      cv.t = t;
+    }
+    cv.due = false;
+    if (cv.keyN) { const b = cv.kp; cv.kp = cv.kb; cv.kb = b; cv.kn = n; cv.last = true; } else cv.last = k;
     const g = cv.el.getContext ? cv.el.getContext('2d') : null;
     if (!g) return;
     try {

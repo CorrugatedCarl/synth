@@ -586,6 +586,7 @@ export function createModule(o, env) {
   const ttl = mk('span', 'cv-ttl'), tEl = mk('span', 'cv-title'), sEl = mk('span', 'cv-sub');
   ttl.append(tEl, sEl);
   const chipEl = mk('span', 'cv-chip'), cpu = mk('span', 'cv-cpu'); // CPU: per module (setCpu, the engine's stats per Inst / Chain)
+  let cpuS = NaN; // (setCpu: the figure shown, %)
   const more = btn('cv-btn cv-more', 'Module menu'); more.textContent = '⋯'; more.setAttribute('aria-haspopup', 'menu');
   const foldB = btn('cv-btn cv-fold', 'Fold', FOLD_SVG);
   if (compact) bar.append(...(o.power ? [pow] : []), stripe, ttl, more); // ((9) the compact bar: the rest made, never shown)
@@ -954,7 +955,11 @@ export function createModule(o, env) {
     setPos, setW, setFold, setZ, setTitle, setChip, setFixed,
     /** (1d) the module's DSP load on its top bar: a fraction of the audio deadline (the engine's stats.per), null = none */
     setCpu(load) {
-      const t = fin(load) && load >= 0 ? (load >= 0.1 ? Math.round(load * 100) : load >= 0.001 ? (load * 100).toFixed(1) : '<0.1') + '%' : '';
+      // (IMPL-FR review 2, P2-2) the figure (cpuS, %; 0 = "<0.1") holds while the load stays within 1.5 of its display steps — 1 %
+      // from 10 % up, 0.1 % below: a reading jittering across a rounding edge never rewrites the bar (each write re-laid the page out)
+      const p = fin(load) && load >= 0 ? load * 100 : NaN;
+      if (!(p === p && Math.abs(p - cpuS) <= (cpuS >= 10 ? 1.5 : 0.15) + 1e-9)) cpuS = p === p ? (p >= 10 ? Math.round(p) : p >= 0.1 ? +p.toFixed(1) : 0) : NaN;
+      const t = cpuS === cpuS ? (cpuS >= 10 ? cpuS : cpuS > 0 ? cpuS.toFixed(1) : '<0.1') + '%' : '';
       if (cpu.textContent !== t) { cpu.textContent = t; cpu.title = t ? 'DSP load of this module: ' + t + ' of the audio deadline' : ''; }
     },
     /** module-local offset of a jack (pure geometry: w and fold; (3) an inline jack's anchor centre, measured once per relayout) */

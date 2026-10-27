@@ -40,7 +40,8 @@
 //   SpecView    'spec'    Spectral     spectrogram (S / E, Hi / Lo handles), SCAN | RATE | X, CUT, FILTER (curve or a
 //                                      wavetable), MIX
 //   view members: static type, el, head, o, type, kit, active() (osc o has this type), show(on), key() (display key;
-//   'off' when inactive), menuItems() (type-specific items of the panel's ⋯ menu)
+//   'off' when inactive; the Wavetable view's is keyN(out)'s string — IMPL-FR §7.3, as FilterPanel's and the spectral
+//   filter's filtKey), menuItems() (type-specific items of the panel's ⋯ menu)
 // Data and pure helpers
 //   oscData(kit)                   the table / noise / sample data shared by the panels of one kit (serum-ui uses it for
 //                                  the format context, the main menu, drops on the displays and the LFO menu: tinfo,
@@ -110,6 +111,15 @@ const MISS_MS = 3000;         // a missing record / onset function is asked agai
 const PCM_IDLE_MS = 30000;    // the snapping PCM is released this long after the last snapping gesture
 const TOUCH_SLOP = 8;         // px a finger may wander before a press becomes a drag (wk's touch slop)
 const warnOnce = (() => { const seen = new Set(); return (k, ...a) => { if (!seen.has(k)) { seen.add(k); console.warn(...a); } }; })();
+// (IMPL-FR §3 B3, §7.3, §13 P1-2) the heavy displays — the wavetable 2D / 3D, the filter response and its spectra, the
+// spectral filter — are a rate class (kit.canvas o.maxHz: 60–119 redraws a second whatever moves their key — the display's
+// multiple nearest 60 from above —: an LFO on cutoff or WT POS; lead, first guess — IMPL-FR §11 Q2, §14 P3-3) and key as numbers (o.keyN): live values quantised as the string keys'
+// toFixed digits were, the state's JSON parts recomputed once per repaint (perEdit: every edit repaints, kit.paintSeq; a
+// snapshot frame reads the cached string) — no string per snapshot. key() stays their joined string (keyStr)
+const HEAVY_HZ = 60;
+const q3 = x => Math.round(x * 1e3) | 0, q4 = x => Math.round(x * 1e4) | 0;   // (| 0: a small integer, never a boxed number)
+function perEdit(kit, M, fn) { const q = kit.paintSeq(); if (M.q !== q) { M.q = q; M.v = fn(); } return M.v; }
+function keyStr(f) { const k = []; return k.slice(0, f(k)).join('|'); }
 // items of an enum destination menu: v = k / hi (as normalizeSerum stores it)
 const enumItems = (id, labels, groups) => { const hi = gridOf(destOf(id)); return labels.map((label, k) => ({ v: k / hi, label, group: groups ? groups[k] : undefined })); };
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -145,7 +155,7 @@ function memTrigSet(seed) {
 }
 
 // oscillator o (0–2) → destination prefix, panel title, module, colour
-const OSC_P = ['a', 'b', 'c'], OSC_T = ['OSC A', 'OSC B', 'OSC C'], OSC_M = ['oscA', 'oscB', 'oscC'];
+const OSC_P = ['a', 'b', 'c'], OSC_T = ['OSC A', 'OSC B', 'OSC C'], OSC_M = ['oscA', 'oscB', 'oscC'], OSC_WT = ['a.wt', 'b.wt', 'c.wt'];
 const OSC_COL = ['#4fb3ff', '#6fe3a1', '#f7c948'];
 const oscIdx = o => (o === 2 ? 2 : o ? 1 : 0);
 const others = o => [0, 1, 2].filter(j => j !== o);
@@ -745,6 +755,8 @@ class OscData {
     if (info.F === info.R) return info.table.frames[k];
     return this.frameAt(info, info.F > 1 ? k / (info.F - 1) : 0).slice();
   }
+  // slotFrame without the copy: valid until the next frameAt (one frame drawn at once — the 3D view's front, IMPL-FR)
+  slotView(info, k) { return info.F === info.R ? info.table.frames[k] : this.frameAt(info, info.F > 1 ? k / (info.F - 1) : 0); }
   remapTab(o) {
     const pts = this.s().osc[o].remap, k = JSON.stringify(pts);
     this.rmap = this.rmap || [{}, {}, {}];
@@ -759,6 +771,15 @@ class OscData {
   livePos(o) {
     const sn = this.kit.snap();
     return sn && sn.notes > 0 && sn.wtPos && fin(sn.wtPos[o]) ? sn.wtPos[o] : this.kit.getN(OSC_P[o] + '.wt');
+  }
+  // (IMPL-FR §7.3) liveN / livePos × q, rounded: a keyN part — an integer (a small one: no boxed number per frame)
+  liveQ(id, q) {
+    const sn = this.kit.snap(), i = core.vi(id);
+    return Math.round((sn && sn.notes > 0 && sn.eff && i >= 0 && fin(sn.eff[i]) ? sn.eff[i] : this.kit.getN(id)) * q) | 0;
+  }
+  posQ(o, q) {
+    const sn = this.kit.snap();
+    return Math.round((sn && sn.notes > 0 && sn.wtPos && fin(sn.wtPos[o]) ? sn.wtPos[o] : this.kit.getN(OSC_WT[o])) * q) | 0;
   }
   // the base frame of oscillator o (its table at the base WT POS), or null while its table loads / for other types
   baseFrame(o) {
@@ -1506,7 +1527,11 @@ export class WTView extends TypeView {
     K.custom(() => del.classList.toggle('sx-hidden', !D.canDelete(K.s().osc[o].wt, false)));
     const edb = btn(d, 'sx-hbtn', icon(d, 'zoom'), 'Open wavetable editor (' + T + ')', () => K.openWtEditor(o));
     this.head.push(wtm.el, ren, del, edb);
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr));
+    this.ids = { warpMode: P + '.warpMode', w1: P + '.w1', w2: P + '.w2', warp: P + '.warp', warp2: P + '.warp2', wvar1: P + '.wvar1',
+      wvar2: P + '.wvar2', uni: P + '.uni', det: P + '.det', on: P + '.on', phase: P + '.phase' };
+    this.rmM = { q: -1, v: '' };      // the remap curve's JSON (perEdit)
+    this.b3 = null;                   // the 3D view's back layers: { info, w, h, dpr, L: [{ p: polyline, col }], cur } (draw3d)
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
     cv.el.setAttribute('role', 'button');
@@ -1541,11 +1566,14 @@ export class WTView extends TypeView {
   // the 2D preview's warp: S1 mode slot 1 of A / B through SerumDSP.renderWarp (Phase-1 modes 1–17), then the S2 slots of
   // the Sync / Alt / Filter / Distortion categories (WARPS2 1–32) through SxWarp.renderWarp2 (§13.3 "2D view shows both
   // slots' effect for Sync/Alt/Distortion")
-  warpSig() {
-    const K = this.kit, D = this.D, o = this.o, P = this.P, legacy = o < 2 && s1Of(K.s());
-    const m1 = legacy ? Math.round(22 * K.getN(P + '.warpMode')) : Math.round(81 * K.getN(P + '.w1')), m2 = Math.round(81 * K.getN(P + '.w2'));
-    return [legacy ? 1 : 0, m1, D.liveN(P + '.warp').toFixed(4), m2, D.liveN(P + '.warp2').toFixed(4), D.liveN(P + '.wvar1').toFixed(3),
-      D.liveN(P + '.wvar2').toFixed(3), (legacy ? m1 >= 13 && m1 <= 16 : isRemap2(m1)) || isRemap2(m2) ? JSON.stringify(K.s().osc[o].remap) : ''].join(',');
+  // (keyN) the warp slots' part of the key from index n → the next index
+  warpKeyN(k, n) {
+    const K = this.kit, D = this.D, o = this.o, I = this.ids, legacy = o < 2 && s1Of(K.s());
+    const m1 = legacy ? Math.round(22 * K.getN(I.warpMode)) : Math.round(81 * K.getN(I.w1)), m2 = Math.round(81 * K.getN(I.w2));
+    k[n++] = legacy ? 1 : 0; k[n++] = m1; k[n++] = D.liveQ(I.warp, 1e4); k[n++] = m2; k[n++] = D.liveQ(I.warp2, 1e4);
+    k[n++] = D.liveQ(I.wvar1, 1e3); k[n++] = D.liveQ(I.wvar2, 1e3);
+    k[n++] = (legacy ? m1 >= 13 && m1 <= 16 : isRemap2(m1)) || isRemap2(m2) ? perEdit(K, this.rmM, () => JSON.stringify(K.s().osc[o].remap)) : '';
+    return n;
   }
   // the slots previewed are those of the Sync / Alt / Filter / Distortion categories (WARPS2 1–32; the legacy slot's S2
   // rendition), through the same voice-order path as Render OSC Warp (OscData.warpCycle) at over 1
@@ -1554,15 +1582,20 @@ export class WTView extends TypeView {
     if (!sl[0] && !sl[1]) return fr;
     try { return D.warpCycle(o, fr, sl, 1, D.remapTab(o)) || fr; } catch (err) { warnOnce('rw2', 'sx-ui-osc: warp preview failed', err); return fr; }
   }
-  key() {
-    if (!this.active()) return 'off';
-    const K = this.kit, D = this.D, o = this.o, s = K.s(), P = this.P, e = D.tableEntry(s.osc[o].wt);
-    return [s.osc[o].wt, e.state, s.ui.view3d[o], D.livePos(o).toFixed(4), this.warpSig(),
-      K.getN(P + '.uni'), K.getN(P + '.det').toFixed(3), s.osc[o].uni.mode, K.getN(P + '.on'),
-      K.dragging(P + '.phase') ? K.getN(P + '.phase').toFixed(3) : '', dsp() ? 1 : 0, sxw() ? 1 : 0].join('|');
+  key() { return keyStr(k => this.keyN(k)); }
+  keyN(k) {
+    if (!this.active()) { k[0] = 'off'; return 1; }
+    const K = this.kit, D = this.D, o = this.o, s = K.s(), O = s.osc[o], I = this.ids, e = D.tableEntry(O.wt);
+    let n = 0;
+    k[n++] = O.wt; k[n++] = e.state; k[n++] = s.ui.view3d[o] | 0; k[n++] = D.posQ(o, 1e4);
+    n = this.warpKeyN(k, n);
+    k[n++] = q4(K.getN(I.uni)); k[n++] = q3(K.getN(I.det)); k[n++] = O.uni.mode; k[n++] = K.getN(I.on) >= 0.5 ? 1 : 0;
+    k[n++] = K.dragging(I.phase) ? q3(K.getN(I.phase)) : -1; k[n++] = dsp() ? 1 : 0; k[n++] = sxw() ? 1 : 0;
+    return n;
   }
   draw(g, w, h, dpr) {
     const K = this.kit, D = this.D, o = this.o, s = K.s(), P = this.P, e = D.tableEntry(s.osc[o].wt);
+    if (!s.ui.view3d[o]) this.b3 = null;
     g.strokeStyle = C.line; g.lineWidth = dpr;
     g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
     g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace';
@@ -1592,22 +1625,40 @@ export class WTView extends TypeView {
     g.fillStyle = C.mute;
     g.fillText((cur + 1) + ' / ' + info.F, 6 * dpr, h - 6 * dpr);
   }
+  // (IMPL-FR §13 P1-2) the 3D view's back layers depend on the table, the size and the density only: their polylines are
+  // computed once (b3) — as Path2D objects where the canvas has them — and stroked from it while WT POS moves (an LFO on it:
+  // no frame interpolated, no 2048-sample slot copied, no layer's points passed again per redraw); the same paths with the
+  // same numbers as drawn afresh, so the same pixels (an image copy is not: a GPU canvas antialiases the front stroke by what
+  // was drawn before it — measured in Chrome for Testing)
   draw3d(g, w, h, dpr, info, cur) {
     const D = this.D, F = info.F, R = info.R || F, dx = w * 0.26, dy = h * 0.4, fw = w * 0.72, amp = h * 0.2;
-    const line = (fr, z, col, lw) => {
-      const x0 = z * dx, y0 = h * 0.7 - z * dy, n = fr.length, steps = Math.max(32, Math.round(fw / (2 * dpr)));
+    const steps = Math.max(32, Math.round(fw / (2 * dpr)));
+    const pts = (fr, z, p) => {   // (x, y) × (steps + 1) of frame fr at depth z, into p
+      const x0 = z * dx, y0 = h * 0.7 - z * dy, n = fr.length;
+      for (let j = 0; j <= steps; j++) { p[2 * j] = x0 + j / steps * fw; p[2 * j + 1] = y0 - fr[Math.min(n - 1, Math.floor(j / steps * n))] * amp; }
+      return p;
+    };
+    const line = (p, col, lw) => {
       g.beginPath();
-      for (let j = 0; j <= steps; j++) {
-        const x = x0 + j / steps * fw, y = y0 - fr[Math.min(n - 1, Math.floor(j / steps * n))] * amp;
-        if (j) g.lineTo(x, y); else g.moveTo(x, y);
-      }
+      g.moveTo(p[0], p[1]);
+      for (let j = 2; j < p.length; j += 2) g.lineTo(p[j], p[j + 1]);
       g.strokeStyle = col; g.lineWidth = lw; g.stroke();
     };
-    for (const L of layers3d(F, R)) {   // back to front; real frames green, interpolated slots grey (§9.3)
-      const fr = L.real && F !== R ? info.table.frames[L.frame] : D.slotFrame(info, L.slot);
-      line(fr, L.z, L.real ? 'rgba(111, 227, 161, 0.55)' : 'rgba(127, 139, 152, 0.35)', dpr);
+    let B = this.b3;
+    if (!B || B.info !== info || B.w !== w || B.h !== h || B.dpr !== dpr) {
+      const P2 = typeof globalThis.Path2D === 'function' && typeof g.stroke === 'function' ? globalThis.Path2D : null;
+      B = this.b3 = { info, w, h, dpr, L: [], cur: new Float64Array(2 * (steps + 1)) };
+      for (const L of layers3d(F, R)) {   // back to front; real frames green, interpolated slots grey (§9.3)
+        const fr = L.real && F !== R ? info.table.frames[L.frame] : D.slotFrame(info, L.slot), p = pts(fr, L.z, new Float64Array(2 * (steps + 1)));
+        let path = null;
+        if (P2) { path = new P2(); path.moveTo(p[0], p[1]); for (let j = 2; j < p.length; j += 2) path.lineTo(p[j], p[j + 1]); }
+        B.L.push({ p, path, col: L.real ? 'rgba(111, 227, 161, 0.55)' : 'rgba(127, 139, 152, 0.35)' });
+      }
     }
-    line(D.slotFrame(info, cur), F > 1 ? cur / (F - 1) : 0, C.cur, 1.8 * dpr);
+    for (const L of B.L) {
+      if (L.path) { g.strokeStyle = L.col; g.lineWidth = dpr; g.stroke(L.path); } else line(L.p, L.col, dpr);
+    }
+    line(pts(D.slotView(info, cur), F > 1 ? cur / (F - 1) : 0, B.cur), C.cur, 1.8 * dpr);
   }
 }
 // unison detune "stalks" at the bottom of a display (inv A3)
@@ -2512,7 +2563,9 @@ export class SpecView extends SmpBase {
   buildMore() {
     const K = this.kit, D = this.D, d = K.doc, o = this.o, T = OSC_T[o];
     // the spectral FILTER: a preview (click opens the curve editor popover), presets / wavetable menu
-    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr) => this.drawFilt(g, w, h, dpr));
+    this.ptM = { q: -1, v: '' };      // the curve's JSON (perEdit)
+    this.fIds = { cut: this.P + '.cut', smix: this.P + '.smix' };
+    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr) => this.drawFilt(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.filtKeyN(k) });
     fcv.el.tabIndex = 0;
     fcv.el.setAttribute('role', 'button');
     fcv.el.setAttribute('aria-label', T + ' spectral filter: click to edit');
@@ -2580,10 +2633,13 @@ export class SpecView extends SmpBase {
     K.edit(s => { const F = s.osc[o].spec.filt; F.kind = 'wt'; F.wt = id; F.pts = pts; }, { label: 'Wavetable as filter' });
     return true;
   }
-  filtKey() {
-    if (!this.active()) return 'off';
+  filtKey() { return keyStr(k => this.filtKeyN(k)); }
+  filtKeyN(k) {
+    if (!this.active()) { k[0] = 'off'; return 1; }
     const F = this.O().spec.filt;
-    return [F.kind, F.wt, JSON.stringify(F.pts), this.D.liveN(this.P + '.cut').toFixed(3), this.D.liveN(this.P + '.smix').toFixed(3)].join('|');
+    k[0] = F.kind; k[1] = F.wt; k[2] = perEdit(this.kit, this.ptM, () => JSON.stringify(this.O().spec.filt.pts));
+    k[3] = this.D.liveQ(this.fIds.cut, 1e3); k[4] = this.D.liveQ(this.fIds.smix, 1e3);
+    return 5;
   }
   // the filter's gain curve (x = log frequency) shifted by CUT (−1…+1 = ±half the axis) and mixed with MIX: the points
   // the DSP compiles (a wavetable filter's are its frame 0, stored when it was chosen)
@@ -3023,6 +3079,14 @@ export class FilterPanel {
     this.k = k ? 1 : 0;
     this.F = this.k ? 'f2.' : 'f.';
     this.D = oscData(kit);
+    const F = this.F;
+    this.ids = { cutoff: F + 'cutoff', res: F + 'res', drive: F + 'drive', var: F + 'var', on: F + 'on', x: F + 'x', y: F + 'y' };
+    this.pzM = { q: -1, v: '' };      // the PZ corners' JSON (perEdit)
+    // (IMPL-FR §3 B3) the response curve cached by its inputs (a spectrum view redraws per snapshot: no impulse then), the
+    // FFT buffers reused: rsp = { type, fc, res, drive, vr, xv, yv, pz, ph (phase view), w, h, S, X (the DSP scripts), ys }
+    this.rsp = null;
+    this.fb = null;                   // { re, im } Float64Array(N) of the response's FFT
+    this.sb = null;                   // { re, im } Float64Array(1024) of the tap's spectrum
     ensureCSS(kit.doc);
     this.el = this.build();
     if (root) root.appendChild(this.el);
@@ -3054,7 +3118,7 @@ export class FilterPanel {
     head.appendChild(route.btn);
     this.route = route;
     // display: drag x = cutoff, y = res; click / Enter / Alt-click cycles the views; right-click: the view menu
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr));
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
     const c = cv.el;
     c.tabIndex = 0;
     c.setAttribute('role', 'button');
@@ -3168,12 +3232,16 @@ export class FilterPanel {
       x: ax(F + 'x'), y: ax(F + 'y'),
     }), () => JSON.stringify([K.s().filter[k].pz, K.getN(F + 'x'), K.getN(F + 'y')]));
   }
-  key() {
-    const K = this.kit, D = this.D, s = K.s(), k = this.k, F = this.F, v = s.ui.filtView[k] | 0, sn = K.snap();
-    const base = [v, this.typeN(true), D.liveN(F + 'cutoff').toFixed(4), D.liveN(F + 'res').toFixed(3), D.liveN(F + 'drive').toFixed(3), D.liveN(F + 'var').toFixed(3),
-      K.getN(F + 'on'), dsp() ? 1 : 0, sxf() ? 1 : 0, this.typeN(false) === 103 ? JSON.stringify(s.filter[k].pz) + D.liveN(F + 'x').toFixed(3) + D.liveN(F + 'y').toFixed(3) : ''];
-    if (v) base.push(K.snapSeq(), sn && sn.notes > 0 ? 1 : 0);
-    return base.join('|');
+  key() { return keyStr(k => this.keyN(k)); }
+  keyN(k) {
+    const K = this.kit, D = this.D, s = K.s(), kk = this.k, I = this.ids, v = s.ui.filtView[kk] | 0, sn = K.snap();
+    let n = 0;
+    const tid = this.typeId();
+    k[n++] = v; k[n++] = D.liveQ(tid, tid === 'f.type' ? 95 : 107); k[n++] = D.liveQ(I.cutoff, 1e4); k[n++] = D.liveQ(I.res, 1e3); k[n++] = D.liveQ(I.drive, 1e3);
+    k[n++] = D.liveQ(I.var, 1e3); k[n++] = K.getN(I.on) >= 0.5 ? 1 : 0; k[n++] = dsp() ? 1 : 0; k[n++] = sxf() ? 1 : 0;
+    if (this.typeN(false) === 103) { k[n++] = perEdit(K, this.pzM, () => JSON.stringify(K.s().filter[kk].pz)); k[n++] = D.liveQ(I.x, 1e3); k[n++] = D.liveQ(I.y, 1e3); }
+    if (v) { k[n++] = K.snapSeq(); k[n++] = sn && sn.notes > 0 ? 1 : 0; }
+    return n;
   }
   // impulse response of the current type (types ≥ 96 through SxFilt2.impulse with X / Y / corners), or null
   impulse(type, fc, res, drive, vr) {
@@ -3201,27 +3269,10 @@ export class FilterPanel {
     g.fillText(label, w - g.measureText(label).width - 4 * dpr, 10 * dpr);
     if (view) this.drawSpectrum(g, w, h, dpr);
     if (type >= 76 && type <= 79) { this.drawIcon(g, w, h, dpr, type); return; }
-    const fc = core.lawValue(F + 'cutoff', D.liveN(F + 'cutoff'));
-    let ir = null;
-    try { ir = this.impulse(type, fc, D.liveN(F + 'res'), D.liveN(F + 'drive'), D.liveN(F + 'var')); } catch (err) { warnOnce('fi' + type, 'sx-ui-osc: filter impulse', err); }
-    if (!ir) { g.fillStyle = C.mute; g.fillText('Filter display needs the DSP scripts', 6 * dpr, 14 * dpr); return; }
-    const N = ir.length, re = new Float64Array(N), im = new Float64Array(N);
-    for (let i = 0; i < N; i++) re[i] = fin(ir[i]) ? ir[i] : 0;
-    fft(re, im);
-    const binHz = 48000 / N, y0 = h * 0.5;
+    const ys = this.response(type, view, w, h);
+    if (!ys) { g.fillStyle = C.mute; g.fillText('Filter display needs the DSP scripts', 6 * dpr, 14 * dpr); return; }
     g.beginPath();
-    for (let x = 0; x <= w; x++) {
-      const b = clamp(fOfX(x / w) / binHz, 0, N / 2 - 1), i = Math.floor(b), f = b - i, j = Math.min(N / 2, i + 1);
-      let y;
-      if (view === 2) {
-        const ph = Math.atan2(im[i] + (im[j] - im[i]) * f, re[i] + (re[j] - re[i]) * f);
-        y = y0 - ph / Math.PI * h * 0.42;
-      } else {
-        const m = Math.hypot(re[i], im[i]) * (1 - f) + Math.hypot(re[j], im[j]) * f, db = 20 * Math.log10(Math.max(1e-6, m));
-        y = h * (24 - clamp(db, -60, 30)) / 72;
-      }
-      if (x) g.lineTo(x, y); else g.moveTo(x, y);
-    }
+    for (let x = 0; x <= w; x++) { if (x) g.lineTo(x, ys[x]); else g.moveTo(x, ys[x]); }
     g.strokeStyle = K.getN(F + 'on') >= 0.5 ? (k ? '#ff5b8a' : '#ff8a5b') : C.mute; g.lineWidth = 1.6 * dpr; g.stroke();
     if (view === 0) {
       g.lineTo(w, h); g.lineTo(0, h); g.closePath();
@@ -3229,8 +3280,40 @@ export class FilterPanel {
       g.strokeStyle = 'rgba(223, 230, 238, 0.25)';
       g.beginPath(); g.moveTo(0, h * 24 / 72); g.lineTo(w, h * 24 / 72); g.stroke();
     }
-    const cx = D.liveN(F + 'cutoff') * w;
+    const cx = D.liveN(this.ids.cutoff) * w;
     g.fillStyle = C.cur; g.fillRect(cx - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
+  }
+  // the response curve's y at x = 0 … w (magnitude, or phase in view 2) for the current inputs, cached by them (IMPL-FR §3
+  // B3: a spectrum view redrawn per snapshot computes no impulse; an LFO on cutoff one per redraw, < 2 × HEAVY_HZ a second) —
+  // the impulse through the shared FFT buffers; null without the DSP scripts
+  response(type, view, w, h) {
+    const K = this.kit, D = this.D, I = this.ids, fc = core.lawValue(I.cutoff, D.liveN(I.cutoff)), res = D.liveN(I.res), drive = D.liveN(I.drive);
+    const vr = D.liveN(I.var), xv = D.liveN(I.x), yv = D.liveN(I.y), ph = view === 2 ? 1 : 0, S = dsp(), X = sxf();
+    const pz = type >= 96 ? perEdit(K, this.pzM, () => JSON.stringify(K.s().filter[this.k].pz)) : '';
+    const A = this.rsp;
+    if (A && A.type === type && A.fc === fc && A.res === res && A.drive === drive && A.vr === vr && A.xv === xv && A.yv === yv && A.pz === pz
+      && A.ph === ph && A.w === w && A.h === h && A.S === S && A.X === X) return A.ys;
+    let ir = null;
+    try { ir = this.impulse(type, fc, res, drive, vr); } catch (err) { warnOnce('fi' + type, 'sx-ui-osc: filter impulse', err); }
+    if (!ir) { this.rsp = null; return null; }
+    const N = ir.length, B = this.fb && this.fb.re.length === N ? this.fb : (this.fb = { re: new Float64Array(N), im: new Float64Array(N) }), re = B.re, im = B.im;
+    for (let i = 0; i < N; i++) { re[i] = fin(ir[i]) ? ir[i] : 0; im[i] = 0; }
+    fft(re, im);
+    const nx = Math.floor(w) + 1, ys = A && A.ys.length === nx ? A.ys : new Float64Array(nx), binHz = 48000 / N, y0 = h * 0.5;
+    for (let x = 0; x <= w; x++) {
+      const b = clamp(fOfX(x / w) / binHz, 0, N / 2 - 1), i = Math.floor(b), f = b - i, j = Math.min(N / 2, i + 1);
+      let y;
+      if (view === 2) {
+        const p = Math.atan2(im[i] + (im[j] - im[i]) * f, re[i] + (re[j] - re[i]) * f);
+        y = y0 - p / Math.PI * h * 0.42;
+      } else {
+        const m = Math.hypot(re[i], im[i]) * (1 - f) + Math.hypot(re[j], im[j]) * f, db = 20 * Math.log10(Math.max(1e-6, m));
+        y = h * (24 - clamp(db, -60, 30)) / 72;
+      }
+      ys[x] = y;
+    }
+    this.rsp = { type, fc, res, drive, vr, xv, yv, pz, ph, w, h, S, X, ys };
+    return ys;
   }
   drawIcon(g, w, h, dpr, type) {   // Ring Mod / S&H types: symbolic display (inv A11.1)
     g.strokeStyle = C.graph; g.lineWidth = 1.6 * dpr;
@@ -3253,8 +3336,8 @@ export class FilterPanel {
     let any = false;
     if (tapAll) for (let i = off; i < off + N && i < tapAll.length; i += 7) if (tapAll[i] !== 0) { any = true; break; }
     if (!sn || !sn.notes || !tapAll || !any) { g.fillStyle = C.mute; g.fillText('no signal', w / 2 - 22 * dpr, h / 2); return; }
-    const re = new Float64Array(N), im = new Float64Array(N), rate = sn.tapRate > 0 ? sn.tapRate : 48000;
-    for (let i = 0; i < N; i++) re[i] = (tapAll[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+    const B = this.sb || (this.sb = { re: new Float64Array(N), im: new Float64Array(N) }), re = B.re, im = B.im, rate = sn.tapRate > 0 ? sn.tapRate : 48000;
+    for (let i = 0; i < N; i++) { re[i] = (tapAll[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1))); im[i] = 0; }
     fft(re, im);
     g.beginPath();
     for (let x = 0; x <= w; x++) {

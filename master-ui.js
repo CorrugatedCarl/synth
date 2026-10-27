@@ -22,19 +22,23 @@
 // peak in dBFS, tp the true peak in dBTP, tpMax the max-hold (a number; an array reads as its larger entry), lat in frames
 // (not shown). Anything missing shows "—".
 //
-// Budgets (G5, §5.3): one 2D canvas for the meters, repainted only when a new summary arrived and at most every METER_MS
-// (30 Hz); the scope canvas at most every SCOPE_MS, and not at all while the signal stays silent; the numbers are DOM text,
-// written at most every TEXT_MS (10 Hz) and only when they changed; nothing is drawn, written or read from the host while
-// not live (on screen, unfolded); no shadowBlur; no layout read anywhere (every size is a constant of this file — the module
-// is fixed-size —, canvases go through wk.fitCanvas: the device ratio and the canvas world's zoom, repainted at a zoom end
-// through wk.onRescale). Plain ES module, no DOM at module top level, no main.js import.
-// The host drives it: update() with every summary, draw() from its frame loop, setLive() when the module goes on / off screen.
+// Budgets (G5, §5.3; IMPL-FR §6): one 2D canvas for the meters, repainted when a new summary arrived or while a true-peak bar
+// moves (it falls at the frame clock's rate); the scope canvas on every draw() (the frame clock's cap: the host's frameTick),
+// and not at all while the signal stays silent; the numbers are DOM text, written at most every TEXT_MS (10 Hz) and only when
+// they changed; nothing is drawn, written or read from the host while not live (on screen, unfolded); no shadowBlur; no
+// layout read anywhere (every size is a constant of this file — the module is fixed-size —, canvases go through
+// wk.fitCanvas: the device ratio and the canvas world's zoom, repainted at a zoom end through wk.onRescale); no allocation
+// in the frame path (draw / the row's clock client). Plain ES module, no DOM at module top level, no main.js import.
+// The host drives it: update() with every summary, draw(t) from its frame loop (t: the frame's time, the host's now()
+// clock), setLive() when the module goes on / off screen. The row runs itself: a wk.clock client while a bar is falling.
+// The peak bars in time (FR3): a new peak at or above the shown level holds PK_HOLD ms (a steady level between two 29 Hz
+// summaries does not saw), then falls TP_REL dB/s, evaluated at each frame's time — the same levels at 60 and 240 fps.
 // The scope's data is pulled: o.read(mode, bufs) fills bufs (td: 8192 floats of the time domain, fd: 4096 dB of the spectrum,
 // L / R: 2048 floats each) for the mode shown and returns the sample rate (falsy: no source — a flat line); it is called
-// only from draw(), only while live, at most every SCOPE_MS.
+// only from draw(), only while live.
 // Accessibility: real buttons with aria-pressed / aria-expanded / labels; every number is DOM text with a hidden full name;
 // the canvases are decoration (aria-hidden); the row's bars are role=meter.
-import { fitCanvas, onRescale, addTransient } from './wk.js?v=9';
+import { fitCanvas, onRescale, addTransient, clock } from './wk.js?v=9';
 
 /** The OUT's body size (world px; the module adds its 40 px bar): fixed, nothing is resizable. */
 export const OUT_W = 420, OUT_H = 236;
@@ -42,13 +46,20 @@ export const MODES = Object.freeze(['wave', 'spectrum', 'image']);
 export const TARGETS = Object.freeze([-9, -14, -16, -23, null]);
 /** O1: the image mode never draws more points than this. */
 export const MAX_POINTS = 2048;
-/** Redraw floors (ms): the meters canvas, the scope canvas, the DOM numbers (10 Hz). */
-export const METER_MS = 30, SCOPE_MS = 30, TEXT_MS = 100;
+/** The DOM numbers' floor (ms, 10 Hz). (IMPL-FR §6: the canvases' 30 ms floors are retired — they paint at the frame clock's rate.) */
+export const TEXT_MS = 100;
 /** Scales (dB / LUFS): the short-term bar, the true-peak bars, the row's peak bars; red from TP_RED up. */
 export const LU_LO = -40, LU_HI = 0, TP_LO = -48, TP_HI = 3, TP_RED = -1, PK_LO = -60;
 export const RED = '#ff4a2a';
 /** How fast the true-peak bars fall (dB per second); the row's peak bars fall at the same pace. */
 export const TP_REL = 24;
+/** How long a peak holds before it falls (ms): a slow summary interval (29 Hz) and its jitter — a steady level stays put. */
+export const PK_HOLD = 50;
+// a peak bar's level at T (ms): its peak A, held until E, then falling TP_REL dB/s, never below lo — a pure function of the
+// time (the same at any frame rate); a new peak a lands when a ≥ the level shown (A = a, E = T + PK_HOLD)
+const fallAt = (A, E, T, lo) => Math.max(lo, A - TP_REL * Math.max(0, T - E) / 1000);
+const MOVED = 1e-3; // (dB) a bar that moved less than this is not repainted
+const TRACE_Q = 16; // (the scope's live traces: a 1/16 px grid drawn in integers — no boxed double per point)
 /** How long "limiting" shows after the safety limiter's last report (ms; engine.js synth-safe reports every ≥ 0.1 s while it acts). */
 export const LIM_MS = 1000;
 
@@ -135,6 +146,27 @@ export function norm(s) {
   const a = s && typeof s === 'object' ? s : {};
   return { m: lvl(a.m), s: lvl(a.s), i: lvl(a.i), lra: lvl(a.lra), tp: pair(a.tp), tpMax: top(a.tpMax), pk: pair(a.pk), corr: fin(a.corr) ? clamp(a.corr, -1, 1) : NaN };
 }
+// the frame path's constants (no allocation per frame): the short-term bar's scale ticks, the spectrum's labels
+const LU_TICKS = Object.freeze([-30, -20, -10]);
+const SPEC_HZ = Object.freeze([[100, '100'], [1000, '1k'], [10000, '10k']]), SPEC_DB = Object.freeze([[-30, '-30 dB'], [-60, '-60 dB'], [-90, '-90 dB'], [-120, '-120 dB']]);
+// a true-peak bar (r: [x, y, w, h]) at db: the zoned fill from the left (zonesFor written out: no array per paint), the −1 line
+function tpBar(g, r, db) {
+  const x = r[0], y = r[1], w = r[2], h = r[3];
+  g.fillStyle = TRACK; g.fillRect(x, y, w, h);
+  if (db > TP_LO) {
+    for (let i = 0; i < TP_ZONES.length; i++) {
+      const Z = TP_ZONES[i];
+      if (db <= Z[0]) break;
+      const x0 = x + w * tpFrac(Z[0]), x1 = x + w * tpFrac(Math.min(Z[1], db, TP_HI));
+      g.fillStyle = Z[2]; g.fillRect(x0, y, x1 - x0, h);
+    }
+  }
+  g.fillStyle = TICK; g.fillRect(Math.round(x + w * tpFrac(TP_RED)), y - 2, 1, h + 4);
+}
+const loud = (a, n, lim) => { for (let i = 0; i < n; i++) if (a[i] > lim || a[i] < -lim) return true; return false; };
+const above = (a, n, lim) => { for (let i = 0; i < n; i++) if (a[i] > lim) return true; return false; };
+// the pulled data has sound (the scope's live / quiet rule)
+const soundIn = (mode, b) => (mode === 'wave' ? loud(b.td, 8192, 1e-9) : mode === 'spectrum' ? above(b.fd, 4096, -129) : loud(b.L, MAX_POINTS, 1e-9) || loud(b.R, MAX_POINTS, 1e-9));
 
 /* ---------------------------------------------------------------------------------------------------- DOM kit */
 const mk = (d, tag, cls, txt) => { const e = d.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
@@ -176,8 +208,11 @@ export function createMasterOut(host, o) {
   let dead = false, live = false, bypass = false, gain = NaN, limited = false, mono = false, menuOpen = false;
   let mode = MODES.includes(O.mode) ? O.mode : 'wave';
   let target = O.target === null ? null : fin(O.target) ? O.target : -14;
-  let cur = norm(null), accTp = [-Infinity, -Infinity], tpLv = [TP_LO, TP_LO], lastTp = -Infinity;
-  let dirty = true, textDirty = true, scopeDirty = true, lastMeter = -Infinity, lastText = -Infinity, lastScope = -Infinity, lastState = '';
+  // the true peaks: acc0 / acc1 the summaries' since the last frame; per channel the peak pA held until pE (fallAt), tpLv the
+  // level at the last frame, tpPaint the level painted (a move under MOVED dB is not repainted); sfG / sfOn: syncSafe's memo
+  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, sfG, sfOn;
+  const pA = new Float64Array(2).fill(-Infinity), pE = new Float64Array(2).fill(-Infinity), tpLv = new Float64Array(2).fill(TP_LO), tpPaint = new Float64Array(2).fill(NaN);
+  let dirty = true, textDirty = true, scopeDirty = true, lastText = -Infinity, lastState = '';
   let bufs = null, binSr = 0, bins = null, warned = false;
   const sig = {}; // the last text written per readout (no read-back of the DOM)
 
@@ -242,8 +277,12 @@ export function createMasterOut(host, o) {
     syncSafe(live ? now() : -Infinity);
   };
   // the safety limiter's button: on / off, and "Limiting −2.5 dB" (amber) while a report is within its hold — written live only
+  // (every frame: nothing is built unless the reading or the switch changed)
   const syncSafe = T => {
-    const g = LS.at(T), txt = fin(g) ? limFull(g) : 'Safety limiter', tip = safeTip(LS.on, g);
+    const g = LS.at(T);
+    if (Object.is(g, sfG) && LS.on === sfOn) return;
+    sfG = g; sfOn = LS.on;
+    const txt = fin(g) ? limFull(g) : 'Safety limiter', tip = safeTip(LS.on, g);
     attr(safeBtn, 'aria-pressed', LS.on); flag(safeBtn, 'act', fin(g));
     if (sig.sf !== txt) { sig.sf = txt; safeBtn.textContent = txt; }
     if (sig.sft !== tip) { sig.sft = tip; safeBtn.title = tip; }
@@ -287,34 +326,42 @@ export function createMasterOut(host, o) {
   control(hold.el, reset, offs); control(ri.el, reset, offs);
 
   /* ---- painting */
-  const paintMeters = T => {
-    const dt = isFinite(lastTp) ? clamp((T - lastTp) / 1000, 0, 1) : 1e3; // (a peak falls TP_REL dB/s)
-    lastTp = T;
-    for (let c = 0; c < 2; c++) tpLv[c] = Math.max(accTp[c], tpLv[c] - TP_REL * dt, TP_LO);
-    accTp = [-Infinity, -Infinity];
+  // the true-peak levels at T: the summaries since the last frame land (a peak at or above the level shown: held PK_HOLD ms
+  // from T), then each falls in time (fallAt); true when a level moved from the one painted
+  const levels = T => {
+    let moved = false;
+    for (let c = 0; c < 2; c++) {
+      const a = c ? acc1 : acc0;
+      let v = fallAt(pA[c], pE[c], T, TP_LO);
+      if (a >= v) { pA[c] = a; pE[c] = T + PK_HOLD; v = a; }
+      tpLv[c] = v;
+      if (!(Math.abs(v - tpPaint[c]) <= MOVED)) moved = true;
+    }
+    acc0 = acc1 = -Infinity;
+    return moved;
+  };
+  const paintMeters = () => {
+    tpPaint[0] = tpLv[0]; tpPaint[1] = tpLv[1];
     const g = fitCanvas(mt, OUT_W, OUT_H);
     if (!g) return;
     g.clearRect(0, 0, OUT_W, OUT_H);
     // short-term loudness: the bar (amber when it passes the target by more than 1 LU), the target tick, a scale
-    let [x, y, w, h] = G.sbar;
+    let r = G.sbar, x = r[0], y = r[1], w = r[2], h = r[3];
     g.fillStyle = TRACK; g.fillRect(x, y, w, h);
     const f = lufsFrac(cur.s);
     if (f > 0) { g.fillStyle = target !== null && cur.s > target + 1 ? AMBER : GREEN; g.fillRect(x, y, w * f, h); }
     g.fillStyle = TICK;
-    for (const l of [-30, -20, -10]) g.fillRect(Math.round(x + w * lufsFrac(l)), y + h, 1, 3);
+    for (let i = 0; i < LU_TICKS.length; i++) g.fillRect(Math.round(x + w * lufsFrac(LU_TICKS[i])), y + h, 1, 3);
     if (target !== null) { g.fillStyle = AMBER; g.fillRect(Math.round(x + w * lufsFrac(target)) - 1, y - 3, 2, h + 6); }
     // true peak L / R: zoned fills, the −1 dBTP line
-    for (const [r, db] of [[G.tpL, tpLv[0]], [G.tpR, tpLv[1]]]) {
-      [x, y, w, h] = r;
-      g.fillStyle = TRACK; g.fillRect(x, y, w, h);
-      for (const z of zonesFor(db)) { const x0 = x + w * tpFrac(z.lo), x1 = x + w * tpFrac(z.hi); g.fillStyle = z.color; g.fillRect(x0, y, x1 - x0, h); }
-      g.fillStyle = TICK; g.fillRect(Math.round(x + w * tpFrac(TP_RED)), y - 2, 1, h + 4);
-    }
-    // correlation: from the centre, red below 0
-    [x, y, w, h] = G.corr;
+    tpBar(g, G.tpL, tpLv[0]); tpBar(g, G.tpR, tpLv[1]);
+    // correlation: from the centre, red below 0 (corrBar written out)
+    r = G.corr; x = r[0]; y = r[1]; w = r[2]; h = r[3];
     g.fillStyle = TRACK; g.fillRect(x, y, w, h);
-    const b = corrBar(cur.corr);
-    if (b) { g.fillStyle = b.bad ? RED : GREEN; const x0 = x + w * (b.from + 1) / 2, x1 = x + w * (b.to + 1) / 2; g.fillRect(x0, y, Math.max(1, x1 - x0), h); }
+    if (fin(cur.corr)) {
+      const k = clamp(cur.corr, -1, 1), x0 = x + w * ((k < 0 ? k : 0) + 1) / 2, x1 = x + w * ((k < 0 ? 0 : k) + 1) / 2;
+      g.fillStyle = k < 0 ? RED : GREEN; g.fillRect(x0, y, Math.max(1, x1 - x0), h);
+    }
     g.fillStyle = TICK; g.fillRect(Math.round(x + w / 2), y - 2, 1, h + 4);
   };
   const writeText = () => {
@@ -351,14 +398,16 @@ export function createMasterOut(host, o) {
       g.fillRect(cx + (r - l) / R2 * k - 0.65, cy - (l + r) / R2 * k - 0.65, 1.3, 1.3);
     }
   };
+  // (IMPL-FR §7.3) the traces on a 1/16 px grid, their points integers under scale(1/16): a double handed to lineTo is boxed
+  // (1 200 a frame were ≈ 29 KB), an integer is not; 1/32 px at most, unseen
   const paintWave = (g, td, sr) => {
     grid(g, false);
-    g.strokeStyle = GREEN; g.lineWidth = 1.6; g.beginPath();
-    const span = Math.max(2, Math.min(2048, Math.round(sr * 0.025)));
+    g.strokeStyle = GREEN; g.save(); g.scale(1 / TRACE_Q, 1 / TRACE_Q); g.lineWidth = 1.6 * TRACE_Q; g.beginPath();
+    const span = Math.max(2, Math.min(2048, Math.round(sr * 0.025))), kx = SW * TRACE_Q / (span - 1);
     let t0 = 0;
     for (let i = 1; i < 4096; i++) if (td[i - 1] <= 0 && td[i] > 0) { t0 = i; break; }
-    for (let i = 0; i < span; i++) { const x = i / (span - 1) * SW, y = SH / 2 - td[t0 + i] * SH * 0.45; i ? g.lineTo(x, y) : g.moveTo(x, y); }
-    g.stroke();
+    for (let i = 0; i < span; i++) { const x = Math.round(i * kx) | 0, y = Math.round((SH / 2 - td[t0 + i] * SH * 0.45) * TRACE_Q) | 0; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.stroke(); g.restore();
   };
   const paintSpectrum = (g, fd, sr) => {
     grid(g, false);
@@ -367,15 +416,13 @@ export function createMasterOut(host, o) {
       binSr = sr; bins = new Uint16Array(SW + 1);
       for (let px = 0; px <= SW; px++) bins[px] = Math.min(n - 1, Math.round(Math.exp(lo + (hi - lo) * px / SW) / ny * n));
     }
-    g.strokeStyle = GREEN; g.lineWidth = 1.6; g.beginPath();
-    for (let px = 0; px <= SW; px++) { const db = Math.max(-130, fd[bins[px]]), y = SH * (-db / 130); px ? g.lineTo(px, y) : g.moveTo(px, y); }
-    g.stroke();
+    g.strokeStyle = GREEN; g.save(); g.scale(1 / TRACE_Q, 1 / TRACE_Q); g.lineWidth = 1.6 * TRACE_Q; g.beginPath();
+    for (let px = 0; px <= SW; px++) { const db = Math.max(-130, fd[bins[px]]), y = Math.round(SH * (-db / 130) * TRACE_Q) | 0; px ? g.lineTo(px * TRACE_Q, y) : g.moveTo(px * TRACE_Q, y); }
+    g.stroke(); g.restore();
     g.fillStyle = 'rgba(124,255,181,0.45)'; g.font = '10px JetBrains Mono, monospace';
-    for (const f of [100, 1000, 10000]) g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), (Math.log(f) - lo) / (hi - lo) * SW + 3, SH - 6);
-    for (const db of [-30, -60, -90, -120]) g.fillText(db + ' dB', 6, SH * (-db / 130) - 3);
+    for (let i = 0; i < SPEC_HZ.length; i++) g.fillText(SPEC_HZ[i][1], (Math.log(SPEC_HZ[i][0]) - lo) / (hi - lo) * SW + 3, SH - 6);
+    for (let i = 0; i < SPEC_DB.length; i++) g.fillText(SPEC_DB[i][1], 6, SH * (-SPEC_DB[i][0] / 130) - 3);
   };
-  const loud = (a, n, lim) => { for (let i = 0; i < n; i++) if (a[i] > lim || a[i] < -lim) return true; return false; };
-  const above = (a, n, lim) => { for (let i = 0; i < n; i++) if (a[i] > lim) return true; return false; };
   // one scope frame: pull the host's data for the mode shown, paint — unless nothing would change (silence stays silence)
   const scopeFrame = () => {
     let sr = 0;
@@ -383,8 +430,7 @@ export function createMasterOut(host, o) {
       if (!bufs) bufs = { td: new Float32Array(8192), fd: new Float32Array(4096), L: new Float32Array(MAX_POINTS), R: new Float32Array(MAX_POINTS) };
       try { sr = +reader(mode, bufs) || 0; } catch (err) { sr = 0; if (!warned) { warned = true; console.error(err); } }
     }
-    const sound = () => (mode === 'wave' ? loud(bufs.td, 8192, 1e-9) : mode === 'spectrum' ? above(bufs.fd, 4096, -129) : loud(bufs.L, MAX_POINTS, 1e-9) || loud(bufs.R, MAX_POINTS, 1e-9));
-    const state = !(sr > 0) ? 'idle' : sound() ? 'live' : 'quiet';
+    const state = !(sr > 0) ? 'idle' : soundIn(mode, bufs) ? 'live' : 'quiet';
     if (!scopeDirty && sc.width > 0 && state !== 'live' && state === lastState) return false; // (a store released at 0 × 0 — wk.releaseCanvases — is painted again)
     lastState = state; scopeDirty = false;
     const g = fitCanvas(sc, SW, SH);
@@ -409,15 +455,17 @@ export function createMasterOut(host, o) {
   function update(s) {
     if (dead) return;
     const n = norm(s);
-    // the held peaks of the interval: a peak between two paints is not lost
-    cur = n; accTp = [Math.max(accTp[0], n.tp[0]), Math.max(accTp[1], n.tp[1])];
+    // the held peaks of the interval: a peak between two frames is not lost (two numbers, no array per summary)
+    cur = n;
+    if (n.tp[0] > acc0) acc0 = n.tp[0];
+    if (n.tp[1] > acc1) acc1 = n.tp[1];
     dirty = textDirty = true;
   }
   // silence at once (the engine went off): every readout "—", the bars empty without waiting for their fall; the controls stay
   function clear() {
     if (dead) return;
-    cur = norm(null); accTp = [-Infinity, -Infinity]; tpLv = [TP_LO, TP_LO]; lastTp = -Infinity;
-    dirty = textDirty = true; lastMeter = lastText = -Infinity;
+    cur = norm(null); acc0 = acc1 = -Infinity; pA.fill(-Infinity); pE.fill(-Infinity); tpLv.fill(TP_LO);
+    dirty = textDirty = true; lastText = -Infinity;
     LS.until = -Infinity; syncSafe(-Infinity);
   }
   function setLive(on) {
@@ -425,15 +473,17 @@ export function createMasterOut(host, o) {
     on = !!on;
     if (on === live) return;
     live = on;
-    if (on) { dirty = textDirty = scopeDirty = true; lastMeter = lastText = lastScope = -Infinity; } else closeMenu(false);
+    if (on) { dirty = textDirty = scopeDirty = true; lastText = -Infinity; } else closeMenu(false);
   }
+  // one frame (the host's frame clock, IMPL-FR §6): the meters when a summary came or a true-peak bar moved, the scope every
+  // frame while it sounds (the goniometer too: the analysers at the cap), the numbers at most every TEXT_MS
   function draw(t) {
     if (dead || !live) return false;
     const T = typeof t === 'number' ? t : now();
     let did = false;
     syncSafe(T); // (the limiter's hold runs out on a frame)
-    if ((dirty || !(mt.width > 0)) && T - lastMeter >= METER_MS) { dirty = false; lastMeter = T; paintMeters(T); did = true; }
-    if ((scopeDirty || reader || !(sc.width > 0)) && T - lastScope >= SCOPE_MS) { lastScope = T; if (scopeFrame()) did = true; }
+    if (levels(T) || dirty || !(mt.width > 0)) { dirty = false; paintMeters(); did = true; }
+    if (scopeDirty || reader || !(sc.width > 0)) { if (scopeFrame()) did = true; }
     if (textDirty && T - lastText >= TEXT_MS) { textDirty = false; lastText = T; writeText(); }
     return did;
   }
@@ -445,7 +495,7 @@ export function createMasterOut(host, o) {
     paintImage(g, L, R, Math.min(MAX_POINTS, L.length | 0, R.length | 0));
     return true;
   }
-  offs.push(onRescale(mt, () => { dirty = scopeDirty = true; lastMeter = lastScope = -Infinity; if (live) draw(); })); // (a zoom end: both canvases at the new density)
+  offs.push(onRescale(mt, () => { dirty = scopeDirty = true; if (live) draw(); })); // (a zoom end: both canvases at the new density)
 
   return {
     el: root,
@@ -463,7 +513,8 @@ export function createMasterOut(host, o) {
     setLive, draw, drawImage, setMode, setTarget,
     mode: () => mode,
     target: () => target,
-    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, mode, target, menu: menuOpen, safe: LS.on, limiting: fin(g), gr: g }; },
+    // (tp: the true-peak levels at the last frame, dBTP)
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, mode, target, menu: menuOpen, safe: LS.on, limiting: fin(g), gr: g, tp: [tpLv[0], tpLv[1]] }; },
     destroy() {
       if (dead) return;
       closeMenu(false); dead = true; live = false;
@@ -474,7 +525,7 @@ export function createMasterOut(host, o) {
 }
 
 /* ---------------------------------------------------------------------------------------------------- the row */
-const BAR_MS = 30, OVER_MS = 800;
+const OVER_MS = 800;
 const chevron = d => {
   const s = d.createElementNS('http://www.w3.org/2000/svg', 'svg'), p = d.createElementNS('http://www.w3.org/2000/svg', 'path');
   s.setAttribute('viewBox', '0 0 10 10'); s.setAttribute('aria-hidden', 'true'); p.setAttribute('d', 'M3.5 1.5 L7 5 L3.5 8.5');
@@ -487,7 +538,10 @@ export function createMasterRow(host, o) {
   const now = typeof O.now === 'function' ? O.now : defaultNow;
   const offs = [];
   let dead = false, live = O.live !== false, bypass = false, gain = NaN, limited = false, mono = false, active = false;
-  let cur = norm(null), accPk = [-Infinity, -Infinity], accTp = -Infinity, lv = [PK_LO, PK_LO], overUntil = 0, lastBar = -Infinity, lastText = -Infinity, textDirty = true;
+  // the peaks: acc0 / acc1 (sample peak) and accTp (true peak) since the last refresh; per bar the peak pA held until pE
+  // (fallAt), lv the level shown, qs its rounded % written; off: the row's frame-clock client while a bar is up (IMPL-FR §6)
+  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, accTp = -Infinity, overUntil = 0, lastText = -Infinity, textDirty = true, off = null, sfG;
+  const pA = new Float64Array(2).fill(-Infinity), pE = new Float64Array(2).fill(-Infinity), lv = new Float64Array(2).fill(PK_LO), qs = new Float64Array(2).fill(NaN);
   const sig = {};
 
   const root = mk(d, 'div', 'cv-mastrow');
@@ -519,8 +573,11 @@ export function createMasterRow(host, o) {
   control(ab, () => { bypass = !bypass; if (!bypass) { gain = NaN; limited = false; } sync(); safe(O.onBypass, bypass); }, offs);
   control(mo, () => { mono = !mono; sync(); safe(O.onMono, mono); }, offs);
   // the indicator: shown (the LUFS number hidden: the row .limiting) while a report is within its hold — written only while live
+  // (every frame while the bars fall: nothing is built unless the reading changed)
   const syncSafe = T => {
     const g = LS.at(T), on = fin(g);
+    if (Object.is(g, sfG)) return;
+    sfG = g;
     if (lim.hidden === on) lim.hidden = !on;
     flag(root, 'limiting', on);
     if (!on) return;
@@ -540,27 +597,41 @@ export function createMasterRow(host, o) {
     syncSafe(live ? now() : -Infinity);
   };
   syncSafe(-Infinity);
+  // the bars at T: the peaks since the last refresh land (at or above the level shown: held PK_HOLD ms from T), each falls in
+  // time (fallAt) — a transform written only when its rounded % moved; the over glow for OVER_MS after an over
   const renderBars = T => {
-    const dt = clamp((T - lastBar) / 1000, 0, 1) || 0, rel = isFinite(lastBar) ? TP_REL * dt : 1e3;
     for (let c = 0; c < 2; c++) {
-      lv[c] = clamp(Math.max(accPk[c], lv[c] - rel), PK_LO, 6);
-      const q = Math.round(pkFrac(lv[c]) * 100), s = 'translateX(' + q + '%)';
-      if (sig['q' + c] !== s) { sig['q' + c] = s; covers[c].style.transform = s; }
+      const a = c ? acc1 : acc0;
+      let v = fallAt(pA[c], pE[c], T, PK_LO);
+      if (a >= v) { pA[c] = a; pE[c] = T + PK_HOLD; v = a; }
+      v = lv[c] = clamp(v, PK_LO, 6);
+      const q = Math.round(pkFrac(v) * 100);
+      if (qs[c] !== q) { qs[c] = q; covers[c].style.transform = 'translateX(' + q + '%)'; }
     }
     if (isOver(accTp)) overUntil = T + OVER_MS;
-    for (const b of bars) flag(b, 'over', T < overUntil);
-    accPk = [-Infinity, -Infinity]; accTp = -Infinity; lastBar = T;
+    for (let i = 0; i < bars.length; i++) flag(bars[i], 'over', T < overUntil);
+    acc0 = acc1 = accTp = -Infinity;
   };
   const renderText = () => {
     const s = fmtLufs(cur.s);
     if (sig.s !== s) { sig.s = s; lval.textContent = s; }
     for (let c = 0; c < 2; c++) { attr(bars[c], 'aria-valuenow', Math.round(lv[c])); attr(bars[c], 'aria-valuetext', lv[c] <= PK_LO ? 'silent' : fmtDb(lv[c]) + ' dB'); }
   };
+  // a refresh (a summary, or a frame of the clock while a bar is up): the bars, the text at most every TEXT_MS, the limiter
   const run = () => {
     const T = now();
-    if (T - lastBar >= BAR_MS) renderBars(T);
+    renderBars(T);
     if (textDirty && T - lastText >= TEXT_MS) { textDirty = false; lastText = T; renderText(); }
     syncSafe(T); // (the limiter's hold runs out on a refresh)
+    clockIf(T);
+  };
+  // (IMPL-FR §6) on the frame clock while live and a bar is above the floor (held or falling) or the over glow shows: added
+  // on the first rise, gone when both bars rest (the clock then asks no frame for the row)
+  const CL = { name: 'master-row', live: () => live && !dead, fn: () => run() };
+  const clockIf = T => {
+    const want = live && !dead && (lv[0] > PK_LO || lv[1] > PK_LO || T < overUntil);
+    if (want && !off) off = clock.add(CL);
+    else if (!want && off) { const f = off; off = null; f(); }
   };
 
   return {
@@ -568,7 +639,11 @@ export function createMasterRow(host, o) {
     update(s) {
       if (dead) return;
       const n = norm(s);
-      cur = n; accPk = [Math.max(accPk[0], n.pk[0]), Math.max(accPk[1], n.pk[1])]; accTp = Math.max(accTp, n.tp[0], n.tp[1]);
+      cur = n;
+      if (n.pk[0] > acc0) acc0 = n.pk[0];
+      if (n.pk[1] > acc1) acc1 = n.pk[1];
+      if (n.tp[0] > accTp) accTp = n.tp[0];
+      if (n.tp[1] > accTp) accTp = n.tp[1];
       textDirty = true;
       if (live) run();
     },
@@ -582,8 +657,8 @@ export function createMasterRow(host, o) {
     // silence at once (the engine went off): the LUFS number "—", both bars empty, the over glow gone; nothing is written while not live
     clear() {
       if (dead) return;
-      cur = norm(null); accPk = [-Infinity, -Infinity]; accTp = -Infinity; lv = [PK_LO, PK_LO]; overUntil = 0;
-      lastBar = lastText = -Infinity; textDirty = true; LS.until = -Infinity;
+      cur = norm(null); acc0 = acc1 = accTp = -Infinity; pA.fill(-Infinity); pE.fill(-Infinity); lv.fill(PK_LO); overUntil = 0;
+      lastText = -Infinity; textDirty = true; LS.until = -Infinity;
       if (live) run(); else syncSafe(-Infinity);
     },
     setActive(on) { if (dead) return; active = !!on; sync(); },
@@ -595,12 +670,14 @@ export function createMasterRow(host, o) {
       on = !!on;
       if (on === live) return;
       live = on;
-      if (on) { lastText = -Infinity; textDirty = true; run(); }
+      if (on) { lastText = -Infinity; textDirty = true; run(); } else clockIf(now());
     },
-    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, active, safe: LS.on, limiting: fin(g), gr: g }; },
+    // (pk: the bars' levels at the last refresh, dBFS)
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, active, safe: LS.on, limiting: fin(g), gr: g, pk: [lv[0], lv[1]] }; },
     destroy() {
       if (dead) return;
       dead = true; live = false;
+      clockIf(-Infinity);
       for (const f of offs.splice(0)) { try { f(); } catch (err) { console.error(err); } }
       if (root.parentNode) root.parentNode.removeChild(root);
     },

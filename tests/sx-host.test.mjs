@@ -516,6 +516,162 @@ test('(MM) the MONO lock is the option\'s alone — no lock, lock: {} / { mono: 
   assert.equal(H.HOST_OPTS.monoLock, undefined, 'HOST_OPTS (a Serum\'s own host) unchanged: the lock is a slot host\'s option');
 });
 
+/* ================================================================ IMPL-FR Cut A: the rate class, numeric keys (§3 B3, §7.3) */
+// the frames of a display at T (ms): the rAF callbacks queued before it, then the frame's own work
+const frameAt = (doc, T) => { for (const f of doc.defaultView.raf.splice(0)) f(T); };
+test('IMPL-FR §3 B3: canvas(cls, key, draw, { maxHz }) — a key change inside the period waits for its end (one rAF, re-armed until due, then drawn with the newest key: nothing lost, nothing armed at rest); without maxHz every change draws; a 60 class is inert on a 60 Hz display; a re-measured canvas draws at once', () => {
+  let T = 1000;
+  const doc = D.fresh(), X = H.createHost(mkHost(), { doc, now: () => T });
+  WK.clock._reset(); WK.clock.config({ display: 120 });
+  try {
+    let a = 0, b = 0;
+    const ta = [], va = [], tb = [];
+    const heavy = X.canvas('t-heavy', () => a, () => { ta.push(T); va.push(a); }, { maxHz: 60 });
+    const light = X.canvas('t-light', () => b, () => { tb.push(T); });
+    assert.deepEqual([heavy.maxHz, light.maxHz || 0], [60, 0]);
+    frameAt(doc, T);
+    X.paintCanvases();
+    assert.deepEqual([va, tb.length], [[0], 1]);
+    // 120 Hz frames with a key change in each: the 60 class every second frame (the change of the frame between waits one
+    // rAF and is drawn with the newer key), the plain canvas every frame
+    for (let f = 1; f <= 24; f++) { T += 1000 / 120; frameAt(doc, T); a = b = f; X.paintCanvases(); }
+    assert.equal(tb.length, 25);
+    assert.equal(ta.length, 13);
+    for (let i = 1; i < ta.length; i++) assert.ok(ta[i] - ta[i - 1] >= 1000 / 60 - 1e-6, 'drawn ' + (ta[i] - ta[i - 1]) + ' ms apart');
+    assert.ok(va.every((v, i) => !i || v > va[i - 1]), 'each draw has a newer key');
+    // the changes stop: the last one is drawn at the period's end, then nothing stays armed
+    T += 1000 / 120; frameAt(doc, T);
+    T += 1000 / 120; frameAt(doc, T);
+    assert.equal(va.at(-1), 24);
+    assert.equal(doc.defaultView.raf.length, 0, 'no rAF at rest');
+    // a second change inside one period arms one rAF only
+    T += 1; a = 25; X.paintCanvases(); a = 26; X.paintCanvases();
+    assert.equal(doc.defaultView.raf.length, 1);
+    // re-measured (a resize: its store was cleared) → drawn at once, whatever the period
+    T += 1000 / 120; frameAt(doc, T);
+    const n0 = ta.length;
+    T += 1; a = 27; heavy.sized = false; X.paintCanvases();
+    assert.deepEqual([ta.length, va.at(-1)], [n0 + 1, 27]);
+    // a 60 Hz display: a 60 class draws every frame (inert)
+    WK.clock.config({ display: 60 });
+    frameAt(doc, T += 50);
+    const n1 = ta.length;
+    for (let f = 1; f <= 6; f++) { T += 1000 / 60; frameAt(doc, T); a = 100 + f; X.paintCanvases(); }
+    assert.equal(ta.length, n1 + 6);
+    // the clock not measured yet (no client ran: its 60 default) on a 120 Hz display: still every second frame
+    WK.clock._reset();
+    frameAt(doc, T += 50);
+    const n2 = ta.length;
+    for (let f = 1; f <= 24; f++) { T += 1000 / 120; frameAt(doc, T); a = 200 + f; X.paintCanvases(); }
+    assert.equal(ta.length - n2, 12);
+  } finally { WK.clock._reset(); X.destroy(); }
+});
+
+test('IMPL-FR §3 B3 (review 1, P3-3; lead: the 60 minimum): a 60 class draws at the display\'s multiple nearest 60 from above — never below 60 a second (82.5: a 165 Hz display at the 120 setting; 72: Medium on a 144 Hz one; 144 → 72; 240 → 60), never every frame of a fast one', () => {
+  for (const [Dd, cap, E, want] of [[165, 120, 82.5, 82.5], [144, 60, 72, 72], [144, 120, 144, 72], [120, 120, 120, 60], [100, Infinity, 100, 100], [240, Infinity, 240, 60], [165, Infinity, 165, 82.5]]) {
+    let T = 1000;
+    const doc = D.fresh(), X = H.createHost(mkHost(), { doc, now: () => T });
+    WK.clock._reset(); WK.clock.config({ display: Dd }); WK.clock.setCap(cap);
+    try {
+      assert.equal(WK.clock.eff(), E, 'the effective rate');
+      let a = 0;
+      const ta = [];
+      X.canvas('t-heavy', () => a, () => { ta.push(T); }, { maxHz: 60 });
+      frameAt(doc, T); X.paintCanvases();
+      // the display's frames for 2 s, a key change on each (posts faster than any display): drawn at ≥ 60 / s, < 120 / s
+      for (let f = 1; f <= 2 * Dd; f++) { T += 1000 / Dd; frameAt(doc, T); a = f; X.paintCanvases(); }
+      const gaps = ta.slice(1).map((t, i) => t - ta[i]), rate = (ta.length - 1) / ((ta.at(-1) - ta[0]) / 1000);
+      assert.ok(gaps.every(g => g <= 1000 / 60 + 1e-6 && g > 1000 / 120 + 1e-6), `D ${Dd} cap ${cap}: drawn ${Math.min(...gaps).toFixed(2)}–${Math.max(...gaps).toFixed(2)} ms apart`);
+      assert.ok(Math.abs(rate - want) < 1e-6, `D ${Dd} cap ${cap}: ${rate} a second, want ${want}`);
+    } finally { WK.clock._reset(); X.destroy(); }
+  }
+});
+
+test('IMPL-FR §3 B3 (review 2, P3-2): the rate class is timed by the frame\'s rAF timestamp, not performance.now() — a snapshot per frame on a 60 Hz display holds 60 draws a second (54 when the paint read the clock wherever in its frame it ran)', () => {
+  let T = 1000, k = 0;
+  const JIT = [0, 7, 1, 6, 0, 8, 2, 5], doc = D.fresh(), X = H.createHost(mkHost(), { doc, now: () => T + JIT[k++ % JIT.length] }); // (performance.now: the frame's start + where its callback ran)
+  WK.clock._reset(); WK.clock.config({ display: 60 });
+  try {
+    let a = 0;
+    const ta = [], tl = [];
+    X.canvas('t-heavy', () => a, () => { ta.push(T); }, { maxHz: 60 });
+    X.canvas('t-light', () => a, () => { tl.push(T); });
+    frameAt(doc, T); X.paintCanvases();
+    // a snapshot each frame (Cut B's rate; the harness's per-frame feed): painted in the snapshot's rAF
+    for (let f = 1; f <= 120; f++) { a = f; X.setSnapshot({ s: { notes: 0 } }); T += 1000 / 60; frameAt(doc, T); }
+    assert.equal(tl.length - 1, 120, 'the plain canvas: every frame');
+    assert.equal(ta.length - 1, 120, 'the 60 class on a 60 Hz display: every frame, whatever the jitter inside it (' + (ta.length - 1) + ' of 120)');
+    // a 120 Hz display: every second frame, exactly
+    WK.clock.config({ display: 120 });
+    frameAt(doc, T += 50);
+    const n0 = ta.length;
+    for (let f = 1; f <= 120; f++) { a = 1000 + f; X.setSnapshot({ s: { notes: 0 } }); T += 1000 / 120; frameAt(doc, T); }
+    assert.equal(ta.length - n0, 60, 'a 120 Hz display: 60 of 120 frames');
+  } finally { WK.clock._reset(); X.destroy(); }
+});
+
+test('IMPL-FR §7.3: keyN(out) — the key as numbers into the canvas\' own buffer (two, swapped: no array per paint), compared element-wise (NaN equals NaN; a count change differs); key() is never called; a throwing keyN redraws', () => {
+  const doc = D.fresh(), X = H.createHost(mkHost(), { doc });
+  const kk = [1, 'a', NaN];
+  let nk = 0, keys = 0;
+  const num = X.canvas('t-num', () => { keys++; return 'x'; }, () => { nk++; }, { keyN: k => { for (let i = 0; i < kk.length; i++) k[i] = kk[i]; return kk.length; } });
+  X.paintCanvases();
+  X.paintCanvases();
+  assert.equal(nk, 1);
+  const bufs = new Set([num.kb, num.kp]);
+  assert.equal(bufs.size, 2);
+  kk[1] = 'b'; X.paintCanvases();
+  kk.push(3); X.paintCanvases();
+  kk.pop(); X.paintCanvases();
+  kk[0] = 1; X.paintCanvases();
+  assert.equal(nk, 4);
+  for (let i = 0; i < 5; i++) X.paintCanvases();
+  assert.equal(nk, 4);
+  assert.ok(bufs.has(num.kb) && bufs.has(num.kp), 'the same two buffers');
+  assert.equal(keys, 0);
+  let bad = 0;
+  X.canvas('t-bad', () => 'k', () => { bad++; }, { keyN: () => { throw new Error('no key'); } });
+  X.paintCanvases(); X.paintCanvases();
+  assert.equal(bad, 2);
+  X.destroy();
+});
+
+test('IMPL-FR §3 B3 (§13 P1-2): the heavy displays declare maxHz 60 and a keyN — the wavetable display, the filter response (its spectrum views too), the spectral filter; playheads and overviews none — and an LFO on cutoff posted at 120 Hz redraws the filter display at ≤ 60 / s', async () => {
+  let T = 1e6; // (review 2, P3-2: a frame's paint is timed by its rAF stamp — the mount's flush stamps frames with the stub DOM's
+  // event counter (≈ 1 000 up), so this clock starts above it: one time base for the frames, as a browser's)
+  const { doc, box, X, s } = parts();
+  X.tNow = () => T;
+  WK.clock._reset(); WK.clock.config({ display: 120 });
+  try {
+    const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box), N = M.mountPart(X, 'noise', box);
+    await flush(doc);
+    const cvOf = (V, re) => V.page.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
+    const rate = cv => [cv.maxHz || 0, typeof cv.keyN === 'function'];
+    assert.deepEqual(rate(cvOf(A, /^OSC A wavetable display/)), [60, true]);
+    assert.deepEqual(rate(cvOf(F, /^FILTER 1 display/)), [60, true]);
+    assert.deepEqual(rate(cvOf(N, /^Noise overview/)), [0, false]);
+    s().osc[0].type = 'spec';
+    X.refresh();
+    await flush(doc);
+    assert.deepEqual(rate(cvOf(A, /^OSC A spectral filter/)), [60, true]);
+    const spg = A.page.canvases.filter(cv => cv.el.getAttribute('data-oscdisp') === '0' && !cv.maxHz);
+    assert.ok(spg.length >= 1, 'the sample / spectrogram displays (a playhead) keep every change');
+    // an LFO on FILTER 1 cutoff, posted at 120 Hz while a note sounds: the display redraws at ≤ 60 / s
+    const disp = cvOf(F, /^FILTER 1 display/), g = disp.el.getContext('2d'), clears = () => g.calls.filter(c => c[0] === 'clearRect').length;
+    const eff = new Float32Array(core.NSV + 64), vi = core.vi('f.cutoff');
+    frameAt(doc, T);
+    const c0 = clears();
+    for (let f = 1; f <= 60; f++) {
+      T += 1000 / 120;
+      eff[vi] = 0.3 + 0.4 * Math.sin(f / 5);
+      X.setSnapshot({ s: { notes: 1, eff } });
+      frameAt(doc, T);
+    }
+    const n = clears() - c0;
+    assert.ok(n >= 28 && n <= 31, n + ' redraws in 0.5 s of 120 Hz posts');
+  } finally { WK.clock._reset(); X.destroy(); }
+});
+
 /* ================================================================ budgets, VOICE, CLIP twins */
 test('budgets (IMPL-3 §1.4): one Serum-faithful modulator ≤ 160 elements and ≤ 2 canvases', async () => {
   for (const kind of ['lfo', 'env', 'macro', 'chaos']) {

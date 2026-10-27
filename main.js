@@ -29,7 +29,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key)
+import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -990,7 +990,8 @@ function whenReady(ms) {
   });
 }
 // the stall meter (audioclock meterSample): every 5 ms while the engine starts (stalls in script evaluation and the
-// processor constructors), then every animation frame (frame()); the drift baseline is taken 2 s after the start
+// processor constructors), then every animation frame (frameEvery: the frame clock's every-rAF client); the drift baseline is
+// taken 2 s after the start
 function clockSample(c = ctx) {
   if (!c || !AC.meterSample(CLK, performance.now() / 1000, c.currentTime, c.state === 'running')) return;
   if (ctx) rateText();
@@ -1045,7 +1046,7 @@ async function powerOn() {
       // image) off MASTER's output — what is exported, pre-Mono, pre-Volume. The metronome stays outside the mix (into the limiter)
       mnode = makeMaster(c);
       mono = c.createGain(); master = c.createGain(); master.gain.value = settings.master;
-      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
+      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = anTau(AN_F0);
       // the safety limiter ('synth-safe'): the last stage — after the Volume (it can't push the output over) and the metronome, so
       // the browser never hard-clips their sum; under −1 dBFS an exact copy L − 1 frames late (the clock allows for it: safePipe)
       safeN = makeSafe(c);
@@ -1101,6 +1102,14 @@ function powerOff() {
   powerUI();
   return c.close().catch(() => {});
 }
+// (IMPL-FR §7.2) the analysers' smoothing in time. Chromium (verified in Chrome for Testing: a step's settling ratio per read is 0.75 at
+// reads every 8, 16 and 32 ms, offline and live) and WebKit [R?] smooth once per read, so the same look at another read rate needs
+// τ = τ0 ^ (f0 / f), f the frame clock's rate in force and f0 each analyser's OWN base rate today: the master's 8192 `an` was read
+// ≈ 30 times a second (mRead), the OUT scope's per-track `sc` once a frame of a 60 Hz display. Set when the rate changes and on every new analyser
+const AN_TAU = 0.75, AN_F0 = 30, SC_F0 = 60;
+const anTau = f0 => AN_TAU ** (f0 / Math.max(1, fpsClock.eff()));
+function anSmooth() { if (an) an.smoothingTimeConstant = anTau(AN_F0); for (const N of nodes.values()) if (N.sc) N.sc.smoothingTimeConstant = anTau(SC_F0); }
+fpsClock.onChange(anSmooth);
 function makeNode(tr) {
   // stage 1e: a track of a graph shape gets a graphed node, built from processorOptions graph / patches / chains / seqs
   // (IMPL-1e §2.5; offline renders the same, renderOffline); a canonical one today's options
@@ -1119,7 +1128,7 @@ function makeNode(tr) {
   });
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser(), sc = ctx.createAnalyser();
   a.fftSize = 512; // (the meter: the last 512 samples — a bigger window would hand it the oldest ones)
-  sc.fftSize = 8192; sc.smoothingTimeConstant = 0.75; // (the OUT scope's own, the master's old size: scopeSource; the rack is in the node, so this is the chain after its FX, fader and pan)
+  sc.fftSize = 8192; sc.smoothingTimeConstant = anTau(SC_F0); // (the OUT scope's own, the master's old size: scopeSource; the rack is in the node, so this is the chain after its FX, fader and pan)
   node.connect(gain); gain.connect(pan); pan.connect(mnode.node); pan.connect(a); pan.connect(sc); // ((M) the sum: MASTER's input
   const N0 = { node, gain, pan, an: a, sc, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined,
     scIn: new Map() }; // ((SC §1.1) the key edges into this node: source id → { s: its node, kg: the edge's GainNode } — never `sc`, the OUT scope's analyser)
@@ -1690,6 +1699,7 @@ function rateLabels() {
   }
 }
 let statT = 0, hotT = 0, sndT = -Infinity; // sndT: the last report of a track that sounded ({t: 'stats'} snd: the safeguard's arm)
+let cpuPct = NaN; // (IMPL-FR review 2, P2-2) the DSP load shown, %: held while the load stays within 1.5 points of it
 function statsText() {
   const now = performance.now();
   if (now - statT < 200 || !ctx || ctx.state !== 'running') return;
@@ -1697,10 +1707,13 @@ function statsText() {
   let load = 0, voices = 0;
   for (const N of nodes.values()) { load += N.load; voices += N.voices; }
   if (mnode) load += mnode.load; // ((M, §2.1) MASTER's too: the safeguard's sum — its levers stay the tracks')
-  const pct = Math.round(load * 100), el = $('#cpu');
-  el.textContent = `DSP load ${pct}% · ${voices} voice${voices === 1 ? '' : 's'} · ${nodes.size} track${nodes.size === 1 ? '' : 's'}`;
-  el.classList.toggle('warn', pct > 75);
-  if (pct > 75) el.textContent += ' — lower oversampling';
+  // (review 2, P2-2) the figure moves when the load leaves it by more than 1.5 points (a load jittering across a rounding edge
+  // flipped it 4× a second idle) and the text is written only when it changed: each write re-laid the page out
+  if (!(Math.abs(load * 100 - cpuPct) <= 1.5 + 1e-9)) cpuPct = Math.round(load * 100);
+  const pct = cpuPct, el = $('#cpu');
+  const txt = `DSP load ${pct}% · ${voices} voice${voices === 1 ? '' : 's'} · ${nodes.size} track${nodes.size === 1 ? '' : 's'}` + (pct > 75 ? ' — lower oversampling' : '');
+  if (el.textContent !== txt) el.textContent = txt;
+  if (el.classList.contains('warn') !== pct > 75) el.classList.toggle('warn', pct > 75);
   // safeguard: summed load above 85% for 2 s (all tracks share one audio thread) -> drop oversampling one step — armed only while
   // an instrument sounds or did within 2.5 s (review #9: the engine's 2 s quiet rule, §6.4, plus a report: the tail right after
   // the playing, staccato gaps). Its levers lower what renders; in silence every instrument is skipped and the load is the racks'
@@ -2669,7 +2682,7 @@ const DRUM = cvDrum.drumHost({
   send: (x, D, S0, at) => drumSend(x, null, at, S0),
   play: () => { if (!T.playing) play(); }, stop: () => { if (T.playing) stop(); },
   playing: () => T.playing, bpm: () => project.bpm, setBpm: (v, ph) => drumSetBpm(v, ph),
-  heard: ts => (ctx && ctx !== holdCtx ? outFrame(ts) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000), barTicks: () => S.barTicks(project),
+  heard: ts => (ctx && ctx !== holdCtx ? (ts == null ? heardFrame() : outFrame(ts)) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000), barTicks: () => S.barTicks(project), // ((IMPL-FR review 2, P3-3) the lamps' pump: the frame's shared heard frame — no getOutputTimestamp of its own a frame; a press's ts: its own)
   noteOn: (x, n, v, ts) => noteOn(n, v, 0, ts), noteOff: (x, n, ts) => noteOff(n, 0, ts),
   sel: x => !!x && trOf(x).id === project.selTrack,
   notice: (text, ms, onTap) => { if (onTap) noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); onTap(); }); notice(text, ms); },
@@ -3867,6 +3880,7 @@ function sxHost(t0, dv) {
     tuningFile: () => tuningFile(V().vals.s.global.tun),
     metronome: on => { project.metronome.on = !!on; transportUI(); persist(); },
     latency: () => outLatency(), // the playhead's output delay (audioclock.js + the Latency setting): clip records line up with it
+    heardFrame: () => heardFrame(), heardTick: () => heardTickNow(), fps: () => wkClock.eff(), // ((IMPL-FR §10.1) the frame's shared heard frame / song tick; the paint rate)
     qualityChosen: () => liftCaps(),
     storage: hostStore,
     notify: txt => notice(txt, 3500),
@@ -3902,6 +3916,7 @@ function fxHost(t0, rec = fxRecOf(t0.id, fxKeyOf(t0)) || fxPanelRec()) { // (R6:
     notify: txt => notice(txt, 3500),
     extraRows: destId => { const k = sx(); return k ? sxExtra(T(), k, destId) : []; }, // ((2b U5) a Serum's own FX: the canvas cables on its knobs — the rack's control menu names them; modHalos paints them)
     scSources: () => scSources(id), // ((SC §6.1) the Ducker's TRIGGER / the compressor's key menus: this track is self
+    heardFrame: () => heardFrame(), heardTick: () => heardTickNow(), fps: () => wkClock.eff(), // ((IMPL-FR §10.1)
   };
 }
 
@@ -4538,7 +4553,7 @@ function drumsErr(t) { // (engine: dr-808.js or dr-seq.js missing in the worklet
 function renderHeads() {
   link303Chk(); // ((7b) the project's TB-303s may have changed — a track added, deleted, replaced, an undo, a load: SYNC 303s)
   const el = $('#heads');
-  el.innerHTML = ''; voiceOpt.clear();
+  el.innerHTML = ''; voiceOpt.clear(); hmRec.clear(); // ((IMPL-FR) the head meters' memo: rebuilt with the rows)
   el.append(h('div', 'hruler', `${project.tracks.length} track${project.tracks.length === 1 ? '' : 's'}`));
   project.tracks.forEach((t, i) => {
     const row = h('div', 'head' + (t.id === project.selTrack ? ' sel' : ''));
@@ -4926,11 +4941,15 @@ function transportUI() {
   $('#tInQ').setAttribute('aria-pressed', project.rec.inputQuantize ? 'true' : 'false');
   document.body.classList.toggle('recording', T.rec);
 }
+// (IMPL-FR §3 A1) each text written only when it changed (posUI runs every frame while playing; the m:ss.mmm one moves almost
+// every frame — the recorded exception)
+let posBBT = null, posTime = null;
 function posUI(t = curTick()) {
   if (!T.playing) { roll && roll.setPlayhead(t, false, false); arr && arr.setPlayhead(t); }
-  $('#tBBT').textContent = S.fmtBBT(project, Math.round(t));
-  const s = S.ticksToSec(project, Math.max(0, t));
-  $('#tTime').textContent = `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`;
+  const b = S.fmtBBT(project, Math.round(t));
+  if (b !== posBBT) { posBBT = b; $('#tBBT').textContent = b; }
+  const s = S.ticksToSec(project, Math.max(0, t)), m = `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`;
+  if (m !== posTime) { posTime = m; $('#tTime').textContent = m; }
 }
 function projectUI() {
   $('#tBpm').value = project.bpm; $('#tSigN').value = project.sig[0]; $('#tSigD').value = project.sig[1]; $('#tBars').value = project.bars;
@@ -5792,76 +5811,147 @@ function scopeSource() {
   const id = cvView ? cvView.trackId : (trk() || {}).id, N = id && nodes.get(id);
   return N ? N.sc : null;
 }
+// (IMPL-FR §3) the OUT scope's box: kept by a ResizeObserver (0 × 0 while it is not rendered — a hidden tab, a folded module),
+// so a frame reads no layout; without one (node) read each frame as before
+let scopeEl = null, scopeRO = null, scopeW = 0, scopeH = 0, scopeBinW = -1, scopeBinSr = 0, scopeBins = null;
+function scopeBox(cv) {
+  if (cv !== scopeEl) {
+    if (scopeRO) scopeRO.disconnect();
+    scopeEl = cv; scopeRO = null; scopeW = scopeH = 0;
+    const RO = globalThis.ResizeObserver;
+    if (typeof RO === 'function') { scopeRO = new RO(() => { scopeW = cv.clientWidth; scopeH = cv.clientHeight; }); scopeRO.observe(cv); }
+  }
+  if (!scopeRO) { if (!cv.offsetParent) return false; scopeW = cv.clientWidth; scopeH = cv.clientHeight; }
+  return scopeW > 0 && scopeH > 0;
+}
+const SCOPE_HZ = [[100, '100'], [1000, '1k'], [10000, '10k']], SCOPE_DB = [[-30, '-30 dB'], [-60, '-60 dB'], [-90, '-90 dB'], [-120, '-120 dB']];
+const TRACE_Q = 16; // (the live traces' grid: 1/16 px, drawn in integers — no boxed double per point)
+// (IMPL-FR review 2, P3-4: master-ui's idle rule) a silent scope's picture — the flat line, no source or nothing above the floor
+// — is drawn once and then left: nothing is drawn again until there is signal or the still picture would differ (its canvas,
+// size, store, source, mode); the scope not live forgets it (drawn once again when it is back)
+let scopeStill = false;
+const scopeK = { cv: null, W: 0, H: 0, sw: 0, sh: 0, A: null, m: '' };
 function drawScope() {
   if (cvMaster) return; // ((M, lane U) the master OUT owns its scope: the shared one is not mounted there
-  const cv = $('#scope');
-  if (!cv.offsetParent || (cvView && !cvView.live(cvModule.ID.out))) return; // (canvas: only while OUT is live — on screen, not folded)
+  const cv = scopeEl && scopeEl.isConnected ? scopeEl : $('#scope');
+  if (!cv || !scopeBox(cv) || (cvView && !cvView.live(cvModule.ID.out))) { scopeStill = false; return; } // (canvas: only while OUT is live — on screen, not folded)
+  const W = scopeW, H = scopeH, A = scopeSource(), wave = scopeMode === 'wave';
+  // the data first: silence (every drawn sample 0, every drawn bin at the −130 dB floor) is a still picture
+  let quiet = !A, span = 0, kx = 0, t0 = 0, ny = 0, lo = 0, hi = 0;
+  if (A && wave) {
+    A.getFloatTimeDomainData(td);
+    span = Math.min(2048, Math.round(A.context.sampleRate * 0.025)); kx = W * TRACE_Q / (span - 1);
+    for (let i = 1; i < 4096; i++) if (td[i - 1] <= 0 && td[i] > 0) { t0 = i; break; }
+    quiet = true;
+    for (let i = 0; i < span; i++) { const v = td[t0 + i]; if (v > 1e-9 || v < -1e-9) { quiet = false; break; } }
+  } else if (A) {
+    A.getFloatFrequencyData(fd);
+    const n = fd.length;
+    ny = A.context.sampleRate / 2; lo = Math.log(20); hi = Math.log(Math.min(ny, 24000));
+    if (scopeBinW !== W || scopeBinSr !== ny || !scopeBins) { // (the pixel → bin table: once per width and rate, not per frame)
+      scopeBinW = W; scopeBinSr = ny; scopeBins = new Uint16Array(Math.floor(W) + 1);
+      for (let px = 0; px <= W; px += 1) scopeBins[px] = Math.min(n - 1, Math.round(Math.exp(lo + (hi - lo) * px / W) / ny * n));
+    }
+    quiet = true;
+    for (let px = 0; px <= W; px += 1) if (fd[scopeBins[px]] > -130) { quiet = false; break; }
+  }
   // the store through the kit (wk.fitCanvas): dpr capped at 2 and, in the OUT module, the camera's zoom (clamp(dpr·k,
   // 0.5, 2), SPEC §4.4): sharp at 200 %, no full-size store per frame at 50 %. The context draws in CSS px
-  const W = cv.clientWidth, H = cv.clientHeight;
+  const K = scopeK, sw = cv.width, sh = cv.height;
   const g = fitCanvas(cv, W, H);
   if (!g) return;
+  if (quiet && scopeStill && K.cv === cv && K.W === W && K.H === H && K.sw === sw && K.sh === sh && cv.width === sw && cv.height === sh && K.A === A && K.m === scopeMode) return;
+  scopeStill = quiet; K.cv = cv; K.W = W; K.H = H; K.sw = cv.width; K.sh = cv.height; K.A = A; K.m = scopeMode;
   g.fillStyle = '#07090a'; g.fillRect(0, 0, W, H);
   g.strokeStyle = 'rgba(124,255,181,0.07)'; g.lineWidth = 1;
   for (let i = 1; i < 10; i++) { const x = Math.round(W * i / 10) + 0.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
   for (let i = 1; i < 6; i++) { const y = Math.round(H * i / 6) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
   g.strokeStyle = '#7cffb5'; g.lineWidth = 1.6; g.shadowColor = 'rgba(124,255,181,0.6)'; g.shadowBlur = 6;
   g.beginPath();
-  const A = scopeSource();
   if (!A) { g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke(); g.shadowBlur = 0; return; }
-  if (scopeMode === 'wave') {
-    A.getFloatTimeDomainData(td);
-    const span = Math.min(2048, Math.round(A.context.sampleRate * 0.025));
-    let t0 = 0;
-    for (let i = 1; i < 4096; i++) if (td[i - 1] <= 0 && td[i] > 0) { t0 = i; break; }
+  // (IMPL-FR §7.3) the trace on a 1/16 px grid, its points integers under scale(1/16): a double handed to lineTo is boxed (a
+  // heap number each — 1 200 points a frame were ≈ 29 KB, 1.7 MB/s at 60 fps), an integer is not; 1/32 px at most, unseen
+  g.save(); g.scale(1 / TRACE_Q, 1 / TRACE_Q); g.lineWidth = 1.6 * TRACE_Q;
+  if (wave) {
     for (let i = 0; i < span; i++) {
-      const x = i / (span - 1) * W, y = H / 2 - td[t0 + i] * H * 0.45;
+      const x = Math.round(i * kx) | 0, y = Math.round((H / 2 - td[t0 + i] * H * 0.45) * TRACE_Q) | 0;
       i ? g.lineTo(x, y) : g.moveTo(x, y);
     }
   } else {
-    A.getFloatFrequencyData(fd);
-    const ny = A.context.sampleRate / 2, n = fd.length, lo = Math.log(20), hi = Math.log(Math.min(ny, 24000));
     for (let px = 0; px <= W; px += 1) {
-      const f = Math.exp(lo + (hi - lo) * px / W), bin = Math.min(n - 1, Math.round(f / ny * n));
-      const db = Math.max(-130, fd[bin]);
-      const y = H * (-db / 130);
-      px ? g.lineTo(px, y) : g.moveTo(px, y);
+      const db = Math.max(-130, fd[scopeBins[px]]);
+      const y = Math.round(H * (-db / 130) * TRACE_Q) | 0;
+      px ? g.lineTo(px * TRACE_Q, y) : g.moveTo(px * TRACE_Q, y);
     }
-    g.stroke(); g.shadowBlur = 0;
+    g.stroke(); g.restore(); g.shadowBlur = 0;
     g.fillStyle = 'rgba(124,255,181,0.45)'; g.font = '10px JetBrains Mono, monospace';
-    for (const f of [100, 1000, 10000]) { const x = (Math.log(f) - lo) / (hi - lo) * W; g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), x + 3, H - 6); }
-    for (const d of [-30, -60, -90, -120]) g.fillText(d + ' dB', 6, H * (-d / 130) - 3);
+    for (let i = 0; i < SCOPE_HZ.length; i++) { const x = (Math.log(SCOPE_HZ[i][0]) - lo) / (hi - lo) * W; g.fillText(SCOPE_HZ[i][1], x + 3, H - 6); }
+    for (let i = 0; i < SCOPE_DB.length; i++) g.fillText(SCOPE_DB[i][1], 6, H * (-SCOPE_DB[i][0] / 130) - 3);
     return;
   }
-  g.stroke(); g.shadowBlur = 0;
+  g.stroke(); g.restore(); g.shadowBlur = 0;
 }
 
 /* ----------------------------------------------------- animation loop */
-function frame() {
-  requestAnimationFrame(frame);
-  if (ctx && !meterT) clockSample(ctx); // (the stall meter; its 5 ms timer while the engine starts)
+// (IMPL-FR §3 A1) the page's frame loop: two clients of the kit's frame clock (wk.clock — one rAF for every animated part):
+// frameEvery on every rAF, ungated (the stall meter: its jitter window is the rAF interval; the frame's count), and frameTick
+// (essential: reduced motion does not slow it) at the clock's global cap — the playhead and transport text while playing,
+// the head meters, the OUT scope, the master OUT. Both are added at boot (frameEvery first: the module's last line)
+let frameN = 0, hfN = -1, hfF = NaN, hfAt = -Infinity;
+function frameEvery() { frameN++; if (ctx && !meterT) clockSample(ctx); } // (the stall meter; its 5 ms timer while the engine starts)
+// the heard frame of this animation frame (§13 P3-7): ONE outFrame — one getOutputTimestamp — a frame, shared by every reader
+// in it (the playhead, the modulator lanes, the hosts' heardFrame / heardTick, §10.1); between frames the last one's, for at
+// most 20 ms (an event between two frames reads a value ≤ one frame old; a page without frames reads afresh)
+function heardFrame() {
+  const now = performance.now();
+  if (hfN !== frameN || now - hfAt > 20) { hfN = frameN; hfAt = now; hfF = ctx ? outFrame() : NaN; }
+  return hfF;
+}
+// the heard song tick on the frame's heard frame (curTick, shared)
+function heardTickNow() { return T.playing && T.a && ctx ? AC.heardTick(heardFrame(), T.as) : T.pos; }
+function frameTick(t, dt) {
   if (T.playing && T.a && ctx) {
-    const F = outFrame(), t = AC.heardTick(F, T.as); // (curTick)
+    const F = heardFrame(), tk = AC.heardTick(F, T.as); // (curTick)
     if (T.rec) recAdv(heardPass(F)); // ((R) a pass heard ended: its held notes into its own step, before the sweep)
-    posUI(t);
-    roll && roll.setPlayhead(t, true, audible(trk()), heardFloor(F)); arr && arr.setPlayhead(t, true); // drawn in this frame, not the next; ((R) the roll's notes lit while heard, (review R-11) from the chase floor)
-    replaceSweep(t);
+    posUI(tk);
+    roll && roll.setPlayhead(tk, true, audible(trk()), heardFloor(F)); arr && arr.setPlayhead(tk, true); // drawn in this frame, not the next; ((R) the roll's notes lit while heard, (review R-11) from the chase floor)
+    replaceSweep(tk);
     cvModPlay(); // (stage 2a: the modulator modules show the selected track's lanes)
-    if (!project.loop.on && !T.rec && t > S.songEnd(project) + S.barTicks(project)) stop();
+    if (!project.loop.on && !T.rec && tk > S.songEnd(project) + S.barTicks(project)) stop();
   }
-  for (const t of project.tracks) {
-    const N = nodes.get(t.id);
-    const el = document.querySelector(`.head[data-id="${t.id}"] .hmeter i`);
-    if (!el) continue;
-    let p = 0;
-    if (N) { N.an.getFloatTimeDomainData(N.buf); for (let i = 0; i < N.buf.length; i++) { const a = Math.abs(N.buf[i]); if (a > p) p = a; } }
-    N && (N.peak = Math.max(p, N.peak * 0.88));
-    const v = N ? N.peak : 0;
-    el.style.width = Math.min(100, v > 1e-4 ? (1 + Math.log10(v) / 3) * 100 : 0).toFixed(1) + '%';
-    el.classList.toggle('clip', v > 0.98);
-  }
+  headMeters(dt);
   drawScope();
-  if (mout) { mout.setLive(mOutLive()); mout.draw(); } // ((M) the master OUT: its own cadence (≤ 30 Hz), only while live
+  if (mout) { mout.setLive(mOutLive()); mout.draw(t); } // ((M) the master OUT, only while live; (FR §6) at the frame clock's rate
+}
+// the track heads' meters: the peak of each track's analyser falling 0.88 per 60 Hz frame — in time, 0.88^(dt / 16.667) (FR3:
+// the same fall at any frame rate) —, the width and the clip class written only when they change; the elements memoised
+// (hmRec: renderHeads drops it, an element gone from the document is looked up again — no querySelector a frame)
+const HM_FALL = 0.88, HM_REF = 1000 / 60;
+const hmRec = new Map(); // track id → { el, w (the width in 0.1 %), clip }
+function headMeterEl(tid) {
+  let r = hmRec.get(tid);
+  if (r && (r.el === null || r.el.isConnected !== false)) return r;
+  r = { el: document.querySelector(`.head[data-id="${tid}"] .hmeter i`), w: NaN, clip: null };
+  hmRec.set(tid, r);
+  return r;
+}
+function headMeters(dt) {
+  const k = Math.pow(HM_FALL, (dt > 0 ? dt : HM_REF) / HM_REF);
+  for (const t of project.tracks) {
+    const r = headMeterEl(t.id), el = r.el;
+    if (!el) continue;
+    const N = nodes.get(t.id);
+    let v = 0;
+    if (N) {
+      let p = 0;
+      N.an.getFloatTimeDomainData(N.buf);
+      for (let i = 0; i < N.buf.length; i++) { const a = Math.abs(N.buf[i]); if (a > p) p = a; }
+      v = N.peak = Math.max(p, N.peak * k);
+    }
+    const w = Math.round(Math.min(100, v > 1e-4 ? (1 + Math.log10(v) / 3) * 100 : 0) * 10), clip = v > 0.98;
+    if (w !== r.w) { r.w = w; el.style.width = (w / 10).toFixed(1) + '%'; }
+    if (clip !== r.clip) { r.clip = clip; el.classList.toggle('clip', clip); }
+  }
 }
 
 /* ============================================== canvas shell, stage 1b (docs/canvas/IMPL-1b.md §2, §4.8) */
@@ -6160,7 +6250,7 @@ function initShell() {
   // the menus: ≡ (file, app, help), ⚙ (settings), the transport's ⋯ and the arrangement's Bars ▾ (narrow windows), tracks
   shell.menus = [
     cvTray.menuPop($('#appMenuBtn'), $('#appMenu')),
-    cvTray.menuPop($('#gearBtn'), $('#gearPop'), { pick: false, onOpen: () => { $('#masterG').value = $('#master').value; perfUI(); } }),
+    cvTray.menuPop($('#gearBtn'), $('#gearPop'), { pick: false, onOpen: () => { $('#masterG').value = $('#master').value; perfUI(); fpsLive(true); }, onClose: () => fpsLive(false) }),
     cvTray.menuPop($('#tMore'), $('#tMorePop'), { attr: 'data-open', pick: false }),
     cvTray.menuPop($('#aBars'), $('#aEdit'), { attr: 'data-open' }),
     cvTray.menuPop($('#trkChip'), $('#trkPop'), { onOpen: trkListUI }),
@@ -6216,8 +6306,17 @@ function initShell() {
     ps.value = perfPref();
     ps.onchange = () => perfPick(ps.value);
     pf.append('Performance ', ps);
-    gp.append(pf, ph);
-    shell.perfSel = ps;
+    // (IMPL-FR §2.1) "Frame rate: 120 fps · 144 · 165 · 240 · Display rate" right after the Performance hint (its hint below, live while ⚙ is
+    // open: what the display does and what is drawn; the options above the measured display rate greyed); a pick stored and applied live (fpsPick)
+    const ff = h('label', 'field cv-fps'), fs = h('select'), fh = h('p', 'cv-ghint', FPS_HINT);
+    fs.id = 'cvFps'; fh.id = 'cvFpsHint'; fs.setAttribute('aria-describedby', fh.id);
+    fs.title = 'The most frames drawn each second. High follows it; Medium and Low draw at 60 where the display allows. A rate above your display’s draws at the display’s own. Visual only: the sound never changes';
+    for (const v of cvWorld.FPS_OPTS) { const op = h('option', null, FPS_LABEL[v]); op.value = v; fs.append(op); }
+    fs.value = fpsPref();
+    fs.onchange = () => fpsPick(fs.value);
+    ff.append('Frame rate ', fs);
+    gp.append(pf, ph, ff, fh);
+    shell.perfSel = ps; shell.fpsSel = fs; shell.fpsHint = fh;
     const f = h('div', 'field'), b = h('button', 'tt', 'Measure this device'), st = h('span', 'cv-measure');
     b.type = 'button'; b.title = 'Render a few standard voices off-line to learn this device’s speed: the load estimates (the Sources tray, the effects’ “+” menus) and the instrument limits use it';
     const fv = +store.get(DEV_FACTOR, 0);
@@ -6281,9 +6380,10 @@ function initWorld() {
   if (!vp || !w) { world = null; return; }
   try {
     world = cvWorld.createWorld(vp, { world: w, overlay: $('#overlay'), toolbar: $('#cvToolbar'), layer: $('#ov'),
-      isBackground: el => cvModule.isBackground(el), onTidy: () => cvTidy(), store, perf: perfPref() }); // ((P) built at the device's preset — ?perf= over it, the world's — never setPerf at boot)
+      isBackground: el => cvModule.isBackground(el), onTidy: () => cvTidy(), store, perf: perfPref(), fps: fpsPref() }); // ((P) built at the device's preset — ?perf= over it, the world's — never setPerf at boot; (FR) and at the frame-rate setting, ?fps= over it)
     world.on('movestart', () => hideTip()); // (the kit's popups and tip close in the world: wk.closeTransient)
   } catch (err) { world = null; console.warn('Canvas camera unavailable — the panels stay where they are', err); }
+  fpsCapBare();
   perfUI();
 }
 // (P, IMPL-P §1–§2) the performance preset — visual only: the cords' physics and the panel faces' texture density (cv-world
@@ -6293,16 +6393,59 @@ function initWorld() {
 const PERF_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
 const PERF_HINT = 'Lower settings draw panels and cords more simply, for slower tablets. Sound is unaffected.';
 const perfPref = () => cvWorld.perfOf(store.get(cvWorld.PERF_PREF, 'high'));
-function perfUI() { // ⚙'s select: the preset the world runs (?perf= shows), else the pref
+function perfUI() { // ⚙'s select: the preset the world runs (?perf= shows), else the pref (and the Frame rate line, which the preset caps)
   const s = shell.perfSel, W = cvW();
   if (s) s.value = W && cvWorld.PERFS.includes(W.perf) ? W.perf : perfPref();
+  fpsUI();
 }
 function perfPick(v) { // the person's own pick: stored, then live
   const p = cvWorld.perfOf(v), W = cvW();
   store.set(cvWorld.PERF_PREF, p);
   if (W && typeof W.setPerf === 'function') W.setPerf(p);
+  fpsCapBare();
   perfUI();
 }
+// (IMPL-FR §2.1, §2.2) the frame-rate setting — visual only, as the preset: a device pref (synth.cv.fps: '120' (the default) | '144' | '165' |
+// '240' | 'display'; absent or anything else 120), never in a project or its History, no worklet message; cv-world's ?fps= over it for the
+// session, never stored. The world turns it into the frame clock's ceiling min(setting, the preset's tier) and tells it ('fps'). The
+// options above the measured display rate are greyed, and while ⚙ is open its hint says what the display does and what is drawn
+import { clock as fpsClock } from './wk.js?v=9'; // (the kit's frame clock: the measured display rate and the rate in force)
+const FPS_LABEL = { 120: '120 fps', 144: '144 fps', 165: '165 fps', 240: '240 fps', display: 'Display rate' };
+const FPS_HINT = 'Smoother motion on fast displays. Medium and Low draw at 60 fps where the display allows; the sound never changes.';
+const fpsPref = () => { const v = String(store.get(cvWorld.FPS_PREF, cvWorld.FPS_OPTS[0])); return cvWorld.FPS_OPTS.includes(v) ? v : cvWorld.FPS_OPTS[0]; };
+let fpsOpen = false, fpsTimer = 0, fpsOffs = [];
+function fpsUI() { // ⚙'s select: the setting the world runs (?fps= shows when it is one of the options), else the pref; the hint live while ⚙ is open
+  const s = shell.fpsSel, ht = shell.fpsHint, W = cvW();
+  if (!s) return;
+  s.value = W && cvWorld.FPS_OPTS.includes(W.fps) ? W.fps : fpsPref();
+  const st = fpsClock.stats();
+  let off = 0;
+  for (const op of s.children) { const no = st.measured && op.value !== 'display' && +op.value > st.display; op.disabled = no; if (no) off++; }
+  if (ht) ht.textContent = !fpsOpen ? FPS_HINT : !st.measured ? FPS_HINT + ' Measuring the display…'
+    : FPS_HINT + ' Display ' + st.display + ' Hz · drawing at ' + +st.eff.toFixed(1) + ' fps' + (off ? ' · faster options need a faster display' : '');
+}
+function fpsLive(on) { // ⚙ opened / closed: the hint follows the clock (a display rate adopted, a ceiling changed), the world's 'fps' and a 1 s tick (a rate measured under the same ceiling changes nothing else)
+  for (const f of fpsOffs.splice(0)) f();
+  clearInterval(fpsTimer); fpsTimer = 0;
+  fpsOpen = !!on;
+  if (on) {
+    fpsOffs.push(fpsClock.onChange(fpsUI));
+    const W = cvW();
+    if (W && typeof W.on === 'function') fpsOffs.push(W.on('fps', fpsUI));
+    fpsTimer = setInterval(fpsUI, 1000);
+  }
+  fpsUI();
+}
+function fpsPick(v) { // the person's own pick: stored, then live
+  const f = cvWorld.FPS_OPTS.includes(String(v)) ? String(v) : cvWorld.FPS_OPTS[0], W = cvW();
+  store.set(cvWorld.FPS_PREF, f);
+  if (W && typeof W.setFps === 'function') W.setFps(f);
+  fpsCapBare();
+  fpsUI();
+}
+// (review 1, P3-5) no world ("Canvas camera unavailable"): main.js sets the frame clock's ceiling itself — cv-world's applyCap,
+// min(the setting, the preset's tier) — at boot and at each pick; with a world, the world's
+function fpsCapBare() { if (!cvW()) fpsClock.setCap(Math.min(cvWorld.fpsOf(fpsPref()), cvWorld.FPS_Q[perfPref()])); }
 // Escape: ends a canvas drag, leaves edit state, then deselects → true — only while focus is on the canvas (the viewport, a
 // module root or its bar; = cv-world canvasFocus, SPEC §4.8), as the roll's own selection does: with focus anywhere else
 // (a key, Hold, a tray, after a track-row chip's reveal) Escape stays today's panic at once
@@ -6994,6 +7137,7 @@ function mfxHost() {
     setTap: inst => postTo({ id: MASTER }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
     storage: hostStore, notify: txt => notice(txt, 3500),
     scSources: () => scSources(null), // ((SC §6.1) self null: its Ducker keys from any track; its compressor has no key input
+    heardFrame: () => heardFrame(), heardTick: () => heardTickNow(), fps: () => wkClock.eff(), // ((IMPL-FR §10.1)
   };
 }
 function renderMasterFx() {
@@ -9219,7 +9363,7 @@ const PATCH = cvPatch.patchHost({
   show: key => modShow(key), // ((9c fix, review 2 F2) a module tapped in / duplicated: off the band, the camera brings it in — the modulators' rule)
   // (9b, IMPL-9b §1.5, §1.6) a face's momentary event to the node (ptEv); the lamps' heard clock (the drums')
   ev: (t, dev, mid, id) => ptEv(ptT(t), dev, mid, id),
-  heard: ts => (ctx && ctx !== holdCtx ? outFrame(ts) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000),
+  heard: ts => (ctx && ctx !== holdCtx ? (ts == null ? heardFrame() : outFrame(ts)) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000), // ((IMPL-FR review 2, P3-3) the frame's shared heard frame)
   playing: () => !!T.playing, // ((9b, review 2 N2) a set's "starts when you press ▶" is not said while the song plays)
 });
 // cv-patch's edit (§1.5, U9's interface): ONE History step labelled `label` — r.back's knobs as the step's ptBack meta —, then
@@ -9570,7 +9714,7 @@ function sxInjSnap(tid, dev, s) {
 // a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity, (2b) a note): the modules of that kind redraw
 // (a dragged wheel ignores it)
 function cvModLive(kind) { if (modBodies.size) for (const B of modBodies.values()) if (B.kind === kind) B.update(modValue(kind)); }
-// (frame(), playing) the selected track's lanes on the modules on screen (U13: a folded or off-screen one waits)
+// (frameTick, playing) the selected track's lanes on the modules on screen (U13: a folded or off-screen one waits)
 const MOD_LANED = new Set(['wheel', 'at', 'bend']);
 function cvModPlay() {
   if (!modBodies.size) return;
@@ -9674,7 +9818,7 @@ function modLane(kind, t) {
     L.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
     modLanes.set(key, c = { cc: t.cc, n: t.cc.length, at: now, L });
   }
-  const tick = curTick(), L = c.L;
+  const tick = heardTickNow(), L = c.L; // ((IMPL-FR) the frame's shared heard tick: no getOutputTimestamp per lane)
   let lo = 0, hi = L.length;
   while (lo < hi) { const m = (lo + hi) >> 1; if (L[m][0] <= tick) lo = m + 1; else hi = m; }
   if (lo) return L[lo - 1][1];
@@ -10626,7 +10770,7 @@ function boot() {
   if (E.length) notice(pre, Math.max(...E.map(x => x[1])));
   recoveredNotice(pre);
   if (readOnly) goReadOnly(readOnly); // a newer project met while starting: Save disabled, the notice (SPEC-canvas §5.8)
-  requestAnimationFrame(frame);
+  wkClock.add({ name: 'frameTick', essential: true, fn: frameTick }); // ((IMPL-FR §3 A1) the frame loop: a client of the frame clock at its cap)
   // (IMPL-A §3.2 item 4) the app: the page is up — the Sound in background setting, then ready (native's queued calls, an
   // open from Files or a resume, wait for it; the restart flag goes back to false)
   if (SHELL) { shellBootMs = performance.now(); shellPost({ t: 'bg', on: bgOn() }); shellPost({ t: 'ready' }); }
@@ -10669,5 +10813,11 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     uiLoad: p => { const was = uiLoad; uiLoad = p; return was; }, // (the panel modules never finish loading in node: a test hands them in)
     loadProject, normDevs, sxRec, fxKeyOf, curModel,
   };
+  // (IMPL-FR §10.1) the frame clock for the tests and the bench (tests/ui-bench-fps.mjs): its stats (the clients' cost per
+  // painted frame), the ceiling in force, the effective paint rate
+  globalThis.__synthTest.fps = { clock: wkClock, stats: () => wkClock.stats(), cap: () => wkClock.cap(), eff: () => wkClock.eff() };
 }
+// (IMPL-FR §3 A1) the stall meter and the frame's count on every rAF — the first client of this page, so every other client of
+// a frame reads that frame's heard frame (heardFrame)
+wkClock.add({ name: 'stall', every: true, essential: true, fn: frameEvery });
 boot();

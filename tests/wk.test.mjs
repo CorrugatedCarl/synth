@@ -2927,9 +2927,10 @@ test('menuSource: a second touch cancels the long-press and arms none; a primary
   off();
 });
 
-test('ticker: the frame-rate gate comes first (matchMedia / getClientRects only on frames that may draw)', () => {
+test('ticker (IMPL-FR §1): matchMedia only on frames that may draw; the on-screen probe at most every 500 ms, never per frame; the display measured from the frames', () => {
   const d = fresh();
   raf.install();
+  wk.clock._reset();
   const mm = globalThis.matchMedia;
   let calls = 0, rects = 0, draws = 0;
   globalThis.matchMedia = () => { calls++; return { matches: false }; };
@@ -2940,16 +2941,302 @@ test('ticker: the frame-rate gate comes first (matchMedia / getClientRects only 
     const tk = wk.ticker(el, () => { draws++; });
     tk.start();
     for (let i = 0; i < 120; i++) raf.flush(1, i * 1000 / 120); // 1 s at 120 Hz
-    assert.deepEqual([draws, calls, rects], [30, 30, 30]);
-    el.getClientRects = () => { rects++; return []; }; // hidden: probed at the frame rate, never drawn
+    assert.deepEqual([draws, calls], [30, 30]);                   // 30 fps: every 4th frame, before and after the estimate lands
+    assert.ok(rects >= 1 && rects <= 3, 'probes in a second: ' + rects);
+    assert.deepEqual([wk.clock.display(), wk.clock.eff(), wk.clock.stats().measured], [120, 120, true]);
+    el.getClientRects = () => { rects++; return []; };            // off screen: seen by the next probe (≤ 500 ms), then never drawn
     rects = 0;
+    const d0 = draws;
     for (let i = 120; i < 240; i++) raf.flush(1, i * 1000 / 120);
-    assert.deepEqual([draws, rects], [30, 30]);
+    assert.ok(draws - d0 <= 15, 'draws after the hide: ' + (draws - d0));
+    assert.ok(rects >= 1 && rects <= 3, 'probes: ' + rects);
+    const d1 = draws;
+    for (let i = 240; i < 360; i++) raf.flush(1, i * 1000 / 120);
+    assert.equal(draws, d1, 'hidden: nothing drawn');
     tk.stop();
+    assert.equal(raf.pending, 0);
   } finally {
     if (mm === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = mm;
     raf.uninstall();
+    wk.clock._reset();
   }
+});
+
+/* ------------------------------------------------------------------- the frame clock (IMPL-FR §1, G2) */
+// a synthetic rAF stream: n frames at `hz` (or hz(i): a variable rate) from t0 (ms), optional quantisation / drops; returns
+// the last (exact) time. o.quant: the exact time read through WebKit's 1 ms timer, floor(t) — 4 / 5 ms deltas at 240 Hz, 8 / 9
+// at 120, 6 / 7 at 144 and 165, 16 / 17 at 60 (review 1, P3-4: a delta of rounded integers was a constant stream)
+function stream(n, hz, t0 = 0, o = {}) {
+  let t = t0;
+  for (let i = 0; i < n; i++) {
+    let dt = 1000 / (typeof hz === 'function' ? hz(i) : hz);
+    if (o.drop && i % 2) dt *= 2;                          // every other frame dropped (a loaded display)
+    t += dt;
+    raf.flush(1, o.quant ? Math.floor(t) : t);
+  }
+  return t;
+}
+test('clock: the display rate is measured (inlier mean of a 32-delta ring, snapped within 8 %), 60 until the ring is full, a change needs 1 s of agreement, a hide is never entered', () => {
+  const d = fresh();
+  raf.install();
+  wk.clock._reset();
+  try {
+    const el = d.createElement('div');
+    d.body.appendChild(el);
+    const off = wk.clock.add({ fn() {}, el, name: 'probe' });
+    assert.deepEqual([wk.clock.display(), wk.clock.stats().measured], [60, false]);
+    let t = stream(20, 120);
+    assert.deepEqual([wk.clock.display(), wk.clock.stats().measured], [60, false], 'the ring not yet full');
+    t = stream(30, 120, t);
+    assert.deepEqual([wk.clock.display(), wk.clock.stats().measured, wk.clock.eff()], [120, true, 120]);
+    // WebKit's 1 ms timer: 240 Hz read as 4 / 5 ms → the inlier mean 4.17 → 240; 60 Hz read as 16 / 17 → 60
+    wk.clock._reset(); wk.clock.add({ fn() {}, el });
+    stream(60, 240, 0, { quant: true });
+    assert.equal(wk.clock.display(), 240);
+    wk.clock._reset(); wk.clock.add({ fn() {}, el });
+    stream(60, 60, 0, { quant: true });
+    assert.equal(wk.clock.display(), 60);
+    // 144 and 25 (not a known rate: the raw Hz)
+    wk.clock._reset(); wk.clock.add({ fn() {}, el }); stream(48, 144); assert.equal(wk.clock.display(), 144);
+    wk.clock._reset(); wk.clock.add({ fn() {}, el }); stream(48, 25); assert.equal(wk.clock.display(), 25);
+    // under load (every other frame dropped, half the deltas doubled) the inlier mean keeps 120 — no candidate even appears
+    wk.clock._reset(); wk.clock.add({ fn() {}, el });
+    t = stream(48, 120);
+    assert.equal(wk.clock.display(), 120);
+    t = stream(120, 120, t, { drop: true });
+    assert.equal(wk.clock.display(), 120, 'half-dropped frames: still 120');
+    // a real change to 60: the candidate appears once ≥ 75 % of the ring is slow (≈ 0.5 s in) and lands after 1 s of agreement
+    t = stream(60, 60, t);                       // 1 s of plain 60 Hz frames: the candidate seen, not yet a second old
+    assert.equal(wk.clock.display(), 120, 'not yet');
+    t = stream(40, 60, t);
+    assert.equal(wk.clock.display(), 60, 'after > 1 s of agreement');
+    t = stream(48, 120, t);                      // back to 120: the candidate appears …
+    const mid = wk.clock.display();
+    t = stream(120, 120, t);                     // … and lands after a second
+    assert.deepEqual([mid, wk.clock.display()], [60, 120]);
+    // a hide: one 5 s delta — rejected, the estimate kept
+    raf.flush(1, t + 5000);
+    assert.equal(wk.clock.display(), 120);
+    assert.equal(raf.pending, 1, 'the live client keeps one frame queued');
+    wk.clock._reset();
+    assert.deepEqual([raf.pending, wk.clock.clients().length, wk.clock.display()], [0, 0, 60]);
+    off();                                       // the first client's remover: long gone, a no-op
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock: the cadence — k = 1 while D ≤ 1.25·C else the smallest k with D / k ≤ 1.25·C, the 60 floor on the global cap only; per-client caps without a floor; reduced motion 10 fps except essential; every; gate off', () => {
+  const d = fresh();
+  raf.install();
+  wk.clock._reset();
+  const mm = globalThis.matchMedia;
+  let reduce = false;
+  globalThis.matchMedia = q => ({ matches: reduce && /reduce/.test(q) });
+  try {
+    const table = [[120, 120, 120], [120, 60, 60], [60, 120, 60], [240, 120, 120], [240, 60, 60], [144, 120, 144], [165, 120, 82.5], [240, 144, 120], [240, 165, 120],
+      [360, 120, 120], [90, 60, 90], [100, 60, 100], [30, 120, 30], [60, Infinity, 60], [240, Infinity, 240], [300, Infinity, 240 + 60]];
+    for (const [D, C, E] of table) {
+      wk.clock.config({ display: D }); wk.clock.setCap(C);
+      near(wk.clock.eff(), E, 1e-9, `D ${D} cap ${C}`);
+    }
+    // per-client cap: 30 fps on a 60 Hz display → every 2nd frame (no floor); the global cap 60 on a 120 Hz display → every 2nd
+    wk.clock.config({ display: 60 }); wk.clock.setCap(Infinity);
+    const el = d.createElement('div');
+    d.body.appendChild(el);
+    const a = [], b = [], c = [], e = [];
+    const offs = [wk.clock.add({ fn: t => a.push(t), el, cap: 30, name: 'a' }), wk.clock.add({ fn: t => b.push(t), el, name: 'b' }),
+      wk.clock.add({ fn: t => c.push(t), el, name: 'c', essential: true }), wk.clock.add({ fn: t => e.push(t), name: 'e', every: true })];
+    assert.deepEqual(wk.clock.clients(), ['a', 'b', 'c', 'e']);
+    stream(12, 60);
+    assert.deepEqual([a.length, b.length, c.length, e.length], [6, 12, 12, 12]);
+    // reduced motion: 10 fps (every 6th frame at 60) for a and b, not for the essential c, not for every
+    reduce = true; a.length = b.length = c.length = e.length = 0;
+    stream(60, 60, 1000);
+    assert.deepEqual([a.length, b.length, c.length, e.length], [10, 10, 60, 60]);
+    reduce = false;
+    // the dt handed to fn is the time since the client's last paint
+    const dts = [];
+    const offD = wk.clock.add({ fn: (t, dt) => dts.push(dt), el, cap: 30 });
+    stream(8, 60, 3000);
+    assert.ok(dts.length === 4 && dts.slice(1).every(x => Math.abs(x - 1000 / 30) < 1e-6), JSON.stringify(dts));
+    offD();
+    // gate off (the sims): every live client paints every round, whatever the cap
+    wk.clock.config({ gate: false }); a.length = 0;
+    stream(5, 60, 4000);
+    assert.equal(a.length, 5);
+    wk.clock.config({ gate: true });
+    // the 60 floor is the global cap's only: cap 10 on a 60 Hz display stays every 6th frame
+    const slow = []; const offS = wk.clock.add({ fn: t => slow.push(t), el, cap: 10 });
+    stream(12, 60, 5000);
+    assert.equal(slow.length, 2);
+    offS();
+    for (const f of offs) f();
+    assert.equal(raf.pending, 0);
+    // a hidden document runs nothing (not even every); the first frame back paints
+    const h = [];
+    const offH = wk.clock.add({ fn: t => h.push(t), el });
+    d.visibilityState = 'hidden'; stream(5, 60, 6000); assert.equal(h.length, 0);
+    d.visibilityState = 'visible'; stream(1, 60, 7000); assert.equal(h.length, 1);
+    offH();
+  } finally {
+    if (mm === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = mm;
+    raf.uninstall(); wk.clock._reset();
+  }
+});
+
+test('clock: one rAF for every client, none at rest; setCap / config fire onChange when eff changes; stats(); a shared IntersectionObserver (optimistic until it answers); _reset leaves a stale frame inert; an element leaving the document ends its client', () => {
+  const d = fresh();
+  raf.install();
+  wk.clock._reset();
+  try {
+    const el = d.createElement('div'), el2 = d.createElement('div');
+    d.body.appendChild(el); d.body.appendChild(el2);
+    const seen = [];
+    const offC = wk.clock.onChange(e => seen.push(e));
+    wk.clock.config({ display: 120 });
+    wk.clock.setCap(60); wk.clock.setCap(60); wk.clock.setCap(Infinity);
+    assert.deepEqual(seen, [120, 60, 120]);
+    const o1 = wk.clock.add({ fn() {}, el }), o2 = wk.clock.add({ fn() {}, el2 });
+    assert.equal(raf.pending, 1, 'one frame for two clients');
+    stream(4, 120);
+    assert.equal(raf.pending, 1);
+    o1(); assert.equal(raf.pending, 1); o2(); assert.equal(raf.pending, 0, 'the last client cancels the frame');
+    // stats: frames, paints, the self time window
+    const o3 = wk.clock.add({ fn() { for (let i = 0; i < 1e4; i++) Math.sqrt(i); }, el });
+    stream(10, 120, 1000);
+    const S = wk.clock.stats();
+    assert.deepEqual([S.display, S.eff, S.clients, S.frames >= 10, S.paints >= 10, S.ms.n >= 10, S.ms.med >= 0, S.ms.max >= S.ms.med], [120, 120, 1, true, true, true, true, true]);
+    o3();
+    // a shared IntersectionObserver: live until it answers, then as it says; one observer, observe / unobserve per element
+    const IO0 = globalThis.IntersectionObserver;
+    const obs = [];
+    let made = 0, cb = null;
+    globalThis.IntersectionObserver = class { constructor(f) { made++; cb = f; } observe(e) { obs.push(['on', e === el ? 1 : 2]); } unobserve(e) { obs.push(['off', e === el ? 1 : 2]); } disconnect() { obs.push(['x']); } };
+    try {
+      wk.clock._reset();
+      wk.clock.config({ display: 60 });
+      const n = [0, 0];
+      const a = wk.clock.add({ fn: () => n[0]++, el }), b = wk.clock.add({ fn: () => n[1]++, el });
+      stream(2, 60, 2000);
+      assert.deepEqual([n, made, obs], [[2, 2], 1, [['on', 1]]], 'optimistic, one observer, one observe for the shared element');
+      cb([{ target: el, isIntersecting: false }]);
+      stream(3, 60, 3000);
+      assert.deepEqual(n, [2, 2]);
+      cb([{ target: el, isIntersecting: true }]);
+      stream(1, 60, 4000);
+      assert.deepEqual(n, [3, 3]);
+      a(); assert.deepEqual(obs.length, 1, 'still watched for b'); b(); assert.deepEqual(obs[1], ['off', 1]);
+    } finally { if (IO0 === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = IO0; }
+    // _reset: the pending frame of the old generation runs nothing (a sim's cancelAnimationFrame is a no-op: the old
+    // callback stays queued), the new client gets its own
+    wk.clock._reset();
+    const z = [], cancel0 = globalThis.cancelAnimationFrame;
+    globalThis.cancelAnimationFrame = () => {};           // (frame() captures the cancel when it arms: install the no-op first)
+    try { wk.clock.add({ fn: t => z.push(t), el }); assert.equal(raf.pending, 1); wk.clock._reset(); } finally { globalThis.cancelAnimationFrame = cancel0; }
+    const y = [];
+    wk.clock.add({ fn: t => y.push(t), el2 });
+    assert.equal(raf.pending, 2, 'the stale frame still queued, plus the new one');
+    raf.flush(1, 5000);                       // both queued callbacks run: the stale one is inert
+    assert.deepEqual([z.length, y.length], [0, 1]);
+    // an element leaving the document ends its client (end() called)
+    let ended = 0;
+    wk.clock._reset();
+    wk.clock.add({ fn() {}, el, end: () => ended++ });
+    el.remove();
+    raf.flush(2, 6000);
+    assert.deepEqual([ended, raf.pending, wk.clock.clients().length], [1, 0, 0]);
+    offC();
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (review 1, P3-4): real WebKit 1 ms quantisation — 120 / 144 / 165 / 240 measured exactly, painted at the 120 setting as the cadence says (a cap-30 client ≈ 30); a ProMotion stream alternating 120 / 60 reads 120, a 90–120 VRR stream 100, and every frame of either paints', () => {
+  const d = fresh();
+  raf.install();
+  try {
+    // the helper really quantises: 240 Hz through a 1 ms timer is 4 / 5 ms deltas, never a constant stream
+    wk.clock._reset();
+    const dts = new Set(), offQ = wk.clock.add({ fn: (t, dt) => dts.add(dt), every: true });
+    stream(60, 240, 0, { quant: true });
+    offQ();
+    assert.deepEqual([...dts].filter(x => x !== 1000 / 60).sort(), [4, 5], 'the quantised deltas');
+    const out = {};
+    for (const [name, hz, q] of [['q120', 120, true], ['q144', 144, true], ['q165', 165, true], ['q240', 240, true],
+      ['alt', i => (i % 2 ? 60 : 120), false], ['vrr', i => 90 + (i * 7919 % 31), false]]) {
+      wk.clock._reset(); wk.clock.setCap(120);                    // (the ⚙ Frame rate default)
+      const el = d.createElement('div'); d.body.appendChild(el);
+      let n = 0, g = 0, f = 0;
+      const offs = [wk.clock.add({ fn: () => n++, el }), wk.clock.add({ fn: () => g++, el, cap: 30 }), wk.clock.add({ fn: () => f++, every: true })];
+      const t = stream(240, hz, 0, { quant: q });                  // the ring filled, the estimate adopted
+      n = g = f = 0;
+      const t2 = stream(240, hz, t, { quant: q }), s = (t2 - t) / 1000;
+      out[name] = [wk.clock.display(), wk.clock.eff(), n, g, n === f, s];
+      for (const o of offs) o();
+    }
+    // [D, E, paints a second, the cap-30 client's, every frame painted]; a count over the window within one paint of rate × time
+    for (const [name, [D, E, paint, gr, all]] of Object.entries({ q120: [120, 120, 120, 30, true], q144: [144, 144, 144, 28.8, true], q165: [165, 82.5, 82.5, 27.5, false],
+      q240: [240, 120, 120, 30, false], alt: [120, 120, null, null, true], vrr: [100, 100, null, null, true] })) {
+      const o = out[name], s = o[5];
+      assert.deepEqual([o[0], o[1], o[4]], [D, E, all], name + ': ' + JSON.stringify(o));
+      if (paint != null) assert.ok(Math.abs(o[2] - paint * s) <= 1 && Math.abs(o[3] - gr * s) <= 1, name + ': ' + JSON.stringify(o));
+    }
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (review 1, P3-1): a second client on an element the shared IntersectionObserver already reported off screen starts as the element is (the observer never reports an unchanged element again) — off screen, neither paints', () => {
+  const d = fresh();
+  raf.install(); wk.clock._reset();
+  const IO0 = globalThis.IntersectionObserver;
+  let cb = null;
+  globalThis.IntersectionObserver = class { constructor(f) { cb = f; } observe() {} unobserve() {} disconnect() {} };
+  try {
+    wk.clock.config({ display: 60 });
+    const rack = d.createElement('div'); d.body.appendChild(rack);
+    const n = [0, 0, 0];
+    const a = wk.clock.add({ fn: () => n[0]++, el: rack, name: 'gr' });           // fx-ui's GR loop on the rack
+    raf.flush(1, 0);
+    cb([{ target: rack, isIntersecting: false }]);                               // the rack panned off screen
+    for (let i = 1; i <= 10; i++) raf.flush(1, i * 1000 / 60);
+    const b = wk.clock.add({ fn: () => n[1]++, el: rack, name: 'spec' });         // fx-ui's spectrum loop on the same rack (a refresh)
+    for (let i = 11; i <= 70; i++) raf.flush(1, i * 1000 / 60);                  // 1 s more, still off screen
+    assert.deepEqual(n.slice(0, 2), [1, 0], 'off screen: neither paints (the second client painted ' + n[1] + ' frames)');
+    cb([{ target: rack, isIntersecting: true }]);                                // back on screen: both
+    raf.flush(1, 71 * 1000 / 60);
+    assert.deepEqual(n.slice(0, 2), [2, 1]);
+    const c = wk.clock.add({ fn: () => n[2]++, el: rack, name: 'third' });       // on screen: a newcomer paints at once
+    raf.flush(1, 72 * 1000 / 60);
+    assert.deepEqual(n, [3, 2, 1]);
+    a(); b(); c();
+  } finally { if (IO0 === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = IO0; raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (review 1, P3-2): the last client dropped and one added back under a no-op cancelAnimationFrame (tests/main-sim.mjs) keeps ONE frame in flight — the dropped frame is inert', () => {
+  fresh();
+  raf.install(); wk.clock._reset();
+  const c0 = globalThis.cancelAnimationFrame;
+  globalThis.cancelAnimationFrame = () => {};                                    // (frame() captures the cancel when it arms: install the no-op first)
+  try {
+    wk.clock.config({ display: 60, gate: false });
+    let n = 0;
+    const a = wk.clock.add({ fn() {} });
+    a();                                                                         // the last client: its frame "cancelled" (a no-op) — still queued
+    const b = wk.clock.add({ fn: () => n++, every: true });
+    for (let i = 1; i <= 5; i++) raf.flush(1, i * 16.7);
+    assert.deepEqual([n, wk.clock.stats().frames], [5, 5], 'one run a frame (ran ' + n + ' times in 5 frames)');
+    b();
+  } finally { globalThis.cancelAnimationFrame = c0; raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (review 1, P3-6): stats() covers its 2 s window at 240 fps (a ring of 512 painted frames, not 256)', () => {
+  const d = fresh();
+  raf.install(); wk.clock._reset();
+  try {
+    wk.clock.config({ display: 240 });
+    const el = d.createElement('div'); d.body.appendChild(el);
+    const off = wk.clock.add({ fn() {}, el });
+    stream(720, 240);                                                            // 3 s at 240
+    const S = wk.clock.stats();
+    assert.deepEqual([S.eff, S.paints, S.ms.n >= 480 && S.ms.n <= 481], [240, 720, true], 'painted frames in the window: ' + S.ms.n);
+    off();
+  } finally { raf.uninstall(); wk.clock._reset(); }
 });
 
 /* ------------------------------------- dragSource edge auto-scroll (iPad: reach a control scrolled out of view) */
@@ -3795,4 +4082,87 @@ test('setLayer / layer: an element inside [data-cv-world] gets the top layer, an
   try {
     assert.equal(sj([wk.layer(inner) === ov, wk.layer(w) === ov, wk.layer(outer) === outer, wk.layer(null)]), sj([true, true, true, null]));
   } finally { wk.setLayer(null); }
+});
+
+// (IMPL-FR §7.3, lane K) the world test is memoised per element while it is connected: a count of the ancestors' hasAttribute calls is the walk
+function spyWalk(...nodes) {
+  const c = { n: 0 };
+  for (const nd of nodes) { const h = nd.hasAttribute.bind(nd); nd.hasAttribute = a => { c.n++; return h(a); }; }
+  return c;
+}
+test('(FR §7.3) inWorld memo: a connected canvas in the world walks its ancestors once (storeDensity at a zoom ≠ 1, fitCanvas, canvasScale, layer), not per call; a detached one is never memoised; a moved one, or a new scale (setCanvasScale / setLayer), walks again — the answers are the unmemoised ones', () => {
+  const d = fresh();
+  const w = d.createElement('div'); w.setAttribute('data-cv-world', ''); d.body.appendChild(w);
+  const a = d.createElement('div'), b = d.createElement('div'), cv = d.createElement('canvas');
+  w.appendChild(a); a.appendChild(b); b.appendChild(cv);
+  const walk = spyWalk(a, b);
+  try {
+    d.defaultView.devicePixelRatio = 2;
+    wk.setCanvasScale(0.5);
+    const s0 = wk.storeDensity(cv), n1 = walk.n;
+    assert.equal(sj([s0, n1 >= 2]), sj([1, true]), 'dpr · k inside the world; the first call walked');
+    for (let i = 0; i < 40; i++) wk.fitCanvas(cv, 100, 50);
+    assert.equal(sj([wk.storeDensity(cv), wk.canvasScale(cv), walk.n]), sj([1, 0.5, n1]), '40 fitCanvas + more calls: no further walk');
+    // a detached chain: never memoised, every call walks (and answers as before)
+    const w2 = d.createElement('div'); w2.setAttribute('data-cv-world', '');
+    const a2 = d.createElement('div'), cv2 = d.createElement('canvas');
+    w2.appendChild(a2); a2.appendChild(cv2);
+    const walk2 = spyWalk(a2);
+    const r2 = [wk.storeDensity(cv2), wk.storeDensity(cv2), wk.storeDensity(cv2)];
+    assert.equal(sj([r2, walk2.n]), sj([[1, 1, 1], 3]), 'detached: a walk each call');
+    // the canvas itself moved out of the world (its parent changed): walks again, now outside — the dpr capped at 2
+    d.body.appendChild(cv);
+    assert.equal(sj([wk.storeDensity(cv), wk.canvasScale(cv)]), sj([2, 1]), 'moved out of the world');
+    b.appendChild(cv);
+    assert.equal(wk.storeDensity(cv), 1, 'and back');
+    // an ancestor moved out (the canvas keeps its parent): the memo is stale until a scale is written (cv-world's zoom end) — then it is the real answer
+    d.body.appendChild(a);
+    wk.setCanvasScale(0.5);
+    assert.equal(sj([wk.storeDensity(cv), wk.canvasScale(cv)]), sj([2, 1]), 'after setCanvasScale: outside');
+    w.appendChild(a);
+    wk.setLayer(null);
+    assert.equal(wk.storeDensity(cv), 1, 'after setLayer: inside again');
+    // layer(): the same memo
+    const ov = d.createElement('div');
+    wk.setLayer(ov);
+    assert.equal(sj([wk.layer(cv) === ov, wk.layer(cv) === ov]), sj([true, true]));
+  } finally { wk.setLayer(null); wk.setCanvasScale(1); d.defaultView.devicePixelRatio = 1; }
+});
+
+test('(FR §7.3) haloPainter reuses its arc list (no filter / sort array per paint), and paints what it painted: arcs sorted by KIND_ORDER, equal kinds in the order given (stable), non-finite ones dropped, 12 arcs, a shrinking list hides the spare paths, null → none', () => {
+  fresh();
+  const { k, el } = mkKnob();
+  const halo = byCls(el, 'wk-halo')[0];
+  const shown = () => halo.children.filter(n => n.localName === 'path' && n.getAttribute('display') !== 'none');
+  const arcsOf = ks => ks.map((kind, i) => ({ from: 0.05 * i, to: 0.05 * i + 0.04, kind }));
+  const f = Array.prototype.filter, so = Array.prototype.sort;
+  let touched = 0;
+  const arcish = a => a.length && a[0] && typeof a[0] === 'object' && 'from' in a[0];
+  Array.prototype.filter = function (...x) { if (arcish(this)) touched++; return f.apply(this, x); };
+  Array.prototype.sort = function (...x) { if (arcish(this)) touched++; return so.apply(this, x); };
+  try {
+    const kinds = ['sel', 'other', 'neg', 'sel', 'other', 'neg', 'weird', 'sel', 'other', 'neg', 'sel', 'other'];
+    for (let i = 0; i < 20; i++) k.setMod({ arcs: arcsOf(kinds), live: 0.5 });
+    assert.equal(touched, 0, 'no filter / sort over the arc list');
+  } finally { Array.prototype.filter = f; Array.prototype.sort = so; }
+  const kinds = ['sel', 'other', 'neg', 'sel', 'other', 'neg', 'weird', 'sel', 'other', 'neg', 'sel', 'other'];
+  const want = kinds.map((kind, i) => [kind, i]).sort((x, y) => {
+    const o = kd => (['other', 'neg', 'sel'].indexOf(kd) < 0 ? 0 : ['other', 'neg', 'sel'].indexOf(kd));
+    return o(x[0]) - o(y[0]) || x[1] - y[1];
+  });
+  k.setMod({ arcs: arcsOf(kinds), live: null });
+  const got = shown().map(n => n.getAttribute('class').replace('wk-arc k-', ''));
+  assert.equal(got.length, 12);
+  assert.equal(sj(got), sj(want.map(([kd]) => (kd === 'weird' ? 'other' : kd))), 'the kind order, stable within a kind');
+  // the first paths follow the order given within a kind: the d of the k-th "other" is the k-th other arc
+  const dOf = i => shown()[i].getAttribute('d');
+  k.setMod({ arcs: [{ from: 0.1, to: 0.2, kind: 'other' }, { from: NaN, to: 0.5, kind: 'sel' }, null, { from: 0.3, to: 0.4, kind: 'other' }, { from: 0.6, to: Infinity, kind: 'neg' }], live: null });
+  assert.equal(shown().length, 2, 'non-finite and null entries dropped');
+  const d0 = dOf(0), d1 = dOf(1);
+  k.setMod({ arcs: [{ from: 0.3, to: 0.4, kind: 'other' }, { from: 0.1, to: 0.2, kind: 'other' }], live: null });
+  assert.equal(sj([dOf(0), dOf(1)]), sj([d1, d0]), 'equal kinds keep the given order');
+  k.setMod({ arcs: [{ from: 0.1, to: 0.2, kind: 'sel' }], live: null });
+  assert.equal(shown().length, 1, 'a shorter list hides the spare paths');
+  k.setMod(null);
+  assert.equal(shown().length, 0);
 });

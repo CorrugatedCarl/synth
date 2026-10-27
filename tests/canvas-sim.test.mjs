@@ -588,7 +588,11 @@ test('module CPU (1d): the engine\'s stats per Inst / Chain reach the shown trac
   assert.equal(cpu(cvModule.ID.out), '', 'OUT: no engine part');
 });
 
-test('OUT scope (1d review): drawn only while the OUT module is live — not off screen, not folded', async () => {
+// (IMPL-FR §1.6) the OUT scope is drawn by main.js's frameTick, a client of the frame clock at the display's rate: these tests
+// look at one draw per sim round (rounds microseconds apart), so the clock's gate is off for them
+const WK = await import('../wk.js?v=9');
+const ungated = async fn => { WK.clock.config({ gate: false }); try { return await fn(); } finally { WK.clock.config({ gate: true }); } };
+test('OUT scope (1d review): drawn only while the OUT module is live — not off screen, not folded', () => ungated(async () => {
   await sim.power(); sim.raf(); await sim.settle(5);
   const sc = sim.$('#scope'), m = () => V().modules.get(cvModule.ID.out), gc = sc.getContext, g = new Proxy({}, { get: () => () => {} });
   let n = 0;
@@ -600,9 +604,9 @@ test('OUT scope (1d review): drawn only while the OUT module is live — not off
     V().toggleFold(cvModule.ID.out); n = 0; sim.raf(); assert.equal(n, 0, 'folded: not drawn');
     V().toggleFold(cvModule.ID.out); sim.raf(); assert.ok(n > 0, 'unfolded: drawn');
   } finally { sc.offsetParent = null; sc.getContext = gc; }
-});
+}));
 
-test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain after the FX rack, fader and pan) in wave and spectrum, never the master\'s; follows a track switch; flat without a node; meters and master tap kept', async () => {
+test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain after the FX rack, fader and pan) in wave and spectrum, never the master\'s; follows a track switch; flat without a node; meters and master tap kept', () => ungated(async () => {
   await sim.power(); sim.raf(); await sim.settle(5);
   while (P().tracks.length < 2) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
   sim.raf(8); await sim.settle(5);
@@ -629,7 +633,8 @@ test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain af
   const sc = sim.$('#scope'), gc = sc.getContext, calls = [];
   const g = new Proxy({}, { get: (o, k) => (k in o ? o[k] : (...a) => { calls.push([k, a]); }), set: (o, k, v) => { o[k] = v; return true; } });
   sc.offsetParent = {}; sc.clientWidth = 300; sc.clientHeight = 100; sc.getContext = () => g;
-  const NB = api.nodes.get(B.id), look = (id, mode) => { api.scopeMode(mode); api.selectTrack(id); sim.raf(8); reads.length = 0; calls.length = 0; sim.raf(3); };
+  // (IMPL-FR review 2, P3-4: a silent scope draws its flat line once — at the switch — and then nothing: the calls are the switch's)
+  const NB = api.nodes.get(B.id), look = (id, mode) => { calls.length = 0; api.scopeMode(mode); api.selectTrack(id); sim.raf(8); reads.length = 0; sim.raf(3); };
   try {
     assert.equal(masterAn.fftSize, 8192, 'the master analyser is kept (the Master canvas\'s tap)');
     assert.ok(!!(scopeOf(A.id) && scopeOf(B.id)),'each track\'s node has an analyser sized for the scope');
@@ -662,7 +667,41 @@ test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain af
   } finally {
     api.nodes.set(B.id, NB); sc.offsetParent = null; sc.getContext = gc; api.scopeMode('wave'); api.selectTrack(first); sim.raf(8);
   }
-});
+}));
+
+test('OUT scope (IMPL-FR review 2, P3-4): silent, its flat line is drawn once and then nothing until there is signal (master-ui\'s idle rule) — a signal draws every frame; a size, mode or source change, or the scope back on screen, draws the still picture once again', () => ungated(async () => {
+  await sim.power(); sim.raf(); await sim.settle(5);
+  const A = api.scopeSource(), sc = sim.$('#scope'), gc = sc.getContext, m = () => V().modules.get(cvModule.ID.out), calls = [];
+  assert.ok(A, 'the shown track\'s analyser');
+  let amp = 0;
+  const td0 = A.getFloatTimeDomainData, fd0 = A.getFloatFrequencyData;
+  A.getFloatTimeDomainData = a => { for (let i = 0; i < a.length; i++) a[i] = amp * Math.sin(i / 7); };
+  A.getFloatFrequencyData = a => { a.fill(amp ? -40 : -200); };
+  const g = new Proxy({}, { get: (o, k) => (k in o ? o[k] : () => { calls.push(k); }), set: (o, k, v) => { o[k] = v; return true; } });
+  sc.offsetParent = {}; sc.clientWidth = 300; sc.clientHeight = 100; sc.getContext = () => g;
+  const draws = n => { let d = 0; for (let i = 0; i < n; i++) { calls.length = 0; sim.raf(); if (calls.includes('fillRect')) d++; } return d; };
+  try {
+    api.scopeMode('wave'); sim.raf(3);
+    assert.equal(draws(10), 0, 'silent: nothing drawn, frame after frame');
+    amp = 0.5;
+    assert.equal(draws(6), 6, 'a signal: every frame');
+    amp = 0;
+    assert.deepEqual([draws(1), draws(8)], [1, 0], 'silent again: the flat line once, then nothing');
+    sc.clientWidth = 320;
+    assert.deepEqual([draws(1), draws(4)], [1, 0], 'a new size: once');
+    api.scopeMode('fft');
+    assert.deepEqual([draws(1), draws(4)], [1, 0], 'the spectrum, silent (every bin at the floor): once');
+    amp = 0.5;
+    assert.equal(draws(3), 3);
+    amp = 0; draws(2);
+    m().onScreen(false); assert.equal(draws(3), 0, 'off screen: nothing');
+    m().onScreen(true); assert.deepEqual([draws(1), draws(3)], [1, 0], 'back on screen: once');
+    const NA = api.nodes.get(T().id), sc0 = NA.sc;
+    NA.sc = null; // (no analyser: the flat line of no source)
+    try { assert.deepEqual([draws(1), draws(3)], [1, 0], 'another source: once'); } finally { NA.sc = sc0; }
+    assert.deepEqual([draws(1), draws(3)], [1, 0]);
+  } finally { A.getFloatTimeDomainData = td0; A.getFloatFrequencyData = fd0; sc.offsetParent = null; sc.getContext = gc; api.scopeMode('wave'); sim.raf(2); }
+}));
 
 test('(9b, IMPL-9b §4.3; lanes U9b, H9b) the Sources tray\'s Moog modules view in the page: the note names the four sets; six groups (Sources · Modifiers · Control · Sequencing · Console & routing · 1960s) and the 35 module tiles in the family\'s order, each with its glyph box, name and load; tiles() stays the synths\'; the host\'s three set tiles (System 35, System 55, System IIIc)', () => {
   const tiles = globalThis.__synthTest.shell.shell.tiles, was = tiles.view();

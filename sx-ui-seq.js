@@ -49,6 +49,15 @@
 //   laneWrite(lane, x0, x1, y)       an automation lane with the span (x0, x1] overwritten by y (macro-knob recording)
 //   rateRemap(n, from, to)           arp RATE n kept at the nearest ladder entry when DOT / TRIP change the ladder
 //   swingN(s) / swingS(n)            SWING value s ∈ [−1, 1] ↔ the field's n (300 steps: 0.25 % in Live's convention)
+//   clipHeadAt(p, b, hb, rate, dir, st, len, wrap, s, d)   a posted clip playhead carried to a heard song beat (IMPL-FR §3 B6)
+//
+// The CLIP roll's playhead (IMPL-FR Cut A §3 B6): while the song plays and the host tells the heard song position
+// (host.heardTick() → song ticks, 960 a beat: the frame's shared value), the selected clip's posted playhead (seq[5] at
+// the post's song beat seq[8]) is carried to the heard beat — the newest post heard by then, from a ring (a post runs
+// ahead of the heard audio by the output delay) — and a frame-clock client (wk.clock) paints it every frame; a hold (the
+// same position posted at a later beat) as posted; a jump posted (a seek, a wrap) starts a new line the heard beat joins
+// when it jumps too (until then it stays on the old line's anchors; gone back before the jump's post came: held until one
+// does); stopped (the free clock), Static, no heardTick: the posted value at the snapshot rate, no client.
 //
 // Every class: .el (its root element, appended to root when root is given) and destroy() (idempotent). Pages repaint
 // through the kit: each page registers ONE kit.custom (its own widget list, so widgets made after the build — overlays,
@@ -494,6 +503,17 @@ export function rateRemap(n, from, to) {
     B.forEach((e, i) => { const d = Math.abs(Math.log(e.beats / e0.beats)); if (d < bd - 1e-12) { bd = d; best = i; } });
   }
   return r5(best / (B.length - 1));
+}
+
+// (IMPL-FR §3 B6) a clip's playhead p (sixteenths), posted at song beat b, carried to song beat hb: the sequencer's own law
+// (sx-seq pPosAt) — 4·rate sixteenths per UNSWUNG beat (u = swingInv(beat, s, d): exact under swing), direction dir (+1, −1;
+// 0 = held: Static), wrapped into the region [st, len) (Normal / Reverse) or clamped to it (the other modes: their segment
+// jumps show at the next post)
+export function clipHeadAt(p, b, hb, rate, dir, st, len, wrap, s, d) {
+  const W = len - st;
+  if (!dir || !(W > 0) || !fin(p)) return p;
+  const x = p + dir * 4 * rate * (core.swingInv(hb, s, d) - core.swingInv(b, s, d));
+  return wrap ? st + ((((x - st) % W) + W) % W) : clamp(x, st, len);
 }
 
 // SWING field: s ∈ [−1, 1] ↔ n ∈ [0, 1] over 300 steps (s step 1/150 = 0.25 % in Live's 50 + 37.5·s % convention)
@@ -1440,6 +1460,10 @@ const sortNotes = L => L.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
 const MAX_NOTES_TEXT = room => (room < core.MAX_CLIP_NOTES ? 'At most ' + core.MAX_BANK_NOTES + ' notes per clip bank' : 'At most ' + core.MAX_CLIP_NOTES + ' notes per clip');
 // recording clock: re-anchor window (snapshots) and the jump that restarts it (ms of clip time: a seek, a relaunch)
 const REC_WIN = 24, REC_JUMP_MS = 120;
+// (IMPL-FR §3 B6) the roll's playhead anchors: a ring of posts (≈ 0.55 s at 29 Hz: a Bluetooth output delay fits); an anchor
+// carries the playhead ≤ HEAD_AGE s (≈ 7 post intervals; older: the posts stopped — the value as posted); the clock client
+// ends when no post came for HEAD_IDLE ms
+const HEAD_N = 16, HEAD_AGE = 0.25, HEAD_IDLE = 1000;
 
 export class ClipPage extends SeqPage {
   // o.twins (SYNTH Canvas milestone 3, IMPL-3 §2.2: CLIP as a Serum part): the MACROS pane's knobs are twins of the MACROS
@@ -1456,6 +1480,16 @@ export class ClipPage extends SeqPage {
     this.snObj = undefined;     // the last snapshot seen (object, kit.snapSeq) and its receive time (ms)
     this.snSeq = -1;
     this.snapAt = 0;
+    // (IMPL-FR §3 B6) the playhead's anchors: b = the post's song beat (seq[8]), p = the selected clip's playhead then
+    // (seq[5]; −1 not playing), d = its direction (Pendulum: from the previous anchor), h = 1 a hold (the previous anchor's
+    // position at a later beat), s = its serial (ser: the last one's), the newest at i − 1; sel = the clip they belong to, t = the
+    // last one's arrival (ms). The lines (review 2): st = the posts' step (beats), js = the serial of the newest jump posted (a
+    // seek, a wrap: a new line from it on), jo / jd = the old line's last audible beat and the jump's direction, hl = the first
+    // serial of the line the heard beat is on; hb / v = the heard beat / the value of the last headNow, lost = held since serial
+    // lost (the heard beat went back before the jump's post came); the clock client's remover
+    this.hA = { b: new Float64Array(HEAD_N), p: new Float64Array(HEAD_N), d: new Int8Array(HEAD_N), h: new Uint8Array(HEAD_N), s: new Float64Array(HEAD_N),
+      n: 0, i: 0, sel: -1, obj: undefined, seq: -1, t: 0, ser: 0, st: NaN, js: 1, jo: NaN, jd: 0, hl: 1, hb: NaN, v: -1, lost: 0, fk: -1, fa: -1 };
+    this.headOff = null;
     this.el = this.build();
     if (root) root.appendChild(this.el);
   }
@@ -1665,7 +1699,7 @@ export class ClipPage extends SeqPage {
       edit: (fn, e) => K.edit(s => { const c = sel(s); if (c) fn(c); s.clip.dirty = 1; }, Object.assign({ label: 'Clip' }, e)),
       key: () => K.s().kbd.key,
       scale: () => K.s().kbd.scale,
-      playhead: () => { const q = seqOf(K); return q && fin(q[5]) ? q[5] : -1; },
+      playhead: () => this.headNow(),
       audition: (K.host && K.host.audition) || null,
       record: () => (this.rec && this.rec.ci === this.C().sel ? { notes: this.pending() } : null),
       zoom: () => arr(K.s().ui.clipZoom),
@@ -1809,6 +1843,99 @@ export class ClipPage extends SeqPage {
     if ((q[6] | 0) === ci && fin(q[7]) && q[7] >= 0) return q[7];
     return NaN;
   }
+  /* the roll's playhead from the heard song beat (IMPL-FR §3 B6; the module header) */
+  // a new snapshot: one anchor while the song plays (a stopped post, another clip selected: the ring starts afresh)
+  headSee() {
+    const K = this.kit, A = this.hA, sn = typeof K.snap === 'function' ? K.snap() : null, sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;
+    if (sn === A.obj && sq === A.seq) return;
+    A.obj = sn; A.seq = sq;
+    const q = seqOf(K), sel = this.C().sel;
+    if (!q || !(q[9] >= 0.5) || !fin(q[8]) || sel !== A.sel) {
+      A.n = 0; A.i = 0; A.sel = sel; A.st = NaN; A.hb = NaN; A.lost = 0; A.js = A.hl = A.ser + 1;
+      if (!q || !(q[9] >= 0.5) || !fin(q[8])) return;
+    }
+    const p = fin(q[5]) && q[5] >= 0 ? q[5] : -1, j = (A.i + HEAD_N - 1) % HEAD_N, pp = A.n ? A.p[j] : -1, b = q[8], bj = A.n ? A.b[j] : NaN, db = b - bj;
+    A.ser++;
+    // (review 2, P3-1) a jump posted — the beat back (a seek back, a loop wrap) or forward past 1.5 of the posts' step (a seek on):
+    // a new line from this anchor on. Until the heard beat makes the jump too (headNow) it stays on the old line's anchors: a heard
+    // beat on one line never meets the other's anchors (a stale position: 6.33 → 4.02 → 6.37; a short seek's cross-carry)
+    if (db < 0 || (A.st > 0 && db > 1.5 * A.st + 1e-6)) { A.js = A.ser; A.jo = bj + (A.st > 0 ? A.st : 0); A.jd = db < 0 ? -1 : 1; }
+    else if (db > 0) A.st = db;
+    let d = A.n ? A.d[j] : 1;
+    if (p >= 0 && pp >= 0 && p !== pp) { const c = this.clip(), W = c ? c.len - c.start : 0; if (Math.abs(p - pp) < W / 2) d = p > pp ? 1 : -1; }
+    // (review 2, P2-1) a hold: the previous post's position at a later beat (RETRIG paused at a seek until its start, a slice at
+    // its segment's end) — shown as posted, never carried ahead and snapped back at the next post (one post cannot tell)
+    A.b[A.i] = b; A.p[A.i] = p; A.d[A.i] = d || 1; A.h[A.i] = p >= 0 && p === pp && b > bj ? 1 : 0; A.s[A.i] = A.ser;
+    A.i = (A.i + 1) % HEAD_N;
+    if (A.n < HEAD_N) A.n++;
+    A.t = now();
+  }
+  // the playhead (sixteenths, −1 none): on the line the heard beat is on, the newest anchor heard by the heard beat hb and ≤
+  // HEAD_AGE s before it, carried to hb (clipHeadAt); nothing heard yet → the earliest later post (by beat) as posted; the heard
+  // beat gone back before the jump's post came → held where it was until a post comes; else (posts stopped, stopped song, Static,
+  // no heardTick) the posted value
+  headNow() {
+    this.headSee();   // (review 2 fixer: this frame's snapshot even before its live() — the clock client may run first in the frame)
+    const K = this.kit, q = seqOf(K), posted = q && fin(q[5]) ? q[5] : -1, A = this.hA;
+    if (!A.n || !q || !(q[9] >= 0.5) || !this.heard()) { A.hb = NaN; return posted; }
+    const c = this.clip(), mode = c ? c.mode | 0 : 8;
+    if (mode === 8) { A.hb = NaN; return posted; }
+    let hb;
+    try { hb = +K.host.heardTick() / 960; } catch (err) { hb = NaN; }
+    if (!fin(hb)) { A.hb = NaN; return posted; }
+    // (review 2) the heard line: the heard beat moves to the newest posted line when it makes the jump too — going back (a seek
+    // back, a wrap), or forward past the old line's last audible beat (a seek on); gone back with no newer line posted, the jump's
+    // post has not come (the output delay shorter than a post interval): every anchor is the old line's, so the playhead holds where
+    // it was until a post comes (else the oldest pre-jump anchor flashed: 14.05 → 9.59 → 14.06)
+    if (A.lost) {
+      if (A.ser === A.lost) { A.hb = hb; return A.v; }
+      A.lost = 0; if (A.js > A.hl) A.hl = A.js;
+    } else if (hb < A.hb - 1e-6) {
+      if (A.js > A.hl) A.hl = A.js; else { A.lost = A.ser; A.hb = hb; return A.v; }
+    } else if (A.js > A.hl && A.jd > 0 && hb > A.jo + 1e-9) A.hl = A.js;
+    A.hb = hb;
+    const H = K.host, bpm = typeof H.bpm === 'function' ? +H.bpm() : 120, age = HEAD_AGE * (bpm > 0 ? bpm : 120) / 60;   // (no bound fn per frame)
+    // the heard line's anchors; nothing heard there → the newest line's; nothing at all there → every anchor (review 1's rule)
+    this.headFind(hb, age, A.hl, A.js > A.hl ? A.js : Infinity);
+    let k = A.fk, ahead = A.fa;
+    if (k < 0 && A.js > A.hl) { this.headFind(hb, age, A.js, Infinity); if (A.fk >= 0 || A.fa >= 0) { k = A.fk; ahead = A.fa; } }
+    if (k < 0 && ahead < 0) { this.headFind(hb, age, 0, Infinity); k = A.fk; ahead = A.fa; }
+    if (k < 0) return (A.v = ahead >= 0 ? A.p[ahead] : posted);
+    const p = A.p[k];
+    if (!(p >= 0)) return (A.v = -1);
+    if (A.h[k]) return (A.v = p);   // (a hold: as posted)
+    const kb = K.s().kbd || {}, sw = fin(kb.swing) ? clamp(kb.swing, -1, 1) : 0, dv = core.SWING_DIVS[clamp(kb.div | 0, 0, 2)];
+    const rate = core.CLIP_RATE_VALUES[Math.round(clamp01(c.n && fin(c.n.rate) ? c.n.rate : 0.5) * 10)] || 1;
+    return (A.v = clipHeadAt(p, A.b[k], hb, rate, mode === 1 ? -1 : mode === 2 ? A.d[k] : 1, c.start | 0, c.len, mode <= 1, sw, dv ? dv.beats : 0.5));
+  }
+  // among the anchors of serials [lo, hi): fk = the newest heard by hb within age, else −1; fa = the earliest later one BY BEAT (after
+  // a loop wrap / a seek back the older anchors' beats lie above hb too — review 1, P2-1), else −1
+  headFind(hb, age, lo, hi) {
+    const A = this.hA;
+    let k = -1, ahead = -1;
+    for (let m = 1; m <= A.n; m++) {
+      const i = (A.i + HEAD_N - m) % HEAD_N;
+      if (A.s[i] < lo || A.s[i] >= hi) continue;
+      const d = hb - A.b[i];
+      if (d >= -1e-9 && d <= age) { k = i; break; }
+      if (d < -1e-9 && (ahead < 0 || A.b[i] < A.b[ahead])) ahead = i;
+    }
+    A.fk = k; A.fa = ahead;
+  }
+  // the clock client that paints it every frame: while the page is shown and the newest post has the song playing the selected
+  // clip (not Static) — none at rest, none hidden; it ends itself when the posts stop
+  headSync() {
+    const q = seqOf(this.kit), c = this.clip(), C = wk.clock;
+    const want = !this.dead && this.shown && !!this.roll && this.heard() && !!q && q[9] >= 0.5 && fin(q[5]) && q[5] >= 0 && !!c && (c.mode | 0) !== 8
+      && !!C && typeof C.add === 'function';
+    if (want && !this.headOff) {
+      this.headOff = C.add({ name: 'sx-clip-head', el: this.roll.el, end: () => { this.headOff = null; },
+        fn: () => { if (now() - this.hA.t > HEAD_IDLE) { this.headStop(); return; } if (this.roll) this.roll.tick(); } });
+    } else if (!want) this.headStop();
+  }
+  headStop() { const f = this.headOff; this.headOff = null; if (f) f(); }
+  // the host tells the heard song position: host.heardTick() → song ticks (960 a beat; main.js: the frame's shared value)
+  heard() { const h = this.kit.host; return !!h && typeof h.heardTick === 'function'; }
   // a new snapshot since the last call (the snapshot object / kit.snapSeq) → its receive time in this.snapAt
   seeSnap() {
     const K = this.kit, sn = typeof K.snap === 'function' ? K.snap() : null, sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;
@@ -2020,11 +2147,13 @@ export class ClipPage extends SeqPage {
       else if (R.stopT && now() - R.stopT >= 150) this.finishRecord('Recording finished: the clip stopped');
       else this.extend();
     }
+    this.headSee();
+    this.headSync();
     if (!this.shown) return;
     if (this.slots) this.slots.live();
     if (this.roll) {
       if (this.rec) this.roll.refresh();
-      this.roll.tick();
+      if (!this.headOff) this.roll.tick();   // (the clock client paints it every frame meanwhile)
     }
   }
   destroy() {
@@ -2036,6 +2165,7 @@ export class ClipPage extends SeqPage {
       try { this.finishRecord(); } catch (err) { warnOnce('recfin', 'sx-ui-seq: finishing the recording failed', err); }
       if (this.rec === R) { this.rec = null; if (R.unIn) R.unIn(); }
     }
+    this.headStop();
     if (this.roll) this.roll.destroy();
     if (this.lanes) this.lanes.destroy();
     super.destroy();
@@ -2319,6 +2449,8 @@ export class PianoRoll {
     this.aud = null;
     this.last = null;
     this.ph = -2;
+    this.phX = -1;                // the overlay's playhead column (−1: none drawn) and the geometry of the last draw (tick)
+    this.vw = null;
     this.offs = [];
     this.ro = null;               // ResizeObserver (browsers) and the size it keeps valid
     this.sz = null;
@@ -2487,14 +2619,18 @@ export class PianoRoll {
     this.drawOv();
     return true;
   }
-  // playhead only (snapshot frames)
+  // playhead only (snapshot frames; every frame while the CLIP page's clock client runs, IMPL-FR §3 B6): the overlay is
+  // redrawn when the playhead lands on another pixel (or shows / goes) — against the geometry the roll was drawn with
   tick() {
     if (this.dead) return;
     const f = this.o.playhead, ph = typeof f === 'function' ? f() : -1;
     if (ph === this.ph) return;
     this.ph = ph;
-    this.drawOv();
+    if (this.vw && this.pxOf(ph, this.vw) === this.phX) return;
+    this.drawOv(ph);
   }
+  // the overlay's playhead column: x rounded, −1 none (not playing, left of the keys)
+  pxOf(ph, v) { const x = fin(ph) && ph >= 0 ? this.xOf(ph, v) : -1; return x >= KEYW ? Math.round(x) : -1; }
   ctx(cv) {
     const { w, h } = this.size(), dpr = storeDpr(this.doc, cv);
     const W = Math.ceil(w * dpr - 1e-6), H = Math.ceil(h * dpr - 1e-6); // (rounded up: never below dpr, review 2)
@@ -2513,6 +2649,7 @@ export class PianoRoll {
     if (!g) return;
     const c = this.clip(), v = this.view(), { w, h } = this.size(), pat = this.kind === 'pat';
     const len = this.lenOf(c), start = this.startOf(c), key = this.keyNow();
+    this.vw = v;
     g.fillStyle = RC.bg;
     g.fillRect(0, 0, w, h);
     // rows
@@ -2618,15 +2755,14 @@ export class PianoRoll {
     g.fillStyle = '#11161c';
     g.fillRect(0, 0, KEYW, RULER);
   }
-  drawOv() {
+  // ph: the playhead when the caller has it (tick); the geometry of the last draw (vw: no view() — rows, folds — per frame)
+  drawOv(ph0) {
     const g = this.ctx(this.ov);
     if (!g) return;
-    const v = this.view(), { h } = this.size(), f = this.o.playhead, ph = typeof f === 'function' ? f() : -1;
+    const v = this.vw || this.view(), { h } = this.size(), f = this.o.playhead, ph = ph0 !== undefined ? ph0 : typeof f === 'function' ? f() : -1;
     this.ph = ph;
-    if (fin(ph) && ph >= 0) {
-      const x = this.xOf(ph, v);
-      if (x >= KEYW) { g.fillStyle = RC.play; g.fillRect(Math.round(x), 0, 2, h); }
-    }
+    this.phX = this.pxOf(ph, v);
+    if (this.phX >= 0) { g.fillStyle = RC.play; g.fillRect(this.phX, 0, 2, h); }
     const G = this.g;
     if (G && G.type === 'marquee' && G.moved) {
       g.strokeStyle = RC.marquee;

@@ -1766,3 +1766,78 @@ test('two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "tw
     assert.equal(st.calls.at(-1)[0], 'end');
   }
 });
+
+/* ------------------------------------------------- IMPL-FR (stage FR, Cut A: lane H-A) */
+// stubs for the observers a browser has: a ResizeObserver whose callback the test fires, an IntersectionObserver (the frame
+// clock's liveness: no getClientRects probe)
+function observers() {
+  const ros = [], saved = [globalThis.ResizeObserver, globalThis.IntersectionObserver];
+  globalThis.ResizeObserver = class { constructor(fn) { this.fn = fn; this.els = []; ros.push(this); } observe(el) { this.els.push(el); } disconnect() { this.els = []; } };
+  globalThis.IntersectionObserver = class { constructor(fn) { this.fn = fn; } observe() {} unobserve() {} disconnect() {} };
+  const fire = (el, w, h) => { for (const o of ros) if (o.els.includes(el)) o.fn([{ target: el, contentRect: { width: w, height: h } }]); };
+  const restore = () => {
+    if (saved[0]) globalThis.ResizeObserver = saved[0]; else delete globalThis.ResizeObserver;
+    if (saved[1]) globalThis.IntersectionObserver = saved[1]; else delete globalThis.IntersectionObserver;
+  };
+  return { fire, restore };
+}
+// (§3 B1a) the playhead loops follow the frame clock's global rate — no 30 fps cap: a dot that moves every frame is drawn every
+// frame at a 120 Hz display; (§7.3) with the size cached from the ResizeObserver and the liveness from the clock, a frame reads
+// no layout (no rect, no getClientRects)
+test('IMPL-FR §3 B1a / §7.3: Curve / Env / Path playheads redraw at the frame clock\'s rate (no 30 cap) and read no layout per frame', () => {
+  const O = observers();
+  wk.clock._reset(); wk.clock.config({ display: 120 });
+  raf.install();
+  try {
+    for (const kind of ['curve', 'env', 'path']) {
+      let k = 0;
+      const ph = () => (kind === 'curve' ? (k % 100) / 100 : kind === 'env' ? { stage: 1, t: (k % 100) / 100 } : [(k % 100) / 100, 0.5]);
+      const r = kind === 'curve' ? mkCurve({ opts: { playhead: ph } }) : kind === 'env' ? mkEnv({ opts: { playhead: ph } }) : mkPath({ opts: { playhead: ph } });
+      O.fire(r.root, 212, 138); // (the box laid out: the size measured once and cached)
+      let rects = 0, crs = 0;
+      const gbr = r.root.getBoundingClientRect.bind(r.root);
+      r.root.getBoundingClientRect = () => { rects++; return gbr(); };
+      r.root.getClientRects = () => { crs++; return [{ width: 1 }]; };
+      const ov = one(r.root, 'gx-ov').getContext('2d');
+      ov.calls.length = 0;
+      for (let i = 1; i <= 120; i++) { k = i; raf.flush(1, 1000 + i * 1000 / 120); }
+      const arcs = ov.calls.filter(c => c[0] === 'arc').length;
+      assert.equal(arcs, 120, kind + ': a dot every frame at 120 fps (' + arcs + ')');
+      assert.deepEqual([rects, crs], [0, 0], kind + ': no layout read per frame');
+      // a resize drops the cache: the next draw measures again
+      O.fire(r.root, 300, 138);
+      assert.ok(rects > 0, kind + ': measured after the resize');
+      r.ed.destroy();
+      raf.flush(1);
+      assert.equal(raf.pending, 0, kind + ': the loop ends with the editor');
+    }
+  } finally { raf.uninstall(); wk.clock._reset(); O.restore(); }
+});
+
+// (§7.3) the EnvEditor's overlay key is numbers (the stage, t to 1e-4: no string a frame) and its geometry is the last draw's
+// (no env object, no corner arrays per overlay frame) — the dot sits on the curve as drawn; a draw takes up a changed envelope
+test('IMPL-FR §7.3: the EnvEditor overlay keys on numbers (stage, t to 1e-4) and reuses the drawn geometry; a redraw takes up a new envelope', () => {
+  let t = 0.5;
+  const g = mkEnv({ opts: { playhead: () => ({ stage: 3, t }) } });
+  const ov = one(g.root, 'gx-ov').getContext('2d'), arcs = () => ov.calls.filter(c => c[0] === 'arc');
+  let envs = 0, geos = 0;
+  const env0 = g.ed.o.env, geo0 = g.ed.geo.bind(g.ed);
+  g.ed.o.env = () => { envs++; return env0(); };
+  g.ed.geo = (...a) => { geos++; return geo0(...a); };
+  ov.calls.length = 0;
+  for (let i = 1; i <= 20; i++) { t = 0.5 + i * 0.01; g.ed.drawOverlay(false, true); } // (0.5 itself: drawn by the refresh)
+  assert.deepEqual([arcs().length, envs, geos], [20, 0, 0], 'a dot per new t; no env() / geo() per overlay frame');
+  ov.calls.length = 0;
+  t += 0.00004; g.ed.drawOverlay(false, true);
+  assert.equal(arcs().length, 0, 'under 1e-4 of t: the same key, nothing drawn');
+  t += 0.0002; g.ed.drawOverlay(false, true);
+  assert.equal(arcs().length, 1);
+  assert.equal(typeof g.ed.lastPh === 'string', false, 'no string key');
+  // the dot on the drawn decay (stage 3): a new decay time is taken up by the redraw
+  const x0 = arcs()[0][1];
+  g.st.e.d = 2; g.ed.refresh();
+  ov.calls.length = 0;
+  t += 0.0002; g.ed.drawOverlay(false, true);
+  assert.ok(arcs().length === 1 && arcs()[0][1] !== x0, 'the redraw\'s geometry');
+  g.ed.destroy();
+});

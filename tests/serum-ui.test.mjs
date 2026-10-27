@@ -2841,6 +2841,42 @@ test('review: hidden canvases are neither drawn nor measured; kit.live tells its
   u.destroy();
 });
 
+test('IMPL-FR §3 B3: the bundled panel\'s snapshot paints honour a canvas\' rate class — posts at 120 Hz redraw a maxHz 60 display at ≤ 60 / s and a plain one at every change; the deferred change of a page hidden meanwhile is not drawn until it shows; keyN keys compare by element', async () => {
+  const { doc, u } = await mount();
+  let T = 1000, heavy = 0, light = 0, nk = 0;
+  u.tNow = () => T;
+  wkm.clock._reset(); wkm.clock.config({ display: 120 });
+  try {
+    const frame = () => { for (const f of doc.defaultView.raf.splice(0)) f(T); };
+    await flush(doc);
+    u.bp = u.pages.osc;
+    const H = u.kit.canvas('', () => 'h' + u.snapSeq, () => { heavy++; }, { maxHz: 60 });
+    u.kit.canvas('', () => 'l' + u.snapSeq, () => { light++; });
+    const kn = [0, 0];
+    u.kit.canvas('', () => 'never', () => { nk++; }, { keyN: k => { k[0] = kn[0]; k[1] = kn[1]; return 2; } });
+    u.bp = null;
+    assert.equal(H.maxHz, 60);
+    frame();
+    u.setSnapshot({ s: { notes: 0 } });
+    frame();
+    heavy = 0; light = 0; nk = 0;
+    for (let f = 1; f <= 24; f++) { T += 1000 / 120; u.setSnapshot({ s: { notes: 0 } }); frame(); if (f % 6 === 0) kn[1] = f; }
+    assert.equal(light, 24);
+    assert.ok(heavy >= 11 && heavy <= 13, heavy + ' heavy draws for 24 posts at 120 Hz');
+    assert.equal(nk, 3, 'keyN: drawn when an element changed');
+    // a change deferred, then the OSC page hidden: nothing drawn while hidden, drawn when shown again
+    T += 1000 / 120; u.setSnapshot({ s: { notes: 0 } }); frame();
+    T += 1; u.setSnapshot({ s: { notes: 0 } }); frame();
+    const h0 = heavy;
+    u.setPage('matrix');
+    T += 1000 / 60; frame(); frame();
+    assert.equal(heavy, h0, 'hidden: not drawn');
+    u.setPage('osc');
+    T += 1000 / 60; await flush(doc);
+    assert.ok(heavy > h0, 'shown: drawn');
+  } finally { wkm.clock._reset(); u.destroy(); }
+});
+
 test('RULINGS2 F1: effect chains are v2 — Factory chains (FACTORY_CHAINS2), saved chains, v1 library entries migrate; locked parameters, rack locks and rows of instances that stay', async () => {
   const { host, u, s } = await mount();
   // the current rack (v2): one Delay (id dly) whose MIX is locked, one Chorus addressed by a matrix row; rack 1 (BUS 1) locked

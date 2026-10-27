@@ -67,7 +67,11 @@
 // Stage P (IMPL-P §1, §2; lane C): the device's performance preset — visual only, nothing here reaches a worklet — o.perf at
 // build (main.js: the pref synth.cv.perf), ?perf=high|medium|low overriding it for the session (never stored); setPerf(id)
 // live → cv-face's FACES.setPerf (the texture density) + the cord layer's setPerf (its physics); glStats() + perf and
-// FACES' budget as faceBudget. ?texmax=N (a test switch: the 25 % of Android tablets whose MAX_TEXTURE_SIZE is 4096) reaches
+// FACES' budget as faceBudget. Stage FR (IMPL-FR §2, §3 A2; lane K): the frame-rate setting — o.fps at build (main.js: the pref
+// synth.cv.fps, '120' on a fresh device), ?fps=120|144|165|240|display|<N> over it for the session (never stored); the ceiling in
+// force min(the setting, FPS_Q[perf]) is the frame clock's cap (wk.clock.setCap) at build and on every setFps / setPerf, told as
+// an 'fps' event; Medium / Low also draw the ropes at the clock's period (the physics steps every tick; a camera write's draw
+// is never held). ?texmax=N (a test switch: the 25 % of Android tablets whose MAX_TEXTURE_SIZE is 4096) reaches
 // createGL as o.maxTex beside ?nogl. A device-ratio change re-checks the faces (cv-face's rest-time recheck: its plan finds
 // the bases made at the old ratio) — a ratio-only change writes no camera, so nothing else would.
 import * as wk from './wk.js?v=9';
@@ -132,6 +136,19 @@ export const MAP_W = 176, MAP_H = 112;
  * 'high' (every device starts on High). */
 export const PERFS = Object.freeze(['high', 'medium', 'low']), PERF_PREF = 'synth.cv.perf';
 export { perfOf };
+/** (FR §2, IMPL-FR) the frame-rate setting — visual only, a device pref (appstore; synth.cv.fps by main.js, never in a project): the
+ * ids ('120' the default · '144' · '165' · '240' · 'display' = the display's own rate, capped at the clock's 240), fpsOf(v) → the
+ * Hz ('display' → ∞; a session number 10…1000 from ?fps= as it is; anything else 120), and the tiers' ceilings (High follows the
+ * setting; Medium and Low draw at 60 — where the display allows: the clock's 60 floor — cords too) */
+export const FPS_OPTS = Object.freeze(['120', '144', '165', '240', 'display']), FPS_PREF = 'synth.cv.fps';
+export const FPS_Q = Object.freeze({ high: Infinity, medium: 60, low: 60 });
+export function fpsOf(v) {
+  if (v === 'display') return Infinity;
+  const n = typeof v === 'number' || (typeof v === 'string' && /^\d{1,4}$/.test(v)) ? +v : NaN;
+  return n >= 10 && n <= 1000 ? n : 120;
+}
+const fpsId = v => { const s = String(v); return s === 'display' || fpsOf(s) === +s ? s : FPS_OPTS[0]; }; // (the setting as an id: unknown → '120')
+let capOwner = null; // (the world that set the clock's cap last: only its destroy gives it back)
 
 // momentum: px/ms to start (0.12 = 120 px/s), cap, stop; decay time constant (ms: a gentle glide); camera animation (ms);
 // a wheel / hook burst ends this long after its last event; taps: slop per pointer type, double-tap window and distance
@@ -192,11 +209,12 @@ const micro = f => (typeof queueMicrotask === 'function' ? queueMicrotask(f) : P
  *   setJackHook: (fn: Function | null, cancel?: Function) => () => void,
  *   cords: () => any,
  *   readonly perf: 'high' | 'medium' | 'low', setPerf: (id: string) => void,
+ *   readonly fps: string, setFps: (id: string) => void,
  *   setFitHook: (fn: (() => ({ids?: string[], kMin?: number, kMax?: number, foot?: boolean} | null)) | null) => () => void,
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
- *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'lock' | 'mods' | 'toolbar', fn: (d: any) => void) => () => void,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'lock' | 'mods' | 'toolbar' | 'fps', fn: (d: any) => void) => () => void,
  *   canvasStats: () => {n: number, bytes: number, minDensity: number | null, onMin: number | null, offN: number, capped: number, budget: number, k: number, dpr: number},
  *   destroy: () => void,
  * }} World
@@ -474,11 +492,13 @@ export function createWorld(viewport, o) {
   let G = null; // the world's own pointer gesture (pan / pinch)
   // (9) the cord layer (cords()); drawn into GL's frame ('under'); the last write outside the tick that drew it, the spacing
   // of those writes, its pending microtask; inside the tick; the last tick's time, the last frame's length (0: not consecutive)
-  let CD = null, cdUnder = false, cdOut = -1e9, cdIv = 0, cdSoon = false, cdMoved = false, ticking = false, tickT = -1, lastFrame = 0;
+  let CD = null, cdUnder = false, cdOut = -1e9, cdIv = 0, cdSoon = false, cdMoved = false, ticking = false, tickT = -1, lastFrame = 0, cdDrawT = -1e9; // (cdDrawT: the last cord draw)
   let fitHook = null; // (9) the host's fit (setFitHook)
   let cordHook = null; // (WC) the host's cord body test and tap (setCordHook): { hit, tap }
   let nearHook = null; // ((WC, fixer K; review P2-3) the host's jack near a press on no jack (setJackNear)
   let perf = perfOf(perfURL() || o.perf); // (P) the preset: ?perf= over o.perf (the device's pref), else high
+  let fps = fpsId(fpsURL() || o.fps), fpsKey = ''; // (FR §2) the frame-rate setting: ?fps= over o.fps (the device's pref), else '120'; the last setting + ceiling told
+  const capMe = {}; // (this world's claim on the clock's cap)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
   let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', pctLab = '', clickUntil = -1e9;
@@ -580,6 +600,7 @@ export function createWorld(viewport, o) {
   // o.maxTex: cv-gl takes min(the GPU's MAX_TEXTURE_SIZE, N) — never a raise)
   function urlQ() { try { return String((win.location && win.location.search) || ''); } catch (err) { return ''; } }
   function perfURL() { const m = /[?&]perf=(high|medium|low)(?:&|$)/.exec(urlQ()); return m ? m[1] : null; }
+  function fpsURL() { const m = /[?&]fps=(display|\d{1,4})(?:&|$)/.exec(urlQ()); return m && (m[1] === 'display' || fpsOf(m[1]) === +m[1]) ? m[1] : null; } // (FR §2.1) ?fps=120|144|165|240|display|<N>
   function texmaxURL() { const m = /[?&]texmax=(\d{1,6})(?:&|$)/.exec(urlQ()), v = m ? +m[1] : 0; return v > 0 ? v : 0; }
   function glPref() { // 'off' | 'test' | '' from the URL (first) or the pref
     let q = '';
@@ -733,7 +754,9 @@ export function createWorld(viewport, o) {
       // (cached rects only: no layout read in a burst; hotfix 2: a zoom burst's plan waits for its end — modules coming into
       // view by the dozen mid-pinch restyled their subtrees and woke their monitors: endBurst → recache → schedule)
       if ((write() || scrDirty) && active && !(B && B.zoom)) screen();
-      if (CD && active && (cdMoved || (!fresh && CD.owed()))) { cdMoved = false; cordsDraw(); } // ((9) the frame's one draw: the camera moved here, or the step's)
+      if (CD && active && (cdMoved || (!fresh && CD.owed()))) { // ((9) the frame's one draw: the camera moved here, or the step's)
+        if (cdMoved || !cordsHeld(T)) { cdMoved = false; cordsDraw(); } // ((FR §3 A2) Medium / Low hold the ropes' draw to the clock's period: owed stays owed, wants() asks the next frame)
+      }
     } finally { ticking = false; }
     if (mapDirty && mapOn && active) drawMap();
     if (glide || anim || (edge && edge.v) || (CD && active && CD.wants())) request();
@@ -776,7 +799,23 @@ export function createWorld(viewport, o) {
       cordsStep(t); cdStamp(t); cordsDraw();
     });
   }
-  function cordsDraw() { if (cdUnder) { glDraw(); return; } try { CD.draw(cam, vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
+  function cordsDraw() { cdDrawT = now(); if (cdUnder) { glDraw(); return; } try { CD.draw(cam, vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
+  // ((FR §3 A2, IMPL-FR) High draws what is owed — the layer owes a draw only when a rope stepped or an end moved, so at a 240 Hz tick
+  // the swaying ropes draw at the physics rate. Medium / Low hold the draw to the clock's effective period (60 a second where the
+  // display allows, the display's own below the floor), the same half-frame slack as the clock's gate. A camera write's draw
+  // (cdMoved, cordsSoon, resize) is never held: the cords follow the transform, the physics steps every tick as ever)
+  function cordsHeld(T) {
+    if (perf === 'high') return false;
+    const P = wk.clock.period();
+    return T - cdDrawT < P - 0.5 * Math.min(lastFrame > 0 ? lastFrame : P, P);
+  }
+  // (FR §2.2) the ceiling in force = min(the setting, the preset's tier) is the frame clock's cap; told ('fps') when the setting or the ceiling changed
+  function applyCap() {
+    const C = Math.min(fpsOf(fps), FPS_Q[perf]), key = fps + '|' + C, was = fpsKey;
+    capOwner = capMe; fpsKey = key;
+    try { wk.clock.setCap(C); } catch (err) { console.error(err); }
+    if (was && key !== was) emit('fps', { cap: C, fps, perf });
+  }
 
   /* ---- bursts: movestart … cameraend */
   function moved(timed, hook) {
@@ -1972,6 +2011,7 @@ export function createWorld(viewport, o) {
   if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook({ pan: p => dragPointer(p), onCamera: cb => api.on('camera', cb) });
   buildToolbar(o.toolbar);
   facesPerf(perf); // ((P) before the GL layer attaches the faces: their first plan at the preset's density)
+  applyCap(); // ((FR §2.2) the frame clock's ceiling at the setting and the preset: told to nobody yet)
   buildGrid();
   watchDpr();
   listen(viewport, 'pointerdown', onDownCap, true);
@@ -2067,6 +2107,17 @@ export function createWorld(viewport, o) {
       perf = perfOf(id);
       facesPerf(perf);
       if (CD && typeof CD.setPerf === 'function') { try { CD.setPerf(perf); } catch (err) { console.error(err); } }
+      applyCap(); // ((FR §2.2) the tier's ceiling)
+    },
+    /** (FR §2.1) the frame-rate setting in force: '120' | '144' | '165' | '240' | 'display' (o.fps at build, ?fps= over it — a session
+     * number too) */
+    get fps() { return fps; },
+    /** (FR §2.1, IMPL-FR) the setting, live (the person's ⚙ pick; anything unknown '120'): the frame clock's ceiling min(it, the preset's
+     * tier) — visual only, no reload, nothing posted. Told as an 'fps' event { cap, fps, perf } when it or the ceiling changed */
+    setFps(id) {
+      if (destroyed) return;
+      fps = fpsId(id);
+      applyCap();
     },
     /** (9) the host's fit: fn() → null (every item, no floor) | { ids, kMin?, kMax?, foot? } — the toolbar's fit, the 0 key and
      * the empty-canvas double-tap frame those items, never below kMin (a side that no longer fits keeps its start — or with foot
@@ -2112,6 +2163,7 @@ export function createWorld(viewport, o) {
       if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }
       if (CD) { try { CD.destroy(); } catch (err) { /* gone */ } CD = null; }
       wk.setWheelVeto(null);
+      if (capOwner === capMe) { capOwner = null; try { wk.clock.setCap(Infinity); } catch (err) { /* kit absent */ } } // ((FR) the clock's ceiling was this world's)
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
       if (o.layer) wk.setLayer(null);
       try { wk.setStoreCaps(null); } catch (err) { /* kit absent */ } // (H5: the caps were this world's)

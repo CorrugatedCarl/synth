@@ -800,6 +800,26 @@ test('setCpu (1d): the module\'s DSP load on its top bar — its share of the au
   m.setCpu(NaN); assert.equal(c.textContent, '');
 });
 
+test('setCpu (IMPL-FR review 2, P2-2): the figure holds within 1.5 of its display steps (1 % from 10 % up, 0.1 % below) — a load jittering ±1 step across a rounding edge never rewrites the bar (each write re-laid the page out), a real move does', () => {
+  const doc = fresh(), { m } = mod({}, { doc }), c = one(m.bar, 'cv-cpu');
+  let txt = '', writes = 0;
+  Object.defineProperty(c, 'textContent', { configurable: true, get: () => txt, set: v => { txt = String(v); writes++; } });
+  const feed = L => { const w = writes; for (const x of L) m.setCpu(x); return [txt, writes - w]; };
+  assert.deepEqual(feed([0.0234]), ['2.3%', 1]);
+  assert.deepEqual(feed([0.0225, 0.0245, 0.0226, 0.0244, 0.0235, 0.0234]), ['2.3%', 0], '±0.1 % across 2.35 %');
+  assert.deepEqual(feed([0.0262]), ['2.6%', 1], 'a real move');
+  assert.deepEqual(feed([0.42, 0.415, 0.435, 0.41, 0.43]), ['42%', 1], '±1 % across 42.5 %: one write (the move to it)');
+  assert.deepEqual(feed([0.00099, 0.00101, 0.0009, 0.0011, 0.00099]), ['<0.1%', 1], 'the idle flicker "<0.1%" ↔ "0.1%" (reviewer 2, measured): one write');
+  assert.deepEqual(feed([0.0012, 0.0008, 0.0011]), ['<0.1%', 0]);
+  assert.deepEqual(feed([0.0005]), ['<0.1%', 0]);
+  assert.deepEqual(feed([0.1004, 0.0995, 0.1003, 0.0996]), ['10%', 1], 'across the 10 % edge where the step changes: one write');
+  assert.deepEqual(feed([0.091, 0.0855]), ['10%', 0], 'from 10 %: a step is 1 %');
+  assert.deepEqual(feed([0.084]), ['8.4%', 1]);
+  assert.deepEqual(feed([0.0826, 0.0854, 0.084]), ['8.4%', 0], 'below 10 %: a step is 0.1 %');
+  assert.deepEqual(feed([null]), ['', 1], 'none: empty at once');
+  assert.deepEqual(feed([0.0234]), ['2.3%', 1], 'a reading after none: shown at once');
+});
+
 test('the CPU slot (1d review): a fixed width with tabular digits, so a changing figure never moves the chip or the title', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), r = (css.match(/\.cv-cpu \{[^}]*\}/) || [''])[0];
   assert.match(r, /flex: none/, 'never shrinks'); assert.match(r, /min-width: 5ch/, '"<0.1%" … "100%" in one slot (a monospace font)');

@@ -1322,6 +1322,68 @@ test('FXRackUI: the GR loop runs through wk.ticker (10 fps with prefers-reduced-
   } finally { if (prevMM === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = prevMM; raf.uninstall(); }
 });
 
+// (IMPL-FR §3 B1b, §7.3) the GR loop's frame (a clock client, still capped at 30: its data is the 29 Hz gr) reads no layout —
+// the sizes come from refresh / the rack's resize —, runs no fxLayout (the slot is cached at refresh), rebuilds no panel list
+// and keeps its change signature as numbers; a new value still paints, an unchanged one does not
+test('IMPL-FR §3 B1b: the GR loop\'s tick reads no layout, runs no fxLayout, lists no panels — the sizes, the slot and the panel list are cached at refresh; the signature is numeric; changes paint, the same values do not', () => {
+  raf.install();
+  try {
+    const { rack, st } = mkRack({ fx: fx2([inst('eq', 'eq'), inst('cmp', 'cmp')]) });
+    st.gr = new Float32Array(4 * 48);
+    const P = rack.panels.get('cmp'), cv = P.grCv, ctx = cv.getContext('2d');
+    place(cv, 0, 0, 156, 64);
+    rack.refresh();                                                                      // (refresh measures)
+    raf.flush(1, 0);
+    let rects = 0, sizes = 0, slots = 0, lists = 0;
+    const gbr = cv.getBoundingClientRect.bind(cv);
+    cv.getBoundingClientRect = () => { rects++; return gbr(); };
+    for (const k of ['clientWidth', 'clientHeight']) Object.defineProperty(cv, k, { configurable: true, get() { sizes++; return k === 'clientWidth' ? 156 : 64; } });
+    const gs = rack.grSlot.bind(rack), gp = rack.grPanels.bind(rack);
+    rack.grSlot = id => { slots++; return gs(id); };
+    rack.grPanels = () => { lists++; return gp(); };
+    ctx.calls.length = 0;
+    for (let i = 0; i < 30; i++) { st.gr[4] = i % 2 ? 6 : 3; raf.flush(1, 100 + 40 * i); }   // FXP instance 1 = the compressor
+    assert.deepEqual([rects, sizes, slots, lists], [0, 0, 0, 0], 'no layout read, no fxLayout, no panel list per tick');
+    assert.equal(ctx.calls.filter(c => c[0] === 'clearRect').length, 30, 'every change painted');
+    assert.ok(ctx.calls.some(c => c[0] === 'fillText' && c[1] === '-6.0') && ctx.calls.some(c => c[0] === 'fillText' && c[1] === '-3.0'));
+    assert.ok(P.grSig instanceof Float64Array, 'the change signature is numbers');
+    ctx.calls.length = 0;
+    raf.flush(10, 2000);
+    assert.equal(ctx.calls.filter(c => c[0] === 'clearRect').length, 0, 'unchanged: nothing painted');
+    // a refresh (an edit) measures again: a resized display paints at its new width
+    place(cv, 0, 0, 200, 64);
+    for (const k of ['clientWidth', 'clientHeight']) delete cv[k];
+    rack.refresh();
+    raf.flush(1, 3000);
+    const bg = ctx.calls.filter(c => c[0] === 'fillRect' && c[1] === 0 && c[2] === 0);
+    assert.equal(bg.length > 0 && bg.at(-1)[3], 200, 'the new width');
+    rack.destroy();
+  } finally { raf.uninstall(); wk.clock._reset(); } // (a failure leaves no armed frame behind for the next tests)
+});
+
+test('IMPL-FR §3 B1c: the Delay spectrum overlay\'s loop (a clock client at the 30 cap) redraws the display only when host.tap() hands a new array', () => {
+  raf.install();
+  try {
+    let frames = Float32Array.from({ length: 1024 }, (_, i) => 0.5 * Math.sin(2 * Math.PI * 1000 * i / 48000));
+    const { rack } = mkRack({ fx: fx2([inst('dly', 'dly')]) });
+    rack.host.setTap = () => {}; rack.host.tap = () => frames;
+    const dd = one(panelOf(rack, 'dly'), 'fxr-dlyf');
+    place(dd, 0, 0, 212, 74);
+    const tap = (el, x, y) => { ptr(el, 'pointerdown', x, y); ptr(el, 'pointerup', x, y); };
+    tap(dd, 100, 30); tap(dd, 102, 31);
+    assert.equal(rack.specId, 'dly');
+    let draws = 0;
+    const D = rack.specD, d0 = D.draw;
+    D.draw = x => { draws++; return d0(x); };
+    raf.flush(10, 0);
+    assert.ok(draws <= 1, 'the same tap array: drawn once at most (' + draws + ')');
+    const n0 = draws;
+    for (let i = 0; i < 5; i++) { frames = frames.slice(); raf.flush(2, 1000 + 80 * i); }
+    assert.equal(draws - n0, 5, 'a new array: one redraw each');
+    rack.destroy();
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
 test('FXRackUI: Reset All Racks and Load Effect Chain drop the rows / locks / MIDI of the instances they remove; same id and type keeps them', () => {
   const s = core.normalizeSerum(core.defaultSerum());
   s.matrix[0] = Object.assign({}, s.matrix[0], { src: 'lfo1', dst: 'fx.dly.feed', amt: 0.8 });

@@ -23,6 +23,10 @@ await sim.power(); await sim.settle(20);
 sim.$('#modal').hidden = true;
 const P = () => api.project(), TR = () => P().tracks.find(t => t.id === P().selTrack), Tx = () => api.transport();
 const settle = async (n = 3) => { for (let i = 0; i < n; i++) { sim.raf(); await sim.settle(3); } };
+// (IMPL-FR §1.6) one frame drawn now: main.js's frameTick is a client of the frame clock at the display's rate, and a frame
+// asked for less than a period after the last (an extra rAF round) is skipped — the clock's gate off for that round
+const WK = await import('../wk.js?v=9');
+const frameNow = () => { WK.clock.config({ gate: false }); try { sim.raf(); } finally { WK.clock.config({ gate: true }); } };
 const LOOP = 1920; // two beats at 240 BPM: half a second a pass
 
 // the song on, a frame (rAF) every 6 quanta (16 ms) as in a browser, until the heard position is past tick `to` of loop pass
@@ -259,12 +263,12 @@ test('R lights in the page: the roll\'s key strip lights the held notes that rea
   // playback: the heard playhead
   P().loop.on = false; P().bpm = 120; Tx().pos = 0; wraps = 0; lastT = -Infinity;
   sim.$('#tPlay').click(); await sim.settle(5);
-  const t1 = until(1, 600); sim.raf();
+  const t1 = until(1, 600); frameNow();
   assert.ok(Math.abs(roll.ph - t1) < 1e-6, 'the roll follows the heard tick');
   assert.deepEqual([roll.sounding().map(x => x.id).sort().join(), roll.litKeys().join()], ['p,q', '72,76'], 'both notes under the playhead');
-  A.mute = true; sim.raf();
+  A.mute = true; frameNow();
   assert.deepEqual(roll.sounding().length, 0, 'muted: unlit');
-  A.mute = false; until(1, 1000); sim.raf();
+  A.mute = false; until(1, 1000); frameNow();
   assert.deepEqual(roll.litKeys(), [76], 'the first ended');
   sim.$('#tPlay').click(); await settle();
   assert.deepEqual([roll.sounding().length, roll.litKeys().length], [0, 0], 'stopped: none');

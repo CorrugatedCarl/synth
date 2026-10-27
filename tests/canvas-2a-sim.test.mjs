@@ -60,6 +60,10 @@ const modCables = () => V().cables.list().filter(c => c.kind === 'mod').map(c =>
 const badge = k => { const m = V().modules.get(k); return m ? (m.bar.children.find(c => /cv-badge/.test(c.className || '')) || {}).textContent || '' : null; };
 const withConfirm = (ans, fn) => { const was = globalThis.confirm, asked = []; globalThis.confirm = m => { asked.push(String(m)); return ans; }; try { fn(); } finally { globalThis.confirm = was; } return asked; };
 const ID = {};
+// (IMPL-FR §1.6) one frame drawn now: main.js's frameTick (the playing lanes on the modulator bodies) is a client of the frame
+// clock at the display's rate, and a round less than a period after the last is skipped — the clock's gate off for that round
+const WK = await import('../wk.js?v=9');
+const frameNow = () => { WK.clock.config({ gate: false }); try { sim.raf(); } finally { WK.clock.config({ gate: true }); } };
 
 test('a Velocity tile dropped on the canvas adds the module where it lands (one History step, the notice undoes it); its tile greys out; a tap adds it left of the instrument', () => {
   const t = T(), n0 = hsteps();
@@ -190,7 +194,7 @@ test('the live wheel (the canvas module, the perf tray, ctl) reaches the cabled,
   assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[0.4], [0.4]]);
   assert.ok(a.cc.some(c => c.k === 'wheel' && c.v === 0.4), 'recorded into the armed target');
   assert.equal(b.cc.length, nb0, 'not into the cabled track');
-  w.update(0); sim.raf();
+  w.update(0); frameNow();
   assert.equal(w.value(), 0.4, 'playing: the module shows the selected track\'s lane');
   sim.$('#tRec').click(); sim.$('#tPlay').click();
   a.arm = false;
@@ -566,15 +570,15 @@ test('(U13) during playback the modulator bodies follow the lanes only on screen
   P().metronome.countIn = 0; P().metronome.on = false;
   sim.$('#tPlay').click(); await sim.settle(2);
   const seen = [];
-  for (let i = 0; i < 12; i++) { sim.run(4800); sim.raf(); seen.push([U.lane('wheel', t), api.perfValue('wheel', t)]); }
+  for (let i = 0; i < 12; i++) { sim.run(4800); frameNow(); seen.push([U.lane('wheel', t), api.perfValue('wheel', t)]); }
   assert.ok(seen.every(([a, b]) => a === b), 'the same as perfValue: ' + JSON.stringify(seen));
   assert.ok(new Set(seen.map(x => x[0])).size >= 2, 'the playhead crossed points: ' + JSON.stringify(seen));
   assert.equal(U.lane('bend', t), -0.5);
   V().toggleFold('wheel');
-  w.update(0.999); sim.run(4800); sim.raf();
+  w.update(0.999); sim.run(4800); frameNow();
   assert.equal(w.value(), 0.999, 'folded (not live): not updated per frame');
   V().toggleFold('wheel');
-  sim.raf();
+  frameNow();
   assert.equal(w.value(), api.perfValue('wheel', t), 'live again');
   sim.$('#tPlay').click();
   t.cc = was;

@@ -1082,6 +1082,252 @@ test('kit.live(shown): hidden ARP / CLIP / keyboard panels are not painted; a CL
   kb.destroy();
 });
 
+/* ================================================================ IMPL-FR Cut A §3 B6: the CLIP playhead at the display's rate */
+const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e, a + ' != ' + b);
+test('IMPL-FR §3 B6: clipHeadAt — a posted clip playhead carried to a heard song beat: 4·rate sixteenths per UNSWUNG beat (swingInv, as the sequencer), Normal / Reverse wrapped into the region, the other modes clamped to it, Static held', () => {
+  const H = seq.clipHeadAt;
+  assert.equal(typeof H, 'function');
+  near(H(4, 10, 10.25, 1, 1, 0, 16, true, 0, 0.5), 5);
+  near(H(15.5, 10, 10.25, 1, 1, 0, 16, true, 0, 0.5), 0.5);       // past the end: wrapped to the start
+  near(H(15.5, 10, 10.25, 1, 1, 4, 16, true, 0, 0.5), 4.5);       // … of the region (START 4)
+  near(H(0.5, 10, 10.25, 1, -1, 0, 16, true, 0, 0.5), 15.5);      // Reverse
+  near(H(2, 10, 10.25, 2, 1, 0, 16, true, 0, 0.5), 4);            // RATE ×2
+  near(H(15.8, 10, 10.25, 1, 1, 0, 16, false, 0, 0.5), 16);       // a mode without the wrap: clamped
+  near(H(3, 10, 11, 1, 0, 0, 16, true, 0, 0.5), 3);               // Static
+  near(H(4, 10, 9.75, 1, 1, 0, 16, true, 0, 0.5), 3);             // a heard beat before the post's
+  const s = 0.5, d = 0.5, b = 10.1, hb = 10.4;                    // swing: the sequencer advances in u = swingInv(beat)
+  near(H(4, b, hb, 1, 1, 0, 16, true, s, d), 4 + 4 * (core.swingInv(hb, s, d) - core.swingInv(b, s, d)));
+  assert.ok(Math.abs(H(4, b, hb, 1, 1, 0, 16, true, s, d) - H(4, b, hb, 1, 1, 0, 16, true, 0, d)) > 1e-3);
+});
+
+test('IMPL-FR §3 B6: the CLIP roll\'s playhead from the heard song beat while the song plays — the newest post heard by then, carried at the clip\'s rate; a clock client paints it per frame (the overlay redrawn only when it moves a pixel); stopped, Static, no host.heardTick or the page hidden: the posted value, no client', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  const heads = () => wk.clock.clients().filter(n => n === 'sx-clip-head').length;
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), R = clip.roll, ph = () => R.o.playhead();
+    T.paint();
+    // posts at 120 BPM (×1: 4 sixteenths a beat), the song playing: [song beat, the clip's playhead]
+    const post = (beat, pos, o = {}) => T.setSnap(snapSeq(Object.assign({ 4: pos >= 0 ? 1 : 0, 5: pos, 8: beat, 9: 1 }, o)));
+    post(10, 0); post(10.0625, 0.25); post(10.125, 0.5);
+    // (in time order — review 2 fixer: a heard beat going back with no jump posted is a heard jump, held until a post comes)
+    tick = 9.9 * 960;                                               // nothing heard yet: the oldest post as posted
+    near(ph(), 0);
+    tick = 10.1 * 960;                                              // heard: between the 2nd and the 3rd post
+    near(ph(), 0.25 + 4 * (10.1 - 10.0625));
+    tick = (10.125 + 0.8) * 960;                                    // 0.4 s past the newest (posts stopped): no runaway
+    near(ph(), 0.5);
+    post(13.875, 15.5); tick = 14 * 960;                            // the clip's end: wrapped
+    near(ph(), 0);
+    assert.equal(heads(), 1, 'one clock client while the song plays the clip');
+    // per frame: the overlay is redrawn when the playhead moves to another pixel only (16 px a sixteenth)
+    const ov = R.ov.getContext('2d').calls, fills = () => ov.filter(c => c[0] === 'fillRect').length;
+    post(14, 0); tick = 14 * 960;
+    dom.raf.flush(1);
+    const f0 = fills();
+    tick += 0.001 * 960; dom.raf.flush(1);                          // 0.004 sixteenth: the same pixel
+    assert.equal(fills(), f0);
+    tick += 0.05 * 960; dom.raf.flush(1);                           // 0.2 sixteenth: 3 px
+    assert.equal(fills(), f0 + 1);
+    near(R.ph, 4 * 0.051, 1e-9);
+    // Static: as posted
+    s.clip.clips[0].mode = 8;
+    post(14.2, 3); tick = 14.3 * 960;
+    near(ph(), 3);
+    s.clip.clips[0].mode = 0;
+    // the song stopped (the free clock): as posted, no client
+    post(20, 6, { 9: 0 }); tick = 21 * 960;
+    near(ph(), 6);
+    assert.equal(heads(), 0);
+    // playing again, then the page hidden: no client; shown: one again
+    post(30, 1);
+    assert.equal(heads(), 1);
+    T.shown = false; post(30.05, 1.2);
+    assert.equal(heads(), 0);
+    T.shown = true; post(30.1, 1.4);
+    assert.equal(heads(), 1);
+    // the clip stopped: −1 when heard, the client gone
+    post(30.2, -1); tick = 30.3 * 960;
+    assert.equal(ph(), -1);
+    assert.equal(heads(), 0);
+    post(31, 2);
+    clip.destroy();
+    assert.equal(heads(), 0, 'destroy drops the client');
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+  // no host.heardTick: the posted value, no client
+  const m2 = mount();
+  const c2 = new seq.ClipPage(m2.root, m2.kit);
+  m2.T.paint();
+  m2.T.setSnap(snapSeq({ 4: 1, 5: 2.5, 8: 10, 9: 1 }));
+  near(c2.roll.o.playhead(), 2.5);
+  assert.equal(wk.clock.clients().length, 0);
+  c2.destroy();
+});
+
+test('IMPL-FR §3 B6 (review 1, P2-1): a song-loop wrap / a backward seek while playing — before the first post after it is heard, the playhead is the earliest later post BY BEAT (near the clip start), never the oldest anchor in the ring (≈ 0.5 s back)', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), ph = () => clip.roll.o.playhead();
+    T.paint();
+    const post = (beat, pos) => T.setSnap(snapSeq({ 4: 1, 5: pos, 8: beat, 9: 1 }));
+    // a 4-beat song loop: the posts up to its end (16: the ring full), then two after the wrap (the engine runs ahead of the heard audio)
+    for (let b = 3; b < 4 - 1e-9; b += 0.0625) post(b, 4 * b);
+    post(0.02, 0.08); post(0.0825, 0.33);
+    tick = 3.99 * 960;                                              // heard: just before the wrap
+    near(ph(), 15.96, 1e-6);
+    tick = 0.01 * 960;                                              // just after it, the first post-wrap anchor not heard yet: it, as posted
+    near(ph(), 0.08);
+    // a seek back from beat 40 to 8 while playing: the same
+    for (let b = 39; b < 40 - 1e-9; b += 0.0625) post(b, 4 * (b - 36));
+    post(8.05, 0.2); post(8.1125, 0.45);
+    tick = 8 * 960;
+    near(ph(), 0.2);
+    tick = 8.08 * 960;                                              // the first post after the seek heard: carried from it
+    near(ph(), 0.2 + 4 * 0.03, 1e-9);
+    clip.destroy();
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+});
+
+test('IMPL-FR §3 B6 (review 2, P2-1): a clip holding its position (the same posted seq[5] while the song beat advances: RETRIG pauses it at a seek until its next start) — the playhead stays at the posted value, never carried ahead and snapped back', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick, bpm: () => 128 } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), ph = () => clip.roll.o.playhead();
+    T.paint();
+    const post = (beat, pos) => T.setSnap(snapSeq({ 4: 1, 5: pos, 8: beat, 9: 1 }));
+    // (reviewer 2's repro, measured in Chrome at b9b8912: after a seek to beat 1 the engine posts seq[5] = 6.36 for ≈ 1.4 s — until the
+    // clip's next 4-beat boundary —, every 0.074 beat (34 ms at 128 BPM); heard ≈ one post behind, 4 frames a post (120 Hz))
+    const shown = [];
+    for (let b = 1.041; b < 2.2; b += 0.074) {
+      post(b, 6.36);
+      for (let k = 1; k <= 4; k++) { tick = (b - 0.074 + k * 0.0185) * 960; if (tick / 960 > 1.041 + 0.074) shown.push(ph()); } // (from the 2nd post heard: one post cannot tell a hold)
+    }
+    const lo = Math.min(...shown), hi = Math.max(...shown);
+    assert.ok(hi - lo < 1e-9, 'the head moved over a held clip: ' + lo.toFixed(3) + ' … ' + hi.toFixed(3) + ' (a sawtooth: carried ahead from each anchor, snapped back at the next)');
+    near(hi, 6.36);
+    // the hold ends (the clip restarts): carried again from the first moving post
+    post(2.207, 0.1); post(2.281, 0.396);
+    tick = 2.3 * 960;
+    near(ph(), 0.396 + 4 * 0.019, 1e-9);
+    clip.destroy();
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+});
+
+test('IMPL-FR §3 B6 (review 2, P3-1): a short seek back (its target inside the ring\'s span) — once the seek is heard (the old line\'s anchors left), before its first post is, the playhead is that post as posted, never a stale pre-seek anchor carried (6.33 → 4.02 → 6.37 in Chrome); until the seek is heard the old line still carries it', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick, bpm: () => 128 } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), ph = () => clip.roll.o.playhead();
+    T.paint();
+    const post = (beat, pos) => T.setSnap(snapSeq({ 4: 1, 5: pos, 8: beat, 9: 1 }));
+    for (let m = 0; m < 16; m++) { const b = 0.42 + m * 0.074; post(b, 4 * b); } // the ring full: beats 0.42 … 1.53, the clip at 4 a beat
+    tick = 1.5 * 960;
+    near(ph(), 6, 1e-9);
+    post(1.007, 6.12);                                              // a seek back to beat 1 (RETRIG: the clip holds where it was)
+    tick = 1.56 * 960;                                              // the old audio still heard: the old line (the anchors from the target on stay)
+    near(ph(), 6.12 + 4 * 0.03, 1e-9);
+    tick = 1.005 * 960;                                             // the seek heard, its first post not yet: it, as posted
+    near(ph(), 6.12, 1e-9);
+    tick = 1.02 * 960;                                              // the first post heard: carried from it (one post cannot tell a hold)
+    near(ph(), 6.12 + 4 * 0.013, 1e-9);
+    post(1.081, 6.12); tick = 1.09 * 960;                           // the second: a hold
+    near(ph(), 6.12, 1e-9);
+    // a loop wrap drops nothing it needs: the anchors past the loop start carry the old pass until the wrap is heard
+    for (let b = 3; b < 4 - 1e-9; b += 0.0625) post(b, 4 * b);
+    post(0.02, 0.08);
+    tick = 3.99 * 960;
+    near(ph(), 15.96, 1e-6);
+    tick = 0.01 * 960;
+    near(ph(), 0.08);
+    clip.destroy();
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+});
+
+test('IMPL-FR §3 B6 (review 2 fixer, the harness\'s clip check in Chrome): the heard beat jumps back in a frame the ring has not taken the seek\'s post yet — its snapshot here, its live() later in the frame: the post is read at once; not posted yet at all: the playhead holds where it was until a post comes, never the oldest pre-seek anchor (14.05 → 9.59 → 14.06)', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick, bpm: () => 128 } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), ph = () => clip.roll.o.playhead();
+    T.paint();
+    const snap = (beat, pos) => snapSeq({ 4: 1, 5: pos, 8: beat, 9: 1 }), post = (beat, pos) => T.setSnap(snap(beat, pos));
+    const old = () => { for (let m = 0; m < 16; m++) { const b = 4.36 + m * 0.074; post(b, 4 * b - 7.4); } tick = 5.5 * 960; near(ph(), 4 * 5.47 - 7.4 + 4 * 0.03, 1e-9); };
+    // (a) the seek's post is the kit's snapshot, its live() (headSee) not run yet in this frame
+    old();
+    T.snap = snap(1.064, 14.5); T.snaps++;
+    tick = 1.014 * 960;
+    near(ph(), 14.5, 1e-9);
+    // (b) the heard beat back before any post of the new line: held where it was (no information yet), until a post comes
+    old();
+    const was = ph();
+    tick = 1.014 * 960;
+    near(ph(), was, 1e-9);
+    tick = 1.03 * 960;
+    near(ph(), was, 1e-9);
+    post(1.064, 14.5); tick = 1.04 * 960;
+    near(ph(), 14.5, 1e-9);
+    // (c) a heard step back with no jump posted: held, and let go by the next post
+    tick = 1.1 * 960;
+    const v = ph();
+    near(v, 14.5 + 4 * 0.036, 1e-9);
+    tick = 1.09 * 960;
+    near(ph(), v, 1e-9);
+    post(1.138, 14.796); tick = 1.095 * 960;
+    near(ph(), 14.5 + 4 * 0.031, 1e-9);
+    clip.destroy();
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+});
+
+test('IMPL-FR §3 B6 (review 2 fixer, the harness\'s clip check in Chrome): a short seek, back or on (its target within HEAD_AGE of the heard beat) — until the heard beat makes the jump it stays on the old line\'s anchors, never carried from the new line\'s first post (13.81 / 12.00 shown in Chrome), and then on the new line\'s', () => {
+  let tick = 0;
+  const { s, kit, T, root } = mount({ host: { heardTick: () => tick, bpm: () => 128 } });
+  dom.raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 60 });
+  try {
+    s.clip.clips[0].len = 16;
+    const clip = new seq.ClipPage(root, kit), ph = () => clip.roll.o.playhead();
+    T.paint();
+    const post = (beat, pos) => T.setSnap(snapSeq({ 4: 1, 5: pos, 8: beat, 9: 1 }));
+    // back: the old line up to beat 1.231 (the clip at 4 a beat + 8), a seek to beat 1 (posted 1.047, the clip held at 13.031)
+    for (let m = 15; m >= 0; m--) { const b = 1.231 - m * 0.074; post(b, 4 * b + 8); }
+    tick = 1.2 * 960; near(ph(), 4 * 1.157 + 8 + 4 * 0.043, 1e-9);
+    post(1.047, 13.031);
+    tick = 1.242 * 960;                                             // the seek not heard yet: the old line, carried from 1.231
+    near(ph(), 4 * 1.231 + 8 + 4 * 0.011, 1e-9);
+    tick = 1.258 * 960;
+    near(ph(), 4 * 1.231 + 8 + 4 * 0.027, 1e-9);
+    tick = 1.02 * 960;                                              // heard: the new line, its first post ahead — as posted
+    near(ph(), 13.031, 1e-9);
+    // on: the old line up to 0.82, a seek to beat 1 (posted 1.018, held at 11.211: 0.198 beat past the last post — 1.5 steps is 0.111)
+    T.setSnap(snapSeq({ 4: 0, 5: -1, 8: 0, 9: 0 })); // (stopped: the ring afresh)
+    for (let m = 15; m >= 0; m--) { const b = 0.82 - m * 0.074; post(b, 4 * b + 7.9); }
+    tick = 0.784 * 960; near(ph(), 4 * 0.746 + 7.9 + 4 * 0.038, 1e-9);
+    post(1.018, 11.211);
+    tick = 0.8 * 960;                                               // not heard yet: the old line
+    near(ph(), 4 * 0.746 + 7.9 + 4 * 0.054, 1e-9);
+    tick = 1.001 * 960;                                             // heard (past the old line's last audible beat, 0.894): the new line
+    near(ph(), 11.211, 1e-9);
+    tick = 1.03 * 960;
+    near(ph(), 11.211 + 4 * 0.012, 1e-9);
+    clip.destroy();
+  } finally { wk.clock._reset(); dom.raf.uninstall(); }
+});
+
 test('KeyboardPanel: collapse, TRANSPOSE (◀ ▶, keys, wheel ±12), KEY / SCALE, SWING with division, OSC MAPPING popover', () => {
   const { s, kit, T, root, doc } = mount();
   const kb = new seq.KeyboardPanel(root, kit);

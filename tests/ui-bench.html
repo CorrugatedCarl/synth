@@ -39,6 +39,11 @@
   Stage WC (IMPL-WC §9, G7): ?wc=1 loads tests/ui-bench-wc.mjs instead — a Juno track, the Wavecraft starter and the full WC-1 rig made
   with the app's own hooks, measured with the app's own cord layer (pan / pinch 25–200 % / the Amplifier dragged / every cord swaying /
   a 60 s zoom sweep); &auto=1 for the CDP harness (window.__wc), &wires=lines the regret path; one JSON (kind "ui-WC-mac").
+  Stage FR (IMPL-FR §9 G7): ?fps=1 loads tests/ui-bench-fps.mjs instead — the frame-rate harness on a device: scenes idle / play8 / roll8 /
+  tutorial / serum / master / busy built with the app's own hooks, each played for a few seconds on the browser's own frames (the iPad's 60),
+  per scene the cost of a frame (every rAF callback + the message handlers), paints per animated display against its expected-live list,
+  the clock's own numbers; &scenes=a,b a subset, &caps=120 more caps, &auto=1 for a driver (window.__fpsBench). The Mac gate itself is
+  `node tests/ui-bench-fps.mjs` (Chrome for Testing, CDP: virtual display at 60 / 120 / 240, CPU throttle, layout / heap). Do not add run=1.
 -->
 <style>
   :root { color-scheme: dark; }
@@ -77,6 +82,10 @@
   // (stage WC, IMPL-WC G7) ?wc=1: the Wavecraft canvas's frame cost (tests/ui-bench-wc.mjs; S0's real scene, rebuilt), loaded the same way
   const WC = !M3 && !M9 && /[?&]wc=1/.test(location.search);
   if (WC) import('./ui-bench-wc.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-wc.mjs did not load: ' + (e && e.message); });
+  // (stage FR, IMPL-FR G7) ?fps=1: the frame-rate harness's device page (tests/ui-bench-fps.mjs: each scene's frame cost and whether every
+  // animated display keeps animating, on the browser's own frames — the iPad's), loaded the same way; &auto=1 for a CDP driver (window.__fpsBench)
+  const FPS = !M3 && !M9 && !WC && /[?&]fps=1/.test(location.search);
+  if (FPS) import('./ui-bench-fps.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-fps.mjs did not load: ' + (e && e.message); });
   const $ = s => document.querySelector(s);
   const SETS = { one: ['prophet5'], five: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'] };
   // candidate fixes, tried as extra stylesheets on the five-synth track (SPEC §2.11: nothing visible changes)
@@ -262,7 +271,7 @@
   }
   $('#run').onclick = () => run().catch(e => { status('failed: ' + e.message); $('#run').disabled = false; });
   $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
-  if (/[?&]run=1/.test(location.search) && !M3 && !M9 && !WC) $('#run').click();
+  if (/[?&]run=1/.test(location.search) && !FPS && !M3 && !M9 && !WC) $('#run').click();
 </script>
 </body>
 </html>

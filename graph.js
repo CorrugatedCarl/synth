@@ -507,8 +507,10 @@ function liveRegion() {
   s.setAttribute('aria-live', 'polite');
   return s;
 }
-// Playhead loop while the element is connected (wk.ticker: ≤ 30 fps, 10 fps with reduced motion, not while hidden).
-function animator(el, fn) { return ticker(el, () => fn()); }
+// Playhead loop while the element is connected: a wk.ticker — a client of the frame clock at its global rate (IMPL-FR §3
+// B1a: no cap — the dot moves whenever its provider's value does), 10 fps with reduced motion, nothing while hidden or off
+// screen (the clock's IntersectionObserver).
+function animator(el, fn) { return ticker(el, () => fn(), { fps: Infinity }); }
 // Touch hit radii (§13.1: 44 px targets): points, curve handles and curves 22 px; mouse 8 / 6 px — screen px: P.k (layout
 // px per screen px, 1/k under the canvas world's zoom) turns them into the editor's layout px
 const hk = P => (P && P.k > 0 ? P.k : 1);
@@ -541,11 +543,29 @@ const unrendered = el => {
 };
 function observeSize(el, fn) {
   const RO = globalThis.ResizeObserver;
-  if (typeof RO !== 'function') return () => {};
-  const ro = new RO(() => fn());
+  if (typeof RO !== 'function') return null;
+  const ro = new RO(entries => fn(entries));
   ro.observe(el);
   return () => ro.disconnect();
 }
+// (IMPL-FR §7.3) an editor's box size, cached while a ResizeObserver watches its root — the callback drops the cache and
+// redraws; a 0 × 0 box (display: none) marks it hidden for the playhead path (ed.hid) — so a playhead frame reads no layout;
+// without an observer (node) measured on every call, as before. ed: { root, height, draw() }; returns the remover
+function watchSize(ed) {
+  ed.sz = null; ed.hid = false;
+  const off = observeSize(ed.root, entries => {
+    ed.sz = null;
+    const e = entries && entries.length ? entries[entries.length - 1] : null, r = e && e.contentRect;
+    ed.hid = !!r && !(r.width > 0 || r.height > 0);
+    ed.draw();
+  });
+  ed.ro = !!off;
+  return off || (() => {});
+}
+const sizeOf = (ed, minW) => (ed.ro ? ed.sz || (ed.sz = boxSize(ed.root, minW, ed.height)) : boxSize(ed.root, minW, ed.height));
+// the playhead path's "not drawn" test: an explicit call reads the layout (unrendered), the clock's frames and a host that
+// knows the editor is shown (live) only check the connection and the observer's hidden flag
+const offScreen = (ed, live) => (live ? !ed.root.isConnected || ed.hid : unrendered(ed.root));
 const fmt3 = v => (Math.round(v * 1000) / 1000).toFixed(3);
 // Zoomable editors (o.zoom, §13.1: pinch zoom and two-finger pan on the LFO editor): the visible window of the unit
 // square in wk.zoomPan's form { x0, x1, y0, y1 } (fractions, y from the top); FULL = no zoom.
@@ -652,9 +672,9 @@ export class CurveEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), watchSize(this), onRescale(root, () => this.draw()));
     attachZoom(this, this.o.zoom);
-    this.anim = animator(root, () => this.drawOverlay());
+    this.anim = animator(root, () => this.drawOverlay(false, true));
     if (this.o.playhead) this.anim.start();
     this.bar = null;
     this.parts = [];
@@ -694,7 +714,7 @@ export class CurveEditor {
   tie() { return this.lfo; }
 
   /* geometry (CSS px inside the canvas; the zoom window `view` maps the unit square onto the plot) */
-  size() { return boxSize(this.root, 40, this.height); }
+  size() { return sizeOf(this, 40); }
   X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
   Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
   pos(e) {
@@ -1170,7 +1190,7 @@ export class CurveEditor {
       ctx.restore();
     }
     if (zoomed) { ctx.restore(); zoomBadge(ctx, v, s, T); }
-    this.drawOverlay(true);
+    this.drawOverlay(true, true);
   }
   marker(ctx, x, s, col, txt) {
     ctx.save();
@@ -1184,8 +1204,9 @@ export class CurveEditor {
     if (ctx.fillText) ctx.fillText(txt, x + 1, 7);
     ctx.restore();
   }
-  drawOverlay(force) {
-    if (unrendered(this.root)) return;
+  // the playhead dot (force: redraw whatever it shows; live: the caller knows the editor is shown — the clock's frame, draw())
+  drawOverlay(force, live) {
+    if (offScreen(this, live)) return;
     const ph = this.o.playhead ? this.o.playhead() : null, v = ph == null || !isFinite(ph) ? null : clamp(ph, 0, 1);
     if (!force && v === this.ph) return;
     this.ph = v;
@@ -1307,7 +1328,8 @@ export class EnvEditor {
     this.act = -1;
     this.g = null;
     this.hover = -1;
-    this.lastPh = null;
+    this.phS = NaN; this.phT = NaN; // the overlay's key: the playhead's stage and t to 1e-4 (numbers, IMPL-FR §7.3)
+    this.gm = null;                 // the last draw's geometry { w, h, E, sc, G } (geoOf)
     const d = D(), root = this.root = d.createElement('div');
     root.className = 'gx-root gx-env';
     root.tabIndex = 0;
@@ -1339,8 +1361,8 @@ export class EnvEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
-    this.anim = animator(root, () => this.drawOverlay());
+    this.offs.push(menuSource(root, { keys: false }), watchSize(this), onRescale(root, () => this.draw()));
+    this.anim = animator(root, () => this.drawOverlay(false, true));
     if (this.o.playhead) this.anim.start();
     this.draw();
   }
@@ -1366,7 +1388,15 @@ export class EnvEditor {
     if (bg) { const q = Math.round(t / bg.sec) * bg.sec; if (Math.abs(q - t) * sc.px <= 6) return clamp(q, 0, T_MAX); }
     return t;
   }
-  size() { return boxSize(this.root, 60, this.height); }
+  size() { return sizeOf(this, 60); }
+  // the geometry the overlay draws on: the last draw()'s envelope, scale and corners while the size is the same (IMPL-FR §7.3:
+  // an overlay frame builds no env object, no corner arrays; the dot sits on the curve as drawn), else computed and kept
+  geoOf(s) {
+    const M = this.gm;
+    if (M && M.w === s.w && M.h === s.h) return M;
+    const E = this.env(), sc = this.scale(s, E);
+    return (this.gm = { w: s.w, h: s.h, E, sc, G: this.geo(s, E, sc) });
+  }
   // time scale (px per second) and the sustain plateau width; frozen while dragging
   scale(s, e) {
     if (this.g) return this.g.sc;
@@ -1560,6 +1590,7 @@ export class EnvEditor {
     const s = this.size(), ctx = fitCanvas(this.cv, s.w, s.h);
     if (!ctx) return;
     const T = this.T = theme(this.root), E = this.env(), sc = this.scale(s, E), G = this.geo(s, E, sc);
+    this.gm = { w: s.w, h: s.h, E, sc, G };
     ctx.clearRect(0, 0, s.w, s.h);
     ctx.fillStyle = T.bg; ctx.fillRect(0, 0, s.w, s.h);
     // time grid (1-2-5 steps ≥ 48 px apart)
@@ -1610,18 +1641,20 @@ export class EnvEditor {
       ctx.fillRect(c[0] - (hot ? 4.5 : 3.5), c[1] - (hot ? 4.5 : 3.5), hot ? 9 : 7, hot ? 9 : 7);
       if (focused && this.act === i) { ctx.lineWidth = 1.5; ctx.strokeStyle = T.accent; ctx.strokeRect(c[0] - 7, c[1] - 7, 14, 14); }
     });
-    this.drawOverlay(true);
+    this.drawOverlay(true, true);
   }
-  drawOverlay(force) {
-    if (unrendered(this.root)) return;
-    const ph = this.o.playhead ? this.o.playhead() : null, key = ph && ph.stage ? ph.stage + ':' + (+ph.t).toFixed(4) : '';
-    if (!force && key === this.lastPh) return;
-    this.lastPh = key;
+  // the playhead dot (force / live as CurveEditor's); keyed on numbers — the stage and t to 1e-4 —, drawn on geoOf
+  drawOverlay(force, live) {
+    if (offScreen(this, live)) return;
+    const ph = this.o.playhead ? this.o.playhead() : null, on = !!(ph && ph.stage), tv = on ? +ph.t : 0;
+    const st = on ? +ph.stage : 0, tk = tv === tv ? Math.round(tv * 1e4) : -1;
+    if (!force && st === this.phS && tk === this.phT) return;
+    this.phS = st; this.phT = tk;
     const s = this.size(), ctx = fitCanvas(this.ov, s.w, s.h);
     if (!ctx) return;
     ctx.clearRect(0, 0, s.w, s.h);
-    if (!key) return;
-    const E = this.env(), sc = this.scale(s, E), G = this.geo(s, E, sc), t = Math.max(0, +ph.t || 0);
+    if (!on) return;
+    const M = this.geoOf(s), E = M.E, sc = M.sc, G = M.G, t = Math.max(0, +ph.t || 0);
     let x, v;
     switch (ph.stage) {
       case 1: x = G.x0 + Math.min(t, E.a) * sc.px; v = E.a > 0 ? E.st + (1 - E.st) * bend(Math.min(1, t / E.a), G.kA) : 1; break;
@@ -1671,7 +1704,7 @@ export class PathEditor {
     this.g = null;
     this.hover = null;
     this.lastTap = null;
-    this.ph = null;
+    this.phX = NaN; this.phY = NaN; // the overlay's key (numbers, IMPL-FR §7.3)
     const d = D(), root = this.root = d.createElement('div');
     root.className = 'gx-root gx-path' + (this.o.readOnly ? ' gx-ro' : '');
     root.tabIndex = 0;
@@ -1698,9 +1731,9 @@ export class PathEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), watchSize(this), onRescale(root, () => this.draw()));
     attachZoom(this, this.o.zoom);
-    this.anim = animator(root, () => this.drawOverlay());
+    this.anim = animator(root, () => this.drawOverlay(false, true));
     if (this.o.playhead) this.anim.start();
     this.draw();
   }
@@ -1719,7 +1752,7 @@ export class PathEditor {
   commit(p, map) { this.emit(p, 'set'); if (map) this.remapIdx(map); this.refresh(); }
 
   /* geometry (the zoom window `view` as CurveEditor) */
-  size() { return boxSize(this.root, 40, this.height); }
+  size() { return sizeOf(this, 40); }
   X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
   Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
   pos(e) {
@@ -2050,20 +2083,22 @@ export class PathEditor {
       ctx.restore();
     }
     if (zoomed) { ctx.restore(); zoomBadge(ctx, this.view, s, T); }
-    this.drawOverlay(true);
+    this.drawOverlay(true, true);
   }
-  drawOverlay(force) {
-    if (unrendered(this.root)) return;
-    const ph = this.o.playhead ? this.o.playhead() : null;
-    const v = Array.isArray(ph) && fin(ph[0]) && fin(ph[1]) ? [clamp(ph[0], 0, 1), clamp(ph[1], 0, 1)] : null, key = v ? v[0].toFixed(4) + ':' + v[1].toFixed(4) : '';
-    if (!force && key === this.ph) return;
-    this.ph = key;
+  // the live output dot (force / live as CurveEditor's); keyed on numbers — x and y to 1e-4 (IMPL-FR §7.3: no string, no
+  // array a frame)
+  drawOverlay(force, live) {
+    if (offScreen(this, live)) return;
+    const ph = this.o.playhead ? this.o.playhead() : null, on = Array.isArray(ph) && fin(ph[0]) && fin(ph[1]);
+    const x = on ? clamp(ph[0], 0, 1) : 0, y = on ? clamp(ph[1], 0, 1) : 0, kx = on ? Math.round(x * 1e4) : -1, ky = on ? Math.round(y * 1e4) : -1;
+    if (!force && kx === this.phX && ky === this.phY) return;
+    this.phX = kx; this.phY = ky;
     const s = this.size(), ctx = fitCanvas(this.ov, s.w, s.h);
     if (!ctx) return;
     ctx.clearRect(0, 0, s.w, s.h);
-    if (!v) return;
+    if (!on) return;
     const T = this.T || theme(this.root);
-    ctx.beginPath(); ctx.arc(this.X(v[0], s), this.Y(v[1], s), 4, 0, Math.PI * 2); ctx.fillStyle = T.on; ctx.fill();
+    ctx.beginPath(); ctx.arc(this.X(x, s), this.Y(y, s), 4, 0, Math.PI * 2); ctx.fillStyle = T.on; ctx.fill();
   }
   destroy() {
     if (this.g) this.finish();

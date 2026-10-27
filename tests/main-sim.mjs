@@ -373,6 +373,11 @@ export async function bootMain(o = {}) {
   }
   G.__synthTest = Object.assign({}, o.synthTest || {}); // o.synthTest: hooks main.js reads while it boots (canvas-sim: cvWorld)
   if (o.beforeImport) o.beforeImport(G); // (IMPL-B B3) the app's document-start scripts (the MIDI shim) on the finished fake window, before main.js
+  // (IMPL-FR §1.6) the kit's frame clock is one per module instance (every boot of a file imports the same ./wk.js?v=9): reset
+  // between boots and the display fixed at 60 — the cadence deterministic, the gate as today (rounds microseconds apart skip
+  // capped clients exactly as the 30 fps ticker skipped them; a test that needs every client to paint per round sets
+  // wk.clock.config({ gate: false }) and restores it)
+  { const wk = await import(new URL('wk.js?v=9', ROOT).href); if (wk.clock) { wk.clock._reset(); wk.clock.config({ display: 60 }); } }
   const url = new URL('main.js?v=9&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;

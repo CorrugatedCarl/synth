@@ -7,7 +7,9 @@ import './v8-guard.mjs';
 // why (never a silent null), a module numbered past 9 999 still binds its sequencer and posts its events (skeptic #1: the
 // host's two binds, PT.isMid). Accessor-free (a guard build: instruments read as devices, cv-model instOf); the real cv-world
 // on the stub DOM (its cord layer on the SVG path: no WebGL in node), the real engine; strings, numbers and booleans only
-// into assert (never a stub DOM node). Run alone: node --max-old-space-size=2048 --test tests/canvas-P-sim.test.mjs
+// into assert (never a stub DOM node). Stage FR lane K (IMPL-FR §2, §7.2): the Frame rate line after the Performance hint (120 · 144 · 165 ·
+// 240 · Display rate, a device pref synthc.cv.fps, ?fps= over it; the options above the measured display greyed, the live hint while ⚙ is
+// open; no worklet message either) and the analysers' smoothing τ = 0.75 ^ (f0 / f) following the frame clock's rate. Run alone: node --max-old-space-size=2048 --test tests/canvas-P-sim.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bootMain } from './main-sim.mjs';
@@ -17,9 +19,11 @@ import * as PT from '../patch-core.js?v=9';
 import * as cvWorld from '../cv-world.js?v=9';
 import * as cvTray from '../cv-tray.js?v=9';
 import * as FACES from '../cv-face.js?v=9';
+import * as wk from '../wk.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 const KEY = 'synthc.cv.perf'; // (store's synth.cv.perf in the app namespace, JSON)
+const FKEY = 'synthc.cv.fps'; // (synth.cv.fps: IMPL-FR §2.1 — the frame-rate setting, a string option id, JSON)
 const ls = fakeStorage({});
 const sim = await bootMain({ ls, hash: '#m900' });
 { // (a Serum's / an LFO's graph editors animate through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box — canvas-2b-sim's)
@@ -40,6 +44,10 @@ const pick = v => { sel().value = v; sel().onchange({ type: 'change', target: se
 const W = () => cv.world();
 const look = () => ({ sel: sel().value, world: W().perf, faces: FACES.FACES.perf, cords: cv.cords().stats().quality, stored: ls.getItem(KEY) });
 const node = t => sim.nodeOf(t.id), sent = (t, k) => node(t).posted.map(x => x.m).filter(m => m.t === k);
+const fsel = () => sh.shell.fpsSel, fhint = () => sh.shell.fpsHint; // (IMPL-FR §2.1: the Frame rate line)
+const fpick = v => { fsel().value = v; fsel().onchange({ type: 'change', target: fsel() }); };
+const INF = v => (v === Infinity ? 'inf' : v);
+const FPS_HINT = 'Smoother motion on fast displays. Medium and Low draw at 60 fps where the display allows; the sound never changes.';
 
 test('⚙ → Canvas: the Performance line — High · Medium · Low, High on a fresh device (nothing stored, no detection), its one-line hint; the world built at it', () => {
   const s = sel();
@@ -54,6 +62,74 @@ test('⚙ → Canvas: the Performance line — High · Medium · Low, High on a 
   assert.deepEqual([hint.tagName, hint.className, hint.id, s.getAttribute('aria-describedby')], ['P', 'cv-ghint', 'cvPerfHint', 'cvPerfHint']);
   assert.equal(hint.textContent, 'Lower settings draw panels and cords more simply, for slower tablets. Sound is unaffected.');
   assert.match(s.title, /Visual only/);
+});
+
+test('(IMPL-FR §2.1) ⚙ → Canvas: the Frame rate line — right after the Performance hint (the P pins above hold), 120 fps · 144 · 165 · 240 · Display rate, 120 on a fresh device (nothing stored), its hint below; the world built at it and the frame clock\'s ceiling in force', () => {
+  const s = fsel();
+  assert.equal(!!s, true, 'the select');
+  assert.deepEqual([s.id, s.tagName], ['cvFps', 'SELECT']);
+  assert.deepEqual(s.children.map(o => [o.value, o.textContent]), [['120', '120 fps'], ['144', '144 fps'], ['165', '165 fps'], ['240', '240 fps'], ['display', 'Display rate']], 'cv-world FPS_OPTS, labelled');
+  assert.deepEqual(cvWorld.FPS_OPTS, ['120', '144', '165', '240', 'display']);
+  const gp = sim.$('#gearPop').children, i = gp.findIndex(c => c.children && c.children.includes(sel())), line = gp[i + 2], hint = gp[i + 3];
+  assert.deepEqual([i >= 0, line.tagName, line.className, line.children.length, line.children[0] === s], [true, 'LABEL', 'field cv-fps', 1, true], 'a label.field right after the Performance hint');
+  assert.deepEqual([hint.tagName, hint.className, hint.id, s.getAttribute('aria-describedby'), hint === fhint()], ['P', 'cv-ghint', 'cvFpsHint', 'cvFpsHint', true]);
+  assert.equal(hint.textContent, FPS_HINT);
+  assert.match(s.title, /Visual only/);
+  assert.deepEqual([s.value, W().fps, wk.clock.cap(), ls.getItem(FKEY)], ['120', '120', 120, null], 'a fresh device: 120 on High, nothing stored');
+  assert.deepEqual(gp.slice(i + 4).filter(c => c.className === 'field cv-fps' || c.id === 'cvFpsHint').length, 0, 'once');
+});
+
+test('a Frame rate pick applies live (the world, the clock\'s ceiling min(setting, the preset\'s tier)) and is stored per device — never in the project or its History, no worklet message at any pick or preset switch (the :75 pin holds), the settings untouched; the same pick again stored again, nothing else; an unknown value → 120', async () => {
+  await settle();
+  const p0 = JSON.stringify(P()), h0 = cv.hist.u.length, set0 = JSON.stringify(api.settings()), os0 = sim.$('#os').value, n0 = sim.posted.length;
+  const seen = [];
+  for (const [f, p] of [['240', 'high'], ['240', 'medium'], ['display', 'medium'], ['display', 'high'], ['144', 'low'], ['165', 'high'], ['120', 'high']]) {
+    pick(p); fpick(f); await settle(2);
+    seen.push([fsel().value, W().fps, W().perf, INF(wk.clock.cap()), ls.getItem(FKEY)]);
+  }
+  assert.deepEqual(seen, [
+    ['240', '240', 'high', 240, '"240"'], ['240', '240', 'medium', 60, '"240"'], ['display', 'display', 'medium', 60, '"display"'], ['display', 'display', 'high', 'inf', '"display"'],
+    ['144', '144', 'low', 60, '"144"'], ['165', '165', 'high', 165, '"165"'], ['120', '120', 'high', 120, '"120"']]);
+  assert.equal(sim.posted.length, n0, 'no worklet message at any pick or preset switch');
+  assert.deepEqual([JSON.stringify(P()) === p0, cv.hist.u.length], [true, h0], 'the project untouched, no History step');
+  assert.deepEqual([JSON.stringify(api.settings()) === set0, sim.$('#os').value, /fps/.test(ls.getItem('synthc.settings') || '')], [true, os0, false], 'the settings untouched, the frame rate not among them');
+  const w0 = ls.writes.length;
+  fpick('120'); await settle();
+  assert.deepEqual([W().fps, ls.writes.slice(w0).filter(k => k === FKEY).length], ['120', 1], 'the same pick: stored again, nothing else');
+  fpick('nonsense'); await settle();
+  assert.deepEqual([fsel().value, W().fps, wk.clock.cap(), ls.getItem(FKEY)], ['120', '120', 120, '"120"'], 'anything else: 120');
+  pick('low'); await settle();
+});
+
+test('(IMPL-FR §2.1, P3-15) the Frame rate options above the measured display rate are disabled and the hint says what the display does — live while ⚙ is open (the clock\'s changes, a preset switch, a 1 s tick), plain again once it closes', async () => {
+  const btn = sim.$('#gearBtn'), tap = () => btn.dispatchEvent({ type: 'click', detail: 1, target: btn });
+  const dis = () => fsel().children.map(o => !!o.disabled);
+  const MORE = ' · faster options need a faster display';
+  pick('high'); fpick('120'); await settle(2);
+  try {
+    wk.clock.config({ display: 240 });
+    assert.equal(fhint().textContent, FPS_HINT, 'closed: the plain hint');
+    tap();
+    assert.deepEqual([dis(), fhint().textContent], [[false, false, false, false, false], FPS_HINT + ' Display 240 Hz · drawing at 120 fps'], 'a 240 Hz display on 120: every option open; drawing at 120 (the 25 % rule: 240 / 2)');
+    wk.clock.config({ display: 144 });
+    assert.deepEqual([dis(), fhint().textContent], [[false, false, true, true, false], FPS_HINT + ' Display 144 Hz · drawing at 144 fps' + MORE], '144 Hz: 165 and 240 greyed; 144 within 25 % of 120 draws at the display\'s rate');
+    wk.clock.config({ display: 60 });
+    assert.deepEqual([dis(), fsel().value, fhint().textContent], [[true, true, true, true, false], '120', FPS_HINT + ' Display 60 Hz · drawing at 60 fps' + MORE], '60 Hz (the iPad): every fixed rate greyed, "Display rate" open; the pick stays shown');
+    wk.clock.config({ display: 120 });
+    pick('medium');
+    assert.deepEqual([dis(), fhint().textContent], [[false, true, true, true, false], FPS_HINT + ' Display 120 Hz · drawing at 60 fps' + MORE], 'Medium on 120 Hz: drawing at 60; a preset switch refreshes the hint');
+    fpick('display');
+    assert.equal(fhint().textContent, FPS_HINT + ' Display 120 Hz · drawing at 60 fps' + MORE, 'Display rate on Medium: still 60');
+    pick('high');
+    assert.equal(fhint().textContent, FPS_HINT + ' Display 120 Hz · drawing at 120 fps' + MORE, 'High: the display\'s 120');
+    tap();
+    assert.equal(fhint().textContent, FPS_HINT, 'closed: plain again');
+    wk.clock.config({ display: 240 });
+    assert.equal(fhint().textContent, FPS_HINT, 'closed: a clock change writes nothing (its listener is gone)');
+    tap();
+    assert.deepEqual([dis(), fhint().textContent], [[false, false, false, false, false], FPS_HINT + ' Display 240 Hz · drawing at 240 fps'], 'opened again: read afresh (Display rate on High: the display\'s 240)');
+    tap();
+  } finally { wk.clock.config({ display: 60 }); fpick('120'); pick('low'); await settle(); }
 });
 
 test('a pick applies live (the world, cv-face, the cords) and is stored per device — never in the project or its History, no worklet message (D1); the same pick again changes nothing', async () => {
@@ -197,6 +273,35 @@ test('R2 fix: {t: ptErr, why: graph} (a patch the evaluator cannot build — the
   assert.equal(lines.filter(l => /dropped a payload item \(graph\)/.test(l)).length, 4, 'a console line for every graph report, notice or not');
 });
 
+test('(IMPL-FR §7.2) the analysers\' smoothing in time: τ = 0.75 ^ (f0 / f), f the frame clock\'s effective rate and f0 each analyser\'s own base rate today — the master\'s 8192 `an` read ≈ 30 times a second (f0 30), the OUT scope\'s per-track `sc` at a 60 Hz display (f0 60); set when the clock\'s rate changes (a display, a preset, the setting) and on every new analyser', async () => {
+  const an = () => globalThis.__synthTest.master.graph().an, scs = () => [...api.nodes.values()].map(N => N.sc);
+  const tau = (f0, f) => Math.pow(0.75, f0 / f), near = (a, b) => Math.abs(a - b) < 1e-12;
+  const look = () => [an().smoothingTimeConstant, ...scs().map(x => x.smoothingTimeConstant)];
+  const want = f => [tau(30, f), ...scs().map(() => tau(60, f))];
+  try {
+    pick('high'); fpick('120'); await settle(2);
+    wk.clock.config({ display: 60 });
+    let got = look(), w = want(60);
+    assert.ok(got.length >= 2 && got.every((x, i) => near(x, w[i])), 'at 60: ' + got + ' vs ' + w + ' (the master 0.75^0.5, a scope 0.75^1 — today\'s)');
+    wk.clock.config({ display: 120 });
+    got = look(); w = want(120);
+    assert.ok(got.every((x, i) => near(x, w[i])), 'at 120 (High, 120): ' + got + ' vs ' + w);
+    assert.ok(near(got[0], 0.75 ** 0.25) && near(got[1], 0.75 ** 0.5), 'master 0.75^(30/120), a scope 0.75^(60/120)');
+    wk.clock.config({ display: 240 });
+    fpick('240'); await settle();
+    got = look(); w = want(240);
+    assert.ok(got.every((x, i) => near(x, w[i])), 'at 240: ' + got);
+    pick('medium'); await settle();
+    got = look(); w = want(60);
+    assert.ok(got.every((x, i) => near(x, w[i])), 'Medium at 240 Hz draws at 60: ' + got);
+    wk.clock.config({ display: 120 }); fpick('120'); pick('high'); await settle();
+    // a new track\'s analyser starts at the rate in force
+    api.addTrack(MODELS.find(m => m.id === 'minimoog')); await settle(3);
+    got = look(); w = want(120);
+    assert.ok(got.length >= 3 && got.every((x, i) => near(x, w[i])), 'a track added at 120: ' + got);
+  } finally { wk.clock.config({ display: 60 }); fpick('120'); pick('low'); await settle(); }
+});
+
 test('?perf= overrides the pref for the session: shown in ⚙, never stored; a pick after it is stored and applied; the pref read again at the next boot', async () => {
   const L2 = fakeStorage({ [KEY]: '"medium"' });
   const s2 = await bootMain({ ls: L2, hash: '#minimoog', location: { search: '?perf=low' } });
@@ -211,4 +316,46 @@ test('?perf= overrides the pref for the session: shown in ⚙, never stored; a p
   const L4 = fakeStorage({ [KEY]: '"turbo"' });
   await bootMain({ ls: L4, hash: '#minimoog' });
   assert.deepEqual([globalThis.__synthTest.cv.world().perf, globalThis.__synthTest.shell.shell.perfSel.value], ['high', 'high'], 'a stored value it does not know: High');
+});
+
+test('(IMPL-FR §2.1) ?fps= overrides the pref for the session: shown in ⚙ when it is one of the options, never stored; a pick after it is stored and applied; the pref read again at the next boot (a number or an unknown value tolerated); the preset still caps the clock', async () => {
+  const L2 = fakeStorage({ [FKEY]: '"144"' });
+  const s2 = await bootMain({ ls: L2, hash: '#minimoog', location: { search: '?fps=240' } });
+  const sh2 = globalThis.__synthTest.shell.shell, W2 = globalThis.__synthTest.cv.world();
+  assert.deepEqual([W2.fps, sh2.fpsSel.value, wk.clock.cap(), L2.getItem(FKEY)], ['240', '240', 240, '"144"'], '?fps=240 over a stored 144: 240 shown and in force, 144 kept');
+  sh2.fpsSel.value = 'display'; sh2.fpsSel.onchange({ type: 'change', target: sh2.fpsSel }); s2.raf();
+  assert.deepEqual([W2.fps, sh2.fpsSel.value, wk.clock.cap() === Infinity, L2.getItem(FKEY)], ['display', 'display', true, '"display"'], 'the person\'s own pick: stored and live');
+  const L3 = fakeStorage({ [FKEY]: '"165"', [KEY]: '"medium"' });
+  await bootMain({ ls: L3, hash: '#minimoog' });
+  const sh3 = globalThis.__synthTest.shell.shell, W3 = globalThis.__synthTest.cv.world();
+  assert.deepEqual([W3.fps, sh3.fpsSel.value, W3.perf, wk.clock.cap()], ['165', '165', 'medium', 60], 'a reload: the stored 165, Medium caps the clock at 60');
+  await bootMain({ ls: fakeStorage({}), hash: '#minimoog', location: { search: '?fps=60' } });
+  const sh4 = globalThis.__synthTest.shell.shell, W4 = globalThis.__synthTest.cv.world();
+  assert.deepEqual([W4.fps, sh4.fpsSel.value, wk.clock.cap()], ['60', '120', 60], '?fps=60: a number outside the options runs (60), the select keeps showing the pref');
+  await bootMain({ ls: fakeStorage({ [FKEY]: '"turbo"' }), hash: '#minimoog' });
+  assert.deepEqual([globalThis.__synthTest.cv.world().fps, globalThis.__synthTest.shell.shell.fpsSel.value, wk.clock.cap()], ['120', '120', 120], 'a stored value it does not know: 120');
+  const s6 = await bootMain({ ls: fakeStorage({ [FKEY]: '240' }), hash: '#minimoog' });
+  assert.deepEqual([globalThis.__synthTest.cv.world().fps, wk.clock.cap()], ['240', 240], 'a number stored: tolerated');
+  // a display not measured yet (the clock\'s ring not full): nothing is greyed, the hint says so
+  wk.clock._reset();
+  const g6 = s6.$('#gearBtn'), f6 = globalThis.__synthTest.shell.shell;
+  g6.dispatchEvent({ type: 'click', detail: 1, target: g6 });
+  assert.deepEqual([f6.fpsSel.children.map(o => !!o.disabled), f6.fpsHint.textContent], [[false, false, false, false, false], FPS_HINT + ' Measuring the display…']);
+  g6.dispatchEvent({ type: 'click', detail: 1, target: g6 });
+});
+
+test('(IMPL-FR §2.2, review 1 P3-5) no world ("Canvas camera unavailable": createWorld threw) — main.js sets the frame clock\'s ceiling itself, min(the setting, the preset\'s tier), at boot and at every Frame rate / Performance pick', async () => {
+  const L = fakeStorage({ [FKEY]: '"165"', [KEY]: '"medium"' });
+  const s7 = await bootMain({ ls: L, hash: '#minimoog', beforeImport: G => { G.document.querySelector('#cvToolbar').append = () => { throw new Error('test: no camera'); }; } });
+  const sh7 = globalThis.__synthTest.shell.shell;
+  const pk = (s, v) => { s.value = v; s.onchange({ type: 'change', target: s }); s7.raf(); };
+  assert.deepEqual([globalThis.__synthTest.cv.world() === null, sh7.fpsSel.value, sh7.perfSel.value, INF(wk.clock.cap())], [true, '165', 'medium', 60], 'booted without a world: Medium caps the clock at 60');
+  pk(sh7.perfSel, 'high');
+  assert.deepEqual([INF(wk.clock.cap()), L.getItem(KEY)], [165, '"high"'], 'High: the setting');
+  pk(sh7.fpsSel, 'display');
+  assert.deepEqual([INF(wk.clock.cap()), L.getItem(FKEY)], ['inf', '"display"'], 'Display rate on High: no ceiling');
+  pk(sh7.fpsSel, '240');
+  assert.equal(INF(wk.clock.cap()), 240);
+  pk(sh7.perfSel, 'low');
+  assert.equal(INF(wk.clock.cap()), 60, 'Low: 60');
 });

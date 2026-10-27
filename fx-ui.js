@@ -325,6 +325,10 @@ const samePts = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b
 function shapeOf(p) { const S = arr(core.DUCK_SHAPES); for (let k = 0; k < S.length; k++) if (samePts(p, S[k].pts)) return k; return -1; }
 // the Ducker's curve editor runs no animator of its own: the rack's grLoop draws its playhead (one loop per rack)
 const NO_ANIM = Object.freeze({ start() {}, stop() {}, running: () => false });
+// (IMPL-FR §3 B1b) the GR display's rows ([label, slot offset, band threshold id]) and a slot's value (0 without one): no
+// array or closure per frame
+const GR_ROWS_MB = Object.freeze([['H', 3, 'mbH'], ['M', 2, 'mbM'], ['L', 1, 'mbL']]), GR_ROWS_1 = Object.freeze([['GR', 0, '']]);
+const grV = (all, i, k) => (i >= 0 && all && fin(all[4 * i + k]) ? all[4 * i + k] : 0);
 function makeInst(id, type, v) {
   const p = {};
   for (const r of tabOf(type, v)) p[r.pid] = r.def;
@@ -912,7 +916,8 @@ export class FXRackUI {
     this.rowEls = [];             // list rows in display order: { el, row }
     this.offs = [];
     this.dead = false;
-    this.specId = ''; this.specD = null; this.specTick = null;   // the Delay display's spectrum overlay (§13.5)
+    this.specId = ''; this.specD = null; this.specTick = null; this.specTap = null;   // the Delay display's spectrum overlay (§13.5; specTap: the tap array drawn)
+    this.grList = null;           // (IMPL-FR §3 B1b) the GR panels, cached at refresh (grCache)
     this.pending = null;
     this.xs = null;
     this.sig = null;
@@ -2173,11 +2178,13 @@ export class FXRackUI {
     return D;
   }
   // the spectrum overlay (§13.5 Delay; one instance at a time): host.setTap(id) asks the rack to tap it, host.tap() is
-  // its latest 1024 frames (smon), drawn while shown at the GR loop's rate
+  // its latest 1024 frames (smon), drawn while shown at the GR loop's rate — (IMPL-FR §3 B1c) a frame-clock client capped at
+  // 30 (the tap is the 29 Hz monitor's): the display (an FFT) is redrawn only when host.tap() hands a new array (one per message)
   specToggle(id, D) {
     if (typeof this.host.setTap !== 'function' || typeof this.host.tap !== 'function') { this.notify('Spectrum view not available here'); return; }
     this.specId = this.specId === id ? '' : id;
     this.specD = this.specId !== '' ? D : null;
+    this.specTap = null;
     this.host.setTap(this.specId);
     this.redraw();
     this.specLoop();
@@ -2189,6 +2196,9 @@ export class FXRackUI {
       this.specTick = ticker(this.rack, () => {
         const E = this.specD;
         if (this.dead || !this.specId || !E || !E.el.isConnected) { this.specTick.stop(); return; }
+        const x = typeof this.host.tap === 'function' ? this.host.tap() : null;
+        if (x === this.specTap) return;
+        this.specTap = x;
         try { E.draw(E); } catch (err) { this.specTick.stop(); }
       }, { fps: 30 });
     }
@@ -2528,56 +2538,84 @@ export class FXRackUI {
     try { L = core.fxLayout(isObj(raw) ? raw : this.fx()); } catch (err) { L = null; }
     return L ? L.inst.findIndex(e => e.id === id) : -1;
   }
-  // lazy (the redraw loop): nothing is painted while the GR values, the band thresholds and the size are unchanged
+  // (IMPL-FR §3 B1b) the GR displays' caches — the panel list, each one's slot in the host's layout (one fxLayout here, none
+  // per frame: P.grI) and its canvas size and theme (the only layout / style read: P.grW, P.grH, P.grT) — rebuilt at a
+  // refresh (an edit, a panel built or dropped); an explicit drawGr (a drag, the rack's resize, a zoom end) measures again
+  grCache() {
+    const raw = this.host.fx ? this.host.fx() : null;
+    let L = null;
+    try { L = core.fxLayout(isObj(raw) ? raw : this.fx()); } catch (err) { L = null; }
+    this.grList = [];
+    for (const P of this.panels.values()) {
+      if (!P.grCv) continue;
+      this.grList.push(P);
+      P.grI = L ? L.inst.findIndex(e => e.id === P.id) : -1;
+      this.grSize(P);
+    }
+  }
+  grSize(P) {
+    const cv = P.grCv, r = cv.getBoundingClientRect();
+    P.grW = Math.max(40, cv.clientWidth || (r.width ? r.width - 2 : 120)); P.grH = Math.max(16, cv.clientHeight || 62);
+    P.grT = this.thm(cv);
+  }
+  // lazy (the redraw loop): nothing is painted while the GR values, the band thresholds and the size are unchanged — the
+  // loop's frame reads the caches and compares numbers (P.grSig: a Float64Array, no string, no allocation)
   drawGr(P, lazy) {
     const cv = P.grCv;
     if (!cv) return;
-    const r = cv.getBoundingClientRect(), w = Math.max(40, cv.clientWidth || (r.width ? r.width - 2 : 120)), H = Math.max(16, cv.clientHeight || 62);
-    const all = this.host.gr ? this.host.gr() : null, i = this.grSlot(P.id), o = 4 * i;
-    const mb = this.val(P.id, 'mb') >= 0.5, gv = k => (i >= 0 && all && fin(all[o + k]) ? all[o + k] : 0);
+    if (!lazy || !(P.grW > 0)) { this.grSize(P); P.grI = this.grSlot(P.id); }
+    const w = P.grW, H = P.grH, all = this.host.gr ? this.host.gr() : null, i = P.grI, o = 4 * i;
+    const mb = this.val(P.id, 'mb') >= 0.5;
     if (P.type === 'duck') { const q = i >= 0 && all ? all[o + 1] : NaN; P.ph = fin(q) && q >= 0 ? clamp01(q) : null; }   // IMPL-SC §4.2 the dip's position
-    const sig =[w, H, mb ? 1 : 0, gv(0), gv(1), gv(2), gv(3), mb ? [this.val(P.id, 'mbH'), this.val(P.id, 'mbM'), this.val(P.id, 'mbL')].join() : ''].join('|');
-    if (lazy && sig === P.grSig) return;
-    P.grSig = sig;
+    const S = P.grSig instanceof Float64Array ? P.grSig : (P.grSig = new Float64Array(10).fill(NaN));
+    const g0 = grV(all, i, 0), g1 = grV(all, i, 1), g2 = grV(all, i, 2), g3 = grV(all, i, 3);
+    const tH = mb ? this.val(P.id, 'mbH') : 0, tM = mb ? this.val(P.id, 'mbM') : 0, tL = mb ? this.val(P.id, 'mbL') : 0;
+    if (lazy && S[0] === w && S[1] === H && S[2] === (mb ? 1 : 0) && S[3] === g0 && S[4] === g1 && S[5] === g2 && S[6] === g3 && S[7] === tH && S[8] === tM && S[9] === tL) return;
+    S[0] = w; S[1] = H; S[2] = mb ? 1 : 0; S[3] = g0; S[4] = g1; S[5] = g2; S[6] = g3; S[7] = tH; S[8] = tM; S[9] = tL;
     const ctx = fitCanvas(cv, w, H);
     if (!ctx) return;
-    const T = this.thm(cv);
+    const T = P.grT || (P.grT = this.thm(cv));
     ctx.clearRect(0, 0, w, H); ctx.fillStyle = T.bg; ctx.fillRect(0, 0, w, H);
-    const rows = mb ? [['H', 3], ['M', 2], ['L', 1]] : [['GR', 0]], rh = (H - 8) / rows.length, x0 = 22, span = w - x0 - 34;
+    const rows = mb ? GR_ROWS_MB : GR_ROWS_1, rh = (H - 8) / rows.length, x0 = 22, span = w - x0 - 34;
     ctx.font = (this.rig ? '600 10px ' : '600 9px ') + T.ui;   // (the FX look: the grid's 10 px minimum, §3.8)
-    rows.forEach(([lab, k], j) => {
-      const y = 4 + j * rh, v = gv(k), cx = mb ? x0 + span / 2 : x0, scale = mb ? span / 2 / 24 : span / 24;
+    for (let j = 0; j < rows.length; j++) {
+      const lab = rows[j][0], k = rows[j][1], y = 4 + j * rh, v = grV(all, i, k), cx = mb ? x0 + span / 2 : x0, scale = mb ? span / 2 / 24 : span / 24;
       ctx.fillStyle = T.panel2; ctx.fillRect(x0, y + 2, span, rh - 4);
       const len = clamp(v, mb ? -24 : 0, 24) * scale;
       ctx.fillStyle = v >= 0 ? T.accent : T.on; // reduction (blue) / upward gain (green)
       if (mb) ctx.fillRect(len >= 0 ? cx - len : cx, y + 2, Math.abs(len), rh - 4); else ctx.fillRect(x0, y + 2, len, rh - 4);
       if (mb) { // the band's threshold bar (MB H / M / L, draggable)
-        const tx = x0 + clamp(this.val(P.id, 'mb' + lab), 0, 1) * span;
+        const tx = x0 + clamp(this.val(P.id, rows[j][2]), 0, 1) * span;
         ctx.fillStyle = T.neg; ctx.fillRect(Math.round(tx) - 1, y + 1, 2, rh - 2);
       }
       ctx.fillStyle = T.mute;
       const tv = P.type === 'duck' && v >= 60 ? '-∞' : (v > 0 ? '-' : v < 0 ? '+' : '') + Math.abs(v).toFixed(1);   // (a full dip: g floored at 1e-6)
       if (ctx.fillText) { ctx.fillText(lab, 3, y + rh / 2 + 3); ctx.fillText(tv, w - 32, y + rh / 2 + 3); }
-    });
-  }
-  grPanels() { return [...this.panels.values()].filter(P => P.grCv && P.el.isConnected); }
-  // the GR bars, and a Ducker's playhead on its curve editor's overlay when the dip's position moved (IMPL-SC §6.2)
-  drawGrs(lazy) {
-    for (const P of this.grPanels()) {
-      this.drawGr(P, lazy);
-      if (P.ed && P.phShown !== P.ph) { P.phShown = P.ph; P.ed.drawOverlay(); }
     }
   }
+  grPanels() { return [...this.panels.values()].filter(P => P.grCv && P.el.isConnected); }
+  // the GR bars, and a Ducker's playhead on its curve editor's overlay when the dip's position moved (IMPL-SC §6.2) — over
+  // the cached list (grCache); the editor is drawn as shown (the loop runs only while the rack is: no layout read)
+  drawGrs(lazy) {
+    const L = this.grList || this.grPanels();
+    for (let j = 0; j < L.length; j++) {
+      const P = L[j];
+      if (!P.grCv || !P.el.isConnected) continue;
+      this.drawGr(P, lazy);
+      if (P.ed && P.phShown !== P.ph) { P.phShown = P.ph; P.ed.drawOverlay(false, true); }
+    }
+  }
+  grShown() { const L = this.grList || []; for (let j = 0; j < L.length; j++) if (L[j].grCv && L[j].el.isConnected) return true; return false; }
   rendered() { const el = this.el; return el.isConnected && !(typeof el.getClientRects === 'function' && el.getClientRects().length === 0); }
-  // the GR display loop while a compressor or a Ducker is shown (wk.ticker, §13.1: ≤ 30 fps, 10 fps with prefers-reduced-motion,
-  // nothing painted while the page is hidden; a frame repaints only what changed); it stops when no compressor is
-  // shown or the rack is hidden (refresh() restarts it)
+  // the GR display loop while a compressor or a Ducker is shown (a wk.ticker: a frame-clock client capped at 30 — its data,
+  // host.gr(), is the 29 Hz monitor's —, 10 fps with prefers-reduced-motion, nothing painted while the page is hidden; a frame
+  // repaints only what changed); it stops when no compressor is shown or the rack is hidden (refresh() restarts it)
   grLoop() {
     const want = !!(this.host.gr && this.grPanels().length && this.rendered());
     if (!want) { if (this.grTick) this.grTick.stop(); this.drawGrs(true); return; }
     if (!this.grTick) {
       this.grTick = ticker(this.rack, () => {
-        if (this.dead || !this.grPanels().length) { this.grTick.stop(); return; }
+        if (this.dead || !this.grShown()) { this.grTick.stop(); return; }
         this.drawGrs(true);
       }, { fps: 30 });
     }
@@ -3272,6 +3310,7 @@ export class FXRackUI {
     }
     if (this.modRowsOf) this.paintMods(this.modRowsOf); // (2b halos: the arcs follow the bases and the panels built just now)
     this.redraw();
+    this.grCache();
     this.grLoop();
     this.specLoop();
   }

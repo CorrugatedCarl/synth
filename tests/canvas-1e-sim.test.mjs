@@ -454,7 +454,7 @@ test('U17: a track switch mounts several device bodies one job per body, a slice
   const b = fresh('juno60'), vp = sim.$('#viewport');
   const REAL = globalThis.performance;
   let ms = 1e6;
-  globalThis.performance = { now: () => (ms += 20), timeOrigin: REAL.timeOrigin }; // (every read 20 ms later: a 12 ms slice holds one job)
+  globalThis.performance = { now: () => (ms += 13), timeOrigin: REAL.timeOrigin }; // (every read 13 ms later: a 12 ms slice holds one job; (IMPL-FR) the frame clock's own reads a frame keep four frames inside CV_MOUNT_MAX)
   try {
     api.selectTrack(a.id);
     const J = cv.mount();

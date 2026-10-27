@@ -1272,3 +1272,30 @@ test('(the cables-behind toggle) the SVG fallback: behind(fn) masks each rope\'s
   V.L.behind(null);
   eq(snap(), before, 'off: the markup as before');
 });
+
+test('(FR §3 A2, P3-10) the layer owes a draw only when a rope stepped or an end moved — the world\'s High draw skip rests on it: at a 240 Hz tick a swaying rope is owed on every second tick (the 1/120 s step) and never on the ticks between; asleep, or under a camera-only frame, nothing is owed; an end moved owes one. The byte-for-byte scene (High = today) is the layer\'s own and unchanged', () => {
+  const S = setup(), other = { tx: -40, ty: 12, k: 1.5 };
+  S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 1000, 600, 2);
+  for (let i = 0; i < 6; i++) S.L.step(S.tick(1000 / 240), false);
+  eq([S.L.owed(), S.L.wants()], [false, false], 'asleep: nothing owed, no frame wanted');
+  S.L.draw(other, 1000, 600, 2);
+  eq([S.L.step(S.tick(1000 / 240), false), S.L.owed()], [false, false], 'a camera-only frame owes nothing');
+  S.L.pluck();
+  S.L.draw(cam, 1000, 600, 2);
+  const owed = [];
+  for (let i = 0; i < 24; i++) { S.L.step(S.tick(1000 / 240), false); owed.push(S.L.owed()); if (S.L.owed()) S.L.draw(cam, 1000, 600, 2); }
+  const n = owed.filter(Boolean).length;
+  ok(n >= 11 && n <= 13, 'a draw owed on ' + n + ' of 24 ticks at 240 Hz: ' + owed.map(x => (x ? 1 : 0)).join(''));
+  ok(owed.every((x, i) => !(x && owed[i - 1]) || i < 4), 'not on the tick right after a draw once the step cadence has settled');
+  // an end moved while asleep: owed once, drawn, then quiet
+  let m = 0;
+  while (S.L.wants() && m++ < 4000) { S.L.step(S.tick(1000 / 120), false); if (S.L.owed()) S.L.draw(cam, 1000, 600, 2); }
+  eq(S.L.wants(), false, 'settled');
+  const P = PORTS(); P.set('i1/m2.j-in', { x: 420, y: 140 });
+  S.L.anchors(P);
+  S.L.step(S.tick(1000 / 240), false);
+  eq(S.L.owed(), true, 'an end moved: a draw owed');
+  S.L.draw(cam, 1000, 600, 2);
+  while (S.L.wants() && m++ < 8000) { S.L.step(S.tick(1000 / 240), false); if (S.L.owed()) S.L.draw(cam, 1000, 600, 2); }
+  eq([S.L.wants(), S.L.owed()], [false, false], 'then quiet');
+});

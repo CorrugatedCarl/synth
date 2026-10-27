@@ -602,3 +602,23 @@ test('§4.6 / §6: a Replace away takes the lamps\' monitor and their queue, its
   sim.run(Math.round(0.1 * sr())); sim.raf(); await settle(2);
   assert.deepEqual([I(T(), d).model, cv.ptLamps().has(k), cv.patch.lampBits(T(), d, m960) > 0], ['m900', true, true], 'undone: monitored and lit again');
 });
+
+test('IMPL-FR review 2 (P3-3): the lamps\' pump reads the frame\'s shared heard frame (main.js heardFrame) — with the playhead, one output timestamp a frame, never one more per pump', async () => {
+  api.selectTrack(ID.t1); await settle();
+  const c = sim.ctx(), WK = await import('../wk.js?v=9'), had = Object.prototype.hasOwnProperty.call(c, 'getOutputTimestamp'), g0 = c.getOutputTimestamp;
+  let stamps = 0;
+  c.getOutputTimestamp = () => { stamps++; return { contextTime: c.currentTime, performanceTime: performance.now() }; }; // (a stamp at the render point: this boot has no audio clock of its own)
+  WK.clock.config({ gate: false }); // (frameTick on every sim round: its rounds are microseconds apart, IMPL-FR §1.6)
+  try {
+    sim.$('#tPlay').onclick(); await settle();
+    const p0 = cv.patch.stats().lamps.pumps, per = [];
+    for (let i = 0; i < 8; i++) { sim.run(Math.round(0.03 * sr())); const s0 = stamps; sim.raf(); per.push(stamps - s0); }
+    assert.equal(cv.patch.stats().lamps.pumps - p0 >= 8, true, 'the pump ran on every frame');
+    assert.deepEqual(per, [1, 1, 1, 1, 1, 1, 1, 1], 'getOutputTimestamp calls a frame');
+  } finally {
+    if (had) c.getOutputTimestamp = g0; else delete c.getOutputTimestamp;
+    WK.clock.config({ gate: true });
+    if (api.transport().playing) sim.$('#tPlay').onclick();
+    await settle();
+  }
+});

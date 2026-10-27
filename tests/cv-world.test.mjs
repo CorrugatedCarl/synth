@@ -2421,6 +2421,162 @@ test('(P) the preset: o.perf at build (unknown → high), ?perf= over it for the
   }
 });
 
+/* ------------------------------------------------------------------ (FR §2) the frame-rate setting and its tiers; (FR §3 A2) the cords' draw gate */
+const INF = v => (v === Infinity ? 'inf' : v);
+test('(FR §2.1) FPS_PREF / FPS_OPTS / FPS_Q / fpsOf: the options 120 (default) · 144 · 165 · 240 · display; FPS_Q = { high ∞, medium 60, low 60 }; fpsOf → the Hz (display → ∞, anything unknown the default 120, a session number 10…1000 as it is)', () => {
+  eq([W.FPS_PREF, W.FPS_OPTS, [W.FPS_Q.high, W.FPS_Q.medium, W.FPS_Q.low].map(INF), Object.isFrozen(W.FPS_Q), Object.isFrozen(W.FPS_OPTS)],
+    ['synth.cv.fps', ['120', '144', '165', '240', 'display'], ['inf', 60, 60], true, true]);
+  eq(['120', '144', '165', '240', 'display', 'bogus', '', null, undefined, 60, '90', '0', '-5', NaN, 'Infinity', '5', 5000, '2400'].map(W.fpsOf).map(INF),
+    [120, 144, 165, 240, 'inf', 120, 120, 120, 120, 60, 90, 120, 120, 120, 120, 120, 120, 120]);
+});
+
+test('(FR §2.2) the tiers: the ceiling in force min(setting, FPS_Q[perf]) reaches wk.clock.setCap at build, on setFps and on setPerf; W.fps; the \'fps\' event ({ cap, fps, perf } once per change, none for the same pick); an unknown id → 120; the world stores nothing; destroy gives the cap back', () => {
+  wk.clock._reset();
+  try {
+    const S = setup({ opts: { createGL: fakeGL([]), createCords: fakeCords([], []) } });
+    eq([S.world.fps, S.world.perf, wk.clock.cap()], ['120', 'high', 120], 'the default: 120 on High');
+    const ev = [];
+    S.world.on('fps', e => ev.push(e));
+    for (const [f, p, cap] of [['120', 'high', 120], ['120', 'medium', 60], ['120', 'low', 60], ['240', 'low', 60], ['240', 'high', 240], ['240', 'medium', 60], ['display', 'high', Infinity],
+      ['display', 'medium', 60], ['display', 'low', 60], ['144', 'high', 144], ['165', 'high', 165], ['165', 'medium', 60], ['120', 'high', 120]]) {
+      S.world.setPerf(p); S.world.setFps(f);
+      eq([S.world.fps, S.world.perf, INF(wk.clock.cap())], [f, p, INF(cap)], f + ' on ' + p);
+    }
+    // the event: one per change of the setting or the ceiling, none for the same pick again
+    ev.length = 0;
+    S.world.setFps('120'); S.world.setPerf('high');
+    eq(ev.length, 0, 'the same picks: nothing');
+    S.world.setFps('240');
+    eq(ev.map(e => [e.cap, e.fps, e.perf]), [[240, '240', 'high']], 'setFps → { cap, fps, perf }');
+    S.world.setPerf('medium');
+    eq(ev.slice(1).map(e => [e.cap, e.fps, e.perf]), [[60, '240', 'medium']], 'setPerf → the ceiling changed');
+    S.world.setFps('144');
+    eq(ev.length, 3, 'the setting changed though the ceiling (60) did not');
+    S.world.setFps('144'); S.world.setPerf('medium');
+    eq(ev.length, 3, 'again: nothing');
+    S.world.setFps('bogus');
+    eq([S.world.fps, INF(wk.clock.cap()), ev.length], ['120', 60, 4], 'an unknown id → the default');
+    eq([...S.prefs.keys()].includes(W.FPS_PREF), false, 'the world never stores it (main.js does)');
+    eq(Object.keys(S.world.glStats()).includes('fps'), false, 'glStats unchanged');
+    S.world.destroy();
+    eq(INF(wk.clock.cap()), 'inf', 'destroy: the cap given back');
+    // two worlds: the last one built owns the cap; the first one\'s destroy leaves it
+    const A = setup({ opts: { fps: '144' } }), B = setup({ opts: { fps: '240' } });
+    eq(wk.clock.cap(), 240);
+    A.world.destroy();
+    eq(wk.clock.cap(), 240, 'a stale destroy leaves the live world\'s cap');
+    B.world.destroy();
+    eq(INF(wk.clock.cap()), 'inf');
+  } finally { wk.clock._reset(); }
+});
+
+test('(FR §2.1) o.fps at build and ?fps= over it for the session (never stored): 120|144|165|240|display|<N>; unknown → o.fps, bad o.fps → 120; the preset still caps it', () => {
+  try {
+    for (const [search, fps, perf, want, cap] of [['?fps=240', '120', 'high', '240', 240], ['?a=1&fps=display', undefined, 'high', 'display', 'inf'], ['?fps=60', '120', 'high', '60', 60], ['?fps=fast', '165', 'high', '165', 165],
+      ['?fpsx=240', '144', 'high', '144', 144], ['', '240', 'high', '240', 240], ['', 'bogus', 'high', '120', 120], ['', undefined, 'high', '120', 120], ['?fps=99999', '144', 'high', '144', 144],
+      ['?fps=240', '120', 'medium', '240', 60], ['?perf=low&fps=display', undefined, 'high', 'display', 60], ['', 144, 'low', '144', 60]]) {
+      wk.clock._reset();
+      const d = dom.fresh(), win = d.defaultView;
+      win.location = { search }; win.document = d; d.querySelectorAll = () => [];
+      const vp = d.createElement('div'), w = d.createElement('div');
+      vp.append(w); d.body.append(vp); place(vp, 0, 0, 800, 600);
+      const prefs = new Map(), store = { get: (k, def) => (prefs.has(k) ? prefs.get(k) : def), set: (k, v) => prefs.set(k, v) };
+      const world = W.createWorld(vp, { world: w, store, perf, fps, env: { win, doc: d, now: () => T, raf: () => 1, caf: () => {}, setTimeout: setT, clearTimeout: clearT }, createGL: fakeGL([]), createCords: fakeCords([], []) });
+      eq([world.fps, INF(wk.clock.cap()), prefs.size], [want, cap, 0], JSON.stringify([search, fps, perf]));
+      world.destroy();
+    }
+  } finally { wk.clock._reset(); }
+});
+
+// the real cord layer on a fake WebGL2 context (no draw recorded: stats().draws counts them)
+const realCords = () => {
+  const gl = {};
+  for (const k of ['COMPILE_STATUS', 'LINK_STATUS', 'VERTEX_SHADER', 'FRAGMENT_SHADER', 'ARRAY_BUFFER', 'STATIC_DRAW', 'DYNAMIC_DRAW', 'FLOAT', 'TRIANGLE_STRIP', 'BLEND', 'ONE', 'ONE_MINUS_SRC_ALPHA', 'COLOR_BUFFER_BIT', 'DEPTH_TEST']) gl[k] = k;
+  for (const k of ['shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'useProgram', 'bindVertexArray', 'bindBuffer', 'bufferData', 'bufferSubData', 'enableVertexAttribArray',
+    'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'uniform4fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear', 'drawArrays', 'drawArraysInstanced']) gl[k] = () => {};
+  Object.assign(gl, { createShader: () => ({}), createProgram: () => ({}), createBuffer: () => ({}), createVertexArray: () => ({}), getUniformLocation: (p, n) => n, getShaderParameter: () => true, getProgramParameter: () => true, getExtension: () => null });
+  const glDoc = vp => ({ createElement: t => { const el = vp.ownerDocument.createElement(t); if (t === 'canvas') el.getContext = k => (k === 'webgl2' ? gl : null); return el; } });
+  return (vp, o) => CORDS.createCords(vp, Object.assign({}, o, { doc: glDoc(vp) }));
+};
+// ticks the world's frame loop at dt ms for n frames (pre(i) before each: a camera write, say) → per tick whether the cord layer drew
+const tickWorld = (S, log, dt, n, pre) => {
+  const out = [];
+  for (let i = 0; i < n; i++) { if (pre) pre(i); log.length = 0; for (const f of S.rq.splice(0)) f(T); out.push(log.some(e => e[0] === 'draw')); T += dt; }
+  return out;
+};
+
+test('(FR §3 A2) the cords\' draw gate: Medium / Low draw the swaying ropes at the clock\'s period (60 a second at a 120 Hz tick; High at every tick) while the ropes step every tick on all; a draw owed is held to the period, never lost, and no frame is asked for after it; a camera write\'s draw is never held', () => {
+  try {
+    for (const [perf, lo, hi] of [['high', 120, 120], ['medium', 59, 61], ['low', 59, 61]]) {
+      wk.clock._reset(); wk.clock.config({ display: 120 });
+      const log = [], S = setup({ opts: { perf, createCords: fakeCords(log, []) } });
+      S.frame();
+      const L = S.world.cords();
+      L.swing(100000);
+      const d = tickWorld(S, log, 1000 / 120, 120), n = d.filter(Boolean).length;
+      ok(n >= lo && n <= hi, perf + ': ' + n + ' draws in 120 ticks');
+      if (perf !== 'high') ok(d.every((x, i) => !(x && d[i - 1])), perf + ': never on two ticks running');
+      // the ropes step on every tick, whatever the draws do
+      log.length = 0; tickWorld(S, log, 1000 / 120, 1);
+      eq(log.filter(e => e[0] === 'step').length, 1, perf + ': stepped');
+      // a pan on every tick (the camera moves: its draw follows the transform, held to nothing)
+      const pans = tickWorld(S, log, 1000 / 120, 60, () => S.world.panBy(3, 0)).filter(Boolean).length;
+      eq(pans, 60, perf + ': a camera write\'s draw every tick');
+      S.world.destroy();
+    }
+    // an owed draw is held to the period, drawn at it, and nothing asks for another frame
+    wk.clock._reset(); wk.clock.config({ display: 120 });
+    const log = [], S = setup({ opts: { perf: 'medium', createCords: fakeCords(log, []) } });
+    S.frame();
+    const L = S.world.cords();
+    L.swing(2); // two steps: the second leaves a draw owed on the tick right after a draw
+    const d = tickWorld(S, log, 1000 / 120, 5);
+    eq([d, L.owedF, L.wants(), S.rq.length], [[true, false, true, false, false], false, false, 0], 'drawn, held one tick, drawn at the period, then no frames');
+    S.world.destroy();
+    // a 90 Hz display on Medium: the clock draws at the display\'s rate (the 60 floor), so do the cords
+    wk.clock._reset(); wk.clock.config({ display: 90 });
+    const l2 = [], S2 = setup({ opts: { perf: 'medium', createCords: fakeCords(l2, []) } });
+    S2.frame();
+    S2.world.cords().swing(100000);
+    eq(tickWorld(S2, l2, 1000 / 90, 90).filter(Boolean).length, 90, '90 Hz on Medium: every tick (the clock\'s rate is 90)');
+    S2.world.destroy();
+    // 60 Hz: the gate is the display
+    wk.clock._reset(); wk.clock.config({ display: 60 });
+    const l3 = [], S3 = setup({ opts: { perf: 'low', createCords: fakeCords(l3, []) } });
+    S3.frame();
+    S3.world.cords().swing(100000);
+    eq(tickWorld(S3, l3, 1000 / 60, 60).filter(Boolean).length, 60, '60 Hz on Low: every tick');
+    S3.world.destroy();
+  } finally { wk.clock._reset(); }
+});
+
+test('(FR §3 A2, P3-10) the real cv-cords through the world: High owes a draw only when a rope stepped or an end moved — at a 240 Hz tick the swaying ropes draw at the physics rate (120 a second), not the tick\'s —; Medium at ≤ 60 a second at a 120 Hz tick; the steps are the same on both', () => {
+  try {
+    const P = new Map(), list = [];
+    for (let i = 0; i < 12; i++) { P.set('a' + i, { x: 60 * i, y: 100 }); P.set('b' + i, { x: 60 * i + 200, y: 300 }); list.push({ id: 'c' + i, a: 'a' + i, b: 'b' + i, c: i % 8 }); }
+    const run = (perf, hz, display) => {
+      wk.clock._reset(); wk.clock.config({ display });
+      const log = [], S = setup({ opts: { perf, createCords: realCords() } });
+      S.frame();
+      const L = S.world.cords();
+      L.alloc(true); L.anchors(new Map(P)); L.set(list); S.frame(2);
+      L.pluck();
+      S.frame(1);
+      const d0 = L.stats().draws, s0 = L.stats().steps;
+      tickWorld(S, log, 1000 / hz, hz);
+      const r = { draws: L.stats().draws - d0, steps: L.stats().steps - s0, running: L.stats().running };
+      S.world.destroy();
+      return r;
+    };
+    const hi = run('high', 240, 240), md = run('medium', 120, 120), h120 = run('high', 120, 120);
+    ok(hi.running && md.running, 'still swaying after a second');
+    ok(hi.draws >= 100 && hi.draws <= 125, 'High at 240 Hz: ' + hi.draws + ' draws (the ropes\' 1/120 s steps, not 240 ticks)');
+    ok(h120.draws >= 100 && h120.draws <= 125, 'High at 120 Hz: ' + h120.draws);
+    ok(md.draws >= 50 && md.draws <= 62, 'Medium at 120 Hz: ' + md.draws + ' draws (≤ 60 a second)');
+    ok(hi.steps > 0 && md.steps > 0, 'the ropes stepped on both: ' + hi.steps + ' / ' + md.steps + ' rope-steps (the draw gate leaves the physics alone)');
+  } finally { wk.clock._reset(); }
+});
+
 test('(P) ?texmax=N reaches createGL as o.maxTex (beside ?nogl; cv-gl takes min(the GPU\'s, N)); absent, 0 or not a number: no maxTex', () => {
   for (const [search, want] of [['?texmax=4096', 4096], ['?a&texmax=2048&b=1', 2048], ['', null], ['?texmax=0', null], ['?texmax=abc', null], ['?texmax=4096x', null], ['?nogl&texmax=4096', 'off']]) {
     let seen = 'off';

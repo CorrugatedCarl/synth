@@ -5,7 +5,8 @@
 //
 // Exports: setPrefs/getPrefs, injectStyles, knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, loadDSP,
 // plus shared infrastructure for graph.js / fx-ui.js / serum-ui.js: menuSource, fireContext, theme, fitCanvas, frame,
-// wheelGate, saveFile, pickFile, ask. The injected CSS covers the widgets, the FX rack (.fxr-*) and the curve editors (.gx-*).
+// wheelGate, saveFile, pickFile, ask, and (IMPL-FR §1) the frame clock `clock` (one rAF, a measured display rate, the
+// cap's cadence) with `ticker` as a client of it. The injected CSS covers the widgets, the FX rack (.fxr-*) and the curve editors (.gx-*).
 // `steps` and `detents` may be numbers/arrays or functions (re-read at every gesture, e.g. a BPM-synced RATE knob).
 // Phase 2 (SPEC-serum2 §11.14, §13.1): fader, meter, xyPad, rangeBar, pianoKeys, stepGrid, iconSeg, modifierBar,
 // dragSource, longPress, zoomPan. Their pure maths hang off the widget functions (no extra exports): meter.pos,
@@ -125,15 +126,28 @@ function arc(n0, n1, r, c) {
   const p0 = pt(n0, r, c), p1 = pt(n1, r, c);
   return `M${p0[0].toFixed(2)} ${p0[1].toFixed(2)}A${r} ${r} 0 ${270 * (n1 - n0) > 180 ? 1 : 0} 1 ${p1[0].toFixed(2)} ${p1[1].toFixed(2)}`;
 }
+// (IMPL-FR §7.3) the arcs a painter draws: the finite ones in KIND_ORDER, equal kinds in the order given, into one list the painter
+// keeps (an in-place filter and a stable insertion sort — a control has a handful of arcs; no array, no comparator a paint) → their count
+function arcList(out, arcs) {
+  let n = 0;
+  if (arcs) for (let i = 0; i < arcs.length; i++) { const a = arcs[i]; if (a && isFinite(a.from) && isFinite(a.to)) out[n++] = a; }
+  out.length = n;
+  for (let i = 1; i < n; i++) {
+    const a = out[i], ka = KIND_ORDER[a.kind] || 0;
+    let j = i - 1;
+    while (j >= 0 && (KIND_ORDER[out[j].kind] || 0) > ka) { out[j + 1] = out[j]; j--; }
+    out[j + 1] = a;
+  }
+  return n;
+}
 // Halo arcs on an SVG group: a pool of paths (classes `wk-arc k-<kind>`) plus one live dot (`wk-live`), last.
 function haloPainter(g, r, c, extra) {
-  const pool = [], live = sv('circle', Object.assign({ class: 'wk-live', r: c > 20 ? 2.4 : 1.8, display: 'none' }, extra));
+  const pool = [], list = [], live = sv('circle', Object.assign({ class: 'wk-live', r: c > 20 ? 2.4 : 1.8, display: 'none' }, extra));
   g.appendChild(live);
   return (arcs, liveN) => {
-    const list = (arcs || []).filter(a => a && isFinite(a.from) && isFinite(a.to))
-      .sort((a, b) => (KIND_ORDER[a.kind] || 0) - (KIND_ORDER[b.kind] || 0));
-    for (let i = 0; i < Math.max(list.length, pool.length); i++) {
-      if (i >= list.length) { attr(pool[i], 'display', 'none'); continue; }
+    const n = arcList(list, arcs);
+    for (let i = 0; i < Math.max(n, pool.length); i++) {
+      if (i >= n) { attr(pool[i], 'display', 'none'); continue; }
       if (!pool[i]) { pool[i] = sv('path', Object.assign({ class: 'wk-arc' }, extra)); g.insertBefore(pool[i], live); }
       const a = list[i], k = KIND_ORDER[a.kind] != null ? a.kind : 'other';
       attr(pool[i], 'class', 'wk-arc k-' + k);
@@ -146,7 +160,7 @@ function haloPainter(g, r, c, extra) {
       attr(live, 'cx', p[0].toFixed(2)); attr(live, 'cy', p[1].toFixed(2));
       live.removeAttribute('display');
     }
-    return list.length;
+    return n;
   };
 }
 // Live marker rule (§9.4): shown only when the live value differs from the base by more than 0.002. `base` = the
@@ -161,17 +175,16 @@ function liveOf(m, base) {
 // bottom). paint(m, base): base = the control's current n for the live-marker rule. The returned painter carries
 // the bar element as `.el` (callers insert content before it).
 function modBar(host, vertical) {
-  const bar = h('span', 'wk-modbar' + (vertical ? ' wk-vbar' : '')), live = h('b', 'wk-mlive'), segs = [];
+  const bar = h('span', 'wk-modbar' + (vertical ? ' wk-vbar' : '')), live = h('b', 'wk-mlive'), segs = [], list = [];
   const P0 = vertical ? 'bottom' : 'left', P1 = vertical ? 'height' : 'width';
   bar.setAttribute('aria-hidden', 'true');
   live.style.display = 'none';
   bar.appendChild(live);
   host.appendChild(bar);
   const paint = (m, base) => {
-    const list = (m && m.arcs || []).filter(a => a && isFinite(a.from) && isFinite(a.to))
-      .sort((a, b) => (KIND_ORDER[a.kind] || 0) - (KIND_ORDER[b.kind] || 0));
-    for (let i = 0; i < Math.max(list.length, segs.length); i++) {
-      if (i >= list.length) { segs[i].style.display = 'none'; continue; }
+    const n = arcList(list, m && m.arcs);
+    for (let i = 0; i < Math.max(n, segs.length); i++) {
+      if (i >= n) { segs[i].style.display = 'none'; continue; }
       if (!segs[i]) { segs[i] = h('i'); bar.insertBefore(segs[i], live); }
       const a = list[i], lo = num01(Math.min(a.from, a.to)), hi = num01(Math.max(a.from, a.to));
       segs[i].className = 'wk-mseg k-' + (KIND_ORDER[a.kind] != null ? a.kind : 'other');
@@ -182,8 +195,8 @@ function modBar(host, vertical) {
     const ln = liveOf(m, base);
     if (ln == null) live.style.display = 'none';
     else { live.style.display = ''; live.style[P0] = (num01(ln) * 100).toFixed(2) + '%'; }
-    host.classList.toggle('wk-modded', list.length > 0);
-    return list.length;
+    host.classList.toggle('wk-modded', n > 0);
+    return n;
   };
   paint.el = bar;
   return paint;
@@ -2775,7 +2788,20 @@ export const CANVAS_MAX_PX = 16e6;
 export const CANVAS_BUDGET = 64 * 1024 * 1024;
 let canvasK = 1, storeCaps = new WeakMap(), capped = []; // (capped: the canvases holding a cap, for the next diff)
 const handed = new WeakMap(); // canvas → the density storeDensity last gave it
-const inWorld = el => { for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; return false; };
+// (IMPL-FR §7.3) the world test walks the ancestors; it is memoised per element while the element is connected (the entry keeps its
+// parent: a canvas that moved asks again; a scale written or a layer set — the camera's zoom end — starts a new epoch, which also
+// catches an ancestor that moved: nothing else moves a subtree in or out of the world between them)
+const inWorldMemo = new WeakMap();
+let inWorldEpoch = 0;
+const walkWorld = el => { for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; return false; };
+const inWorld = el => {
+  if (!el || typeof el !== 'object') return false;
+  const m = inWorldMemo.get(el);
+  if (m !== undefined && m.e === inWorldEpoch && m.p === el.parentNode) return m.v;
+  const v = walkWorld(el);
+  if (el.isConnected) { if (m !== undefined) { m.p = el.parentNode; m.e = inWorldEpoch; m.v = v; } else inWorldMemo.set(el, { p: el.parentNode, e: inWorldEpoch, v }); }
+  return v;
+};
 /** The device pixel ratio, uncapped (≥ 1). */
 export function deviceRatio() { const d = D(), win = d && d.defaultView || globalThis; return Math.max(1, +win.devicePixelRatio || 1); }
 export function storeDensity(el, w, hgt) {
@@ -2885,12 +2911,12 @@ export function edgePan2(band, p, st) {
 // the top layer (#ov): pieces that must not scale or clip with the world (the large LFO editor, sheets) render there.
 // layer(x) → the top layer when x lies inside [data-cv-world] (and one is set), else x
 let topLayer = null;
-export function setLayer(el) { topLayer = el || null; }
+export function setLayer(el) { topLayer = el || null; inWorldEpoch++; }
 export function layer(fallback) { return topLayer && fallback && inWorld(fallback) ? topLayer : fallback; }
 // setCanvasScale(k): the camera's zoom at its last zoom end; fitCanvas sizes in-world stores for it. canvasScale(el): the
 // factor el's canvas stores take on top of the device ratio (k inside the world, else 1; no layout read) for owners that
 // size their own canvases
-export function setCanvasScale(k) { canvasK = k > 0 && isFinite(k) ? +k : 1; }
+export function setCanvasScale(k) { canvasK = k > 0 && isFinite(k) ? +k : 1; inWorldEpoch++; }
 export function canvasScale(el) { return canvasK !== 1 && inWorld(el) ? canvasK : 1; }
 // static canvas owners (drawn on change, not by a ticker) register a repaint for a zoom end: onRescale(el, fn) → off;
 // rescaleCanvases(root?) calls the ones inside root (all without it; detached ones are skipped). Animated canvases pick
@@ -2937,32 +2963,208 @@ export function frame(fn) {
 export function reducedMotion() {
   try { const m = globalThis.matchMedia; return !!(m && m('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
 }
-// ticker(el, fn, o): the display loop of an animated canvas (§13.1: ≤ 30 fps, 10 fps with prefers-reduced-motion, hidden
-// pages are not painted). fn(t) runs on animation frames at most o.fps (default 30, ≤ 60) times per second; frames
-// are skipped while the document is hidden or el is not rendered (display: none, a hidden page), and the loop ends
-// by itself once el leaves the document. Returns { start(), stop(), running() → bool }; start() is idempotent.
-export function ticker(el, fn, o) {
-  const fps = o && o.fps > 0 ? Math.min(60, +o.fps) : 30;
-  let cancel = null, last = -1e9, on = false, iv = 1000 / fps;
-  // The frame-rate gate comes first (4 ms slack: every 2nd frame at 60 Hz, every 4th at 120 Hz for 30 fps); only a
-  // frame that passes it reads prefers-reduced-motion (which may lengthen the interval) and the element's visibility
-  // (getClientRects can force a layout). A hidden frame counts as a frame, so a hidden page is probed at the frame rate.
-  const tick = t => {
-    cancel = null;
-    if (!on || !el || !el.isConnected) { on = false; return; }
-    if (t - last >= iv - 4) {
-      iv = reducedMotion() ? 100 : 1000 / fps;
-      if (t - last >= iv - 4) {
-        last = t;
-        const d = D(), hidden = (d && d.visibilityState === 'hidden') || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
-        if (!hidden) { try { fn(t); } catch (err) { console.error(err); } }
-      }
+/* ------------------------------------------------------------ the frame clock (IMPL-FR §1) */
+// One requestAnimationFrame per module instance while any client is on, none at rest. A client { fn(t, dt), live?(), el?,
+// cap?, essential?, every?, name?, end?() } paints on the frames its cadence picks. The display's rate D is MEASURED from
+// the rAF deltas (no screen.refreshRate in WebKit): a RING_N-delta ring; the estimate = the mean of the inliers within
+// ±25 % of the ring's 25th percentile (WebKit's 1 ms timer reads 240 Hz as 4 / 5 ms → 4.17 → 240; a loaded 120 Hz display
+// that drops half its frames keeps 120 until ≥ 75 % are slow), snapped to DISPLAY_RATES within 8 %, else the raw Hz; 60
+// until the ring is full; after the first adoption a change needs CLK_HYST ms of agreement (no flapping under load); a
+// delta > 250 ms (a hide, a stall) is never entered, so the estimate survives a tab switch. The ceiling C = min(cap,
+// DISPLAY_MAX): k = 1 while D ≤ 1.25·C, else the smallest k with D / k ≤ 1.25·C; the 60 floor on the GLOBAL cap only
+// (D / k ≥ FLOOR_HZ while D is; a 30 Hz Low Power display draws at 30); E = D / k. A client's own cap: k_c = round(E / cap)
+// ≥ 1, no floor (a 30 fps loop whose data is 29 Hz stays 30); reduced motion: cap 10 unless `essential`, read once per
+// frame on the first client whose gate passes (the old ticker's two-stage rule). The gate: t − last ≥ k·k_c·P − slack,
+// slack = half the ACTUAL frame (≤ half the period: right even while the estimate is still 60 on a 120 Hz display).
+// "Live": el on screen through one shared IntersectionObserver (optimistic until it answers; a client added on an element
+// already watched starts as its siblings are), else a getClientRects probe
+// at most every CLK_PROBE ms; `live()` when given; `el.isConnected` every frame (a client whose element left the document
+// is dropped: `end()`). Hidden document: nothing runs. `every` clients run on every rAF, ungated (the stall meter).
+// Test mode: config({ display, gate }) fixes the estimate / disables the gate; _reset() drops everything (a stale frame —
+// from before it, or dropped with the last client under a no-op cancel — is inert: a token per armed frame, one in flight).
+// stats(): the clients' summed self time per painted frame, 2 s window (STAT_N: 2 s at 240).
+export const DISPLAY_RATES = Object.freeze([30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240]);
+export const DISPLAY_MAX = 240, FLOOR_HZ = 60, RING_N = 32;
+const CLK_OVER = 1.25, CLK_HYST = 1000, CLK_PROBE = 500, CLK_STAT = 2000, CLK_LONG = 250, CLK_SNAP = 0.08, CLK_EVERY = 8;
+const STAT_N = 512; // (the self-time ring: 2 s at DISPLAY_MAX = 480 painted frames)
+const CLK = {
+  armed: null, cancel: null, list: [], byEl: new Map(), io: null, change: new Set(), lastEff: 60,
+  cap: Infinity, D: 60, meas: false, ring: new Float64Array(RING_N), sort: new Float64Array(RING_N), rn: 0, ri: 0, nth: 0, pend: 0, pendT: 0, lastT: -1,
+  cfg: { display: 0, gate: true }, rm: false, frames: 0, paints: 0, sMs: new Float64Array(STAT_N), sT: new Float64Array(STAT_N), si: 0, sn: 0,
+};
+function clkK() {
+  const D = CLK.D, C = Math.min(CLK.cap, DISPLAY_MAX);
+  let k = 1;
+  if (D > CLK_OVER * C) { k = Math.ceil(D / (CLK_OVER * C) - 1e-9); if (D / k > CLK_OVER * C) k++; }
+  while (k > 1 && D / k < FLOOR_HZ) k--;
+  return k;
+}
+const clkEff = () => CLK.D / clkK();
+function clkEmit() {
+  const e = clkEff();
+  if (e === CLK.lastEff) return;
+  CLK.lastEff = e;
+  for (const f of [...CLK.change]) { try { f(e); } catch (err) { console.error(err); } }
+}
+// the display estimate from the ring (§1.2): the inlier mean, snapped; adopted at once the first time, then with hysteresis
+function clkMeasure(dt, t) {
+  if (!(dt > 0) || dt > CLK_LONG) return;
+  CLK.ring[CLK.ri] = dt; CLK.ri = (CLK.ri + 1) % RING_N; if (CLK.rn < RING_N) CLK.rn++;
+  if (CLK.rn < RING_N || (++CLK.nth % CLK_EVERY) !== 0) return;
+  const S = CLK.sort; S.set(CLK.ring); S.sort();
+  const p25 = S[Math.floor(0.25 * (RING_N - 1))], lo = 0.75 * p25, hi = 1.25 * p25;
+  let sum = 0, n = 0;
+  for (let i = 0; i < RING_N; i++) { const v = S[i]; if (v >= lo && v <= hi) { sum += v; n++; } }
+  const hz = n ? 1000 / (sum / n) : 1000 / p25;
+  let cand = Math.round(clamp(hz, 10, 1000));
+  for (const r of DISPLAY_RATES) if (Math.abs(hz - r) <= CLK_SNAP * r) { cand = r; break; }
+  if (!CLK.meas) { CLK.meas = true; CLK.D = cand; CLK.pend = 0; clkEmit(); return; }
+  if (cand === CLK.D) { CLK.pend = 0; return; }
+  if (CLK.pend !== cand) { CLK.pend = cand; CLK.pendT = t; return; }
+  if (t - CLK.pendT >= CLK_HYST) { CLK.D = cand; CLK.pend = 0; clkEmit(); }
+}
+function clkPeriod(c) {
+  const E = clkEff(), o = c.o;
+  let cap = o.cap > 0 ? +o.cap : Infinity;
+  if (CLK.rm && !o.essential) cap = Math.min(cap, 10);
+  const kc = cap === Infinity ? 1 : Math.max(1, Math.round(E / cap));
+  return kc * 1000 / E;
+}
+function clkIO() {
+  if (CLK.io !== null) return CLK.io;
+  const IO = globalThis.IntersectionObserver;
+  if (typeof IO !== 'function') { CLK.io = false; return false; }
+  try {
+    CLK.io = new IO(entries => { for (const e of entries) { const S = CLK.byEl.get(e.target); if (S) for (const c of S) c.vis = !!e.isIntersecting; } });
+  } catch (err) { CLK.io = false; }
+  return CLK.io;
+}
+function clkWatch(c, on) {
+  const el = c.o.el;
+  if (!el || typeof el !== 'object') return;
+  let S = CLK.byEl.get(el);
+  if (on) {
+    if (!S) { CLK.byEl.set(el, (S = new Set())); const io = clkIO(); if (io) { try { io.observe(el); } catch (err) { /* a detached node */ } } }
+    else { const sib = S.values().next().value; if (sib) c.vis = sib.vis; } // (an element already watched: as it is — the observer never reports an unchanged one again)
+    S.add(c);
+  } else if (S) {
+    S.delete(c);
+    if (!S.size) { CLK.byEl.delete(el); if (CLK.io) { try { CLK.io.unobserve(el); } catch (err) { /* gone */ } } }
+  }
+}
+function clkLive(c, t) {
+  const o = c.o;
+  if (typeof o.live === 'function') { try { return !!o.live(); } catch (err) { return false; } }
+  const el = o.el;
+  if (!el) return true;
+  if (CLK.io) return c.vis !== false;
+  if (t - c.probeT >= CLK_PROBE || !(c.probeT > -Infinity)) {
+    c.probeT = t;
+    c.vis = !(typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
+  }
+  return c.vis !== false;
+}
+function clkRun(c, t, dt) { try { c.fn(t, dt); } catch (err) { console.error(err); } }
+function clkDrop(c) {
+  if (!CLK.list.includes(c)) return;
+  CLK.list = CLK.list.filter(x => x !== c);
+  clkWatch(c, false);
+  if (!CLK.list.length && CLK.cancel) { CLK.cancel(); CLK.cancel = null; CLK.armed = null; }
+}
+function clkArm() {
+  if (CLK.cancel || !CLK.list.length) return;
+  const tok = {};
+  CLK.armed = tok;
+  CLK.cancel = frame(t => clkTick(tok, t));
+}
+function clkTick(tok, t) {
+  if (tok !== CLK.armed) return; // (a frame dropped, or from before _reset: inert, even under a no-op cancel — one in flight)
+  CLK.armed = null; CLK.cancel = null;
+  const L = CLK.list;
+  if (!L.length) return;
+  const d = D(), hidden = !!(d && d.visibilityState === 'hidden');
+  const dtF = CLK.lastT >= 0 ? t - CLK.lastT : NaN;
+  CLK.lastT = t; CLK.frames++;
+  if (!hidden && !(CLK.cfg.display > 0)) clkMeasure(dtF, t);
+  const PD = 1000 / CLK.D, slack = 0.5 * Math.min(dtF > 0 ? dtF : PD, PD), t0 = nowMs();
+  let painted = false, rmRead = false;
+  for (const c of L) {
+    const o = c.o;
+    if (o.el && o.el.isConnected === false) { clkDrop(c); if (typeof o.end === 'function') { try { o.end(); } catch (err) { console.error(err); } } continue; }
+    if (hidden) continue;
+    if (o.every) { clkRun(c, t, dtF > 0 ? dtF : PD); continue; }
+    if (!clkLive(c, t)) continue;
+    let P = clkPeriod(c);
+    if (CLK.cfg.gate && t - c.last < P - slack) continue;
+    if (!rmRead && !o.essential) {
+      rmRead = true;
+      const r = reducedMotion();
+      if (r !== CLK.rm) { CLK.rm = r; P = clkPeriod(c); if (CLK.cfg.gate && t - c.last < P - slack) continue; }
     }
-    if (on) cancel = frame(tick);
-  };
+    const dt = c.last > -Infinity ? t - c.last : P;
+    c.last = t;
+    clkRun(c, t, dt);
+    painted = true;
+  }
+  if (painted) { CLK.paints++; CLK.sMs[CLK.si] = nowMs() - t0; CLK.sT[CLK.si] = t; CLK.si = (CLK.si + 1) % STAT_N; if (CLK.sn < STAT_N) CLK.sn++; }
+  clkArm();
+}
+export const clock = Object.freeze({
+  add(client) {
+    if (!client || typeof client.fn !== 'function') throw new Error('clock.add: a client with fn(t, dt)');
+    const c = { o: client, fn: client.fn, last: -Infinity, vis: true, probeT: -Infinity };
+    CLK.list = CLK.list.concat(c);
+    clkWatch(c, true);
+    clkArm();
+    return () => clkDrop(c);
+  },
+  setCap(hz) { CLK.cap = hz > 0 && isFinite(hz) ? +hz : Infinity; clkEmit(); },
+  cap: () => CLK.cap,
+  display: () => CLK.D,
+  eff: () => clkEff(),
+  period: () => 1000 / clkEff(),
+  k: () => clkK(),
+  clients: () => CLK.list.map(c => c.o.name || (c.o.el ? 'el' : 'client')),
+  onChange(fn) { if (typeof fn !== 'function') return () => {}; CLK.change.add(fn); return () => { CLK.change.delete(fn); }; },
+  stats() {
+    const ms = [], T = CLK.lastT;
+    for (let i = 0; i < CLK.sn; i++) if (T - CLK.sT[i] <= CLK_STAT) ms.push(CLK.sMs[i]);
+    ms.sort((a, b) => a - b);
+    const q = p => (ms.length ? ms[Math.min(ms.length - 1, Math.floor(p * (ms.length - 1)))] : 0);
+    return { display: CLK.D, measured: CLK.meas, cap: CLK.cap, eff: clkEff(), k: clkK(), frames: CLK.frames, paints: CLK.paints, clients: CLK.list.length,
+      ms: { n: ms.length, med: q(0.5), p95: q(0.95), max: ms.length ? ms[ms.length - 1] : 0 } };
+  },
+  config(o) {
+    if (!o) return { display: CLK.cfg.display, gate: CLK.cfg.gate };
+    if ('display' in o) { const v = +o.display; if (v > 0) { CLK.cfg.display = v; CLK.D = v; CLK.meas = true; CLK.pend = 0; } else { CLK.cfg.display = 0; } }
+    if ('gate' in o) CLK.cfg.gate = o.gate !== false;
+    clkEmit();
+    return { display: CLK.cfg.display, gate: CLK.cfg.gate };
+  },
+  _reset() {
+    CLK.armed = null;
+    if (CLK.cancel) { try { CLK.cancel(); } catch (err) { /* a gone frame */ } }
+    CLK.cancel = null;
+    const L = CLK.list;
+    CLK.list = [];
+    for (const c of L) { clkWatch(c, false); if (typeof c.o.end === 'function') { try { c.o.end(); } catch (err) { console.error(err); } } }
+    if (CLK.io) { try { CLK.io.disconnect(); } catch (err) { /* gone */ } }
+    CLK.io = null; CLK.byEl.clear(); CLK.change.clear();
+    CLK.cap = Infinity; CLK.D = 60; CLK.meas = false; CLK.rn = 0; CLK.ri = 0; CLK.nth = 0; CLK.pend = 0; CLK.pendT = 0; CLK.lastT = -1; CLK.lastEff = 60;
+    CLK.cfg = { display: 0, gate: true }; CLK.rm = false; CLK.frames = 0; CLK.paints = 0; CLK.si = 0; CLK.sn = 0;
+  },
+});
+// ticker(el, fn, o): the display loop of an animated canvas — a client of the clock over el (IMPL-FR §1.1): fn(t, dt) on the
+// frames the cadence picks (o.fps = the client's cap, default 30: a loop whose data is 29 Hz keeps it; 10 fps under
+// prefers-reduced-motion; nothing while the document is hidden or el is not on screen), and the loop ends by itself once
+// el leaves the document. Returns { start(), stop(), running() → bool }; start() is idempotent.
+export function ticker(el, fn, o) {
+  const cap = o && o.fps > 0 ? +o.fps : 30;
+  let off = null, on = false;
+  const C = { el, cap, name: 'ticker', fn: (t, dt) => fn(t, dt), end: () => { on = false; off = null; } };
   return {
-    start() { if (on) return; on = true; cancel = frame(tick); },
-    stop() { on = false; if (cancel) cancel(); cancel = null; },
+    start() { if (on) return; on = true; off = clock.add(C); },
+    stop() { on = false; if (off) off(); off = null; },
     running: () => on,
   };
 }

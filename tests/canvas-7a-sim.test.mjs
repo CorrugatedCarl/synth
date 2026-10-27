@@ -683,3 +683,28 @@ test('review 1 F5 — → Piano roll while the song plays: the notes reach the w
     api.selectTrack(ID.t); sim.raf(); await settle();
   }
 });
+
+test('IMPL-FR review 2 (P3-3): the drum lamps\' pump reads the frame\'s shared heard frame (main.js heardFrame) — one getOutputTimestamp a frame for the playhead and the posts\' pump together, never one more per pump', async () => {
+  api.selectTrack(ID.t); sim.raf(); await settle();
+  api.transport().pos = 0;
+  await start();
+  const c = sim.ctx(), g0 = c.getOutputTimestamp, Tr = api.transport();
+  let stamps = 0;
+  try {
+    await play(1); // (posts flowing: 200 ms of them always queued, so the pump runs on every frame)
+    c.getOutputTimestamp = function () { stamps++; return g0.apply(this, arguments); };
+    const per = [], seen = [];
+    for (let i = 0; i < 8; i++) {
+      sim.run(Math.round(BAR / 16 * Tr.a.fpt)); // (a step's audio: its post queued)
+      const s0 = stamps;
+      sim.raf();
+      per.push(stamps - s0); seen.push(DR().state().S.pos ? DR().state().S.pos.s : -1);
+    }
+    assert.equal(new Set(seen).size > 4, true, 'the panel stepped at the heard posts: ' + seen.join());
+    assert.deepEqual(per, [1, 1, 1, 1, 1, 1, 1, 1], 'getOutputTimestamp calls a frame');
+  } finally {
+    c.getOutputTimestamp = g0;
+    if (api.transport().playing) await start();
+    await settle();
+  }
+});

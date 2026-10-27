@@ -1361,3 +1361,82 @@ test('P: the top bar\'s Panic (#tPanic) — in the transport row, aria-labelled,
   assert.deepEqual(N.posted.map(x => x.m.t).filter(k => k === 'panic'), ['panic'], 'Esc: the same');
   s.key('KeyS', false);
 });
+
+/* ================================================================ IMPL-FR (stage FR, Cut A: lane H-A) */
+const WK = await import('../wk.js?v=9'); // the kit instance main.js imports: its frame clock
+test('IMPL-FR §3 A1 / §10.1: the frame loop is two clock clients (the stall meter on every rAF, frameTick essential at the global cap); __synthTest.fps; the frame\'s heard frame shared (one getOutputTimestamp a frame, the hosts\' heardFrame / heardTick); the head meters memoised, falling 0.88 per 16.667 ms in time, written on change; the transport text written on change', async () => {
+  const s = await bootMain({ clock: 'std', outLat: 0.03, baseLat: 0.01, hash: '#serum' });
+  const FPS = globalThis.__synthTest.fps;
+  await s.power(); await s.settle(5); s.advance(20); s.raf();
+  const api = s.api, c = s.ctx(), proj = api.project(), tr = proj.tracks[0], H = api.sxHost(tr);
+  // the clients and the hook
+  assert.ok(FPS && FPS.clock === WK.clock && typeof FPS.stats === 'function', '__synthTest.fps');
+  assert.deepEqual(['stall', 'frameTick'].map(n => FPS.clock.clients().includes(n)), [true, true], FPS.clock.clients().join());
+  // (the merge with lane K: the ⚙ Frame rate setting's default, 120, is the clock's ceiling — IMPL-FR §2; the sim's display is 60)
+  assert.deepEqual([FPS.eff(), FPS.cap(), FPS.stats().display, H.fps()], [60, 120, 60, 60]);
+  // one getOutputTimestamp a frame; the playhead, the lanes and the hosts read the frame's
+  proj.metronome.countIn = 0;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.run(4800);
+  let stamps = 0;
+  const g0 = c.getOutputTimestamp.bind(c);
+  c.getOutputTimestamp = () => { stamps++; return g0(); };
+  s.advance(17); s.raf();
+  const F1 = H.heardFrame(), t1 = H.heardTick();
+  assert.equal(stamps, 1, 'one getOutputTimestamp for the frame and its readers: ' + stamps);
+  near(t1, api.curTick(), 1e-9, 'heardTick: the heard song tick');
+  assert.ok(F1 > 0 && typeof api.fxHost(tr).heardTick === 'function' && typeof api.fxHost(tr).heardFrame === 'function');
+  // the transport text: written only when it changed (three frames at the same heard time: one write)
+  const bbt = s.$('#tBBT');
+  let bw = 0, bv = bbt.textContent;
+  Object.defineProperty(bbt, 'textContent', { configurable: true, get: () => bv, set: v => { bv = v; bw++; } });
+  WK.clock.config({ gate: false });
+  try { s.advance(17); s.raf(); s.raf(); s.raf(); } finally { WK.clock.config({ gate: true }); }
+  assert.equal(bw, 1, 'the same heard time three frames running: one write');
+  s.$('#tPlay').click(); await s.settle(2);
+  // the head meters: the element looked up once, the peak falling 0.88 per 16.667 ms (time, not frames: 60 and 120 fps
+  // agree), the width written only when its rounded value moved
+  const N = api.nodes.get(tr.id), el = s.$(`.head[data-id="${tr.id}"] .hmeter i`), doc = s.dom.document, q0 = doc.querySelector;
+  let amp = 0.5, qs = 0, widths = 0, w = '';
+  N.an.getFloatTimeDomainData = a => { a.fill(0); a[3] = amp; };
+  doc.querySelector = function (sel) { if (/hmeter/.test(sel)) qs++; return q0.apply(this, arguments); };
+  Object.defineProperty(el.style, 'width', { configurable: true, get: () => w, set: v => { w = v; widths++; } });
+  try {
+    for (const hz of [60, 120]) {
+      WK.clock.config({ display: hz });
+      amp = 0.5; s.advance(1000 / hz); s.raf();
+      assert.equal(N.peak, 0.5, hz + ': the peak');
+      amp = 0;
+      for (let i = 1; i <= hz; i++) { s.advance(1000 / hz); s.raf(); }
+      near(N.peak, 0.5 * Math.pow(0.88, 60), 1e-9, hz + ' fps: a second later 0.5 · 0.88^60');
+    }
+    for (let i = 0; i < 60; i++) { s.advance(1000 / 120); s.raf(); }
+    const wN = widths;
+    for (let i = 0; i < 30; i++) { s.advance(1000 / 120); s.raf(); }
+    assert.deepEqual([widths - wN, w, qs], [0, '0.0%', 0], 'at rest: no write; the element not looked up again');
+  } finally { WK.clock.config({ display: 60 }); doc.querySelector = q0; }
+});
+test('IMPL-FR review 2 (P2-2): the header\'s "DSP load …" (#cpu) is written only when its text changes, and the percentage holds within 1.5 points of the one shown — a load jittering ±1 % across a rounding edge never rewrites it (each write re-laid the page out: 4 a second idle)', async () => {
+  const s = await bootMain({ clock: 'std', hash: '#serum' });
+  await s.power(); await s.settle(5); s.run(48000); s.raf();
+  const tr = s.api.project().tracks[0], N = s.nodeOf(tr.id), M = s.ctx().nodes.find(n => n.name === 'synth-master'), r0 = N.got.filter(m => m.t === 'stats').at(-1);
+  assert.ok(r0 && M, 'a track report to copy, MASTER');
+  s.advance(250); M._fromProc({ t: 'stats', load: 0, lat: 0, per: [] }); // (MASTER's share 0: the track's report is the sum)
+  const el = s.$('#cpu');
+  let txt = String(el.textContent), writes = 0;
+  Object.defineProperty(el, 'textContent', { configurable: true, get: () => txt, set: v => { txt = String(v); writes++; } });
+  const feed = load => { s.advance(250); N._fromProc(Object.assign({}, r0, { load, voices: 0, snd: 0 })); };
+  const pct = () => (/DSP load (\d+)%/.exec(txt) || [])[1];
+  feed(0.124);
+  assert.deepEqual([pct(), writes], ['12', 1]);
+  for (let i = 0; i < 4; i++) feed(0.124);
+  assert.equal(writes, 1, 'the same text: not written again');
+  for (const x of [0.115, 0.135, 0.12, 0.13, 0.1151, 0.1349, 0.125, 0.1251]) feed(x); // (±1 % across 12.5 %)
+  assert.deepEqual([pct(), writes], ['12', 1], 'a jitter across a rounding edge: no flicker');
+  feed(0.2);
+  assert.deepEqual([pct(), writes], ['20', 2], 'a real move: written once');
+  feed(0.8);
+  assert.deepEqual([pct(), writes, / — lower oversampling$/.test(txt), el.classList.contains('warn')], ['80', 3, true, true], 'above 75 %: one write with the advice');
+  feed(0.79); feed(0.81);
+  assert.deepEqual([pct(), writes], ['80', 3]);
+});

@@ -194,6 +194,16 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    panels), moved drops come into view. **For the user**: the lead's first guesses (no envelope / Mod Wheel on the master — an LFO in
    ENV one-shot mode is a song envelope; CC drives a master CC module whatever track is selected); the track-side BPM-LFO tempo gap
    (canvas BPM LFOs on tracks run at 120 with ANCHOR off or while stopped — fixing changes those tracks' sound: needs the user's OK).
+23. **(2026-10-27.)** **Display-rate visuals, Cut A deployed** (ROADMAP 23; contract IMPL-FR, §14 every lane / review / fixer note;
+   holding branch `wt-FR`): `wk.clock` — one rAF, the display rate measured (32-delta ring, hysteresis, long deltas rejected), the cap's
+   cadence (25 % rule, the 60 floor on the global cap), per-client caps, an IntersectionObserver for liveness, reduced motion 10 fps
+   except essential; ⚙ Frame rate (`synth.cv.fps`: 120 default / 144 / 165 / 240 / Display) with High following it, Medium / Low 60;
+   the heavy Serum / Wavecraft displays a rate class `k = floor(E / 60)` (60–119 / s: the user's 60 minimum, lead); the CLIP / SEQ
+   playheads from the heard clock (lines for seeks / wraps, a held clip shown as posted); #cpu and the module bars' figures with a
+   hold (idle layout + style < 1 ms / s); the G7 harness `tests/ui-bench-fps.mjs` (`ui-fps-mac` in bench.json; virtual display in
+   headless CfT; `?fps=1` on a device). G9 on the Mac's 120 Hz panel passed (macOS drops an idle page to 30; motion → 120 at once,
+   the clock follows in ~1.5 s). **Next**: Cut B (the fast lane — knob rings without the ~35 ms glide delay; the iPad measured first).
+   **For the user**: the FR first guesses (scratchpad morning list): options / 25 % rule / Medium-Low 60 / heavy displays 60–119.
 
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 

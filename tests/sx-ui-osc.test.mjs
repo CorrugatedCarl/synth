@@ -2137,6 +2137,120 @@ test('layers3d: real frames first-class, back to front', () => {
   assert.ok(raw.every(x => x.real && x.frame === x.slot));
 });
 
+/* ================================================================ IMPL-FR Cut A: the heavy displays (§3 B3, §7.3, §13 P1-2) */
+// the key of a keyN canvas as its own elements (never fake-DOM nodes: the state's strings and numbers only)
+const keyOf = f => { const k = []; const n = f(k); return k.slice(0, n); };
+const sameKey = (a, b) => a.length === b.length && a.every((x, i) => x === b[i] || (x !== x && b[i] !== b[i]));
+test('IMPL-FR §3 B3 / §7.3: the wavetable display, the filter display and the spectral filter declare maxHz 60 and key as numbers (keyN; key() is its string; \'off\' while inactive); the state\'s JSON parts per repaint, never per snapshot; the noise / sample displays (a playhead) declare none', async () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0), F1 = new osc.FilterPanel(root, kit, 0);
+  new osc.NoisePanel(root, kit);
+  T.paint(); await settle(); T.paint();
+  const by = re => T.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
+  const wc = by(/^OSC A wavetable display/), fc = by(/^FILTER 1 display/), nc = by(/^Noise overview/);
+  assert.deepEqual([wc.maxHz, fc.maxHz, nc.maxHz || 0], [60, 60, 0]);
+  assert.deepEqual([typeof wc.keyN, typeof fc.keyN, typeof nc.keyN], ['function', 'function', 'undefined']);
+  const V = P.views.wt;
+  for (const f of [k => V.keyN(k), k => F1.keyN(k)]) {
+    const a = keyOf(f), b = keyOf(f);
+    assert.ok(sameKey(a, b), 'stable while nothing changes');
+    assert.ok(a.every(x => typeof x === 'number' || typeof x === 'string'), 'numbers and the state\'s strings');
+  }
+  assert.equal(V.key(), keyOf(k => V.keyN(k)).join('|'));
+  // a live value moves the key: WT POS (wtPos) / cutoff (eff) while a note sounds
+  const w0 = keyOf(k => V.keyN(k)), f0 = keyOf(k => F1.keyN(k)), eff = new Float32Array(core.NSV + 8);
+  eff[core.vi('f.cutoff')] = 0.123;
+  T.setSnap({ notes: 1, eff, wtPos: new Float32Array([0.7, 0, 0]) });
+  assert.ok(!sameKey(w0, keyOf(k => V.keyN(k))) && !sameKey(f0, keyOf(k => F1.keyN(k))));
+  T.setSnap(null);
+  // inactive
+  s.osc[0].type = 'spec';
+  T.paint();
+  assert.deepEqual(keyOf(k => V.keyN(k)), ['off']);
+  assert.equal(V.key(), 'off');
+  // the spectral filter: its curve's points enter through a per-repaint memo (an edit repaints; a snapshot does not)
+  const SV = P.views.spec, sc = by(/^OSC A spectral filter/);
+  assert.deepEqual([sc.maxHz, typeof sc.keyN], [60, 'function']);
+  const sp = T.canvases.find(cv => cv.el.getAttribute('data-oscdisp') === '0' && cv.el.parentNode && SV.el.contains(cv.el));
+  assert.ok(sp && !sp.maxHz, 'the spectrogram (a playhead): every change');
+  const k0 = keyOf(k => SV.filtKeyN(k));
+  s.osc[0].spec.filt.pts = [[0, 0.2, 0], [1, 0.9, 0]];
+  T.setSnap({ notes: 0 });
+  assert.ok(sameKey(k0, keyOf(k => SV.filtKeyN(k))), 'a snapshot reads no JSON');
+  T.paint();
+  assert.ok(!sameKey(k0, keyOf(k => SV.filtKeyN(k))), 'the repaint after the edit does');
+  assert.equal(SV.filtKey(), keyOf(k => SV.filtKeyN(k)).join('|'));
+});
+
+test('IMPL-FR §13 P1-2: the 3D wavetable view caches its back layers\' polylines per table, size and density — a WT POS move strokes them from the cache and the front frame (no slot copied), with the very calls of a fresh view\'s draw (the same pixels); a new size computes them again; the 2D view drops them', async () => {
+  const { doc, s, kit, T, root } = mount();
+  s.osc[0].wt = 'user:1';                                          // a morph table: 256 display slots over 3 frames
+  s.ui.view3d = [1, 0, 0];
+  const P = new osc.OscPanel(root, kit, 0), V = P.views.wt, D = osc.oscData(kit);
+  D.tableEntry('user:1');
+  await settle(); T.paint();
+  const g = doc.createElement('canvas').getContext('2d'), calls = () => g.calls.map(c => c.slice());
+  const fresh = (w, h) => { const F = new osc.WTView(null, kit, 0), g2 = doc.createElement('canvas').getContext('2d'); F.draw(g2, w, h, 1); return g2.calls.map(c => c.slice()); };
+  V.draw(g, 300, 120, 1);
+  const nL = osc.layers3d(256, 3).length;
+  assert.equal(V.b3.L.length, nL);
+  assert.equal(g.calls.filter(c => c[0] === 'stroke').length, 1 + nL + 1, 'the axis, the layers, the front frame');
+  // WT POS moves: the layers from the cache (no slot copied), the calls those of an uncached view's draw
+  const sf = D.slotFrame;
+  let copies = 0;
+  D.slotFrame = (...a) => { copies++; return sf.apply(D, a); };
+  const L0 = V.b3.L;
+  for (const p of [0.2, 0.55, 0.9]) {
+    T.setSnap({ notes: 1, wtPos: new Float32Array([p, 0, 0]) });
+    g.calls.length = 0;
+    V.draw(g, 300, 120, 1);
+    assert.equal(copies, 0, 'no slot copied');
+    D.slotFrame = sf;
+    assert.deepEqual(calls(), fresh(300, 120), 'pos ' + p + ': the same calls');
+    D.slotFrame = (...a) => { copies++; return sf.apply(D, a); };
+  }
+  assert.equal(V.b3.L, L0);
+  D.slotFrame = sf;
+  // a new size: computed again
+  V.draw(g, 320, 120, 1);
+  assert.deepEqual([V.b3.w, V.b3.L !== L0], [320, true]);
+  // 2D: released
+  s.ui.view3d = [0, 0, 0];
+  V.draw(g, 320, 120, 1);
+  assert.equal(V.b3, null);
+});
+
+test('IMPL-FR §3 B3: the filter display caches its response by its inputs — a spectrum view redrawn for a new tap computes no impulse and draws the same path; a cutoff move computes one; the drawn calls equal an uncached draw\'s', async t => {
+  let calls = 0;
+  const imp = (type, fc, res, drive, vr, fs, len) => { calls++; const u = new Float64Array(len); for (let i = 0; i < 64; i++) u[i] = Math.exp(-i * fc / 4000) * (1 - res); return u; };
+  globalThis.SerumDSP = { filterImpulse: imp };
+  t.after(() => { delete globalThis.SerumDSP; });
+  const { doc, s, T, root, kit } = mount();
+  s.ui.filtView = [1, 0];                                          // response + FFT
+  const F1 = new osc.FilterPanel(root, kit, 0);
+  const g = doc.createElement('canvas').getContext('2d');
+  const tap = v => { const a = new Float32Array(2048); for (let i = 0; i < 1024; i++) a[i] = Math.sin(i * v); return a; };
+  const draw = () => { g.calls.length = 0; F1.draw(g, 300, 120, 1); return g.calls.map(c => c.slice()); };
+  T.setSnap({ notes: 1, filtTap: tap(0.1), tapRate: 48000 });
+  calls = 0;
+  const a = draw();
+  assert.equal(calls, 1);
+  T.setSnap({ notes: 1, filtTap: tap(0.3), tapRate: 48000 });
+  const b = draw();
+  assert.equal(calls, 1, 'a new tap: the cached response');
+  T.setSnap({ notes: 1, filtTap: tap(0.1), tapRate: 48000 });
+  assert.deepEqual(draw(), a, 'the same tap: the same calls (the reused FFT buffers hold nothing over)');
+  assert.notDeepEqual(b, a);
+  s.p['f.cutoff'] = 0.31;
+  draw();
+  assert.equal(calls, 2, 'a cutoff move: one impulse');
+  // the cached draw equals a fresh panel's (uncached) draw of the same state
+  const F2 = new osc.FilterPanel(root, kit, 0);
+  const g2 = doc.createElement('canvas').getContext('2d');
+  F2.draw(g2, 300, 120, 1);
+  assert.deepEqual(draw(), g2.calls.map(c => c.slice()));
+});
+
 /* ================================================================ through the real DSP scripts */
 
 test('real DSP: filter displays (types < 96 and ≥ 96), the 2D warp preview (renderWarp2) and Render OSC Warp v2 / S1', async t => {
