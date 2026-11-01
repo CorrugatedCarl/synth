@@ -1652,7 +1652,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face; (the FX look, 2026-10-26) to every FX module
    (its bar inherits) and its rack's root (.fxr-root declares the kit's tokens itself: wk.js); outside #world the ⚙ drawer, a stacked
    jack's count (.cv-jn, the cord layer's top) and the kit's popups opened from a skinned module (.wk-ctx menus, .wk-pop lists — main.js
-   wkPopSkin) carry the attribute themselves. A new skin: a SKINS entry + one block. */
+   wkPopSkin) carry the attribute themselves. A new skin: a SKINS entry + one block. (WC-2) A glass skin (SKINS glass: true) may give its
+   pane an alpha (#rrggbbaa: the case, the face's and the bar's sheens, the hairlines — nothing else) and has its own rules after the
+   blocks (the gate's one exception, tests/cv-tray.test.mjs). */
 /* charcoal (WC-1, SKIN_DEFAULT): the cord lab's colours (docs/canvas/ref/cord-lab.html) — charcoal faces, cream engraving in the narrow
    face, black knobs with cream pointers and arcs, cream-ringed jacks, warm grey screws, the app's amber; a warm red for a negative amount */
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig],
@@ -1669,3 +1671,48 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
   --rig-case: #17181a; --rig-face: #1f2023; --rig-bar: #1f2023; --rig-title: #ebe6d8; --rig-line: #2c2e32; --rig-font: 'Archivo Narrow', Inter, var(--ui);
   --rig-screen: #141518; --rig-jack-ring: #ebe6d8; --rig-jack-nut: #7d7a72; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
 }
+/* ivory (WC-2, the user: "a light skin. Cream or ivory faces, dark engraving, and the same layout"; IMPL-WC §5.2 — Q5 (a)): cream faces on a
+   darker cream body, charcoal engraving in the narrow face, light caps with charcoal pointers (the kit draws a pointer in the face's own
+   text colour), a burnt-orange arc and accent, charcoal-ringed jacks, the same screws; the displays the kit paints itself stay dark windows */
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-rig],
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-rig] .sx-root,
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-rig] .rig-face,
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-fx],
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-fx] .fxr-root,
+.rig-drawer[data-cv-skin="ivory"],
+.cv-jn[data-cv-skin="ivory"],
+.wk-ctx[data-cv-skin="ivory"],
+.wk-pop[data-cv-skin="ivory"] {
+  --sx-bg: #e9e3d3; --sx-panel: #e9e3d3; --sx-panel2: #f8f5ee; --sx-line: #bfb7a4; --sx-graph: #97431a; --sx-ink: #1d1c1a; --sx-mute: #5d574c;
+  --sx-accent: #97431a; --sx-neg: #a3301e; --text: #1d1c1a; --mute: #5d574c;
+  --rig-case: #d9d2c0; --rig-face: #e9e3d3; --rig-bar: #e9e3d3; --rig-title: #1d1c1a; --rig-line: #bfb7a4; --rig-font: 'Archivo Narrow', Inter, var(--ui);
+  --rig-screen: #f3efe4; --rig-jack-ring: #2b2a27; --rig-jack-nut: #6f6a60; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+}
+/* glass (WC-2, the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when
+   they are in behind mode"): smoked frosted glass — the module is the pane (--rig-case, a cool slate at 55 %: the cords behind it show, the
+   words stay ≥ 4.5 : 1 over the canvas and ≥ 3 : 1 with the lightest cord right behind them), a faint sheen on the face and the bar, light
+   hairlines; everything solid on it opaque — the ink, the knob caps and buttons, the screens, the menus and popovers */
+#world[data-cv-skin="glass"] .cv-mod[data-cv-rig],
+#world[data-cv-skin="glass"] .cv-mod[data-cv-rig] .sx-root,
+#world[data-cv-skin="glass"] .cv-mod[data-cv-rig] .rig-face,
+#world[data-cv-skin="glass"] .cv-mod[data-cv-fx],
+#world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-root,
+.rig-drawer[data-cv-skin="glass"],
+.cv-jn[data-cv-skin="glass"],
+.wk-ctx[data-cv-skin="glass"],
+.wk-pop[data-cv-skin="glass"] {
+  --sx-bg: #141a21; --sx-panel: #19202a; --sx-panel2: #0e1217; --sx-line: #3b4653; --sx-graph: #e3ecf5; --sx-ink: #eef2f6; --sx-mute: #b9c3ce;
+  --sx-accent: #7cc8ff; --sx-neg: #ff8f7a; --text: #eef2f6; --mute: #b9c3ce;
+  --rig-case: #1e26308c; --rig-face: #ffffff08; --rig-bar: #ffffff0f; --rig-title: #eef2f6; --rig-line: #ffffff29; --rig-font: 'Archivo Narrow', Inter, var(--ui);
+  --rig-screen: #0c1015; --rig-jack-ring: #e3ecf5; --rig-jack-nut: #6d7884; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+}
+/* the glass skin's own rules (WC-2) — after the blocks, scoped to the glass skin alone, no box changed (the gate's one exception: a block
+   sets custom properties only). (1) The pane is the module: the layers inside it that paint the case or the kit's ground again — a rig's
+   body and its .inst (a fixed #0f1216), an FX module's body, its tab and its rack's root — lose their colour (else the tint compounds:
+   twice in a rig's body, four times in an FX rack's). (2) The two popovers over a face — the X-Shaper's, the ⚙ drawer in the top layer —
+   take the opaque --sx-panel (see-through over the knobs they cover, they would be unreadable). (3) The frost: backdrop-filter (the
+   expensive part — one blur a pane, each frame the canvas moves) on every preset but Low (#viewport[data-cv-perf], cv-world's): Low keeps
+   the translucency alone. With the cables behind, the world draws the ropes under the panes (cv-cords behind(fn, true)): seen frosted */
+#world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]) :is(.cv-body, .inst.custom, .fxtab, .fxr-root) { background-color: transparent; }
+#world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"] { background-color: var(--sx-panel); }
+#viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]) { -webkit-backdrop-filter: blur(12px) saturate(1.6); backdrop-filter: blur(12px) saturate(1.6); }

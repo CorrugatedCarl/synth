@@ -616,11 +616,22 @@ entry + one CSS block (+ a font file if it brings one). Per-instrument skins are
 - **`ivory`** (WC-2, the second, original — Q5 (a)): face `#e9e3d3` (cream) on a `#d9d2c0` body, line `#bfb7a4`, ink `#1d1c1a` (charcoal),
   muted `#6d675c`, accent `#b5541f`; knob cap black `#17171a` with a **white** pointer `#f6f3ea`, track `#bfb7a4`, value arc `#b5541f`; screen
   frame `#f3efe4`; jack ring charcoal `#2b2a27`, hole `#0b0b0c`; screws `#8d8678` → `#4a463e`; the same narrow face in charcoal.
-- Both are **original art**: no Xfer / Serum asset, logo, colour scheme or text; the faces' legends are the catalogue's generic words.
+  **→ Shipped (WC-2, 2026-11-01; §14 "Notes — WC-2 skins")** with the gate's corrections: muted `#5d574c`, accent and value arc `#97431a`
+  (the planned `#6d675c` / `#b5541f` read 4.4 / 3.8 : 1 on the face), **light caps** `#f8f5ee` with the charcoal pointer (the kit draws a
+  knob's pointer in `--sx-ink`, the face's own text colour: a black cap would hide it), the screws the one SVG's (`#9c978a` → `#55524a`).
+- **`glass`** ("Frosted glass", WC-2, the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see
+  cables through the glass when they are in behind mode"): smoked frosted glass — the module is a translucent pane (a cool slate
+  `#1e2630` at 55 %, frosted by `backdrop-filter: blur(12px) saturate(1.6)`, none on Low), a faint sheen on the face and the bar, light
+  hairlines; ink `#eef2f6`, muted `#b9c3ce`, accent `#7cc8ff`; everything solid on it opaque (caps `#0e1217`, screens `#0c1015`, menus
+  and popovers `#19202a`). With "Cables behind modules" on, the cords are drawn **under** the panes (§14): seen through, frosted.
+- All three are **original art**: no Xfer / Serum asset, logo, colour scheme or text; the faces' legends are the catalogue's generic words.
 - **The screens** (skeptic P2-9): sx-ui-osc hard-codes its display palette (`C` sx-ui-osc.js:88, ≈ 20 uses; `OSC_COL` :149 [R]) and a canvas
   repaints only when something changes. **WC-1**: the Oscillator / Filter / Envelope / LFO displays keep the kit's colours (dark, like
   charcoal — acceptable on the one shipped skin; §13). **WC-2** (ivory): the display painters read `wk.theme(el)` (wk.js:2704–2717 [R]) for a
-  rig mount and repaint on a skin change; G6 WC-2 screenshots the Oscillator display on ivory. ~~The FX panel is not skinned (§13).~~
+  rig mount and repaint on a skin change; G6 WC-2 screenshots the Oscillator display on ivory. **→ As shipped (WC-2):** the theme painters
+  (graph.js: the LFO / Envelope screens; the FX displays) take a skin's colours and are painted again at a pick (`wk.rescaleCanvases` over
+  the world); sx-ui-osc's Oscillator and Filter displays keep the kit's dark palette on every skin — dark windows in the cream panel (the
+  user asked for colour and font variables only; §13). ~~The FX panel is not skinned (§13).~~
   **The FX look (the user, 2026-10-26: "can we make this effects panel in the style of wavecraft as well" — on every track, the full
   treatment):** every FX module on the canvas (a track's Effects, a shared FX panel, a Serum's own FX, the master's) is marked
   `[data-cv-fx]` and wears the skin (the block scopes the module and its rack's `.fxr-root`, where the kit declares its tokens); its rack
@@ -1023,7 +1034,16 @@ layout check and the contact sheets), lane F. The Serum complete panel is out of
   update"); the "MPE on by default" preference applies to a new Serum only (`applyPrefs(s, prefs, true)` for the rig's starter and Init).
   A converted Serum keeps its `global.mpe` in the state (W2: the same state; moot without the routing). Lifting it = midi.js's two sites
   on `isSxModel` with B2's hash moved — a stage decision.
-- **The screens keep the kit's colours in WC-1** (sx-ui-osc's hard-coded palette); ivory re-colours them in WC-2.
+- **The screens keep the kit's colours in WC-1** (sx-ui-osc's hard-coded palette); ivory re-colours them in WC-2. **→ WC-2 as shipped:** the
+  LFO / Envelope / FX displays take the skin (theme painters); the Oscillator and Filter displays stay dark on ivory (sx-ui-osc's palette).
+- **The glass skin (WC-2)** (§14 "Notes — WC-2 skins"): the cords are seen through the panes on a **Wavecraft's cord canvas** only (the
+  host's `setGlass`): a 900 Series' faces are cv-gl textures under `#world` (the glass layer's ropes would lie over them), so there — and in
+  the SVG fallback (`?nogl`, no WebGL2) and the `under` diagnostic mode — "Cables behind" keeps the cut-out (the ropes hidden under every
+  panel, a glass FX module's too). A second WebGL2 context and drawing buffer (the cord layer's size: up to the 18.7 MB above at 1440 ×
+  900 dpr 2) exist while glass + behind are on (0 × 0 otherwise; the context itself from the first glass frame to the layer's end). A cord right behind a word lowers its contrast for that moment: ≥ 3 : 1 for the face's words and the bar's title
+  with the lightest cord unblurred behind them (the Low preset), ≈ a third of that cord's light at Medium / High (the blur). WebKit's
+  `-webkit-backdrop-filter` and its backdrop root (the glass layer is a canvas before `#world`, `#world` transformed) were not run here
+  (Chrome for Testing only): the iPad's look is to be checked in the one iPad pass.
 - **The `under` cord mode** (a diagnostic pref) draws cords beneath the DOM: a rig's cords would hide behind its panels — not supported for
   rigs (the layer's `gl` / `svg` modes are).
 - **Tracks keep their names after a rename of the instrument** (the lead's decision 6): a track made as "Wavecraft 3" keeps that name; the
@@ -2341,6 +2361,72 @@ Presentation only: no DSP file, every golden bit-identical, every control / data
   the S1 / S2 badges and their words ("Serum 1 module …", "Convert to Serum 2 Module": the gate's words review) → Classic / Modern ·
   v1 / v2 (Legacy / Current) · Original / Plus. Generic and kept: Distortion, Flanger, Phaser, Chorus, Delay, Compressor, Reverb
   (Plate, Hall, Vintage), EQ, Filter, Utility, Ducker (ours), and the plain parameter words (RATE, DEPTH, FEED, MIX …).
+
+### Notes — WC-2 skins: Ivory and Frosted glass (the user, 2026-11-01; `rig-core.js` (SKINS), `style.css` (two blocks + the glass rules), `cv-cords.js` (the glass layer), `cv-world.js` (`setGlass`, `data-cv-perf`), `main.js` (the ⚙ line, the glass word), `tests/ui-bench-fps.mjs` (`--skin`, `--behind`); `tests/cv-tray`, `rig-model`, `rig-ui`, `cv-cords`, `cv-world`, `canvas-WC-sim`)
+The user: **Ivory** — "a light skin. Cream or ivory faces, dark engraving, and the same layout. Colour and font variables only"; **Frosted
+glass** — "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when they are in
+behind mode". Tests first (4657001), then the build. Presentation only: no DSP file, every golden untouched, every box equal across skins.
+- **SKINS** (rig-core): `charcoal` (the default), `ivory` ("Ivory"), `glass` ("Frosted glass", `glass: true`); all three the narrow
+  face, so the layout is the same to the pixel. **⚙ → Canvas → "<NAME> skin ▾"** (`#cvSkin`, after the Frame rate line; its words from
+  `RIG.NAME`): the pref `synth.rig.skin` (a device pref, never in a project), applied at once — the one attribute, the view synced (a stacked
+  jack's count carries the skin itself), the static displays painted again (`wk.rescaleCanvases` over the world: graph.js and the FX
+  displays read the theme when they paint). The kit's popups and the ⚙ drawer take it at their next opening.
+- **Ivory** is a block like charcoal's (§5.2 with the gate's corrections: the muted and the accent darkened to ≥ 4.5 : 1 on the cream
+  face, light caps — the kit's pointer is `--sx-ink`, the face's own text colour —, the screws the one SVG's). The theme displays (LFO,
+  Envelope, the FX screens) go cream with burnt-orange traces; the Oscillator and Filter displays stay dark windows (sx-ui-osc's palette).
+- **Glass, the CSS.** A block like any (the 23 variables, the same order) — but its **pane** may carry an alpha: `--rig-case`
+  `#1e26308c` (the module is the pane), `--rig-face` / `--rig-bar` faint white sheens, `--rig-line` a light hairline; every kit token,
+  text, cap, screen and popover colour stays opaque. Then the glass skin's **own rules, after the blocks**, scoped to the glass skin alone
+  and changing no box: (1) the layers inside a module that paint the case or the kit's ground again — a rig's body and its `.inst` (a
+  fixed `#0f1216`), an FX module's body, its tab, its rack's root — `background-color: transparent` (else the tint compounds: twice in a
+  rig's body, four times in an FX rack's — the pane must be one layer to read as one sheet of glass); (2) the X-Shaper popover and the ⚙
+  drawer (both over a face's controls) `var(--sx-panel)`, opaque; (3) the frost, `backdrop-filter` (and `-webkit-`) `blur(12px)
+  saturate(1.6)` on every rig and FX module — **`#viewport:not([data-cv-perf="low"])`**: Low keeps the translucency, no blur (cv-world now
+  writes the preset on `#viewport` at build and on `setPerf`).
+- **The gate change (cv-tray), the smallest that allows it:** a skin block still sets custom properties only; the file's tail is the
+  blocks, then the glass rules. A value may be `#rrggbbaa` only on a `glass: true` skin and only on the four pane variables. Contrast is
+  measured on screen: a pane colour composited over the canvas (`#viewport`'s `#0a0b0d`, read from style.css) and the face / bar sheens over
+  the pane — an opaque skin's numbers are exactly as before (4.5 : 1 text, 3 : 1 UI parts); a glass skin also keeps the face's words and
+  the bar's title ≥ 3 : 1 with the lightest cord (cv-cords' `#e9e5da`) unblurred right behind them (Low's worst moment) and its pane's
+  alpha in 0.45 … 0.7 (see-through, not clear). The glass rules are pinned exactly (selectors, the three declarations; each selector part
+  names a glass skin alone; background-color only `transparent` / a `var()`; backdrop-filter only under the not-Low selector).
+- **The cut-out, and the glass path.** "Cables behind modules" (cv-world's toggle → cv-cords `behind(fn)`) discards the rope fragments
+  inside the modules' world rects on the cord canvas, which sits above `#world` — on glass they would simply vanish. Now
+  **`behind(fn, true)`** (the world's `setGlass(on)` → `behindTell`: told only while the cables are behind) also draws those fragments on
+  a **second WebGL2 canvas inserted before `#world`** (`canvas.cv-cords-glass`, under every module, over cv-gl's grid): its program is the
+  strip's with the complement rule (`STRIP_FS_G`: kept only inside a box and not in front — the live rope, the cord in the finger and the
+  selected cord stay whole on top), the strip uploaded whole when it was rebuilt (a rig's cords: a few KB), the shadow and cord passes at
+  the top's camera and alpha. The panes' backdrop-filter frosts them; the plugs, knob rings, badges, × and counts stay on top and usable
+  (the top canvas is `behind(fn)`'s, call for call — tested on two fake contexts). Off (`behind(fn)`, `behind(null)`): its buffer 0 × 0, no
+  draw. No second context (a context limit): the cut-out alone, never retried; the SVG fallback and `under` ignore the flag.
+  **Every other skin's behind is exactly as it was**: the host (`rigSkin`) says glass only for a glass skin on a rig's cord canvas
+  (`drawMode` 'cords', not the master) — never a 900 Series (its faces are cv-gl textures under `#world`: the glass layer would draw over
+  them), never lines mode; any other skin sends `behind(fn, false)` ≡ `behind(fn)`.
+- **Measured** (Chrome for Testing 156, headless, 1440 × 900 dpr 2, downloads denied, the M4 Max). **The main thread** —
+  `tests/ui-bench-fps.mjs --scenes tutorial,busy --throttle 1,4 --caps 60,120 --skin <id> [--behind]` (the two new flags drive the ⚙
+  line and the toolbar toggle; the report's config and scene info name them): frame cost med / p95 ms —
+
+  | scene · throttle · cap | charcoal | charcoal, behind | glass | glass, behind |
+  |---|---|---|---|---|
+  | tutorial 1× 60 | 0.485 / 1.43 | 0.465 / 1.41 | 0.44 / 1.23 | 0.46 / 1.255 |
+  | tutorial 1× 120 | 0.26 / 0.955 | 0.26 / 1.04 | 0.26 / 0.93 | 0.255 / 0.905 |
+  | tutorial 4× 60 | 1.05 / 2.97 | 1.115 / 2.935 | 1.23 / 2.99 | 1.235 / 3.205 |
+  | tutorial 4× 120 | 0.755 / 2.745 | 0.605 / 2.665 | 0.755 / 2.64 | 0.62 / 2.6 |
+  | busy 1× 60 | 0.375 / 1.64 | 0.405 / 1.675 | 0.385 / 1.675 | 0.385 / 1.79 |
+  | busy 1× 120 | 0.25 / 1.55 | 0.26 / 1.645 | 0.255 / 1.465 | 0.225 / 1.51 |
+  | busy 4× 60 | 1.68 / 5.65 | 1.975 / 6.025 | 1.59 / 5.915 | 1.905 / 5.88 |
+  | busy 4× 120 | 1.105 / 5.435 | 1.005 / 5.565 | 0.83 / 5.27 | 0.855 / 5.26 |
+
+  Every cell inside G7's budgets, the same within the run-to-run noise: the frost is the compositor's and the glass layer's draw a few
+  GL calls (its 195–212 frames in a busy window: `stats().glass`). **The compositor** (what ui-bench-fps cannot see; a CDP trace while the
+  camera pans at 60 fps, 182 frames — a scratch script, not in the repo): the viz thread's `Display::DrawAndSwap` per frame (med) — tutorial
+  charcoal 0.51 ms, glass 0.87 (on top) / 0.89 (behind), glass on **Low 0.51** (no blur: as charcoal); busy 0.52 · 0.96 / 0.99 · Low 0.48;
+  the GPU main thread +0.4 … 0.8 ms a frame on busy with glass at High (6.5 → 7.0 / 7.3), unchanged on tutorial and on Low. So the frost
+  costs ≈ 0.4 ms of compositor time a camera frame on this Mac (one blur a glass module in view; at rest only where something in or under a pane redraws); Low removes it.
+  The iPad's numbers are the one iPad pass's (WebKit's backdrop-filter is its own).
+- **The contact sheet** (scratchpad, the lead's report): the starter rig in charcoal, ivory, glass with the cables on top and behind; an
+  LFO onto three knobs (its cords crossing the Oscillator's face) in glass behind / on top, charcoal behind, ivory; 75 % close-ups (glass
+  behind at High and at Low, charcoal behind, ivory); the Effects panel in glass and ivory; the ⚙ line.
 
 ## 15. Review log
 

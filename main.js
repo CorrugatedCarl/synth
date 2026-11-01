@@ -29,7 +29,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
+import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -6317,6 +6317,17 @@ function initShell() {
     ff.append('Frame rate ', fs);
     gp.append(pf, ph, ff, fh);
     shell.perfSel = ps; shell.fpsSel = fs; shell.fpsHint = fh;
+    // (WC-2, IMPL-WC §5.1) "<NAME> skin ▾" after the Frame rate line: rig-core SKINS by label, the pref shown, a pick stored and applied live
+    // (rigSkinPick) — the name from the constant (never in the HTML)
+    const kf = h('label', 'field cv-skin'), ks = h('select');
+    ks.id = 'cvSkin';
+    ks.title = 'The look of ' + RIG.NAME + ' modules and of every effects panel: colours only, the layout the same. Frosted glass shows the cables behind its panels when “Cables behind modules” is on';
+    for (const S of RC.SKINS) { const op = h('option', null, S.label); op.value = S.id; ks.append(op); }
+    ks.value = rigSkinId();
+    ks.onchange = () => rigSkinPick(ks.value);
+    kf.append(RIG.NAME + ' skin ', ks);
+    gp.append(kf);
+    shell.skinSel = ks;
     const f = h('div', 'field'), b = h('button', 'tt', 'Measure this device'), st = h('span', 'cv-measure');
     b.type = 'button'; b.title = 'Render a few standard voices off-line to learn this device’s speed: the load estimates (the Sources tray, the effects’ “+” menus) and the instrument limits use it';
     const fv = +store.get(DEV_FACTOR, 0);
@@ -8310,13 +8321,31 @@ function rigW(part) {
   return M ? 64 * M.cols + 32 : cvModule.W_MOD;
 }
 function rigHt(part) { const k = rigKind(part); return RIGUI && RIGUI.FACE && RIGUI.FACE[k] ? RIGUI.sizeOf(k, part).h + cvModule.BAR_H : cvModule.PART_H_DEF[k] || 256; }
-// the rig skin on the world (one attribute: rig-ui applySkin; before the panels load the same rule over rig-core SKINS)
+// the rig skin on the world (one attribute: rig-ui applySkin; before the panels load the same rule over rig-core SKINS); (WC-2) a glass
+// skin on a rig's cord canvas — its modules are panes, no GL face under them — tells the world, which then draws the cords under the panes
+// when they are behind (cv-world setGlass → cv-cords behind(fn, true)); any other skin or canvas: behind as it was
+const rigSkinId = () => { const id = store.get(RIG_SKIN, RC.SKIN_DEFAULT); return RC.SKINS.some(s => s.id === id) ? id : RC.SKIN_DEFAULT; };
 function rigSkin() {
-  const W = cvW(), el = W && W.el, id = store.get(RIG_SKIN, RC.SKIN_DEFAULT);
+  const W = cvW(), el = W && W.el, id = rigSkinId();
   if (!el || typeof el.setAttribute !== 'function') return;
-  if (RIGUI) { RIGUI.applySkin(el, id); return; }
-  const v = RC.SKINS.some(s => s.id === id) ? id : RC.SKIN_DEFAULT;
-  if (el.getAttribute('data-cv-skin') !== v) el.setAttribute('data-cv-skin', v);
+  if (RIGUI) RIGUI.applySkin(el, id);
+  else if (el.getAttribute('data-cv-skin') !== id) el.setAttribute('data-cv-skin', id);
+  if (typeof W.setGlass === 'function') {
+    const S = RC.SKINS.find(x => x.id === id);
+    W.setGlass(!!(S && S.glass) && !cvMaster && drawMode(trk()) === 'cords');
+  }
+}
+// (WC-2, IMPL-WC §5.1) ⚙ → Canvas → "<NAME> skin": the person's pick — stored (a device pref, never in a project), applied at once (one
+// attribute: the CSS), the view synced (a stacked jack's count carries the skin itself: cv-cables re-reads it at the layout), the world's
+// static displays painted again in its colours (graph.js reads the theme when it paints); the kit's popups and the ⚙ drawer take it at
+// their next opening
+function rigSkinPick(v) {
+  const id = RC.SKINS.some(s => s.id === v) ? v : RC.SKIN_DEFAULT, W = cvW();
+  store.set(RIG_SKIN, id);
+  rigSkin();
+  cvRender();
+  if (W && W.el) wkRescale(W.el);
+  if (shell.skinSel && shell.skinSel.value !== id) shell.skinSel.value = id;
 }
 // (the skins on the kit's popups) a ⋯ / right-click menu or a dropdown list opened from a skinned module (a rig part, an FX module — the
 // world's attribute) or from the ⚙ drawer (its own) wears that skin: they live on <body>, style.css scopes each skin block to them too

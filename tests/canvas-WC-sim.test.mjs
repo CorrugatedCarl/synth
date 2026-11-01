@@ -1539,20 +1539,25 @@ test('(the user, 2026-10-26: "on a socket with multiple outs lets just put a dis
 // see cables through the glass when they are in behind mode")) the ⚙ line (IMPL-WC §5.1: ⚙ → Canvas → "<NAME> skin ▾", SKINS by label), the
 // pick live, and the host's glass word to the world
 test('(WC-2) ⚙ → Canvas → "<NAME> skin": one line (#cvSkin, after the Frame rate line) listing SKINS by label, the pref shown; a pick stored (synth.rig.skin) and applied at once — the one attribute on #world, the static displays repainted (wk.rescaleCanvases over the world); the glass skin tells the world its canvas is glass (setGlass) on a rig canvas in cords mode only — never in lines mode, on another canvas (a Juno, a 900 Series) or with another skin', async () => {
-  const gp = sim.$('#gearPop'), sel = sim.$('#cvSkin'), W = W0.w;
-  assert.ok(sel && sel.tagName === 'SELECT', 'the select');
+  const gp = sim.$('#gearPop'), sel = sh.shell.skinSel, W = W0.w;
+  assert.ok(sel && sel.tagName === 'SELECT' && sel.id === 'cvSkin', 'the select');
   const kids = gp.children, i = kids.findIndex(c => c.children && c.children.includes(sel)), line = kids[i], fps = kids.findIndex(c => c.id === 'cvFpsHint');
-  assert.deepEqual([line.tagName, line.className, line.textContent.startsWith(RIG.NAME + ' skin'), i > fps && fps > 0], ['LABEL', 'field cv-skin', true, true], 'a labelled line after the Frame rate hint, in the constant\'s words');
+  assert.deepEqual([line.tagName, line.className, line.children.length, i > fps && fps > 0], ['LABEL', 'field cv-skin', 1, true], 'a label.field after the Frame rate hint (its words: the stub keeps no text nodes — the source below)');
+  const src = readFileSync(new URL('../main.js', import.meta.url), 'utf8');
+  assert.ok(/kf\.append\(RIG\.NAME \+ ' skin ', ks\)/.test(src) && sel.title.includes(RIG.NAME), 'the constant\'s words, never a written name');
   assert.deepEqual(sel.children.map(o => [o.value, o.textContent]), RC.SKINS.map(S => [S.id, S.label]));
   assert.deepEqual(sel.children.map(o => o.textContent), ['Charcoal', 'Ivory', 'Frosted glass']);
   assert.equal(sel.value, 'charcoal', 'the pref (the default)');
   await fresh(RIG.ID);
-  assert.deepEqual([W.el.getAttribute('data-cv-skin'), W.glass], ['charcoal', false]);
+  RG.add(null, 'osc'); await settle(2); // (two cords at the Filter's IN Σ: a stacked count, which carries the skin itself)
+  rigGeometry(); await settle(2);
+  assert.deepEqual([W.el.getAttribute('data-cv-skin'), W.glass, nTop().map(c => c.getAttribute('data-cv-skin'))], ['charcoal', false, ['charcoal']]);
   let rescaled = 0;
   const off = WK.onRescale(W.el, () => rescaled++);
   try {
     sel.value = 'ivory'; sel.onchange();
     assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass, rescaled], ['ivory', 'ivory', false, 1], 'ivory: stored, applied, repainted');
+    assert.deepEqual(nTop().map(c => c.getAttribute('data-cv-skin')), ['ivory'], 'the stacked count in the new skin at once');
     sel.value = 'glass'; sel.onchange();
     assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass, rescaled], ['glass', 'glass', true, 2], 'glass on a rig canvas in cords mode: the world told');
     RG.wires('lines'); await settle(3);

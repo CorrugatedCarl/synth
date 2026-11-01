@@ -3,7 +3,7 @@
 // × viewport size, in Chrome for Testing (CDP) — and, as `ui-bench.html?fps=1`, on a device (iPad / Safari: native frames, no CDP).
 //   node --max-old-space-size=2048 tests/ui-bench-fps.mjs [--scenes idle,play8,…] [--sizes d,l,p] [--caps 60,120,240] [--throttle 1,4,6]
 //        [--display N] [--warm ms] [--measure ms] [--out report.json] [--bench-row row.json] [--profile dir] [--layout-gate idle|all|none]
-//        [--no-cross] [--no-gate] [--list] [--quiet]
+//        [--no-cross] [--no-gate] [--list] [--quiet] [--skin charcoal|ivory|glass] [--behind]
 //   node tests/ui-bench-fps.mjs --compare bench cur.json         two reports side by side (no browser; `bench` = tests/bench.json's "ui-fps-mac" row, the
 //     baseline's, or a saved report): regressions, improvements; exit 1 on a regression
 //     the matrix = sizes × scenes × throttles × caps (the virtual display = the cap) + at 1 × two cells of a 240 Hz display under the caps 120 and 60
@@ -241,7 +241,7 @@ export function matrix(o = {}) {
 }
 /** argv → options (unknown flags ignored; lists comma-separated; numbers checked). Pure. */
 export function parseArgs(argv) {
-  const o = { sizes: ['d'], scenes: SCENE_IDS.slice(), caps: CAPS.slice(), throttles: THROTTLES.slice(), display: 0, cross: true, warm: 3200, measure: 4000, out: null, benchRow: null, profile: null, list: false, quiet: false, gate: true, layoutGate: 'idle', compare: null, errors: [] };
+  const o = { sizes: ['d'], scenes: SCENE_IDS.slice(), caps: CAPS.slice(), throttles: THROTTLES.slice(), display: 0, cross: true, warm: 3200, measure: 4000, out: null, benchRow: null, profile: null, list: false, quiet: false, gate: true, layoutGate: 'idle', compare: null, skin: null, behind: false, errors: [] };
   const list = (k, v, ok) => { const a = String(v || '').split(',').map(x => x.trim()).filter(Boolean); if (!a.length || !a.every(ok)) { o.errors.push('--' + k + ': ' + v); return null; } return a; };
   const num = (k, v, lo, hi) => { const n = +v; if (!(n >= lo && n <= hi)) { o.errors.push('--' + k + ': ' + v); return null; } return n; };
   for (let i = 0; i < argv.length; i++) {
@@ -261,6 +261,8 @@ export function parseArgs(argv) {
     else if (a === '--quiet') o.quiet = true;
     else if (a === '--no-gate') o.gate = false;
     else if (a === '--no-cross') o.cross = false;
+    else if (a === '--skin') { if (/^[a-z]+$/.test(v || '')) o.skin = v; else o.errors.push('--skin: ' + v); i++; } // ((WC-2) the scenes in a skin (the ⚙ line's own path)
+    else if (a === '--behind') o.behind = true; // ((WC-2) "Cables behind modules" on (the toolbar toggle's own path)
     else if (a === '--compare') { if (v && argv[i + 2]) o.compare = [v, argv[i + 2]]; else o.errors.push('--compare needs two report files'); i += 2; }
   }
   return o;
@@ -658,16 +660,20 @@ const BUILD = {
   },
 };
 /** Builds a scene in the page (its own frames, F.setHz(0)); → { id, info, notes, expect } for the driver. */
-export async function buildScene(win, id) {
+export async function buildScene(win, id, o = {}) {
   if (!BUILD[id]) throw new Error('no scene ' + id);
   const A = appOf(win), t0 = win.performance.now();
   if (A.F) A.F.setHz(60); // a 60 Hz display while building (the clock measures it; a free-running rAF would leave it a stale 1000); the browser's own frames without a virtual display
+  if (o.skin) { const ks = A.shell.shell && A.shell.shell.skinSel; if (ks) { ks.value = o.skin; ks.onchange(); } else A.notes.push('no skin line (⚙ → <NAME> skin): the default skin'); } // ((WC-2) the person's own path
+  if (o.behind) { try { A.cv.world().setBehind(true); } catch (e) { A.notes.push('setBehind: ' + e.message); } }
   await BUILD[id](A);
   await sleep(1200);
   const V = A.cv.view(), P = A.api.project(), canv = Array.from(A.doc.querySelectorAll('canvas')), vw = win.innerWidth, vh = win.innerHeight;
   const on = el => { const r = el.getBoundingClientRect(); return r.width > 1 && r.height > 1 && r.right > 0 && r.left < vw && r.bottom > 0 && r.top < vh; };
   const info = { tracks: P.tracks.length, modules: V && V.modules ? V.modules.size : 0, canvases: canv.length, canvasesOnScreen: canv.filter(on).length, dots: A.doc.querySelectorAll('.wk-live').length,
     bpm: P.bpm, playing: !!A.api.transport().playing, audio: A.api.ctx() ? A.api.ctx().state : 'none', buildMs: Math.round(win.performance.now() - t0), viewport: [vw, vh, win.devicePixelRatio], coarse: !!(win.matchMedia && win.matchMedia('(pointer: coarse)').matches) };
+  { const W = A.cv.world(), L = W && W.cords ? W.cords() : null, sg = L && L.stats ? L.stats().glass : null; // ((WC-2) the skin and the cables-behind state measured
+    Object.assign(info, { skin: A.doc.querySelector('#world') ? A.doc.querySelector('#world').getAttribute('data-cv-skin') : null, behind: !!(W && W.behindOn && W.behindOn()), glass: sg || null }); }
   return { id, info, notes: A.notes.slice(), errors: A.F ? A.F.errs.slice(0, 10) : [], expect: EXPECT[id] || [] }; // (errors: the console errors of the app's start and the build — the cells count their own)
 }
 
@@ -891,7 +897,7 @@ export async function drive(o) {
   const git = (...a) => { try { return cp.spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' }).stdout.trim(); } catch (e) { return ''; } };
   const rep = { kind: 'ui-fps', v: VERSION, when: new Date().toISOString(), build: git('rev-parse', '--short', 'HEAD') + (git('status', '--porcelain', '--', '*.js', 'index.html', 'style.css') ? '+dirty' : ''),
     machine: os.cpus()[0].model + ', ' + os.arch() + ', node ' + process.version, chrome: '', ua: '', pace: 'virtual display (Worker Atomics.wait ticks), --disable-frame-rate-limit --disable-gpu-vsync',
-    config: { sizes: o.sizes, scenes: o.scenes, caps: o.caps, throttles: o.throttles, display: o.display || 'cap', warmMs: o.warm, measureMs: o.measure, layoutGate: o.layoutGate }, scenes: {}, cells: [], checks: [], aborted: [] };
+    config: { sizes: o.sizes, scenes: o.scenes, caps: o.caps, throttles: o.throttles, display: o.display || 'cap', warmMs: o.warm, measureMs: o.measure, layoutGate: o.layoutGate, skin: o.skin || 'charcoal', behind: !!o.behind }, scenes: {}, cells: [], checks: [], aborted: [] };
   let ws = null;
   const cleanup = async () => { try { if (ws) ws.close(); } catch (e) { /* closed */ } ch.kill(); srv.close(); await new Promise(r => setTimeout(r, 700)); try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) { /* busy */ } };
   try {
@@ -940,7 +946,7 @@ export async function drive(o) {
           for (let i = 0; i < 600 && !ok; i++) { await new Promise(r => setTimeout(r, 100)); try { ok = await ev('!!(window.__fps && window.__synthTest && __synthTest.cv && __synthTest.api && __synthTest.shell && document.querySelector("#world") && __synthTest.cv.world())', 5000); } catch (e) { /* not yet */ } }
           if (!ok) throw new Error('the app did not start');
           await ev("import('/tests/ui-bench-fps.mjs?t=" + Date.now() + "').then(m => { window.__fpsPage = m; return true; })");
-          const b = await ev('__fpsPage.buildScene(window, ' + JSON.stringify(scene) + ')', 240000);
+          const b = await ev('__fpsPage.buildScene(window, ' + JSON.stringify(scene) + ', ' + JSON.stringify({ skin: o.skin, behind: o.behind }) + ')', 240000);
           const SC = rep.scenes[sk + '/' + scene] = { info: b.info, notes: b.notes, errors: b.errors.concat(L.slice(0, 10)), callbacks: [], clients: [] };
           rep.checks.push({ id: 'build errors', size: sk, scene, pass: !SC.errors.length && !b.notes.length, value: SC.errors, note: SC.errors.length ? 'console errors while the app started and the scene was built: ' + SC.errors.slice(0, 3).join(' | ') : b.notes.length ? 'the scene did not build as asked: ' + b.notes.join(' | ') : 'none' });
           say('   built in ' + b.info.buildMs + ' ms: ' + JSON.stringify(b.info) + (b.notes.length ? '\n   notes: ' + b.notes.join(' | ') : ''));

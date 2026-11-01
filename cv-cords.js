@@ -18,6 +18,8 @@
 //   at each draw (the modules' world rects: their fragments discarded inside them; the SVG fallback: a mask), the plugs on top, a knob
 //   end hidden with its rope; the live rope, the cord in the finger and the selected one whole on top; hit() none behind a box. Never
 //   told (the default): no hide uniform is written — today's frames, call for call. onAlloc(on): the host's allocation, told.
+//   (WC-2, the glass skin) behind(fn, true): the same, and the ropes inside the boxes drawn again on the glass layer — a second canvas
+//   BEFORE #world, under the modules — so a translucent pane shows them through, frosted (its backdrop-filter); the top canvas unchanged.
 // Where: a second WebGL2 canvas (.cv-cords) after #world in #viewport — above every module, under #overlay / the toolbar / the
 //   trays — never transformed, drawn by cv-world in the same write() that moves #world (the faces' proven path, glued
 //   mid-pinch), with the same camera, device ratio and viewport; its drawing buffer only while it is allocated (alloc: the host's
@@ -362,14 +364,17 @@ const STRIP_VS = '#version 300 es\nlayout(location=0) in vec2 p;layout(location=
   + 'int i=int(a.y+0.5);cb=body[i];cr=rim[i];ch=hi[i];float e=floor(a.z/' + f1(KNOB.FLAG) + '+0.01);float z=a.z-' + f1(KNOB.FLAG) + '*e;ke=e;'
   + 'float q=floor(z/4.0+0.01);sl=z-4.0*q;al=' + ALPHA_Q('q') + ';wpx=hw*kd;'
   + 'vec2 dv=(w*cam.z+cam.xy)*cam.w;gl_Position=vec4(dv.x/vp.x*2.0-1.0,1.0-dv.y/vp.y*2.0,0.0,1.0);}';
-const STRIP_FS = '#version 300 es\nprecision highp float;uniform vec4 vp;uniform vec4 hb[' + HIDE_MAX + '];uniform int nh;\n'
+// ((WC-2) the glass layer's rule — the top's complement: kept only inside a box and not in front, the fragments the top canvas discards)
+const HIDE_IN_FS = (pt, f) => '{bool k=false;for(int i=0;i<' + HIDE_MAX + ';i++){if(i>=nh)break;vec4 b=hb[i];if(' + pt + '.x>b.x&&' + pt + '.x<b.z&&' + pt + '.y>b.y&&' + pt + '.y<b.w){k=true;break;}}if(!k||' + f + '>0.5)discard;}';
+const stripFs = hide => '#version 300 es\nprecision highp float;uniform vec4 vp;uniform vec4 hb[' + HIDE_MAX + '];uniform int nh;\n'
   + 'in float v;in float hc;in float ke;flat in vec3 cb;flat in vec3 cr;flat in vec3 ch;flat in float sl;flat in float wpx;flat in float al;in vec2 wq;in float fz;out vec4 o;\n'
-  + 'void main(){' + HIDE_FS('wq', 'fz') + 'float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w*al;'
+  + 'void main(){' + hide + 'float a=abs(v),aa=max(fwidth(v),1e-4);float cov=clamp((1.0-a)/aa+0.5,0.0,1.0)*vp.w*al;'
   + 'if(vp.z<0.5){o=vec4(0.0,0.0,0.0,' + f1(LOOK.SH_A) + '*cov*(1.0-ke));return;}'
   + 'vec3 c=mix(cr,cb,clamp((' + (LOOK.BODY / LOOK.W).toFixed(6) + '-a)/aa+0.5,0.0,1.0));'
   + 'c=mix(c,ch,clamp((' + (LOOK.HI / LOOK.W).toFixed(6) + '-abs(v-hc))/aa+0.5,0.0,1.0)*' + f1(LOOK.HI_A) + ');'
   + 'if(sl>0.5)c=mix(c,vec3(' + f1(LOOK.SEL) + '),clamp((a-(1.0-2.0/max(wpx,1.0)))/aa+0.5,0.0,1.0)*0.9);'
   + 'o=vec4(c*cov,cov);}';
+const STRIP_FS = stripFs(HIDE_FS('wq', 'fz')), STRIP_FS_G = stripFs(HIDE_IN_FS('wq', 'fz'));
 // the plugs: one instanced quad an end (ins = x, y, colour, shape: 0 round, 1 S-trigger, 2 the glue probe, (WC, fixer B2) 3 + u the KNOB
 // end heading u turns; fl = selected + 4·(ALPHAS index)), an SDF in world px with a one-device-px ramp; layers composited front to back
 // over: shadow, ring, body, the S plug's parting line, highlight, the selected ring
@@ -424,6 +429,15 @@ export function colourTables() {
 /** A cord's (x, y) end from an anchors map (a Map or a plain object) of jack key → {x, y}; null unknown. */
 const anchorIn = (A, k) => { const p = A ? (typeof A.get === 'function' ? A.get(k) : A[k]) : null; return p && isFinite(p.x) && isFinite(p.y) ? p : null; };
 const fin = v => typeof v === 'number' && isFinite(v);
+
+// a program from two shader sources on context g (a compile or link failure throws: the caller falls back)
+function prog(g, a, b) {
+  const sh = (t, src) => { const x = g.createShader(t); g.shaderSource(x, src); g.compileShader(x); if (!g.getShaderParameter(x, g.COMPILE_STATUS)) { const l = typeof g.getShaderInfoLog === 'function' ? g.getShaderInfoLog(x) : ''; g.deleteShader(x); throw new Error('cv-cords: shader ' + (l || 'failed')); } return x; };
+  const p = g.createProgram(), x = sh(g.VERTEX_SHADER, a), y = sh(g.FRAGMENT_SHADER, b);
+  g.attachShader(p, x); g.attachShader(p, y); g.linkProgram(p); g.deleteShader(x); g.deleteShader(y);
+  if (!g.getProgramParameter(p, g.LINK_STATUS)) { const l = typeof g.getProgramInfoLog === 'function' ? g.getProgramInfoLog(p) : ''; g.deleteProgram(p); throw new Error('cv-cords: link ' + (l || 'failed')); }
+  return p;
+}
 
 /* ---------------------------------------------------------------- the layer */
 let MASK_N = 0; // ((the user, 2026-10-26: cables behind) the SVG fallback's mask ids, one a layer
@@ -573,9 +587,7 @@ export function createCords(viewport, o) {
   const U = { cam: new Float32Array(4), vp: new Float32Array(4) }, CT = colourTables();
   const ctxOf = () => (mode === 'under' ? (typeof o.under === 'function' ? (() => { try { return o.under() || null; } catch (err) { return null; } })() : null) : gl);
   function glBuild(g) { // the two programs, the strip's VAO / buffer, the plugs' quad + instance buffer (once, after a restore / reset)
-    const sh = (t, s) => { const x = g.createShader(t); g.shaderSource(x, s); g.compileShader(x); if (!g.getShaderParameter(x, g.COMPILE_STATUS)) { const l = typeof g.getShaderInfoLog === 'function' ? g.getShaderInfoLog(x) : ''; g.deleteShader(x); throw new Error('cv-cords: shader ' + (l || 'failed')); } return x; };
-    const pr = (a, b) => { const p = g.createProgram(), x = sh(g.VERTEX_SHADER, a), y = sh(g.FRAGMENT_SHADER, b); g.attachShader(p, x); g.attachShader(p, y); g.linkProgram(p); g.deleteShader(x); g.deleteShader(y); if (!g.getProgramParameter(p, g.LINK_STATUS)) { const l = typeof g.getProgramInfoLog === 'function' ? g.getProgramInfoLog(p) : ''; g.deleteProgram(p); throw new Error('cv-cords: link ' + (l || 'failed')); } return p; };
-    const ps = pr(STRIP_VS, STRIP_FS), pp = pr(PLUG_VS, PLUG_FS), Q = { g, ps, pp };
+    const ps = prog(g, STRIP_VS, STRIP_FS), pp = prog(g, PLUG_VS, PLUG_FS), Q = { g, ps, pp };
     for (const [p, k] of [[ps, 's'], [pp, 'p']]) { Q[k + 'Cam'] = g.getUniformLocation(p, 'cam'); Q[k + 'Vp'] = g.getUniformLocation(p, 'vp'); }
     Q.sHb = g.getUniformLocation(ps, 'hb'); Q.sNh = g.getUniformLocation(ps, 'nh'); Q.sFr = g.getUniformLocation(ps, 'fr'); Q.sn = 0; // ((the user, 2026-10-26) cables behind:
     Q.pHb = g.getUniformLocation(pp, 'hb'); Q.pNh = g.getUniformLocation(pp, 'nh'); Q.pFr = g.getUniformLocation(pp, 'fp'); Q.pn = 0; // nh 0 as linked: none written while off
@@ -597,6 +609,7 @@ export function createCords(viewport, o) {
     cap = 0; capP = 0; upV = -1; upFull = true;
     return Q;
   }
+  const ctxAttrs = () => ({ alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: !!o.test, powerPreference: 'high-performance' });
   const isGL = g => !!g && typeof g.createShader === 'function' && typeof g.getProgramParameter === 'function' && typeof g.createVertexArray === 'function' && typeof g.vertexAttribDivisor === 'function';
   // the canvas and its context, at the first need (an allocation, a cord, a live plug): never at boot for a project without cords
   function ensure() {
@@ -604,7 +617,7 @@ export function createCords(viewport, o) {
     let c = null, g = null;
     try {
       c = doc && typeof doc.createElement === 'function' ? doc.createElement('canvas') : null;
-      g = c && typeof c.getContext === 'function' ? c.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: !!o.test, powerPreference: 'high-performance' }) : null;
+      g = c && typeof c.getContext === 'function' ? c.getContext('webgl2', ctxAttrs()) : null;
     } catch (err) { g = null; }
     if (!isGL(g)) { toSvg(); return; }
     try { P = glBuild(g); } catch (err) { console.error(err); try { const x = g.getExtension && g.getExtension('WEBGL_lose_context'); if (x) x.loseContext(); } catch (e2) { /* gone */ } toSvg(); return; }
@@ -636,6 +649,7 @@ export function createCords(viewport, o) {
   const bufOn = () => allocOn || cords.size > 0 || !!LV;
   function bufSize(vw, vh, d) { // the drawing buffer: the viewport in device px while allocated, 0 × 0 otherwise
     if (!cv) return;
+    if (!bufOn()) glassFree(); // ((WC-2) the glass layer's with it
     const on = bufOn(), w = on ? Math.max(0, Math.round(vw * d)) : 0, h = on ? Math.max(0, Math.round(vh * d)) : 0;
     if (w === BW && h === BH) return;
     BW = w; BH = h; blank = true;
@@ -812,7 +826,7 @@ export function createCords(viewport, o) {
     if (!under) { bufSize(vw, vh, d); if (!(BW > 0 && BH > 0)) return false; }
     const W = under ? Math.max(0, Math.round(vw * d)) : BW, H = under ? Math.max(0, Math.round(vh * d)) : BH;
     if (builtV !== geomV) build();
-    if (!under && !nStrip && !nPlug && blank) return true; // (nothing drawn, nothing to clear)
+    if (!under && !nStrip && !nPlug && blank) { glassIdle(); return true; } // (nothing drawn, nothing to clear; (WC-2) the glass layer neither)
     const nh = boxes();
     if (nh) fronts();
     const t0 = now();
@@ -833,15 +847,105 @@ export function createCords(viewport, o) {
     }
     g.bindVertexArray(null);
     blank = !nStrip && !nPlug;
+    if (!under) { if (glassOn && nh && nStrip) glassFrame(vw, vh); else glassIdle(); } // ((WC-2) the ropes under the panes, after the top
     const ms = now() - t0;
     st.draws++; st.drawMs += ms; if (ms > st.drawMax) st.drawMax = ms;
     return true;
+  }
+
+  /* ---- (WC-2; the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass
+     when they are in behind mode") the glass layer: while behind(fn, true), a second WebGL2 canvas BEFORE #world — under every module —
+     draws the rope fragments the top canvas discards (inside a box, not in front: STRIP_FS_G, the top's complement), so a translucent pane
+     shows them through (its backdrop-filter frosts them); the plugs, the knob ends, the live / held / selected cords and every rope outside
+     a box stay the top canvas's, call for call as behind(fn). Its own context: the strip program alone, the strip uploaded whole when it was
+     rebuilt (a rig's few cords: a few KB), the shadow and cord passes at the top's camera; made at its first draw (no second context: the
+     cut-out alone, never retried), 0 × 0 while off. The host decides when (a glass skin on a rig's canvas: no GL face under its modules —
+     a 900 Series' faces, drawn by cv-gl under #world, would show these ropes over them) */
+  let glassOn = false, GQ = null; // GQ: { cv, g, P, ready, cap, upV, BW, BH, blank } — or { none: true } (no second context)
+  let glassDraws = 0;
+  function glBuildG(g) {
+    const ps = prog(g, STRIP_VS, STRIP_FS_G), Q = { g, ps };
+    Q.sCam = g.getUniformLocation(ps, 'cam'); Q.sVp = g.getUniformLocation(ps, 'vp'); Q.sHb = g.getUniformLocation(ps, 'hb'); Q.sNh = g.getUniformLocation(ps, 'nh'); Q.sFr = g.getUniformLocation(ps, 'fr');
+    g.useProgram(ps);
+    g.uniform3fv(g.getUniformLocation(ps, 'body'), CT.body); g.uniform3fv(g.getUniformLocation(ps, 'rim'), CT.rim); g.uniform3fv(g.getUniformLocation(ps, 'hi'), CT.hi);
+    Q.sv = g.createVertexArray(); Q.sb = g.createBuffer();
+    g.bindVertexArray(Q.sv); g.bindBuffer(g.ARRAY_BUFFER, Q.sb);
+    for (const [loc, size, off] of [[0, 2, 0], [1, 2, 8], [2, 3, 16]]) { g.enableVertexAttribArray(loc); g.vertexAttribPointer(loc, size, g.FLOAT, false, FPV * 4, off); }
+    g.bindVertexArray(null);
+    g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.ONE, g.ONE_MINUS_SRC_ALPHA); g.clearColor(0, 0, 0, 0);
+    return Q;
+  }
+  function glassMake() {
+    if (GQ) return GQ.ready ? GQ : null;
+    if (dead || !doc || typeof doc.createElement !== 'function' || !WL || WL.parentNode !== viewport || typeof viewport.insertBefore !== 'function') return null;
+    let c = null, g = null, Q = null;
+    try { c = doc.createElement('canvas'); g = c && typeof c.getContext === 'function' ? c.getContext('webgl2', ctxAttrs()) : null; } catch (err) { g = null; }
+    if (isGL(g)) { try { Q = glBuildG(g); } catch (err) { console.error(err); Q = null; } }
+    if (!Q) { GQ = { none: true }; try { const x = g && g.getExtension && g.getExtension('WEBGL_lose_context'); if (x) x.loseContext(); } catch (err) { /* gone */ } return null; }
+    const G = GQ = { cv: c, g, P: Q, ready: true, cap: 0, upV: -1, BW: 0, BH: 0, blank: true, none: false };
+    try {
+      c.className = 'cv-cords-glass'; c.setAttribute('aria-hidden', 'true');
+      c.style.cssText = 'position:absolute;left:0;top:0;display:block;pointer-events:none;';
+      viewport.insertBefore(c, WL); // (under #world: the panes over it)
+    } catch (err) { console.error(err); }
+    if (typeof c.addEventListener === 'function') {
+      G.lost = e => { try { if (e && typeof e.preventDefault === 'function') e.preventDefault(); } catch (err) { /* inert */ } G.ready = false; };
+      G.restored = () => { if (dead || GQ !== G) return; try { G.P = glBuildG(g); G.ready = true; G.cap = 0; G.upV = -1; G.BW = G.BH = -1; owedF = true; wakeW(); } catch (err) { console.error(err); } };
+      c.addEventListener('webglcontextlost', G.lost, false); c.addEventListener('webglcontextrestored', G.restored, false);
+    }
+    return G;
+  }
+  function glassFrame(vw, vh) {
+    const G = glassMake();
+    if (!G || !(BW > 0 && BH > 0)) return;
+    const g = G.g, Q = G.P;
+    if (G.BW !== BW || G.BH !== BH) {
+      G.BW = BW; G.BH = BH;
+      try { G.cv.width = BW; G.cv.height = BH; G.cv.style.width = vw + 'px'; G.cv.style.height = vh + 'px'; } catch (err) { /* inert */ }
+    }
+    if (G.upV !== builtV) { // the strip whole (the top's partial runs are its own GPU copy's)
+      const bs = nStrip * FPV;
+      g.bindBuffer(g.ARRAY_BUFFER, Q.sb);
+      if (bs > G.cap) { G.cap = Math.ceil(bs * 1.5); g.bufferData(g.ARRAY_BUFFER, G.cap * 4, g.DYNAMIC_DRAW); }
+      if (bs) g.bufferSubData(g.ARRAY_BUFFER, 0, strip, 0, bs);
+      G.upV = builtV;
+    }
+    g.viewport(0, 0, BW, BH); g.clear(g.COLOR_BUFFER_BIT);
+    g.useProgram(Q.ps); g.bindVertexArray(Q.sv); g.uniform4fv(Q.sCam, U.cam);
+    hideU(g, Q.sHb, Q.sNh, Q.sFr, FR, nHB);
+    U.vp[2] = 0; g.uniform4fv(Q.sVp, U.vp); g.drawArrays(g.TRIANGLE_STRIP, 0, nStrip);
+    U.vp[2] = 1; g.uniform4fv(Q.sVp, U.vp); g.drawArrays(g.TRIANGLE_STRIP, 0, nStrip);
+    g.bindVertexArray(null);
+    G.blank = false; glassDraws++;
+  }
+  // on, but nothing under a box this frame: cleared once; off: its buffer 0 × 0
+  function glassIdle() {
+    if (!GQ || GQ.none) return;
+    if (!glassOn) { glassFree(); return; }
+    if (GQ.blank || !GQ.ready) return;
+    try { GQ.g.viewport(0, 0, GQ.BW, GQ.BH); GQ.g.clear(GQ.g.COLOR_BUFFER_BIT); } catch (err) { /* lost */ }
+    GQ.blank = true;
+  }
+  function glassFree() {
+    if (!GQ || GQ.none || (GQ.BW === 0 && GQ.BH === 0)) return;
+    GQ.BW = GQ.BH = 0; GQ.blank = true; GQ.upV = -1;
+    try { GQ.cv.width = 0; GQ.cv.height = 0; GQ.cv.style.width = '0px'; GQ.cv.style.height = '0px'; } catch (err) { /* inert */ }
+    if (GQ.ready && GQ.cap) { try { GQ.g.bindBuffer(GQ.g.ARRAY_BUFFER, GQ.P.sb); GQ.g.bufferData(GQ.g.ARRAY_BUFFER, 0, GQ.g.DYNAMIC_DRAW); } catch (err) { /* lost */ } GQ.cap = 0; }
+  }
+  function glassDrop() { // the layer gone, or GL given up: the canvas and its context let go
+    const G = GQ;
+    GQ = null; glassOn = false;
+    if (!G || G.none) return;
+    try { G.cv.removeEventListener('webglcontextlost', G.lost, false); G.cv.removeEventListener('webglcontextrestored', G.restored, false); } catch (err) { /* gone */ }
+    try { const x = G.g && G.g.getExtension && G.g.getExtension('WEBGL_lose_context'); if (x && typeof x.loseContext === 'function') x.loseContext(); } catch (err) { /* gone */ }
+    try { G.cv.width = 0; G.cv.height = 0; G.cv.remove(); } catch (err) { /* gone */ }
   }
 
   /* ---- the SVG fallback: in #world above the modules (z 10001), the motion-off parabola as the lab's strokes + the plugs */
   let SV = null;
   function toSvg() {
     if (dead) return;
+    glassDrop(); // ((WC-2) the SVG keeps its mask alone
     freeGeom(); // (R2b F6: no canvas, no buffers, no ropes moving — stats() says so)
     BW = BH = 0; running = false;
     if (cv) { try { const x = gl && gl.getExtension && gl.getExtension('WEBGL_lose_context'); if (x && typeof x.loseContext === 'function' && ready) x.loseContext(); } catch (err) { /* gone */ } try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ } }
@@ -1036,11 +1140,13 @@ export function createCords(viewport, o) {
     drop() { if (dead || !GB) return; GB = null; dirty(); changed(); if (SV) SV.paint(); },
     /** (the user, 2026-10-26: "we need a button that makes cables go behind") fn(out, max) → n: the boxes (world px, x0 y0 x1 y1 into
      * out, at most max) the rope bodies go behind — asked at each draw (a module in the finger) —, the plugs on top; null: on top again,
-     * the default (no hide uniform written). */
-    behind(fn) {
+     * the default (no hide uniform written). (WC-2) glass true (the host's: the boxes are translucent panes): the ropes behind them are
+     * drawn on the glass layer under #world too — 'gl' mode only (the SVG keeps its mask, 'under' its cut-out). */
+    behind(fn, glass) {
       if (dead) return;
-      const f = typeof fn === 'function' ? fn : null;
-      if (f === hideFn) return;
+      const f = typeof fn === 'function' ? fn : null, gs = !!f && glass === true && mode === 'gl';
+      if (f === hideFn && gs === glassOn) return;
+      if (gs !== glassOn) { glassOn = gs; if (!gs) glassFree(); }
       hideFn = f; owedF = true; wakeW();
       if (SV) SV.paint();
     },
@@ -1201,7 +1307,9 @@ export function createCords(viewport, o) {
         restored: st.restored, svgPaths: st.svgPaths, alloc: allocOn, buffer: BW > 0 ? BW + '×' + BH : '0×0',
         bytes: (BW > 0 ? BW * BH * 4 : 0) + (cap + capP) * 4, verts: nStrip, plugs: nPlug,
         // (P) the preset, its quality and drawn points a cord; (P-1) whole builds, cords written, upload calls, build ms
-        perf, quality: CQ.q, pts: PTS, fulls: st.fulls, writes: st.writes, runs: st.runs, buildMs: st.builds ? st.buildMs / st.builds : 0, buildMax: st.buildMax };
+        perf, quality: CQ.q, pts: PTS, fulls: st.fulls, writes: st.writes, runs: st.runs, buildMs: st.builds ? st.buildMs / st.builds : 0, buildMax: st.buildMax,
+        // ((WC-2) the glass layer: told, its frames, its drawing buffer
+        glass: { on: glassOn, draws: glassDraws, buffer: GQ && GQ.BW > 0 ? GQ.BW + '×' + GQ.BH : '0×0' } };
       if (reset) Object.assign(st, { frames: 0, ropeSteps: 0, stepMs: 0, stepMax: 0, awakeMax: 0, holds: 0, draws: 0, drawMs: 0, drawMax: 0, uploads: 0, uploadBytes: 0, builds: 0, svgPaths: 0,
         fulls: 0, writes: 0, runs: 0, buildMs: 0, buildMax: 0 });
       return s;
@@ -1216,6 +1324,7 @@ export function createCords(viewport, o) {
       }
       if (SV) { try { SV.root.remove(); } catch (err) { /* gone */ } }
       if (TP) { try { TP.remove(); } catch (err) { /* gone */ } }
+      glassDrop(); // ((WC-2)
       cv = null; gl = null; P = null; SV = null; TP = null; cords.clear(); ropes = []; LV = null; GB = null;
     },
   };

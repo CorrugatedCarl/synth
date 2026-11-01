@@ -74,6 +74,9 @@
 // is never held). ?texmax=N (a test switch: the 25 % of Android tablets whose MAX_TEXTURE_SIZE is 4096) reaches
 // createGL as o.maxTex beside ?nogl. A device-ratio change re-checks the faces (cv-face's rest-time recheck: its plan finds
 // the bases made at the old ratio) — a ratio-only change writes no camera, so nothing else would.
+// Stage WC-2 (the glass skin, IMPL-WC §14): the preset on #viewport (data-cv-perf: CSS turns the glass skin's frost off on Low);
+// setGlass(on), the host's word that this canvas's modules are glass panes — with the cables behind, the cord layer is told
+// behind(fn, true) (the ropes under the panes too); glassOn().
 import * as wk from './wk.js?v=9';
 import { createGL } from './cv-gl.js?v=9';
 import * as FACES from './cv-face.js?v=9';
@@ -480,6 +483,7 @@ export function createWorld(viewport, o) {
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
   let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, tbOff = false, locked = false, modsMode = 'always';
   let behind = false, cordCanvas = false; // ((the user, 2026-10-26) the cables-behind toggle (BEHIND_PREF); a cord canvas shown (its layer allocated)
+  let glass = false; // ((WC-2) the host's word: this canvas's modules are glass panes (a glass skin on a rig in cords mode) — the ropes behind them seen through
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
@@ -1941,7 +1945,17 @@ export function createWorld(viewport, o) {
     }
     return n;
   }
-  function behindTell() { if (CD && typeof CD.behind === 'function') { try { CD.behind(behind ? behindBoxes : null); } catch (err) { console.error(err); } } }
+  function behindTell() { if (CD && typeof CD.behind === 'function') { try { CD.behind(behind ? behindBoxes : null, behind && glass); } catch (err) { console.error(err); } } }
+  // ((WC-2; the user: "a translucent skin … so that we can see cables through the glass when they are in behind mode") the host's word that
+  // this canvas's modules are glass panes: with the cables behind, the layer also draws the ropes UNDER the panes (cv-cords behind(fn, true):
+  // a second canvas before #world, the fragments the cut-out drops), frosted by their backdrop-filter; off: behind(fn) — every other skin's
+  // behind exactly as it was. The cables on top: nothing to tell
+  function setGlass(on) {
+    on = !!on;
+    if (on === glass) return;
+    glass = on;
+    if (behind) behindTell();
+  }
   function setBehind(on) {
     on = !!on;
     if (on === behind) return;
@@ -2004,6 +2018,7 @@ export function createWorld(viewport, o) {
   behind = !!(store && store.get && store.get(BEHIND_PREF, false) === true);
   attr(viewport, 'data-cv-pinch', pinchMode);
   attr(viewport, 'data-cv-locked', locked);
+  attr(viewport, 'data-cv-perf', perf); // ((WC-2) the preset for CSS: the glass skin's frost (backdrop-filter) off on Low
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
   if (o.layer) wk.setLayer(o.layer);
   wk.setWheelVeto(() => wheelVeto());
@@ -2086,6 +2101,9 @@ export function createWorld(viewport, o) {
     modsMode: () => modsMode, setModsMode,
     /** (the user, 2026-10-26) the cables-behind toggle: on = every cord canvas's rope bodies behind the modules (BEHIND_PREF); a change emits 'behind' */
     behindOn: () => behind, setBehind,
+    /** (WC-2) the host's word that this canvas's modules are glass panes (a glass skin on a rig's cord canvas): with the cables behind, the
+     * cord layer draws the ropes under the panes too (behind(fn, true)) */
+    glassOn: () => glass, setGlass,
     /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */
     setDragging: on => away(2, !!on),
     /** (1e) installs the jack hook (cv-cables createCableDrag): fn(e, jackEl) → truthy | {cancel} takes the press;
@@ -2105,6 +2123,7 @@ export function createWorld(viewport, o) {
     setPerf(id) {
       if (destroyed) return;
       perf = perfOf(id);
+      attr(viewport, 'data-cv-perf', perf); // ((WC-2) the glass skin's frost follows it
       facesPerf(perf);
       if (CD && typeof CD.setPerf === 'function') { try { CD.setPerf(perf); } catch (err) { console.error(err); } }
       applyCap(); // ((FR §2.2) the tier's ceiling)

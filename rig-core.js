@@ -153,9 +153,12 @@ export const AUTOPLUG = deepFreeze({
 });
 
 /* ---------------------------------------------------------------- the skins (§5.1) */
-/** The built-in skins (no editor): id = the style.css block `#world[data-cv-skin="<id>"]`, label (the WC-2 ⚙ line), font: 'narrow' (the
- * bundled narrow face, Inter its fallback) | 'ui'. WC-1 ships charcoal alone; ivory (cream panels, charcoal lettering) joins in WC-2. */
-export const SKINS = deepFreeze([{ id: 'charcoal', label: 'Charcoal', font: 'narrow' }]);
+/** The built-in skins (no editor): id = the style.css block `#world[data-cv-skin="<id>"]`, label (the ⚙ line), font: 'narrow' (the
+ * bundled narrow face, Inter its fallback) | 'ui'; glass: true — a translucent pane (its block's case, face, bar and hairlines may carry
+ * an alpha; style.css's glass rules after the blocks; the host tells the world, which draws the cords under the panes when behind).
+ * WC-1 shipped charcoal; WC-2 (the user) adds ivory (cream faces, charcoal engraving) and glass (frosted: the cords seen through it). */
+export const SKINS = deepFreeze([{ id: 'charcoal', label: 'Charcoal', font: 'narrow' }, { id: 'ivory', label: 'Ivory', font: 'narrow' },
+  { id: 'glass', label: 'Frosted glass', font: 'narrow', glass: true }]);
 export const SKIN_DEFAULT = 'charcoal';
 
 /* ---------------------------------------------------------------- a Serum state entering a Wavecraft (§2.5) */

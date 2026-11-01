@@ -1292,7 +1292,7 @@ test('(WC-2; the user: "a translucent skin for wavecraft that has a frosted glas
   const top = B.made[0], g = B.made[1], tg = top._gl, gg = g._gl;
   eq(tg.calls, A.made[0]._gl.calls, 'the top canvas: behind(fn)\'s frames, call for call');
   eq([B.vp.childNodes.indexOf(g), B.vp.childNodes.indexOf(B.w), B.vp.childNodes.indexOf(top)], [0, 1, 2], 'under #world (the panes over it), the top canvas after it');
-  eq([g.className, g.getAttribute('aria-hidden'), /pointer-events:none/.test(g.style.cssText), /position:absolute/.test(g.style.cssText)], ['cv-cords cv-cords-glass', 'true', true, true]);
+  eq([g.className, g.getAttribute('aria-hidden'), /pointer-events:none/.test(g.style.cssText), /position:absolute/.test(g.style.cssText)], ['cv-cords-glass', 'true', true, true]);
   eq([g.width, g.height, g.style.width, g.style.height], [2000, 1200, '1000px', '600px'], 'the viewport in device px, as the top');
   eq(gg.attrs, tg.attrs, 'the same context attributes');
   eq([gg.count('createProgram'), gg.count('drawArraysInstanced')], [1, 0], 'one program, the strip (no plug)');
