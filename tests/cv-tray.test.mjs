@@ -1606,8 +1606,14 @@ const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - 
 const alphaOf = h => (h.length === 9 ? parseInt(h.slice(7), 16) / 255 : 1);
 const over = (fg, bg) => { const a = alphaOf(fg); return '#' + [1, 3, 5].map(i => Math.round(a * parseInt(fg.slice(i, i + 2), 16) + (1 - a) * parseInt(bg.slice(i, i + 2), 16)).toString(16).padStart(2, '0')).join(''); };
 // a skin block's custom properties (IMPL-WC §5.1: the kit's --sx-* tokens, the module chrome's --text / --mute, the faces' own --rig-*); nothing else
+// ((WC-2 displays) and the displays' own tokens — sx-ui-osc's oscillator, sample, spectral and filter screens: the screen, its grid, words,
+// waves and marks, the oscillators' and filters' traces, the spectrogram's two ends; the words on the spectral view's Hi / Lo handles (their
+// ground the accent); their defaults today's colours: tests/sx-ui-osc)
+const DISP_VARS = ['--sxd-bg', '--sxd-grid', '--sxd-mute', '--sxd-ink', '--sxd-wave', '--sxd-loop', '--sxd-on', '--sxd-cur', '--sxd-slice', '--sxd-mark', '--sxd-xy',
+  '--sxd-osc-a', '--sxd-osc-b', '--sxd-osc-c', '--sxd-f1', '--sxd-f2', '--sxd-spec-lo', '--sxd-spec-hi', '--sxd-hl-ink'];
 const SKIN_VARS = ['--sx-bg', '--sx-panel', '--sx-panel2', '--sx-line', '--sx-graph', '--sx-ink', '--sx-mute', '--sx-accent', '--sx-neg', '--text', '--mute',
-  '--rig-case', '--rig-face', '--rig-bar', '--rig-title', '--rig-line', '--rig-font', '--rig-screen', '--rig-jack-ring', '--rig-jack-nut', '--rig-jack-hole', '--rig-screw', '--rig-screw-lo'];
+  '--rig-case', '--rig-face', '--rig-bar', '--rig-title', '--rig-line', '--rig-font', '--rig-screen', '--rig-jack-ring', '--rig-jack-nut', '--rig-jack-hole', '--rig-screw', '--rig-screw-lo',
+  ...DISP_VARS];
 // (WC-2) a glass skin's pane: the only variables it may give an alpha (#rrggbbaa) — the module's case (the pane: style.css's glass rules
 // clear the layers inside it), the face's and the bar's sheens over it, the hairlines; every kit token, text, knob, screen and popover stays opaque
 const PANE_VARS = ['--rig-case', '--rig-face', '--rig-bar', '--rig-line'];
@@ -1643,6 +1649,14 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
       assert.ok(ratio(v, fg, bg, CANVAS) >= 4.5, `${S.id}: ${fg} on ${bg} ${ratio(v, fg, bg, CANVAS).toFixed(2)} : 1`);
     for (const [fg, bg] of [['--rig-jack-ring', '--rig-face'], ['--sx-graph', '--sx-line'], ['--sx-ink', '--sx-panel2'], ['--sx-neg', '--rig-face'], ['--rig-screw', '--rig-face'], ['--rig-line', '--rig-case']])
       assert.ok(ratio(v, fg, bg, CANVAS) >= (fg === '--rig-screw' || fg === '--rig-line' ? 1.2 : 3), `${S.id}: ${fg} against ${bg} ${ratio(v, fg, bg, CANVAS).toFixed(2)} : 1`);
+    // ((WC-2 displays) the screen (opaque on every skin): its words ≥ 4.5 : 1 (the counter, the notices, a missing sample's line in --sxd-xy), every
+    // trace and mark ≥ 3 : 1, the grid a hairline (≥ 1.2, as --rig-line), the spectrogram's loudest end ≥ 3 : 1 from its quietest
+    for (const fg of ['--sxd-mute', '--sxd-ink', '--sxd-xy']) assert.ok(contrast(v[fg], v['--sxd-bg']) >= 4.5, `${S.id}: ${fg} on the screen ${contrast(v[fg], v['--sxd-bg']).toFixed(2)} : 1`);
+    for (const fg of ['--sxd-wave', '--sxd-loop', '--sxd-on', '--sxd-cur', '--sxd-slice', '--sxd-mark', '--sxd-osc-a', '--sxd-osc-b', '--sxd-osc-c', '--sxd-f1', '--sxd-f2'])
+      assert.ok(contrast(v[fg], v['--sxd-bg']) >= 3, `${S.id}: ${fg} on the screen ${contrast(v[fg], v['--sxd-bg']).toFixed(2)} : 1`);
+    assert.ok(contrast(v['--sxd-grid'], v['--sxd-bg']) >= 1.2, `${S.id}: the grid ${contrast(v['--sxd-grid'], v['--sxd-bg']).toFixed(2)} : 1`);
+    assert.ok(contrast(v['--sxd-spec-hi'], v['--sxd-spec-lo']) >= 3, `${S.id}: the spectrogram's ends ${contrast(v['--sxd-spec-hi'], v['--sxd-spec-lo']).toFixed(2)} : 1`);
+    assert.ok(contrast(v['--sxd-hl-ink'], v['--sx-accent']) >= 4.5, `${S.id}: the Hi / Lo handles' words on the accent ${contrast(v['--sxd-hl-ink'], v['--sx-accent']).toFixed(2)} : 1`);
     // ((WC-2) the pane's worst moment — the lightest cord right behind a word, unblurred (the Low preset): the face's words and the bar's
     // title stay ≥ 3 : 1 (the blur of Medium / High spreads a cord to about a third of that); the pane really is see-through)
     if (S.glass) {
@@ -1668,6 +1682,17 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
     ['#e9e3d3', '#e9e3d3', '#e9e3d3', '#e9e3d3', '#d9d2c0', '#bfb7a4', '#bfb7a4', '#1d1c1a', '#1d1c1a', '#1d1c1a', '#5d574c', '#5d574c', '#97431a'], 'cream faces on a darker cream body, charcoal engraving');
   assert.deepEqual([I['--sx-panel2'], I['--sx-graph'], I['--rig-screen'], I['--rig-jack-ring'], I['--rig-jack-nut'], I['--rig-jack-hole'], I['--rig-screw'], I['--rig-screw-lo'], I['--sx-neg']],
     ['#f8f5ee', '#97431a', '#f3efe4', '#2b2a27', '#6f6a60', '#0b0b0c', '#9c978a', '#55524a', '#a3301e'], 'light caps with charcoal pointers, a burnt-orange arc; charcoal-ringed jacks');
+  // ((WC-2 displays; the user: the displays follow the skin) charcoal and glass keep the screens exactly as they were — today's colours, the
+  // defaults (sx-ui-osc's draws pinned call for call: tests/sx-ui-osc); Ivory a cream screen (its --rig-screen) with dark traces and grid: the
+  // accents darkened until they read on cream (the oscillators' blue · green · ochre, the cursor the skin's burnt orange, the filters'
+  // orange and pink), the S / E markers its ink, the spectrogram cream → gold → dark brown (its green runs at 0.85: the far end's green 0),
+  // the Hi / Lo handles' words cream on the burnt orange (the default's near-black on it: 2.8 : 1)
+  const TODAY = ['#0a0d10', '#2a333d', '#7f8b98', '#dfe6ee', '#59c2ff', '#4fb3ff', '#6fe3a1', '#ffd84a', '#f7c948', '#ffffff', '#ff5b5b',
+    '#4fb3ff', '#6fe3a1', '#f7c948', '#ff8a5b', '#ff5b8a', '#000000', '#ffffff', '#061018'];
+  for (const id of ['charcoal', 'glass']) assert.deepEqual(DISP_VARS.map(k => V[id][k]), TODAY, id + ': the displays as they were');
+  assert.deepEqual(DISP_VARS.map(k => I[k]), ['#f3efe4', '#d3cbb8', '#5d574c', '#1d1c1a', '#2a6496', '#1f5f99', '#1e7a4a', '#97431a', '#8a6200', '#1d1c1a', '#a3301e',
+    '#1f5f99', '#1e7a4a', '#8a6200', '#b4501e', '#a8325e', '#f3efe4', '#3c0014', '#f3efe4'], 'ivory: a cream screen, dark traces');
+  assert.equal(I['--sxd-bg'], I['--rig-screen'], 'ivory: the screen its frame\'s cream');
   // the chrome: every [data-cv-rig] rule outside the skins, colours only through custom properties (a #hex only as a var() fallback: the plain module's
   // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
   const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !tail.includes(r));

@@ -871,3 +871,58 @@ test('part CSS: a part root is container sxp without a frame, keeps its PART_W w
   assert.match(rule('.sx-panel.sx-bare > .sx-ptitle.sx-bare:empty'), /display:\s*none/);
   assert.match(rule('.sx-part[data-col="O"] .wk-md, .sx-part[data-col="O"] .wk-lg'), /--wk-d:\s*30px/);
 });
+
+/* ================================================================ (WC-2 displays) the display palette */
+// The kit's displays follow the skin: a canvas' palette (sx-ui-osc dispPalette: the --sxd-* tokens, today's colours their defaults) is
+// resolved when the canvas is measured and only when its skin (the nearest data-cv-skin) is not the one it was resolved for — never per
+// frame, not again at a zoom end; a skin pick (main.js: wk.rescaleCanvases over the world) re-measures every canvas, so it reads it again
+test('(WC-2 displays) a display canvas\' palette: resolved at its sizing once per skin (no getComputedStyle per frame, none at a zoom end), handed to its draw as the fifth argument; a skin change reads it again; .sx-disp\'s ground is --sxd-bg (#0a0d10 its default)', async () => {
+  const src = readFileSync(new URL('../sx-host.js', import.meta.url), 'utf8'), a = src.indexOf('const CSS = `');
+  const css = src.slice(a + 13, src.indexOf('`;', a)).replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(css, /\.sx-disp \{ display: block; width: 100%; height: 120px; background: var\(--sxd-bg, #0a0d10\);/, 'the screen\'s ground: the token, today\'s colour its default');
+  const OSC = await import('../sx-ui-osc.js?v=9');
+  assert.equal(typeof OSC.dispPalette, 'function');
+  let T = 1e6, reads = 0;
+  const { doc, box, X } = parts();
+  X.tNow = () => T;
+  const IV = { '--sxd-bg': '#f3efe4', '--sxd-mute': '#5d574c' };
+  const skinOf = el => { const w = el && el.closest ? el.closest('[data-cv-skin]') : null; return w ? w.getAttribute('data-cv-skin') : ''; };
+  doc.defaultView.getComputedStyle = el => ({ getPropertyValue: k => { if (k === '--sxd-bg') reads++; return skinOf(el) === 'ivory' && IV[k] ? ' ' + IV[k] : ''; } });
+  box.setAttribute('data-cv-skin', 'charcoal');
+  WK.clock._reset(); WK.clock.config({ display: 120 });
+  try {
+    const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box), N = M.mountPart(X, 'noise', box);
+    const cvs = [A, F, N].flatMap(V => V.page.canvases), got = new Map();
+    for (const cv of cvs) { const d = cv.draw; cv.draw = (g, w, h, dpr, p) => { got.set(cv, p); return d(g, w, h, dpr, p); }; }
+    await flush(doc);
+    const drawn = () => cvs.filter(cv => got.has(cv));
+    assert.ok(drawn().length >= 3, drawn().length + ' displays drawn');
+    assert.equal(reads, drawn().length, 'one read per canvas measured');
+    const P0 = OSC.dispPalette();
+    assert.ok(drawn().every(cv => got.get(cv) === P0), 'charcoal: the defaults (one interned palette)');
+    // frames: an LFO on cutoff, a note — the displays redraw, the palette is not read again
+    const eff = new Float32Array(core.NSV + 64), vi = core.vi('f.cutoff'), n0 = reads;
+    got.clear();
+    for (let f = 1; f <= 40; f++) { T += 1000 / 120; eff[vi] = 0.3 + 0.4 * Math.sin(f / 5); X.setSnapshot({ s: { notes: 1, eff } }); frameAt(doc, T); }
+    assert.ok(got.size >= 1, 'redrawn');
+    assert.equal(reads, n0, 'no palette read per frame');
+    // a zoom end: every canvas re-measured, the skin the same — no read
+    WK.rescaleCanvases(box);
+    got.clear();
+    for (let f = 1; f <= 3; f++) { T += 1000 / 120; frameAt(doc, T); }
+    await flush(doc);
+    assert.ok(got.size >= 1, 'drawn again after the zoom end');
+    assert.equal(reads, n0, 'no read at a zoom end');
+    // a skin pick: the attribute, then the world's re-measure → one read per canvas, the draws in the new palette
+    box.setAttribute('data-cv-skin', 'ivory');
+    WK.rescaleCanvases(box);
+    got.clear();
+    await flush(doc);
+    const P1 = drawn().map(cv => got.get(cv));
+    assert.ok(P1.length >= 3 && P1.every(p => p && p.bg === '#f3efe4' && p.mute === '#5d574c' && p.grid === P0.grid), 'Ivory\'s palette, the tokens it does not set at their defaults');
+    assert.ok(P1.every(p => p === P1[0]), 'one interned palette');
+    assert.equal(reads - n0, drawn().length, 'one read per canvas, once');
+    for (let f = 1; f <= 20; f++) { T += 1000 / 120; eff[vi] = 0.5 + 0.3 * Math.sin(f / 3); X.setSnapshot({ s: { notes: 1, eff } }); frameAt(doc, T); }
+    assert.equal(reads - n0, P1.length, 'and not per frame');
+  } finally { WK.clock._reset(); X.destroy(); }
+});
