@@ -116,7 +116,8 @@ function menuOpts(doc, el) {
 const closeMenus = doc => { dom.fire(doc.body, 'pointerdown'); };
 
 const EXPORTS = ['OscPanel', 'FilterPanel', 'SubPanel', 'NoisePanel', 'WTView', 'MultiView', 'SampleView', 'GranView', 'SpecView',
-  'markerLayout', 'zoneMapLayout', 'sliceAt', 'xyToN', 'oscData', 'layers3d', 'warpMenuItems', 'filterLit', 'autoSlices', 'smpCoords', 'specRect'];
+  'markerLayout', 'zoneMapLayout', 'sliceAt', 'xyToN', 'oscData', 'layers3d', 'warpMenuItems', 'filterLit', 'autoSlices', 'smpCoords', 'specRect',
+  'dispPalette'];   // ((WC-2 displays) the display tokens resolved for a canvas: its skin's palette)
 
 /* ================================================================ module, destinations, structure */
 
@@ -2304,4 +2305,254 @@ test('real DSP: filter displays (types < 96 and ≥ 96), the 2D warp preview (re
   await D.renderOscWarp(1);
   assert.equal(s.p['b.warpMode'], 0);
   assert.equal(log.filter(x => x[0] === 'saveNew').length, 3);
+});
+
+/* ================================================================ (WC-2 displays) the display palette: the skin's tokens */
+// The oscillator, sample, spectral and filter displays draw from a palette of display tokens (--sxd-*: a skin block in style.css sets
+// them; each defaults to the colour the display drew before) — resolved once per canvas and skin by the host (sx-host paintCanvas),
+// handed to the draw as its fifth argument. The pins: every display's calls (method calls and property writes in order, numbers to
+// 1e-6, the spectrogram image's pixels digested) — with no palette, the defaults, the charcoal and the glass blocks' palettes — equal
+// today's (DISP_REF: the digests of 406e5b8's draws); on Ivory every colour is an Ivory token's, and a probe palette (one colour per
+// token) shows each token sits exactly where today's colour was (the probe's calls mapped to the defaults are today's).
+const { createHash } = await import('node:crypto');
+const { readFileSync } = await import('node:fs');
+const SXD = ['--sxd-bg', '--sxd-grid', '--sxd-mute', '--sxd-ink', '--sxd-wave', '--sxd-loop', '--sxd-on', '--sxd-cur', '--sxd-slice', '--sxd-mark', '--sxd-xy',
+  '--sxd-osc-a', '--sxd-osc-b', '--sxd-osc-c', '--sxd-f1', '--sxd-f2', '--sxd-spec-lo', '--sxd-spec-hi'];
+// a skin block's custom properties, as style.css writes them
+const skinVals = id => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const m = new RegExp('#world\\[data-cv-skin="' + id + '"\\] \\.cv-mod\\[data-cv-rig\\],[^{]*\\{([^}]*)\\}').exec(css);
+  assert.ok(m, 'the ' + id + ' block');
+  return Object.fromEntries([...m[1].matchAll(/(--[a-z0-9-]+):\s*([^;]+);/g)].map(x => [x[1], x[2].trim()]));
+};
+// the palette the host resolves for a canvas whose computed style reads vals (null: no getComputedStyle — node, a page without a skin)
+const palFor = vals => {
+  const doc = dom.fresh(), el = doc.createElement('canvas');
+  if (vals) doc.defaultView.getComputedStyle = () => ({ getPropertyValue: k => (k in vals ? ' ' + vals[k] : '') });
+  return osc.dispPalette ? osc.dispPalette(el) : undefined;
+};
+// a recording 2D context: every call and property write in order (numbers to 1e-6, an object as its kind: no node in the log), the
+// images createImageData handed out kept (their pixels digested after the draw)
+function recCtx() {
+  const log = [], imgs = [], t = {};
+  const val = v => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v === null || ['string', 'boolean', 'undefined'].includes(typeof v) ? v
+    : Array.isArray(v) || ArrayBuffer.isView(v) ? Array.from(v, val) : '<' + (v.localName || typeof v) + '>');
+  const g = new Proxy(t, {
+    get(_, k) {
+      if (k === 'measureText') return s => ({ width: String(s).length * 6 });
+      if (k === 'createImageData') return (w, h) => { const im = { width: w, height: h, data: new Uint8ClampedArray(4 * w * h) }; imgs.push(im); log.push(['createImageData', w, h]); return im; };
+      if (typeof k === 'symbol') return undefined;
+      if (k in t) return t[k];
+      return (...a) => { log.push([k, ...a.map(val)]); };
+    },
+    set(_, k, v) { t[k] = v; log.push(['=' + k, val(v)]); return true; },
+  });
+  return { g, log, imgs };
+}
+const digest = R => createHash('sha256').update(JSON.stringify(R.log) + R.imgs.map(im => createHash('sha256').update(im.data).digest('hex')).join()).digest('hex').slice(0, 20);
+// a deterministic filter impulse (no DSP scripts here): a response curve for any type < 96
+const FIMP = (type, fc, res, drive, vr, fs, len) => { const u = new Float64Array(len); for (let i = 0; i < 64; i++) u[i] = Math.exp(-i * fc / 4000) * (1 - res) * (i % 3 ? 1 : -0.5); return u; };
+const TAP = () => { const a = new Float32Array(2048); for (let i = 0; i < 2048; i++) a[i] = Math.sin(i * 0.21) * 0.6 + Math.sin(i * 0.037) * 0.3; return a; };
+// the displays in states that reach every colour they draw: name → async () → (g, p) => the draws on g with palette p
+const DISP_SCENES = {
+  'wt 2D A (stalks, the phase line)': async () => {
+    const { s, kit, T, root } = mount();
+    s.p['a.uni'] = core.lawNorm('a.uni', 4);
+    const V = new osc.OscPanel(root, kit, 0).views.wt;
+    T.paint(); await settle(); T.paint();
+    T.held.add('a.phase'); s.p['a.phase'] = 0.3;
+    return (g, p) => V.draw(g, 300, 120, 1, p);
+  },
+  'wt 2D B': async () => { const { kit, T, root } = mount(), V = new osc.OscPanel(root, kit, 1).views.wt; T.paint(); await settle(); T.paint(); return (g, p) => V.draw(g, 300, 120, 1, p); },
+  'wt 2D C': async () => { const { kit, T, root } = mount(), V = new osc.OscPanel(root, kit, 2).views.wt; T.paint(); await settle(); T.paint(); return (g, p) => V.draw(g, 300, 120, 1, p); },
+  'wt 3D (real frames, interpolated slots)': async () => {
+    const { s, kit, T, root } = mount();
+    s.osc[0].wt = 'user:1'; s.ui.view3d = [1, 0, 0];
+    const V = new osc.OscPanel(root, kit, 0).views.wt;
+    T.paint(); await settle(); T.paint();
+    return (g, p) => V.draw(g, 300, 120, 1, p);
+  },
+  'wt missing': async () => {
+    const { s, kit, T, root } = mount();
+    s.osc[0].wt = 'factory:Nope';
+    const V = new osc.OscPanel(root, kit, 0).views.wt;
+    T.paint(); await settle(); T.paint();
+    return (g, p) => V.draw(g, 300, 120, 1, p);
+  },
+  'multi: none, missing, the zone map (a live zone, a missing one), a zone\'s waveform, a missing zone\'s, the envelope': async () => {
+    const { s, kit, T, root, host } = mount();
+    const rec0 = host.smp.record;
+    host.smp.record = id => (id === 'msmp:2' ? Promise.resolve({ name: 'Two', zones: [{ lo: 0, hi: 63, vlo: 1, vhi: 127, smp: 'smp:z0' }, { lo: 64, hi: 127, vlo: 1, vhi: 127, smp: 'smp:z1' }], missing: ['smp:z1'] }) : rec0(id));
+    s.osc[0].type = 'multi'; s.osc[0].multi = '';
+    const V = new osc.OscPanel(root, kit, 0).views.multi, D = osc.oscData(kit);
+    T.paint(); await settle(); T.paint();
+    for (const id of ['msmp:gone', 'msmp:1', 'msmp:2']) D.recEntry(id);
+    for (const id of ['msmp:2', 'msmp:1']) { s.osc[0].multi = id; V.zones(); await settle(); T.paint(); await settle(); }
+    D.overview('smp:z0'); await settle();
+    return (g, p) => {
+      s.osc[0].multi = ''; V.draw(g, 300, 120, 1, p);
+      s.osc[0].multi = 'msmp:gone'; V.draw(g, 300, 120, 1, p);
+      s.osc[0].multi = 'msmp:1'; V.sel = -1;
+      T.setSnap({ notes: 1, zone: new Int16Array([1, -1, -1]) }); V.draw(g, 300, 120, 1, p);
+      T.setSnap({ notes: 0, zone: new Int16Array([-1, -1, -1]) }); V.draw(g, 300, 120, 1, p);
+      V.sel = 0; V.draw(g, 300, 120, 1, p); V.sel = -1;
+      s.osc[0].multi = 'msmp:2'; V.draw(g, 300, 120, 1, p);
+      V.sel = 1; V.draw(g, 300, 120, 1, p); V.sel = -1; s.osc[0].multi = 'msmp:1';
+      s.osc[0].msmo.override = 0; V.drawEnv(g, 260, 44, 1, p);
+      s.osc[0].msmo.override = 1; V.drawEnv(g, 260, 44, 1, p);
+    };
+  },
+  'sample: loop, X-fade, slices, markers, playhead, stalks; Auto\'s threshold; missing; none': async () => {
+    const { s, kit, T, root } = mount();
+    s.osc[0].type = 'sample'; s.osc[0].smp = 'smp:1';
+    Object.assign(s.osc[0].smpo, { loop: 1, anim: 1 });
+    s.osc[0].smpo.slice.marks = [0.25, 0.5, 0.75]; s.osc[0].smpo.slice.mode = 2;
+    Object.assign(s.p, { 'a.sstart': 0.1, 'a.send': 0.9, 'a.lstart': 0.4, 'a.lend': 0.6, 'a.xfade': 0.3, 'a.uni': core.lawNorm('a.uni', 3) });
+    const V = new osc.OscPanel(root, kit, 0).views.sample, D = osc.oscData(kit);
+    T.paint(); await settle(); T.paint(); D.recEntry('smp:gone'); await settle(); T.paint();
+    T.setSnap({ notes: 1, smpPos: Float32Array.from([0.45, 0.1, 0.4, 0.6, 0, 0, 0, 0, 0, 0, 0, 0]) });
+    return (g, p) => {
+      V.draw(g, 300, 120, 1, p);
+      s.osc[0].smpo.slice.mode = 1; V.draw(g, 300, 120, 1, p); s.osc[0].smpo.slice.mode = 2;
+      s.osc[0].smp = 'smp:gone'; V.draw(g, 300, 120, 1, p);
+      s.osc[0].smp = ''; V.draw(g, 300, 120, 1, p); s.osc[0].smp = 'smp:1';
+    };
+  },
+  'spectral: the spectrogram, its waveform, the band outside Lo … Hi; the spectral filter': async () => {
+    const { s, kit, T, root, host } = mount();
+    host.smp.spectrogram = (id, w, h) => Promise.resolve({ w, h, data: new Uint8ClampedArray(w * h).map((_, i) => (i * 7 + (i / w | 0) * 13) & 255) });
+    s.osc[0].type = 'spec'; s.osc[0].smp = 'smp:1'; s.osc[0].smpo.wave = 1;
+    Object.assign(s.p, { 'a.flo': 0.2, 'a.fhi': 0.8 });
+    const V = new osc.OscPanel(root, kit, 0).views.spec, D = osc.oscData(kit);
+    T.paint(); await settle(); T.paint(); D.smpInfo('smp:1'); D.spectrogram('smp:1'); D.overview('smp:1'); await settle(); T.paint();
+    return (g, p) => {
+      V.draw(g, 300, 120, 1, p);
+      V.drawFilt(g, 260, 44, 1, p);
+      s.osc[0].spec.filt.kind = 'wt'; V.drawFilt(g, 260, 44, 1, p);
+    };
+  },
+  'noise: an overview with its playhead, a colour noise, none yet': async () => {
+    const { s, kit, T, root } = mount();
+    const P = new osc.NoisePanel(root, kit), D = osc.oscData(kit);
+    s.noise.src = 'noise:Analog/Hiss';
+    D.noiseOv.set('noise:Analog/Hiss', new Float32Array(512).map((_, i) => (i & 1 ? 0.6 : -0.4) * (0.5 + 0.5 * Math.sin(i / 9))));
+    T.paint(); await settle();
+    return (g, p) => {
+      T.setSnap({ notes: 1, noisePos: 0.37 }); P.draw(g, 300, 64, 1, p);
+      s.noise.src = 'color:Pink'; D.noiseOverview('color:Pink'); P.draw(g, 300, 64, 1, p);
+      s.noise.src = 'noise:Analog/Unknown'; D.noiseOv.set('noise:Analog/Unknown', null); P.draw(g, 300, 64, 1, p);
+      s.noise.src = 'noise:Analog/Hiss';
+    };
+  },
+  'filters: on / off, the views (magnitude, + FFT, phase), FILTER 2, a symbolic type, no signal, no DSP': async () => {
+    const { s, kit, T, root } = mount();
+    const F1 = new osc.FilterPanel(root, kit, 0), F2 = new osc.FilterPanel(root, kit, 1);
+    T.paint(); await settle();
+    return (g, p) => {
+      const was = globalThis.SerumDSP;
+      globalThis.SerumDSP = { filterImpulse: FIMP };
+      try {
+        T.setSnap({ notes: 1, filtTap: TAP(), tapRate: 48000 });
+        s.p['f.on'] = 1; s.p['f2.on'] = 1;
+        for (const v of [0, 1, 2]) { s.ui.filtView = [v, v]; F1.draw(g, 300, 120, 1, p); F2.draw(g, 300, 120, 1, p); }
+        s.ui.filtView = [0, 0]; s.p['f.on'] = 0; F1.draw(g, 300, 120, 1, p);
+        s.p['f.on'] = 1; s.p['f.type2'] = 76 / 107; F1.draw(g, 300, 120, 1, p); s.p['f.type2'] = 0;
+        T.setSnap({ notes: 0 }); s.ui.filtView = [1, 0]; F1.draw(g, 300, 120, 1, p); s.ui.filtView = [0, 0];
+      } finally { if (was === undefined) delete globalThis.SerumDSP; else globalThis.SerumDSP = was; }
+      F1.draw(g, 300, 120, 1, p);
+    };
+  },
+};
+const sceneRun = async (name, p) => { const draw = await DISP_SCENES[name](), R = recCtx(); draw(R.g, p); return R; };
+// 406e5b8's draws (before the palette): the digests of every scene's calls
+const DISP_REF = {
+  'wt 2D A (stalks, the phase line)': 'bea41e2c07037ada23d7', 'wt 2D B': '199ee13ae12a2a2b700f', 'wt 2D C': '9bfbbf682a764e238d93',
+  'wt 3D (real frames, interpolated slots)': '2deb2f8a35498e649714', 'wt missing': '1df2b6ac3f96fbba3729',
+  'multi: none, missing, the zone map (a live zone, a missing one), a zone\'s waveform, a missing zone\'s, the envelope': '5f0844df4f7e0eb2a458',
+  'sample: loop, X-fade, slices, markers, playhead, stalks; Auto\'s threshold; missing; none': '52e2d4dc0f5df82fe6a7',
+  'spectral: the spectrogram, its waveform, the band outside Lo … Hi; the spectral filter': '52d9f1d9f1085c2d17c6',
+  'noise: an overview with its playhead, a colour noise, none yet': '99981ab7e5c092067b6d',
+  'filters: on / off, the views (magnitude, + FFT, phase), FILTER 2, a symbolic type, no signal, no DSP': '448c95e5eda3c16edf76',
+};
+test('(WC-2 displays) charcoal, glass and Serum complete (no skin): every display draws exactly today\'s calls and colours — with no palette, the defaults, and the palettes the charcoal and glass blocks resolve to', async () => {
+  const got = {};
+  for (const name of Object.keys(DISP_SCENES)) got[name] = digest(await sceneRun(name, undefined));
+  assert.deepEqual(got, DISP_REF, 'today\'s draws');
+  assert.equal(typeof osc.dispPalette, 'function', 'the palette resolver');
+  const P0 = palFor(null), Pc = palFor(skinVals('charcoal')), Pg = palFor(skinVals('glass'));
+  assert.ok(P0 === Pc && P0 === Pg && P0 === osc.dispPalette(), 'charcoal and glass: the defaults, one palette (interned)');
+  for (const name of Object.keys(DISP_SCENES)) assert.equal(digest(await sceneRun(name, P0)), DISP_REF[name], name + ': the default palette');
+});
+
+// a palette's colours by entry: the tokens (#rrggbb), the oscillators' and filters' (osc0…, f0…) and the alpha variants (<token>_<alpha>)
+const palColors = P => {
+  const out = new Map();
+  for (const [k, v] of Object.entries(P)) if (typeof v === 'string' && /^(#|rgba\()/.test(v)) out.set(k, v);
+  P.osc.forEach((v, i) => out.set('osc' + i, v));
+  P.f.forEach((v, i) => out.set('f' + i, v));
+  return out;
+};
+// the log with every colour write of palette A replaced by palette B's colour of the same entry (a colour not A's stays: it shows)
+const mapLog = (log, A, B) => {
+  const a = palColors(A), b = palColors(B), to = new Map([...a].map(([k, v]) => [v, b.get(k)]));
+  return log.map(c => (c[0] === '=fillStyle' || c[0] === '=strokeStyle') && to.has(c[1]) ? [c[0], to.get(c[1])] : c);
+};
+const firstDiff = (a, b) => { const n = Math.max(a.length, b.length); for (let i = 0; i < n; i++) if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) return i + ': ' + JSON.stringify(a[i]) + ' ≠ ' + JSON.stringify(b[i]); return null; };
+// one distinct colour per token (its alpha variants distinct too): where a token is used reads off the calls
+const PROBE = Object.fromEntries(SXD.map((k, i) => [k, '#' + [i + 1, 2 * i + 3, 3 * i + 5].map(x => x.toString(16).padStart(2, '0')).join('')]));
+// a probe colour (#rrggbb, or an alpha variant's rgba(r, g, b, a)) → its token
+const probeToken = c => {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/.exec(c), r = /^rgba\((\d+), (\d+), (\d+), [\d.]+\)$/.exec(c);
+  const rgb = m ? m.slice(1).map(x => parseInt(x, 16)) : r ? r.slice(1).map(Number) : null;
+  return rgb ? SXD.find((k, i) => rgb[0] === i + 1 && rgb[1] === 2 * i + 3 && rgb[2] === 3 * i + 5) || null : null;
+};
+// the spectrogram's pixels for its levels q (0 … 1) between the palette's two ends: red q², green 0.85 · q^1.4, blue √q (the dark default:
+// black → blue → white, as before), opaque
+const specPixels = (P, data) => {
+  const [lo, hi] = P.spec, out = new Uint8ClampedArray(4 * data.length);
+  for (let i = 0; i < data.length; i++) {
+    const q = data[i] / 255;
+    out[4 * i] = lo[0] + (hi[0] - lo[0]) * q * q; out[4 * i + 1] = lo[1] + (hi[1] - lo[1]) * Math.pow(q, 1.4) * 0.85; out[4 * i + 2] = lo[2] + (hi[2] - lo[2]) * Math.sqrt(q); out[4 * i + 3] = 255;
+  }
+  return out;
+};
+test('(WC-2 displays) Ivory: every display draws in the Ivory tokens — each where today\'s colour was (a probe palette, one colour per token, mapped to the defaults draws today\'s calls; mapped to Ivory\'s, Ivory\'s), every colour an Ivory one (no dark literal left); the spectrogram between Ivory\'s two ends', async () => {
+  assert.equal(typeof osc.dispPalette, 'function', 'the palette resolver');
+  const P0 = palFor(null), Pi = palFor(skinVals('ivory')), Pq = palFor(PROBE);
+  assert.ok(Pi !== P0 && Pq !== P0 && Pi !== Pq);
+  assert.deepEqual(SXD.map(k => skinVals('ivory')[k]).map(v => /^#[0-9a-f]{6}$/.test(v || '')), SXD.map(() => true), 'the Ivory block sets every display token');
+  const ivory = new Set(palColors(Pi).values()), dark = new Set(palColors(P0).values()), used = new Set();
+  for (const name of Object.keys(DISP_SCENES)) {
+    const q = await sceneRun(name, Pq), d = await sceneRun(name, P0), i = await sceneRun(name, Pi);
+    assert.equal(firstDiff(mapLog(q.log, Pq, P0), d.log), null, name + ': the probe mapped to the defaults = today\'s calls');
+    assert.equal(firstDiff(mapLog(q.log, Pq, Pi), i.log), null, name + ': the probe mapped to Ivory = Ivory\'s calls');
+    const cols = i.log.filter(c => c[0] === '=fillStyle' || c[0] === '=strokeStyle').map(c => c[1]);
+    assert.deepEqual(cols.filter(c => !ivory.has(c)), [], name + ': every colour an Ivory token\'s');
+    assert.deepEqual(cols.filter(c => dark.has(c)), [], name + ': no default (dark) colour');
+    for (const c of q.log) if (c[0] === '=fillStyle' || c[0] === '=strokeStyle') { const t = probeToken(c[1]); assert.ok(t, name + ': ' + c[1] + ' is a token\'s'); used.add(t); }
+    // the spectrogram's image: Ivory's ends (the default's: today's pixels, in DISP_REF)
+    for (const [R, P] of [[i, Pi], [q, Pq], [d, P0]]) for (const im of R.imgs) {
+      const data = Array.from({ length: im.width * im.height }, (_, j) => (j * 7 + (j / im.width | 0) * 13) & 255);
+      assert.ok(Buffer.from(im.data).equals(Buffer.from(specPixels(P, data))), name + ': the spectrogram\'s pixels between the palette\'s ends');
+    }
+  }
+  // every colour token drawn somewhere (the spectrogram's ends: its pixels, above)
+  assert.deepEqual([...used].sort(), SXD.filter(k => !/spec/.test(k)).sort());
+  // the spectral view's Hi / Lo handles (DOM over the screen, on the skin's accent): their words a token too, today's near-black its default
+  const src = readFileSync(new URL('../sx-ui-osc.js', import.meta.url), 'utf8');
+  assert.match(src, /\n\.sxo-hl \{[^}\n]*; color: var\(--sxd-hl-ink, #061018\); background: var\(--sx-accent, #4fb3ff\);/);
+  assert.match(skinVals('ivory')['--sxd-hl-ink'] || '', /^#[0-9a-f]{6}$/, 'the Ivory block sets it');
+});
+
+test('(WC-2 displays) a palette change re-derives what was cached in the old one — the 3D view\'s back layers, the spectrogram\'s image — and only then', async () => {
+  assert.equal(typeof osc.dispPalette, 'function', 'the palette resolver');
+  const P0 = palFor(null), Pi = palFor(skinVals('ivory'));
+  const d3 = await DISP_SCENES['wt 3D (real frames, interpolated slots)'](), ds = await DISP_SCENES['spectral: the spectrogram, its waveform, the band outside Lo … Hi; the spectral filter']();
+  const run = (draw, P) => { const R = recCtx(); draw(R.g, P); return R; };
+  const a = run(d3, P0), b = run(d3, P0), c = run(d3, Pi), e = run(d3, P0);
+  assert.equal(firstDiff(a.log, b.log), null, 'the same palette: the same calls (the layers from the cache)');
+  assert.equal(firstDiff(mapLog(c.log, Pi, P0), a.log), null, 'Ivory: the layers again, in Ivory');
+  assert.equal(firstDiff(e.log, a.log), null, 'back: the defaults again');
+  const s0 = run(ds, P0), s1 = run(ds, P0), s2 = run(ds, Pi), s3 = run(ds, Pi);
+  assert.deepEqual([s0.imgs.length, s1.imgs.length, s2.imgs.length, s3.imgs.length], [1, 0, 1, 0], 'one image per palette change');
 });

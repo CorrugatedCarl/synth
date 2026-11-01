@@ -1036,6 +1036,7 @@ layout check and the contact sheets), lane F. The Serum complete panel is out of
   on `isSxModel` with B2's hash moved — a stage decision.
 - **The screens keep the kit's colours in WC-1** (sx-ui-osc's hard-coded palette); ivory re-colours them in WC-2. **→ WC-2 as shipped:** the
   LFO / Envelope / FX displays take the skin (theme painters); the Oscillator and Filter displays stay dark on ivory (sx-ui-osc's palette).
+  **→ WC-2 displays (2026-11-01):** they follow the skin too — the display tokens `--sxd-*` (§14 "Notes — WC-2 displays").
 - **The glass skin (WC-2)** (§14 "Notes — WC-2 skins"): the cords are seen through the panes on a **Wavecraft's cord canvas** only (the
   host's `setGlass`): a 900 Series' faces are cv-gl textures under `#world` (the glass layer's ropes would lie over them), so there — and in
   the SVG fallback (`?nogl`, no WebGL2) and the `under` diagnostic mode — "Cables behind" keeps the cut-out (the ropes hidden under every
@@ -2374,6 +2375,7 @@ behind mode". Tests first (4657001), then the build. Presentation only: no DSP f
 - **Ivory** is a block like charcoal's (§5.2 with the gate's corrections: the muted and the accent darkened to ≥ 4.5 : 1 on the cream
   face, light caps — the kit's pointer is `--sx-ink`, the face's own text colour —, the screws the one SVG's). The theme displays (LFO,
   Envelope, the FX screens) go cream with burnt-orange traces; the Oscillator and Filter displays stay dark windows (sx-ui-osc's palette).
+  (Superseded the same day: "Notes — WC-2 displays", below.)
 - **Glass, the CSS.** A block like any (the 23 variables, the same order) — but its **pane** may carry an alpha: `--rig-case`
   `#1e26308c` (the module is the pane), `--rig-face` / `--rig-bar` faint white sheens, `--rig-line` a light hairline; every kit token,
   text, cap, screen and popover colour stays opaque. Then the glass skin's **own rules, after the blocks**, scoped to the glass skin alone
@@ -2427,6 +2429,50 @@ behind mode". Tests first (4657001), then the build. Presentation only: no DSP f
 - **The contact sheet** (scratchpad, the lead's report): the starter rig in charcoal, ivory, glass with the cables on top and behind; an
   LFO onto three knobs (its cords crossing the Oscillator's face) in glass behind / on top, charcoal behind, ivory; 75 % close-ups (glass
   behind at High and at Low, charcoal behind, ivory); the Effects panel in glass and ivory; the ⚙ line.
+
+### Notes — WC-2 displays: the oscillator, sample, spectral and filter screens follow the skin (the user, 2026-11-01; `sx-ui-osc.js` (the display tokens, `dispPalette`, every draw), `sx-host.js` (`.sx-disp`'s ground, `paintCanvas`), `style.css` (the three blocks); `tests/sx-ui-osc`, `sx-host`, `cv-tray`)
+On Ivory the displays sx-ui-osc paints itself stayed dark (its hard-coded `C`, `OSC_COL` and ~19 `rgba()` literals; `.sx-disp`'s `#0a0d10`).
+Tests first, then the build. Presentation only: no DSP file, every golden untouched, no box changed.
+- **The display tokens**, CSS custom properties, each defaulting to the colour drawn before: `--sxd-bg` (the screen; `.sx-disp`'s ground
+  is `var(--sxd-bg, #0a0d10)`), `-grid`, `-mute` (the words), `-ink`, `-wave`, `-loop` (loop band and markers, unison stalks, zones),
+  `-on` (the 3D view's real frames, the filter's spectrum), `-cur` (cursor, playhead, current frame, cutoff mark), `-slice`, `-mark` (S / E),
+  `-xy` (missing-sample words), `-osc-a/b/c`, `-f1`, `-f2`, `-spec-lo` / `-spec-hi` (the spectrogram's two ends), and `-hl-ink` (the words
+  on the spectral view's Hi / Lo handles — CSS, their ground `--sx-accent`). The alpha variants are derived in code from a token and the
+  alpha as it was written (`DISP_A`: `wave_10` = `rgba(89, 194, 255, 0.10)`, … — the very strings of before). The sample view's dim outside
+  S … E and the spectral band's are the screen's own colour at 0.55 / 0.5 (on cream they fade toward cream). The spectrogram's map keeps its
+  curves between the two ends (red q², green 0.85 · q^1.4, blue √q; `0 + (255 − 0) · …` evaluates as `255 · …`: the same bytes).
+- **Every skin block** carries the 19 after `--rig-screw-lo`, in one order (the gate's `SKIN_VARS` = the 23 + `DISP_VARS`): charcoal and glass
+  today's colours; **Ivory** a cream screen (its `--rig-screen` `#f3efe4`), grid `#d3cbb8`, words `#5d574c`, ink `#1d1c1a`, wave `#2a6496`,
+  loop / OSC 1 `#1f5f99`, on / OSC 2 `#1e7a4a`, slice / OSC 3 `#8a6200`, the cursor the skin's burnt orange `#97431a`, S / E the ink, missing
+  `#a3301e`, the filters `#b4501e` / `#a8325e`, the spectrogram cream → gold → dark brown (`#f3efe4` → `#3c0014`: the far end's green 0, as
+  green runs at 0.85), the handles' words cream. Every accent changed on Ivory: on cream each of today's failed 3 : 1 (the yellows 1.2–1.4,
+  the blues ≈ 2, the red 2.6 — and it is text). The gate (cv-tray, per skin): words (`-mute`, `-ink`, `-xy`) ≥ 4.5 : 1 on `--sxd-bg`, every
+  trace and mark ≥ 3, the grid a hairline ≥ 1.2 (as `--rig-line`; today's is 1.5), the spectrogram's ends ≥ 3 apart, the handles' words ≥ 4.5
+  on `--sx-accent` (the default near-black on Ivory's burnt orange: 2.8 → cream 5.8).
+- **The palette** (`dispPalette(el)`, exported): one `getComputedStyle` → the tokens (unset or not `#rrggbb`: the default) → an **interned**
+  frozen object (one per distinct set: no skin, charcoal and glass are the same object; the caches compare it by identity). The host reads it
+  in `paintCanvas`'s measuring branch, after the hidden check, **only when the canvas has none or its skin changed** (`skinOf`: the nearest
+  `data-cv-skin` — `#world`'s, the ⚙ drawer's; '' outside), and hands it to `draw(g, w, h, dpr, pal)`. Never per frame; a zoom end
+  re-measures without reading; a skin pick (main.js `rigSkinPick` → `wk.rescaleCanvases` over the world) re-measures every canvas, its key
+  differs, it reads once. A Serum complete module in an ivory world reads its own computed style: the defaults (the blocks scope rig and FX
+  modules only). Every draw takes `pal = P0` (the defaults): the stub kit and direct calls draw as before. The 3D view's back-layer cache and
+  the spectrogram's image cache are keyed by the palette too (a skin change rebuilds them, the same skin never).
+- **The pins** (tests/sx-ui-osc): ten scenes reaching every colour the displays draw (wavetable 2D A / B / C with stalks and the phase line,
+  3D real and interpolated, missing; the multisample's messages, zone map with live and missing zones, a zone's waveform, the envelope; the
+  sample view's loop, X-fade, slices, markers, playhead, stalks, Auto's threshold, missing, none; the spectral view's spectrogram, waveform,
+  band and its filter; the noise overview, playhead, colour noise; the filters on / off in the three views, FILTER 2, a symbolic type, no
+  signal, no DSP) recorded on a stub 2D context (every call and property write, numbers to 1e-6, the spectrogram's pixels digested):
+  with no palette, the defaults and the charcoal / glass blocks' palettes = the digests of 406e5b8's draws (`DISP_REF`). Ivory: a probe
+  palette (one colour per token) mapped to the defaults draws exactly today's calls and mapped to Ivory's exactly Ivory's (so each token
+  sits where today's colour was), every Ivory colour write is an Ivory token's (no dark literal left), every token is drawn somewhere, the
+  spectrogram's pixels lie between Ivory's ends. tests/sx-host: one read per canvas, none over 60 frames of an LFO on cutoff, none at a zoom
+  end, one per canvas at a skin change (the draws then get Ivory's palette).
+- **Left alone:** the panel chrome's own colours (a title's `--sxo-c`, the missing badge's red, the X|Y dot — red with a white ring and a
+  black outline: it reads on both), sx-ui-mix's MIX-page filter display and sx-ui-seq's roll (not on a rig's face). Seen while making the
+  sheet, **pre-existing** (406e5b8 too): on a rig's oscillator, after Tidy, switching to a type whose view was never built throws in
+  `OscPanel.typeView` (`insertBefore`: the face moved the anchor) and the face stays on the old view — not touched here.
+- **The contact sheet** (scratchpad, the lead's report; Chrome for Testing, 1440 × 900 dpr 2, downloads denied): a rig of three
+  oscillators (wavetable 2D / 3D, sample, spectral) and two filters playing, in charcoal and Ivory — the whole canvas and close-ups.
 
 ## 15. Review log
 
