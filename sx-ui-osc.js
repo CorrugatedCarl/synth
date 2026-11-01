@@ -56,6 +56,9 @@
 //   autoSlices(odf, thr, rate, len, hop)   Auto slicing marks from an onset function (§9.4.5 rule = smp.slicesFromOdf)
 //   smpCoords(ops)                 processed-sample fractions (markers, slices, k.pos) ↔ fractions of the stored record
 //   specRect(w, h, lo, hi, rate, H)   spectrogram image rectangles on the panel's 20 Hz … 20 kHz axis
+//   dispPalette(el?)               (WC-2 displays) the display tokens (--sxd-*) resolved on el: its skin's palette (interned;
+//                                  no el / no skin: the defaults, today's colours). The host reads it when a canvas is measured,
+//                                  for a skin it was not read for, and hands it to the draw as its fifth argument (sx-host)
 //   (view = { a, b }: the visible range of the sample, fractions, a < b; absent = the whole sample)
 //
 // Contract with serum-ui's drop layer: every oscillator display carries data-oscdisp="<o>" (Alt-drag of an LFO tile →
@@ -86,8 +89,40 @@ const PHASE_MEM = list('PHASE_MEM'), UNI_MODES = list('UNI_MODES'), UNI_SPAWN = 
 const LOOP_MODES = list('LOOP_MODES'), SCAN_RANGES = list('SCAN_RANGES'), FADE_MS = list('FADE_MS'), SLICE_MODES = list('SLICE_MODES');
 const DENS_MODES = list('DENS_MODES'), GLEN_MODES = list('GLEN_MODES'), XY_Y_GRAN = list('XY_Y_GRAN'), XY_Y_SPEC = list('XY_Y_SPEC');
 const XY_MODES = list('XY_MODES'), COLOR_NOISES = list('COLOR_NOISES'), FILTER_CATS = list('FILTER_CATS'), LEN_LADDER = list('LEN_LADDER');
-const C = { line: '#2a333d', mute: '#7f8b98', on: '#6fe3a1', graph: '#59c2ff', cur: '#ffd84a', ink: '#dfe6ee', loop: '#4fb3ff',
-  slice: '#f7c948', mark: '#ffffff', xy: '#ff5b5b', bg: '#0a0d10' };
+// (WC-2 displays) the display tokens — the colours of the oscillator, sample, spectral and filter screens: CSS custom properties a skin
+// block sets (style.css, every block the same list), each defaulting to the colour the displays drew before (no skin — Serum complete,
+// the classic page — and the charcoal and glass blocks: exactly today's draws, tests/sx-ui-osc). [key, property, default]
+const DISP = [['bg', '--sxd-bg', '#0a0d10'], ['grid', '--sxd-grid', '#2a333d'], ['mute', '--sxd-mute', '#7f8b98'], ['ink', '--sxd-ink', '#dfe6ee'],
+  ['wave', '--sxd-wave', '#59c2ff'], ['loop', '--sxd-loop', '#4fb3ff'], ['on', '--sxd-on', '#6fe3a1'], ['cur', '--sxd-cur', '#ffd84a'],
+  ['slice', '--sxd-slice', '#f7c948'], ['mark', '--sxd-mark', '#ffffff'], ['xy', '--sxd-xy', '#ff5b5b'], ['oscA', '--sxd-osc-a', '#4fb3ff'],
+  ['oscB', '--sxd-osc-b', '#6fe3a1'], ['oscC', '--sxd-osc-c', '#f7c948'], ['f1', '--sxd-f1', '#ff8a5b'], ['f2', '--sxd-f2', '#ff5b8a'],
+  ['specLo', '--sxd-spec-lo', '#000000'], ['specHi', '--sxd-spec-hi', '#ffffff']];
+// the alpha variants the draws use (<token>_<alpha>), derived from a token: the alpha as it was written (the strings are today's)
+const DISP_A = [['grid_90', 'grid', '0.9'], ['mute_35', 'mute', '0.35'], ['ink_35', 'ink', '0.35'], ['ink_25', 'ink', '0.25'], ['wave_10', 'wave', '0.10'],
+  ['wave_65', 'wave', '0.65'], ['wave_70', 'wave', '0.7'], ['loop_12', 'loop', '0.12'], ['loop_22', 'loop', '0.22'], ['loop_70', 'loop', '0.7'],
+  ['loop_85', 'loop', '0.85'], ['on_55', 'on', '0.55'], ['on_60', 'on', '0.6'], ['cur_30', 'cur', '0.3'], ['cur_55', 'cur', '0.55'],
+  ['slice_60', 'slice', '0.6'], ['xy_25', 'xy', '0.25'], ['bg_50', 'bg', '0.5'], ['bg_55', 'bg', '0.55'], ['f1_08', 'f1', '0.08']];
+const PALS = new Map();   // the palettes by their colours: one frozen object per distinct set (a draw's caches compare it by identity)
+const rgbOf = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function palette(vals) {
+  const key = vals.join(), had = PALS.get(key);
+  if (had) return had;
+  const P = { key };
+  DISP.forEach(([k], i) => { P[k] = vals[i]; });
+  P.osc = Object.freeze([P.oscA, P.oscB, P.oscC]); P.f = Object.freeze([P.f1, P.f2]);
+  P.spec = Object.freeze([Object.freeze(rgbOf(P.specLo)), Object.freeze(rgbOf(P.specHi))]);
+  for (const [k, t, a] of DISP_A) { const c = rgbOf(P[t]); P[k] = 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', ' + a + ')'; }
+  PALS.set(key, Object.freeze(P));
+  return P;
+}
+const P0 = palette(DISP.map(t => t[2]));   // the defaults
+// the display tokens as resolved on el (one getComputedStyle; a token unset or not #rrggbb keeps its default) → the interned palette
+export function dispPalette(el) {
+  let cs = null;
+  try { const d = el && el.ownerDocument, w = d && d.defaultView; cs = w && typeof w.getComputedStyle === 'function' ? w.getComputedStyle(el) : null; } catch (err) { cs = null; }
+  if (!cs || typeof cs.getPropertyValue !== 'function') return P0;
+  return palette(DISP.map(([, prop, def]) => { const v = String(cs.getPropertyValue(prop) || '').trim().toLowerCase(); return /^#[0-9a-f]{6}$/.test(v) ? v : def; }));
+}
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
 const fin = x => typeof x === 'number' && isFinite(x);
@@ -156,7 +191,7 @@ function memTrigSet(seed) {
 
 // oscillator o (0–2) → destination prefix, panel title, module, colour
 const OSC_P = ['a', 'b', 'c'], OSC_T = ['OSC A', 'OSC B', 'OSC C'], OSC_M = ['oscA', 'oscB', 'oscC'], OSC_WT = ['a.wt', 'b.wt', 'c.wt'];
-const OSC_COL = ['#4fb3ff', '#6fe3a1', '#f7c948'];
+const OSC_COL = P0.osc;   // (the panel title's --sxo-c; the displays draw their palette's osc)
 const oscIdx = o => (o === 2 ? 2 : o ? 1 : 0);
 const others = o => [0, 1, 2].filter(j => j !== o);
 
@@ -299,8 +334,8 @@ const CSS = `
 .sxo-pane { display: grid; gap: 8px; min-width: 0; }
 .sxo-pane .sx-krow { align-items: center; }
 .sxo-dw { position: relative; min-width: 0; }
-.sxo-dot { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: ${C.xy}; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; cursor: move; touch-action: none; }
-.sxo-hl { position: absolute; z-index: 2; right: 0; width: 22px; height: 12px; margin-top: -6px; padding: 0 2px; color: #061018; background: var(--sx-accent, #4fb3ff); border-radius: 3px 0 0 3px; font: 700 8px/12px var(--mono, ui-monospace, monospace); text-align: center; cursor: ns-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
+.sxo-dot { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: ${P0.xy}; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; cursor: move; touch-action: none; }
+.sxo-hl { position: absolute; z-index: 2; right: 0; width: 22px; height: 12px; margin-top: -6px; padding: 0 2px; color: var(--sxd-hl-ink, #061018); background: var(--sx-accent, #4fb3ff); border-radius: 3px 0 0 3px; font: 700 8px/12px var(--mono, ui-monospace, monospace); text-align: center; cursor: ns-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
 .sxo-badge { display: inline-flex; align-items: center; padding: 1px 5px; color: var(--sx-on, #6fe3a1); border: 1px solid var(--sx-on, #6fe3a1); border-radius: 3px; font: 700 8px/1.4 var(--mono, ui-monospace, monospace); letter-spacing: 0.08em; }
 .sxo-wrow { align-items: center; }
 .sxo-wrow > .wk-menu { flex: 1 1 140px; }
@@ -313,7 +348,7 @@ const CSS = `
 .sxo-hint { color: var(--sx-mute, #7f8b98); font-size: 10px; }
 .sxo-win { touch-action: none; }
 .sxo-win svg { width: 22px; height: 14px; }
-.sxo-miss { color: ${C.xy}; border-color: ${C.xy}; font-weight: 700; }
+.sxo-miss { color: ${P0.xy}; border-color: ${P0.xy}; font-weight: 700; }
 `;
 function ensureCSS(doc) {
   if (!doc || !doc.head || typeof doc.createElement !== 'function') return;
@@ -1530,8 +1565,8 @@ export class WTView extends TypeView {
     this.ids = { warpMode: P + '.warpMode', w1: P + '.w1', w2: P + '.w2', warp: P + '.warp', warp2: P + '.warp2', wvar1: P + '.wvar1',
       wvar2: P + '.wvar2', uni: P + '.uni', det: P + '.det', on: P + '.on', phase: P + '.phase' };
     this.rmM = { q: -1, v: '' };      // the remap curve's JSON (perEdit)
-    this.b3 = null;                   // the 3D view's back layers: { info, w, h, dpr, L: [{ p: polyline, col }], cur } (draw3d)
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
+    this.b3 = null;                   // the 3D view's back layers: { info, w, h, dpr, pal (the palette), L: [{ p: polyline, col }], cur } (draw3d)
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
     cv.el.setAttribute('role', 'button');
@@ -1593,44 +1628,44 @@ export class WTView extends TypeView {
     k[n++] = K.dragging(I.phase) ? q3(K.getN(I.phase)) : -1; k[n++] = dsp() ? 1 : 0; k[n++] = sxw() ? 1 : 0;
     return n;
   }
-  draw(g, w, h, dpr) {
+  draw(g, w, h, dpr, pal = P0) {
     const K = this.kit, D = this.D, o = this.o, s = K.s(), P = this.P, e = D.tableEntry(s.osc[o].wt);
     if (!s.ui.view3d[o]) this.b3 = null;
-    g.strokeStyle = C.line; g.lineWidth = dpr;
+    g.strokeStyle = pal.grid; g.lineWidth = dpr;
     g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
     g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace';
     if (e.state !== 'ok') {
-      g.fillStyle = C.mute;
+      g.fillStyle = pal.mute;
       g.fillText(e.state === 'loading' ? 'Loading…' : 'Wavetable not found: ' + nameOfId(s.osc[o].wt), 8 * dpr, 16 * dpr);
       return;
     }
     const info = e.info, pos = D.livePos(o);
     const cur = info.interp ? Math.round(pos * (info.F - 1)) : Math.min(info.F - 1, Math.floor(pos * info.F));
-    if (s.ui.view3d[o]) this.draw3d(g, w, h, dpr, info, cur);
+    if (s.ui.view3d[o]) this.draw3d(g, w, h, dpr, info, cur, pal);
     else {
       const fr = this.warped(D.frameAt(info, pos));
       const n = fr.length, amp = h * 0.42;
       g.beginPath();
       for (let x = 0; x <= w; x++) { const y = h / 2 - fr[Math.min(n - 1, Math.floor(x / w * n))] * amp; if (x) g.lineTo(x, y); else g.moveTo(x, y); }
-      g.strokeStyle = OSC_COL[o]; g.lineWidth = 1.6 * dpr; g.stroke();
+      g.strokeStyle = pal.osc[o]; g.lineWidth = 1.6 * dpr; g.stroke();
       g.lineTo(w, h / 2); g.lineTo(0, h / 2); g.closePath();
-      g.fillStyle = 'rgba(89, 194, 255, 0.10)'; g.fill();
+      g.fillStyle = pal.wave_10; g.fill();
       if (K.dragging(P + '.phase')) {
         const x = Math.min(0.99999, K.getN(P + '.phase')) * w;
-        g.strokeStyle = C.cur; g.lineWidth = 1.5 * dpr;
+        g.strokeStyle = pal.cur; g.lineWidth = 1.5 * dpr;
         g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
       }
     }
-    drawStalks(K, o, g, w, h, dpr);
-    g.fillStyle = C.mute;
+    drawStalks(K, o, g, w, h, dpr, pal);
+    g.fillStyle = pal.mute;
     g.fillText((cur + 1) + ' / ' + info.F, 6 * dpr, h - 6 * dpr);
   }
   // (IMPL-FR §13 P1-2) the 3D view's back layers depend on the table, the size and the density only: their polylines are
   // computed once (b3) — as Path2D objects where the canvas has them — and stroked from it while WT POS moves (an LFO on it:
   // no frame interpolated, no 2048-sample slot copied, no layer's points passed again per redraw); the same paths with the
   // same numbers as drawn afresh, so the same pixels (an image copy is not: a GPU canvas antialiases the front stroke by what
-  // was drawn before it — measured in Chrome for Testing)
-  draw3d(g, w, h, dpr, info, cur) {
+  // was drawn before it — measured in Chrome for Testing); (WC-2 displays) and on the palette: a skin change computes them again
+  draw3d(g, w, h, dpr, info, cur, pal) {
     const D = this.D, F = info.F, R = info.R || F, dx = w * 0.26, dy = h * 0.4, fw = w * 0.72, amp = h * 0.2;
     const steps = Math.max(32, Math.round(fw / (2 * dpr)));
     const pts = (fr, z, p) => {   // (x, y) × (steps + 1) of frame fr at depth z, into p
@@ -1645,28 +1680,28 @@ export class WTView extends TypeView {
       g.strokeStyle = col; g.lineWidth = lw; g.stroke();
     };
     let B = this.b3;
-    if (!B || B.info !== info || B.w !== w || B.h !== h || B.dpr !== dpr) {
+    if (!B || B.info !== info || B.w !== w || B.h !== h || B.dpr !== dpr || B.pal !== pal) {
       const P2 = typeof globalThis.Path2D === 'function' && typeof g.stroke === 'function' ? globalThis.Path2D : null;
-      B = this.b3 = { info, w, h, dpr, L: [], cur: new Float64Array(2 * (steps + 1)) };
+      B = this.b3 = { info, w, h, dpr, pal, L: [], cur: new Float64Array(2 * (steps + 1)) };
       for (const L of layers3d(F, R)) {   // back to front; real frames green, interpolated slots grey (§9.3)
         const fr = L.real && F !== R ? info.table.frames[L.frame] : D.slotFrame(info, L.slot), p = pts(fr, L.z, new Float64Array(2 * (steps + 1)));
         let path = null;
         if (P2) { path = new P2(); path.moveTo(p[0], p[1]); for (let j = 2; j < p.length; j += 2) path.lineTo(p[j], p[j + 1]); }
-        B.L.push({ p, path, col: L.real ? 'rgba(111, 227, 161, 0.55)' : 'rgba(127, 139, 152, 0.35)' });
+        B.L.push({ p, path, col: L.real ? pal.on_55 : pal.mute_35 });
       }
     }
     for (const L of B.L) {
       if (L.path) { g.strokeStyle = L.col; g.lineWidth = dpr; g.stroke(L.path); } else line(L.p, L.col, dpr);
     }
-    line(pts(D.slotView(info, cur), F > 1 ? cur / (F - 1) : 0, B.cur), C.cur, 1.8 * dpr);
+    line(pts(D.slotView(info, cur), F > 1 ? cur / (F - 1) : 0, B.cur), pal.cur, 1.8 * dpr);
   }
 }
 // unison detune "stalks" at the bottom of a display (inv A3)
-function drawStalks(K, o, g, w, h, dpr) {
+function drawStalks(K, o, g, w, h, dpr, pal) {
   const s = K.s(), P = OSC_P[o], N = Math.round(core.lawValue(P + '.uni', K.getN(P + '.uni')));
   if (N < 2) return;
   const det = core.lawValue(P + '.det', K.getN(P + '.det')), mode = s.osc[o].uni.mode;
-  g.strokeStyle = 'rgba(79, 179, 255, 0.85)'; g.lineWidth = 1.5 * dpr;
+  g.strokeStyle = pal.loop_85; g.lineWidth = 1.5 * dpr;
   for (let i = 0; i < N; i++) {
     const t = 2 * i / (N - 1) - 1, v = mode === 4 ? t : core.detuneShape(mode, t), x = w / 2 + v * Math.max(det, 0.02) * w * 0.44;
     g.beginPath(); g.moveTo(x, h - 2 * dpr); g.lineTo(x, h - (i === (N - 1) / 2 ? 14 : 9) * dpr); g.stroke();
@@ -1699,7 +1734,7 @@ export class MultiView extends TypeView {
       if (miss.textContent !== t) miss.textContent = t;
     });
     this.head.push(im.el, load, ren, del, emb, miss);
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr));
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal));
     this.cv = cv;
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
@@ -1718,7 +1753,7 @@ export class MultiView extends TypeView {
         const on = !s.osc[o].msmo.dlyBpm;
         if (typeof core.setMsDelayBpm === 'function') core.setMsDelayBpm(s, o, on, D.bpm()); else s.osc[o].msmo.dlyBpm = on ? 1 : 0;
       }, { label: 'Delay BPM sync' }) }]);
-    const ecv = K.canvas('sxo-mini', () => this.envKey(), (g, w, h, dpr) => this.drawEnv(g, w, h, dpr));
+    const ecv = K.canvas('sxo-mini', () => this.envKey(), (g, w, h, dpr, pal) => this.drawEnv(g, w, h, dpr, pal));
     ecv.el.setAttribute('role', 'img');
     ecv.el.setAttribute('aria-label', 'Multisample envelope: drag the corners');
     this.envDrag(ecv.el);
@@ -1778,37 +1813,37 @@ export class MultiView extends TypeView {
     const id = this.O().multi, z = this.zones(), zs = this.sel >= 0 && z[this.sel] ? z[this.sel].smp : '', re = this.D.recEntry(id);
     return [id, z.length, this.hot(), this.sel, zs, zs && this.D.overview(zs) ? 1 : 0, re ? re.state : '', this.missingZones().join(',')].join('|');
   }
-  draw(g, w, h, dpr) {
+  draw(g, w, h, dpr, pal = P0) {
     const D = this.D, o = this.o, id = this.O().multi, Z = this.zones(), M = this.missingZones();
     g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace';
-    if (!id) { g.fillStyle = C.mute; g.fillText('Choose an instrument or load an SFZ', 8 * dpr, 16 * dpr); return; }
+    if (!id) { g.fillStyle = pal.mute; g.fillText('Choose an instrument or load an SFZ', 8 * dpr, 16 * dpr); return; }
     if (D.isMissing(id)) {
-      g.fillStyle = C.xy;
+      g.fillStyle = pal.xy;
       g.fillText('Missing sample: ' + D.smpName(id, 'multi'), 8 * dpr, 16 * dpr);
-      g.fillStyle = C.mute;
+      g.fillStyle = pal.mute;
       g.fillText('Drop the files here or tap the badge to relink', 8 * dpr, 30 * dpr);
       return;
     }
     if (this.sel >= 0 && Z[this.sel]) {   // the selected / last-played zone's waveform
       const z = Z[this.sel], gone = M.includes(z.smp), ov = gone ? null : D.overview(z.smp);
-      if (ov) drawOverview(g, ov, [0, 1], w, h, OSC_COL[o]);
-      g.fillStyle = C.mute;
+      if (ov) drawOverview(g, ov, [0, 1], w, h, pal.osc[o]);
+      g.fillStyle = pal.mute;
       g.fillText('Zone ' + (this.sel + 1) + ': ' + noteName(z.lo | 0) + '–' + noteName(z.hi | 0) + ' · vel ' + (z.vlo | 0) + '–' + (z.vhi | 0) + ' (click: map)', 6 * dpr, 12 * dpr);
-      if (gone) { g.fillStyle = C.xy; g.fillText('Missing sample: drop a file here to relink', 6 * dpr, 28 * dpr); }
+      if (gone) { g.fillStyle = pal.xy; g.fillText('Missing sample: drop a file here to relink', 6 * dpr, 28 * dpr); }
       return;
     }
-    if (!Z.length) { g.fillStyle = C.mute; g.fillText(D.recs.has(id) && D.recs.get(id).state === 'loading' ? 'Loading…' : 'No zones (instrument not available)', 8 * dpr, 16 * dpr); return; }
-    g.strokeStyle = 'rgba(42, 51, 61, 0.9)'; g.lineWidth = dpr;
+    if (!Z.length) { g.fillStyle = pal.mute; g.fillText(D.recs.has(id) && D.recs.get(id).state === 'loading' ? 'Loading…' : 'No zones (instrument not available)', 8 * dpr, 16 * dpr); return; }
+    g.strokeStyle = pal.grid_90; g.lineWidth = dpr;
     for (let oct = 1; oct < 11; oct++) { const x = oct * 12 / 128 * w; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
     const live = !!(this.kit.snap() && this.kit.snap().notes > 0);
     for (const z of zoneMapLayout(Z, w, h, this.hot())) {
       const gone = M.includes(Z[z.i].smp);
-      g.fillStyle = gone ? 'rgba(255, 91, 91, 0.25)' : z.hot ? (live ? 'rgba(255, 216, 74, 0.55)' : 'rgba(255, 216, 74, 0.3)') : 'rgba(79, 179, 255, 0.22)';
+      g.fillStyle = gone ? pal.xy_25 : z.hot ? (live ? pal.cur_55 : pal.cur_30) : pal.loop_22;
       g.fillRect(z.x, z.y, Math.max(dpr, z.w - dpr), Math.max(dpr, z.h - dpr));
-      g.strokeStyle = gone ? C.xy : z.hot ? C.cur : 'rgba(79, 179, 255, 0.7)';
+      g.strokeStyle = gone ? pal.xy : z.hot ? pal.cur : pal.loop_70;
       g.strokeRect(z.x + 0.5, z.y + 0.5, Math.max(dpr, z.w - dpr), Math.max(dpr, z.h - dpr));
     }
-    g.fillStyle = C.mute;
+    g.fillStyle = pal.mute;
     g.fillText(D.smpName(id, 'multi') + ' · ' + Z.length + ' zones' + (M.length ? ' · ' + M.length + ' missing' : ''), 6 * dpr, h - 5 * dpr);
   }
   // the envelope graph: DELAY · A · H · D (to S) · release R (each segment ∝ its time)
@@ -1823,12 +1858,12 @@ export class MultiView extends TypeView {
     const top = h * 0.12, bot = h * 0.92, ys = bot - (bot - top) * E.s;
     return { E, pts: [[0, bot], [x1, bot], [x2, top], [x3, top], [x4, ys], [x5, ys], [x6, bot]], sw, top, bot };
   }
-  drawEnv(g, w, h, dpr) {
+  drawEnv(g, w, h, dpr, pal = P0) {
     const G = this.envGeo(w, h);
     g.beginPath();
     G.pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])));
-    g.strokeStyle = this.O().msmo.override ? OSC_COL[this.o] : C.mute; g.lineWidth = 1.6 * dpr; g.stroke();
-    g.fillStyle = C.cur;
+    g.strokeStyle = this.O().msmo.override ? pal.osc[this.o] : pal.mute; g.lineWidth = 1.6 * dpr; g.stroke();
+    g.fillStyle = pal.cur;
     for (const i of [2, 4, 6]) g.fillRect(G.pts[i][0] - 2 * dpr, G.pts[i][1] - 2 * dpr, 4 * dpr, 4 * dpr);
   }
   // drag the attack corner (x → A), the decay corner (x → D, y → S) or the release end (x → R)
@@ -1867,10 +1902,10 @@ export class MultiView extends TypeView {
     c.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) end(); });
   }
 }
-// min/max overview columns (pairs) over the fraction range [a, b] of the sample (flip: b at the left, a reversed sample)
+// min/max overview columns (pairs) over the fraction range [a, b] of the sample in col (a palette's; flip: b at the left, a reversed sample)
 function drawOverview(g, ov, ab, w, h, col, flip) {
   const n = ov.length / 2, [a, b] = ab;
-  g.fillStyle = col || 'rgba(89, 194, 255, 0.7)';
+  g.fillStyle = col;
   for (let x = 0; x < w; x++) {
     const xx = flip ? w - 1 - x : x;
     const u0 = a + (b - a) * xx / w, u1 = a + (b - a) * (xx + 1) / w, c0 = Math.floor(u0 * n), c1 = Math.max(c0 + 1, Math.ceil(u1 * n));
@@ -1906,7 +1941,7 @@ class SmpBase extends TypeView {
     this.head.push(sm.el, load, ren, del, emb, miss);
     // display (+ overlays: X|Y dot, Hi / Lo handles) in a positioned wrapper
     const wrap = mk(d, 'div', 'sxo-dw');
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr));
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal));
     this.cv = cv;
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
@@ -2077,38 +2112,38 @@ class SmpBase extends TypeView {
   }
   bgKey() { const id = this.O().smp; return this.D.overview(id) ? 1 : 0; }
   // a missing user sample (§9.9) / no sample / still loading: the display's message, true when one was drawn
-  drawMsg(g, w, h, dpr, pending) {
-    const id = this.O().smp, put = (t, y, col) => { g.fillStyle = col || C.mute; g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText(t, 8 * dpr, y * dpr); };
+  drawMsg(g, w, h, dpr, pending, pal = P0) {
+    const id = this.O().smp, put = (t, y, col) => { g.fillStyle = col || pal.mute; g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText(t, 8 * dpr, y * dpr); };
     if (!id) { put('Choose a sample, load one or drop a file', 16); return true; }
-    if (this.D.isMissing(id)) { put('Missing sample: ' + this.D.smpName(id, 'sample'), 16, C.xy); put('Drop a file here or tap the badge to relink', 30); return true; }
+    if (this.D.isMissing(id)) { put('Missing sample: ' + this.D.smpName(id, 'sample'), 16, pal.xy); put('Drop a file here or tap the badge to relink', 30); return true; }
     if (pending) { put(pending, 16); return true; }
     return false;
   }
   // the processed sample's overview range: [v.a, v.b] of the processed sample through trim and reverse (smpCoords)
-  drawBg(g, w, h, dpr, v) {
+  drawBg(g, w, h, dpr, v, pal = P0) {
     const id = this.O().smp, ov = this.D.overview(id), Cc = smpCoords(this.O().smpo.ops);
-    if (this.drawMsg(g, w, h, dpr, ov ? '' : 'Loading…')) return;
+    if (this.drawMsg(g, w, h, dpr, ov ? '' : 'Loading…', pal)) return;
     const a = Cc.toRec(v.a), b = Cc.toRec(v.b);
-    drawOverview(g, ov, [Math.min(a, b), Math.max(a, b)], w, h, 'rgba(89, 194, 255, 0.65)', Cc.rev);
+    drawOverview(g, ov, [Math.min(a, b), Math.max(a, b)], w, h, pal.wave_65, Cc.rev);
   }
-  draw(g, w, h, dpr) {
+  draw(g, w, h, dpr, pal = P0) {
     const v = this.viewR(), m = this.mm(), L = markerLayout(m, v, w), so = this.O().smpo;
-    this.drawBg(g, w, h, dpr, v);
+    this.drawBg(g, w, h, dpr, v, pal);
     const vline = (x, col, lw) => { g.strokeStyle = col; g.lineWidth = lw * dpr; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); };
-    if (L.loop) { g.fillStyle = 'rgba(79, 179, 255, 0.12)'; g.fillRect(L.loop.x0, 0, L.loop.x1 - L.loop.x0, h); }
+    if (L.loop) { g.fillStyle = pal.loop_12; g.fillRect(L.loop.x0, 0, L.loop.x1 - L.loop.x0, h); }
     if (L.xfade && L.xfade.len > 0) {
-      g.fillStyle = 'rgba(79, 179, 255, 0.22)';
+      g.fillStyle = pal.loop_22;
       g.beginPath(); g.moveTo(L.xfade.x0, h); g.lineTo(L.xfade.x1, 0); g.lineTo(L.xfade.x1, h); g.closePath(); g.fill();
     }
-    // the region outside S…E dimmed
+    // the region outside S…E dimmed (the screen's own colour over it)
     const S = L.markers[0], E = L.markers[1], x0 = Math.min(S.x, E.x), x1 = Math.max(S.x, E.x);
-    g.fillStyle = 'rgba(10, 13, 16, 0.55)';
+    g.fillStyle = pal.bg_55;
     if (x0 > 0) g.fillRect(0, 0, x0, h);
     if (x1 < w) g.fillRect(x1, 0, w - x1, h);
-    for (const sl of L.slices) if (sl.vis) vline(sl.x, C.slice, 1);
+    for (const sl of L.slices) if (sl.vis) vline(sl.x, pal.slice, 1);
     if (m.slicing === 1) {   // Auto: the threshold line
       const thr = this.g && this.g.thr !== undefined ? this.g.thr : so.slice.thr;
-      g.strokeStyle = 'rgba(247, 201, 72, 0.6)'; g.lineWidth = dpr; g.setLineDash && g.setLineDash([4 * dpr, 3 * dpr]);
+      g.strokeStyle = pal.slice_60; g.lineWidth = dpr; g.setLineDash && g.setLineDash([4 * dpr, 3 * dpr]);
       g.beginPath(); g.moveTo(0, (1 - thr) * h); g.lineTo(w, (1 - thr) * h); g.stroke();
       if (g.setLineDash) g.setLineDash([]);
     }
@@ -2116,11 +2151,11 @@ class SmpBase extends TypeView {
       if (!mk2.vis) continue;
       if (mk2.id === 'XF') {
         const y = this.xfY(mk2.y, h);
-        g.fillStyle = C.loop; g.beginPath(); g.arc ? g.arc(mk2.x, y, 4 * dpr, 0, 2 * Math.PI) : g.rect(mk2.x - 4 * dpr, y - 4 * dpr, 8 * dpr, 8 * dpr); g.fill();
-      } else vline(mk2.x, mk2.id === 'S' || mk2.id === 'E' ? C.mark : C.loop, mk2.id === 'S' || mk2.id === 'E' ? 1.5 : 1.2);
+        g.fillStyle = pal.loop; g.beginPath(); g.arc ? g.arc(mk2.x, y, 4 * dpr, 0, 2 * Math.PI) : g.rect(mk2.x - 4 * dpr, y - 4 * dpr, 8 * dpr, 8 * dpr); g.fill();
+      } else vline(mk2.x, mk2.id === 'S' || mk2.id === 'E' ? pal.mark : pal.loop, mk2.id === 'S' || mk2.id === 'E' ? 1.5 : 1.2);
     }
-    if (L.play && L.play.vis) vline(L.play.x, C.cur, 1.5);
-    drawStalks(this.kit, this.o, g, w, h, dpr);
+    if (L.play && L.play.vis) vline(L.play.x, pal.cur, 1.5);
+    drawStalks(this.kit, this.o, g, w, h, dpr, pal);
   }
   xfY(X, h) { return h * (0.92 - 0.84 * clamp01(X)); }
 
@@ -2565,7 +2600,7 @@ export class SpecView extends SmpBase {
     // the spectral FILTER: a preview (click opens the curve editor popover), presets / wavetable menu
     this.ptM = { q: -1, v: '' };      // the curve's JSON (perEdit)
     this.fIds = { cut: this.P + '.cut', smix: this.P + '.smix' };
-    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr) => this.drawFilt(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.filtKeyN(k) });
+    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr, pal) => this.drawFilt(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.filtKeyN(k) });
     fcv.el.tabIndex = 0;
     fcv.el.setAttribute('role', 'button');
     fcv.el.setAttribute('aria-label', T + ' spectral filter: click to edit');
@@ -2643,7 +2678,7 @@ export class SpecView extends SmpBase {
   }
   // the filter's gain curve (x = log frequency) shifted by CUT (−1…+1 = ±half the axis) and mixed with MIX: the points
   // the DSP compiles (a wavetable filter's are its frame 0, stored when it was chosen)
-  drawFilt(g, w, h, dpr) {
+  drawFilt(g, w, h, dpr, pal = P0) {
     const F = this.O().spec.filt, cut = 2 * this.D.liveN(this.P + '.cut') - 1, mix = this.D.liveN(this.P + '.smix');
     const gain = u => core.evalPts(F.pts, clamp01(u));
     g.font = Math.round(9 * dpr) + 'px ui-monospace, monospace';
@@ -2653,28 +2688,33 @@ export class SpecView extends SmpBase {
       const y = h - 2 * dpr - v * (h - 6 * dpr);
       if (x) g.lineTo(x, y); else g.moveTo(x, y);
     }
-    g.strokeStyle = OSC_COL[this.o]; g.lineWidth = 1.4 * dpr; g.stroke();
-    g.fillStyle = C.mute;
+    g.strokeStyle = pal.osc[this.o]; g.lineWidth = 1.4 * dpr; g.stroke();
+    g.fillStyle = pal.mute;
     g.fillText(F.kind === 'wt' ? 'WT FILTER · ' + nameOfId(F.wt) : 'FILTER', 6 * dpr, 11 * dpr);
   }
   bgKey() { const id = this.O().smp; return [this.D.spectrogram(id) ? 1 : 0, this.O().smpo.wave, this.O().smpo.wave ? (this.D.overview(id) ? 1 : 0) : ''].join(','); }
   // the spectrogram over the processed view range (through trim; mirrored when reversed, as the waveform), its rows
   // (log 20 Hz … rate/2 from the host) placed on the panel's 20 Hz … 20 kHz axis (yOfHz: the Hi / Lo handles, the dimming)
-  drawBg(g, w, h, dpr, v) {
+  drawBg(g, w, h, dpr, v, pal = P0) {
     const id = this.O().smp, sp = this.D.spectrogram(id), Cc = smpCoords(this.O().smpo.ops), info = this.D.smpInfo(id);
-    if (this.drawMsg(g, w, h, dpr, '')) return;
+    if (this.drawMsg(g, w, h, dpr, '', pal)) return;
     const x0 = Cc.toRec(v.a), x1 = Cc.toRec(v.b), lo = Math.min(x0, x1), hi = Math.max(x0, x1);
     if (sp) {
-      // a cached offscreen image of the spectrogram (palette: dark → blue → white)
-      if (!sp.img && typeof g.createImageData === 'function') {
+      // a cached offscreen image of the spectrogram, its levels q between the palette's two ends: red q², green 0.85 · q^1.4,
+      // blue √q (the default black → blue → white; (WC-2 displays) Ivory's cream → dark brown) — made again for another palette
+      if ((!sp.img || sp.imgP !== pal) && typeof g.createImageData === 'function') {
         try {
-          const im = g.createImageData(sp.w, sp.h);
+          const im = g.createImageData(sp.w, sp.h), [S0, S1] = pal.spec;
           if (im && im.data) {
-            for (let i = 0; i < sp.w * sp.h; i++) { const q = sp.data[i] / 255; im.data[4 * i] = 255 * q * q; im.data[4 * i + 1] = 255 * Math.pow(q, 1.4) * 0.85; im.data[4 * i + 2] = 255 * Math.sqrt(q); im.data[4 * i + 3] = 255; }
+            for (let i = 0; i < sp.w * sp.h; i++) {
+              const q = sp.data[i] / 255;
+              im.data[4 * i] = S0[0] + (S1[0] - S0[0]) * q * q; im.data[4 * i + 1] = S0[1] + (S1[1] - S0[1]) * Math.pow(q, 1.4) * 0.85;
+              im.data[4 * i + 2] = S0[2] + (S1[2] - S0[2]) * Math.sqrt(q); im.data[4 * i + 3] = 255;
+            }
             const c = this.kit.doc.createElement('canvas');
             c.width = sp.w; c.height = sp.h;
             const cg = c.getContext ? c.getContext('2d') : null;
-            if (cg && typeof cg.putImageData === 'function') { cg.putImageData(im, 0, 0); sp.img = c; }
+            if (cg && typeof cg.putImageData === 'function') { cg.putImageData(im, 0, 0); sp.img = c; sp.imgP = pal; }
           }
         } catch (err) { warnOnce('spimg', 'sx-ui-osc: spectrogram image', err); sp.img = false; }
       }
@@ -2686,11 +2726,11 @@ export class SpecView extends SmpBase {
           g.restore();
         } else g.drawImage(sp.img, R.sx, R.sy, R.sw, R.sh, 0, R.dy, w, R.dh);
       }
-    } else { g.fillStyle = C.mute; g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText('Analysing…', 8 * dpr, 16 * dpr); }
-    if (this.O().smpo.wave) { const ov = this.D.overview(id); if (ov) drawOverview(g, ov, [lo, hi], w, h, 'rgba(223, 230, 238, 0.35)', Cc.rev); }
+    } else { g.fillStyle = pal.mute; g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText('Analysing…', 8 * dpr, 16 * dpr); }
+    if (this.O().smpo.wave) { const ov = this.D.overview(id); if (ov) drawOverview(g, ov, [lo, hi], w, h, pal.ink_35, Cc.rev); }
     // the band outside Lo … Hi dimmed
     const flo = 1 - yOfHz(core.lawValue(this.P + '.flo', this.D.liveN(this.P + '.flo'))), fhi = 1 - yOfHz(core.lawValue(this.P + '.fhi', this.D.liveN(this.P + '.fhi')));
-    g.fillStyle = 'rgba(10, 13, 16, 0.5)';
+    g.fillStyle = pal.bg_50;
     if (fhi > 0) g.fillRect(0, 0, w, fhi * h);
     if (flo < 1) g.fillRect(0, flo * h, w, h - flo * h);
   }
@@ -3028,7 +3068,7 @@ export class NoisePanel {
     this.route = route;
     this.map = mapPane(K, 'NOISE', s => s.noise);
     head.append(nm.el, load, del, emb, route.btn);
-    const cv = K.canvas('sx-short', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr));
+    const cv = K.canvas('sx-short', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal));
     cv.el.setAttribute('role', 'img');
     cv.el.setAttribute('aria-label', 'Noise overview; drop a WAV file to import a noise');
     fileDrop(cv.el, files => D.importNoiseFiles(files));
@@ -3048,19 +3088,19 @@ export class NoisePanel {
     const K = this.kit, s = K.s(), sn = K.snap(), ov = this.D.noiseOverview(s.noise.src);
     return [s.noise.src, ov ? 1 : 0, sn && sn.notes > 0 && fin(sn.noisePos) ? sn.noisePos.toFixed(3) : '', K.getN('n.on')].join('|');
   }
-  draw(g, w, h, dpr) {
+  draw(g, w, h, dpr, pal = P0) {
     const K = this.kit, s = K.s(), mm = this.D.noiseOverview(s.noise.src), sn = K.snap();
-    g.fillStyle = C.mute;
+    g.fillStyle = pal.mute;
     if (!mm) { g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText(nameOfId(s.noise.src), 6 * dpr, h / 2 + 4 * dpr); return; }
-    g.fillStyle = 'rgba(89, 194, 255, 0.7)';
+    g.fillStyle = pal.wave_70;
     const n = mm.length / 2;
     for (let x = 0; x < w; x++) {
       const c = Math.min(n - 1, Math.floor(x / w * n)), lo = mm[2 * c], hi = mm[2 * c + 1];
       g.fillRect(x, h / 2 - hi * h * 0.45, 1, Math.max(1, (hi - lo) * h * 0.45));
     }
-    if (/^color:/.test(s.noise.src)) { g.fillStyle = C.mute; g.font = Math.round(9 * dpr) + 'px ui-monospace, monospace'; g.fillText(nameOfId(s.noise.src).toUpperCase(), 6 * dpr, 11 * dpr); }
+    if (/^color:/.test(s.noise.src)) { g.fillStyle = pal.mute; g.font = Math.round(9 * dpr) + 'px ui-monospace, monospace'; g.fillText(nameOfId(s.noise.src).toUpperCase(), 6 * dpr, 11 * dpr); }
     else if (sn && sn.notes > 0 && fin(sn.noisePos)) {
-      g.fillStyle = C.cur;
+      g.fillStyle = pal.cur;
       g.fillRect(Math.round(clamp01(sn.noisePos) * (w - 1)), 0, Math.max(1, dpr), h);
     }
   }
@@ -3118,7 +3158,7 @@ export class FilterPanel {
     head.appendChild(route.btn);
     this.route = route;
     // display: drag x = cutoff, y = res; click / Enter / Alt-click cycles the views; right-click: the view menu
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr) => this.draw(g, w, h, dpr), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
     const c = cv.el;
     c.tabIndex = 0;
     c.setAttribute('role', 'button');
@@ -3256,10 +3296,10 @@ export class FilterPanel {
     const S = dsp();
     return S && typeof S.filterImpulse === 'function' ? S.filterImpulse(type, fc, res, drive, vr, 48000, 4096) : null;
   }
-  draw(g, w, h, dpr) {
+  draw(g, w, h, dpr, pal = P0) {
     const K = this.kit, D = this.D, s = K.s(), k = this.k, F = this.F, view = s.ui.filtView[k] | 0, type = this.typeN(true);
     g.font = Math.round(9 * dpr) + 'px ui-monospace, monospace';
-    g.strokeStyle = 'rgba(42, 51, 61, 0.9)'; g.lineWidth = dpr; g.fillStyle = C.mute;
+    g.strokeStyle = pal.grid_90; g.lineWidth = dpr; g.fillStyle = pal.mute;
     for (const f of [100, 1000, 10000]) {
       const x = Math.log(f / F_LO) / Math.log(F_HI / F_LO) * w;
       g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
@@ -3267,21 +3307,21 @@ export class FilterPanel {
     }
     const label = ['MAG', 'MAG + FFT', 'PHASE + FFT'][view] || '';
     g.fillText(label, w - g.measureText(label).width - 4 * dpr, 10 * dpr);
-    if (view) this.drawSpectrum(g, w, h, dpr);
-    if (type >= 76 && type <= 79) { this.drawIcon(g, w, h, dpr, type); return; }
+    if (view) this.drawSpectrum(g, w, h, dpr, pal);
+    if (type >= 76 && type <= 79) { this.drawIcon(g, w, h, dpr, type, pal); return; }
     const ys = this.response(type, view, w, h);
-    if (!ys) { g.fillStyle = C.mute; g.fillText('Filter display needs the DSP scripts', 6 * dpr, 14 * dpr); return; }
+    if (!ys) { g.fillStyle = pal.mute; g.fillText('Filter display needs the DSP scripts', 6 * dpr, 14 * dpr); return; }
     g.beginPath();
     for (let x = 0; x <= w; x++) { if (x) g.lineTo(x, ys[x]); else g.moveTo(x, ys[x]); }
-    g.strokeStyle = K.getN(F + 'on') >= 0.5 ? (k ? '#ff5b8a' : '#ff8a5b') : C.mute; g.lineWidth = 1.6 * dpr; g.stroke();
+    g.strokeStyle = K.getN(F + 'on') >= 0.5 ? pal.f[k] : pal.mute; g.lineWidth = 1.6 * dpr; g.stroke();
     if (view === 0) {
       g.lineTo(w, h); g.lineTo(0, h); g.closePath();
-      g.fillStyle = 'rgba(255, 138, 91, 0.08)'; g.fill();
-      g.strokeStyle = 'rgba(223, 230, 238, 0.25)';
+      g.fillStyle = pal.f1_08; g.fill();
+      g.strokeStyle = pal.ink_25;
       g.beginPath(); g.moveTo(0, h * 24 / 72); g.lineTo(w, h * 24 / 72); g.stroke();
     }
     const cx = D.liveN(this.ids.cutoff) * w;
-    g.fillStyle = C.cur; g.fillRect(cx - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
+    g.fillStyle = pal.cur; g.fillRect(cx - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
   }
   // the response curve's y at x = 0 … w (magnitude, or phase in view 2) for the current inputs, cached by them (IMPL-FR §3
   // B3: a spectrum view redrawn per snapshot computes no impulse; an LFO on cutoff one per redraw, < 2 × HEAVY_HZ a second) —
@@ -3315,8 +3355,8 @@ export class FilterPanel {
     this.rsp = { type, fc, res, drive, vr, xv, yv, pz, ph, w, h, S, X, ys };
     return ys;
   }
-  drawIcon(g, w, h, dpr, type) {   // Ring Mod / S&H types: symbolic display (inv A11.1)
-    g.strokeStyle = C.graph; g.lineWidth = 1.6 * dpr;
+  drawIcon(g, w, h, dpr, type, pal = P0) {   // Ring Mod / S&H types: symbolic display (inv A11.1)
+    g.strokeStyle = pal.wave; g.lineWidth = 1.6 * dpr;
     g.beginPath();
     for (let x = 0; x <= w; x++) {
       const p = x / w;
@@ -3327,15 +3367,15 @@ export class FilterPanel {
       if (x) g.lineTo(x, yy); else g.moveTo(x, yy);
     }
     g.stroke();
-    g.fillStyle = C.mute;
+    g.fillStyle = pal.mute;
     g.fillText(FILTERS[type].name, 6 * dpr, 12 * dpr);
   }
   // FFT of this filter's output tap (snapshot.filtTap: Filter 1 then Filter 2, 1024 each)
-  drawSpectrum(g, w, h, dpr) {
+  drawSpectrum(g, w, h, dpr, pal = P0) {
     const sn = this.kit.snap(), tapAll = sn && sn.filtTap, N = 1024, off = this.k && tapAll && tapAll.length >= 2 * N ? N : 0;
     let any = false;
     if (tapAll) for (let i = off; i < off + N && i < tapAll.length; i += 7) if (tapAll[i] !== 0) { any = true; break; }
-    if (!sn || !sn.notes || !tapAll || !any) { g.fillStyle = C.mute; g.fillText('no signal', w / 2 - 22 * dpr, h / 2); return; }
+    if (!sn || !sn.notes || !tapAll || !any) { g.fillStyle = pal.mute; g.fillText('no signal', w / 2 - 22 * dpr, h / 2); return; }
     const B = this.sb || (this.sb = { re: new Float64Array(N), im: new Float64Array(N) }), re = B.re, im = B.im, rate = sn.tapRate > 0 ? sn.tapRate : 48000;
     for (let i = 0; i < N; i++) { re[i] = (tapAll[off + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1))); im[i] = 0; }
     fft(re, im);
@@ -3346,6 +3386,6 @@ export class FilterPanel {
       const db = 20 * Math.log10(Math.max(1e-7, m)), y = h * (6 - clamp(db, -96, 6)) / 102;
       if (x) g.lineTo(x, y); else g.moveTo(x, y);
     }
-    g.strokeStyle = 'rgba(111, 227, 161, 0.6)'; g.lineWidth = 1.2 * dpr; g.stroke();
+    g.strokeStyle = pal.on_60; g.lineWidth = 1.2 * dpr; g.stroke();
   }
 }

@@ -1670,10 +1670,14 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
   --sx-accent: #e8a33d; --sx-neg: #ec6a4c; --text: #ebe6d8; --mute: #9c978a;
   --rig-case: #17181a; --rig-face: #1f2023; --rig-bar: #1f2023; --rig-title: #ebe6d8; --rig-line: #2c2e32; --rig-font: 'Archivo Narrow', Inter, var(--ui);
   --rig-screen: #141518; --rig-jack-ring: #ebe6d8; --rig-jack-nut: #7d7a72; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+  --sxd-bg: #0a0d10; --sxd-grid: #2a333d; --sxd-mute: #7f8b98; --sxd-ink: #dfe6ee; --sxd-wave: #59c2ff; --sxd-loop: #4fb3ff; --sxd-on: #6fe3a1;
+  --sxd-cur: #ffd84a; --sxd-slice: #f7c948; --sxd-mark: #ffffff; --sxd-xy: #ff5b5b; --sxd-osc-a: #4fb3ff; --sxd-osc-b: #6fe3a1; --sxd-osc-c: #f7c948;
+  --sxd-f1: #ff8a5b; --sxd-f2: #ff5b8a; --sxd-spec-lo: #000000; --sxd-spec-hi: #ffffff; --sxd-hl-ink: #061018;
 }
 /* ivory (WC-2, the user: "a light skin. Cream or ivory faces, dark engraving, and the same layout"; IMPL-WC §5.2 — Q5 (a)): cream faces on a
    darker cream body, charcoal engraving in the narrow face, light caps with charcoal pointers (the kit draws a pointer in the face's own
-   text colour), a burnt-orange arc and accent, charcoal-ringed jacks, the same screws; the displays the kit paints itself stay dark windows */
+   text colour), a burnt-orange arc and accent, charcoal-ringed jacks, the same screws; (WC-2 displays) the oscillator, sample, spectral and
+   filter screens cream (the screen frame's), dark traces and grid: the accents darkened until they read on cream (≥ 3 : 1), the words ≥ 4.5 */
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-rig],
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-rig] .sx-root,
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-rig] .rig-face,
@@ -1687,6 +1691,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
   --sx-accent: #97431a; --sx-neg: #a3301e; --text: #1d1c1a; --mute: #5d574c;
   --rig-case: #d9d2c0; --rig-face: #e9e3d3; --rig-bar: #e9e3d3; --rig-title: #1d1c1a; --rig-line: #bfb7a4; --rig-font: 'Archivo Narrow', Inter, var(--ui);
   --rig-screen: #f3efe4; --rig-jack-ring: #2b2a27; --rig-jack-nut: #6f6a60; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+  --sxd-bg: #f3efe4; --sxd-grid: #d3cbb8; --sxd-mute: #5d574c; --sxd-ink: #1d1c1a; --sxd-wave: #2a6496; --sxd-loop: #1f5f99; --sxd-on: #1e7a4a;
+  --sxd-cur: #97431a; --sxd-slice: #8a6200; --sxd-mark: #1d1c1a; --sxd-xy: #a3301e; --sxd-osc-a: #1f5f99; --sxd-osc-b: #1e7a4a; --sxd-osc-c: #8a6200;
+  --sxd-f1: #b4501e; --sxd-f2: #a8325e; --sxd-spec-lo: #f3efe4; --sxd-spec-hi: #3c0014; --sxd-hl-ink: #f3efe4;
 }
 /* glass (WC-2, the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when
    they are in behind mode"): smoked frosted glass — the module is the pane (--rig-case, a cool slate at 55 %: the cords behind it show, the
@@ -1705,6 +1712,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
   --sx-accent: #7cc8ff; --sx-neg: #ff8f7a; --text: #eef2f6; --mute: #b9c3ce;
   --rig-case: #1e26308c; --rig-face: #ffffff08; --rig-bar: #ffffff0f; --rig-title: #eef2f6; --rig-line: #ffffff29; --rig-font: 'Archivo Narrow', Inter, var(--ui);
   --rig-screen: #0c1015; --rig-jack-ring: #e3ecf5; --rig-jack-nut: #6d7884; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+  --sxd-bg: #0a0d10; --sxd-grid: #2a333d; --sxd-mute: #7f8b98; --sxd-ink: #dfe6ee; --sxd-wave: #59c2ff; --sxd-loop: #4fb3ff; --sxd-on: #6fe3a1;
+  --sxd-cur: #ffd84a; --sxd-slice: #f7c948; --sxd-mark: #ffffff; --sxd-xy: #ff5b5b; --sxd-osc-a: #4fb3ff; --sxd-osc-b: #6fe3a1; --sxd-osc-c: #f7c948;
+  --sxd-f1: #ff8a5b; --sxd-f2: #ff5b8a; --sxd-spec-lo: #000000; --sxd-spec-hi: #ffffff; --sxd-hl-ink: #061018;
 }
 /* the glass skin's own rules (WC-2) — after the blocks, scoped to the glass skin alone, no box changed (the gate's one exception: a block
    sets custom properties only). (1) The pane is the module: the layers inside it that paint the case or the kit's ground again — a rig's

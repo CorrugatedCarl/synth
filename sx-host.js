@@ -868,7 +868,7 @@ const CSS = `
 .sx-krow { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 6px; min-width: 0; }
 .sx-krow.sx-sp { justify-content: space-between; }
 .sx-krow .wk-menu { flex: 1 1 120px; min-width: 0; }
-.sx-disp { display: block; width: 100%; height: 120px; background: #0a0d10; border: 1px solid var(--sx-line); border-radius: 6px; cursor: pointer; touch-action: none; }
+.sx-disp { display: block; width: 100%; height: 120px; background: var(--sxd-bg, #0a0d10); border: 1px solid var(--sx-line); border-radius: 6px; cursor: pointer; touch-action: none; }
 .sx-disp.sx-tall { height: 150px; }
 .sx-disp.sx-short { height: 64px; }
 .sx-disp.sx-dropok { border-color: var(--sx-accent); box-shadow: 0 0 0 2px var(--sx-accent) inset; }
@@ -1189,6 +1189,12 @@ function rateMs(hz) {
 function sameKeyN(a, b, n) {
   for (let i = 0; i < n; i++) { const x = a[i], y = b[i]; if (x !== y && (x === x || y === y)) return false; }
   return true;
+}
+// (WC-2 displays) the skin a canvas sits in: the nearest data-cv-skin (#world's, the ⚙ drawer's), '' outside any — the key its palette was read for
+function skinOf(el) {
+  let w = null;
+  try { w = el && typeof el.closest === 'function' ? el.closest('[data-cv-skin]') : null; } catch (err) { w = null; }
+  return w ? w.getAttribute('data-cv-skin') || '' : '';
 }
 // Touch long-press (500 ms, ≤ 8 px) on a plain element → fn(x, y); skipped when the browser already fired its
 // own contextmenu for that press (Android) and while el is being dragged (wk.dragSource's wk-dragging: a touch drag can
@@ -2544,11 +2550,12 @@ export class SerumHost {
 
   /* ---------------------------------------------------------------- canvases */
   // extra: { maxHz, keyN } (the kit's canvas(), above); a keyN canvas keeps two key buffers, swapped at each draw (kp = the
-  // drawn key, kn its count; kb the next one): no array, no string per paint
+  // drawn key, kn its count; kb the next one): no array, no string per paint. (WC-2 displays) draw(g, w, h, dpr, pal): pal its
+  // palette (sx-ui-osc dispPalette), read at a measure for the skin sk it sits in (paintCanvas)
   canvas(cls, key, draw, extra) {
     const c = mk(this.d, 'canvas', 'sx-disp' + (cls ? ' ' + cls : ''));
     const cv = Object.assign({ el: c, key, draw, last: null, sized: false, w: 0, h: 0, dpr: 1, maxHz: 0, keyN: null }, extra);
-    cv.t = -Infinity; cv.due = false;
+    cv.t = -Infinity; cv.due = false; cv.pal = null; cv.sk = null;
     if (typeof cv.keyN === 'function') { cv.kb = []; cv.kp = []; cv.kn = -1; } else cv.keyN = null;
     (this.bp || this.headPage).canvases.push(cv);
     if (this.ro) this.ro.observe(c);
@@ -2591,6 +2598,11 @@ export class SerumHost {
       const w = Math.max(1, Math.ceil(lw * q - 1e-6)), h = Math.max(1, Math.ceil(lh * q - 1e-6)); // (rounded up, review 2: never below q)
       if (cv.el.width !== w || cv.el.height !== h) { cv.el.width = w; cv.el.height = h; }
       cv.w = w; cv.h = h; cv.dpr = q; cv.last = null;
+      // (WC-2 displays) its palette: the display tokens of the skin it sits in, read here — at a measure, and only for a skin it
+      // was not read for (a zoom end re-measures without reading; a skin pick re-measures the world's canvases, wk.rescaleCanvases,
+      // and the attribute differs) — never per frame
+      const sk = skinOf(cv.el);
+      if (!cv.pal || cv.sk !== sk) { cv.pal = osc.dispPalette(cv.el); cv.sk = sk; }
     }
     if (cv.hid) return;
     // the key (keyN: element-wise against the drawn one; a throwing key always differs) — then the rate class: a change
@@ -2616,7 +2628,7 @@ export class SerumHost {
     try {
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, cv.w, cv.h);
-      cv.draw(g, cv.w, cv.h, cv.dpr);
+      cv.draw(g, cv.w, cv.h, cv.dpr, cv.pal);
     } catch (err) { warnOnce('draw' + cv.el.className, 'serum-ui: display draw failed', err); }
   }
 
