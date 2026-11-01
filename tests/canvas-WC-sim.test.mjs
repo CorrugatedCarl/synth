@@ -69,6 +69,7 @@ function scriptedWorld(root) {
     cords: () => CORDS,
     setCordHook(hit, tap) { W.cordHook = { hit, tap }; return () => { W.cordHook = null; }; },
     setJackNear(f) { W.jackNear = f; return () => { if (W.jackNear === f) W.jackNear = null; }; }, // ((fixer K, P2-3) the host's near hook
+    glass: false, setGlass(on) { W.glass = !!on; }, // ((WC-2) the host's word: this canvas's modules are glass panes (the cords under them when behind)
   };
   return W;
 }
@@ -1532,4 +1533,37 @@ test('(the user, 2026-10-26: "on a socket with multiple outs lets just put a dis
   assert.ok(nTop().some(c => c.getAttribute('data-to') === 'l'), 'S3: a forked source counted, on its left');
   // no count on another canvas (the 900 Series keeps today's look: its stacked jacks too)
   for (const m of ['juno60', 'm900']) { await fresh(m); assert.deepEqual(counts(), {}, m + ': no count'); }
+});
+
+// (WC-2; the user: two more skins — "Ivory" (light: cream faces, dark engraving, the same layout) and "Frosted glass" (translucent: "so that we can
+// see cables through the glass when they are in behind mode")) the ⚙ line (IMPL-WC §5.1: ⚙ → Canvas → "<NAME> skin ▾", SKINS by label), the
+// pick live, and the host's glass word to the world
+test('(WC-2) ⚙ → Canvas → "<NAME> skin": one line (#cvSkin, after the Frame rate line) listing SKINS by label, the pref shown; a pick stored (synth.rig.skin) and applied at once — the one attribute on #world, the static displays repainted (wk.rescaleCanvases over the world); the glass skin tells the world its canvas is glass (setGlass) on a rig canvas in cords mode only — never in lines mode, on another canvas (a Juno, a 900 Series) or with another skin', async () => {
+  const gp = sim.$('#gearPop'), sel = sim.$('#cvSkin'), W = W0.w;
+  assert.ok(sel && sel.tagName === 'SELECT', 'the select');
+  const kids = gp.children, i = kids.findIndex(c => c.children && c.children.includes(sel)), line = kids[i], fps = kids.findIndex(c => c.id === 'cvFpsHint');
+  assert.deepEqual([line.tagName, line.className, line.textContent.startsWith(RIG.NAME + ' skin'), i > fps && fps > 0], ['LABEL', 'field cv-skin', true, true], 'a labelled line after the Frame rate hint, in the constant\'s words');
+  assert.deepEqual(sel.children.map(o => [o.value, o.textContent]), RC.SKINS.map(S => [S.id, S.label]));
+  assert.deepEqual(sel.children.map(o => o.textContent), ['Charcoal', 'Ivory', 'Frosted glass']);
+  assert.equal(sel.value, 'charcoal', 'the pref (the default)');
+  await fresh(RIG.ID);
+  assert.deepEqual([W.el.getAttribute('data-cv-skin'), W.glass], ['charcoal', false]);
+  let rescaled = 0;
+  const off = WK.onRescale(W.el, () => rescaled++);
+  try {
+    sel.value = 'ivory'; sel.onchange();
+    assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass, rescaled], ['ivory', 'ivory', false, 1], 'ivory: stored, applied, repainted');
+    sel.value = 'glass'; sel.onchange();
+    assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass, rescaled], ['glass', 'glass', true, 2], 'glass on a rig canvas in cords mode: the world told');
+    RG.wires('lines'); await settle(3);
+    assert.equal(W.glass, false, 'lines mode: no cords to see');
+    RG.wires('cords'); await settle(3);
+    assert.equal(W.glass, true, 'cords again');
+    const rig = T().id;
+    for (const m of ['juno60', 'm900']) { await fresh(m); assert.deepEqual([W.el.getAttribute('data-cv-skin'), W.glass], ['glass', false], m + ': the skin on the world (its FX module wears it), never the glass word'); }
+    api.selectTrack(rig); await settle(4);
+    assert.equal(W.glass, true, 'back on the rig');
+    sel.value = 'charcoal'; sel.onchange();
+    assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass], ['charcoal', 'charcoal', false], 'charcoal: as before');
+  } finally { off(); api.store.set('synth.rig.skin', 'charcoal'); }
 });

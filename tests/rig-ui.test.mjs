@@ -420,4 +420,6 @@ test('applySkin: one attribute on the world (an unknown id → the default skin)
   assert.equal(w.getAttribute('data-cv-skin'), 'charcoal');
   assert.equal(RU.applySkin(w, 'neon'), RC.SKIN_DEFAULT);
   assert.equal(RU.applySkin(null, 'charcoal'), 'charcoal');
+  // ((WC-2) the two more: the same one attribute — a skin is CSS, never a box)
+  assert.deepEqual(['ivory', 'glass', 'charcoal'].map(id => [RU.applySkin(w, id), w.getAttribute('data-cv-skin')]), [['ivory', 'ivory'], ['glass', 'glass'], ['charcoal', 'charcoal']]);
 });

@@ -18,6 +18,7 @@ import * as PT from '../patch-core.js?v=9';
 import * as cvArt from '../cv-art.js?v=9';
 import { MODULE_LAYOUTS } from '../panels/index.js?v=9';
 import { RIG, MODULES, SKINS, SKIN_DEFAULT } from '../rig-core.js?v=9';
+import { PALETTE } from '../cv-cords.js?v=9'; // ((WC-2) the lightest cord that can pass behind a glass pane
 // (WC, IMPL-WC §7) the rig view's note (the srcNote line) and its tiles' tip, from the display constant
 const RIG_NOTE = `Drop a module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`;
 // (integration fixer L, review WC-int P3-8: our own words through RIG.NAME — the old "Arrive with the next cut." was the plan's jargon)
@@ -1601,30 +1602,54 @@ test('style.css (9): the Moog tiles\' glyph box, the target chip in #overlay, th
 // WCAG relative luminance and contrast of two #rrggbb colours
 const lum = h => { const c = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+// (WC-2, the glass skin) a colour on screen: #rrggbb, or a pane's #rrggbbaa composited over its backdrop (#rrggbb) as the browser blends it
+const alphaOf = h => (h.length === 9 ? parseInt(h.slice(7), 16) / 255 : 1);
+const over = (fg, bg) => { const a = alphaOf(fg); return '#' + [1, 3, 5].map(i => Math.round(a * parseInt(fg.slice(i, i + 2), 16) + (1 - a) * parseInt(bg.slice(i, i + 2), 16)).toString(16).padStart(2, '0')).join(''); };
 // a skin block's custom properties (IMPL-WC §5.1: the kit's --sx-* tokens, the module chrome's --text / --mute, the faces' own --rig-*); nothing else
 const SKIN_VARS = ['--sx-bg', '--sx-panel', '--sx-panel2', '--sx-line', '--sx-graph', '--sx-ink', '--sx-mute', '--sx-accent', '--sx-neg', '--text', '--mute',
   '--rig-case', '--rig-face', '--rig-bar', '--rig-title', '--rig-line', '--rig-font', '--rig-screen', '--rig-jack-ring', '--rig-jack-nut', '--rig-jack-hole', '--rig-screw', '--rig-screw-lo'];
-test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in the face font, the face, the kit labels\' font, four corner screws in one pseudo-element, the jack look — colours only through custom properties; lane C\'s marked place; the skins last: one block per SKINS id, colour and font custom properties only, charcoal the cord lab\'s, contrast ≥ 4.5 : 1', () => {
+// (WC-2) a glass skin's pane: the only variables it may give an alpha (#rrggbbaa) — the module's case (the pane: style.css's glass rules
+// clear the layers inside it), the face's and the bar's sheens over it, the hairlines; every kit token, text, knob, screen and popover stays opaque
+const PANE_VARS = ['--rig-case', '--rig-face', '--rig-bar', '--rig-line'];
+test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in the face font, the face, the kit labels\' font, four corner screws in one pseudo-element, the jack look — colours only through custom properties; lane C\'s marked place; the skins last: one block per SKINS id, colour and font custom properties only, charcoal the cord lab\'s, contrast ≥ 4.5 : 1 (WC-2: a glass skin\'s pane composited over the canvas, its words ≥ 3 : 1 over the lightest cord behind it)', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length)); // (comments blanked, offsets kept)
   const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim(), at: m.index }));
   const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
   // the skins: one block per SKINS id, the three scopes (the module — its bar inherits —, .sx-root where the kit declares its tokens, .rig-face), last in the file
-  const skins = rules.filter(r => r.sel.includes('[data-cv-skin='));
+  // ((WC-2, moved by design) the file's tail: the blocks — custom properties only —, then the glass skin's own rules, next test)
+  const tail = rules.filter(r => r.sel.includes('[data-cv-skin=')), skins = tail.filter(r => decls(r.body).every(([k]) => k.startsWith('--')));
   // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too)
   assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
   assert.equal(SKIN_DEFAULT, 'charcoal');
-  assert.ok(skins.every(r => rules.every(q => q === r || skins.includes(q) || q.at < r.at)), 'the skin blocks are the last rules of the file');
+  // ((WC-2, the user) two more: Ivory (light: cream faces, dark engraving) and Frosted glass (translucent: the cords seen through it)
+  assert.deepEqual(SKINS.map(S => [S.id, S.label, S.font, !!S.glass]), [['charcoal', 'Charcoal', 'narrow', false], ['ivory', 'Ivory', 'narrow', false], ['glass', 'Frosted glass', 'narrow', true]]);
+  assert.ok(tail.every(r => rules.every(q => q === r || tail.includes(q) || q.at < r.at)), 'the skin blocks (and the glass rules after them) are the last rules of the file');
+  assert.ok(skins.every(r => tail.every(q => skins.includes(q) || q.at > r.at)), 'the blocks first, the glass rules after them');
+  // the canvas the panes sit on (#viewport's ground) and the lightest cord that can pass behind a pane (cv-cords' palette)
+  const CANVAS = (/\n#viewport \{[^}]*background-color: (#[0-9a-f]{6});/.exec(css) || [])[1], CORD = PALETTE.slice().sort((a, b) => lum(b) - lum(a))[0];
+  assert.deepEqual([CANVAS, CORD], ['#0a0b0d', '#e9e5da']);
+  // a ground on screen over backdrop B: the module's pane (--rig-case) over B, anything else over the pane (an opaque colour is itself)
+  const ground = (v, k, B) => { const c = over(v['--rig-case'], B); return k === '--rig-case' ? c : over(v[k], c); };
+  const ratio = (v, fg, bg, B) => { const g = ground(v, bg, B); return contrast(over(v[fg], g), g); };
   const V = {};
   for (const [i, r] of skins.entries()) {
     const D = decls(r.body), S = SKINS[i], v = Object.fromEntries(D);
     assert.deepEqual(D.map(d => d[0]), SKIN_VARS, S.id + ': every skin variable, in order, and nothing else (no number, no other property: a switch changes no box)');
-    for (const [k, x] of D) assert.ok(k === '--rig-font' || /^#[0-9a-f]{6}$/.test(x), S.id + ' ' + k + ': a colour (' + x + ')');
+    for (const [k, x] of D) assert.ok(k === '--rig-font' || /^#[0-9a-f]{6}$/.test(x) || (S.glass && PANE_VARS.includes(k) && /^#[0-9a-f]{8}$/.test(x)), S.id + ' ' + k + ': a colour (' + x + ')' + (S.glass ? ' — an alpha only on the pane' : ''));
     assert.equal(v['--rig-font'], S.font === 'narrow' ? '\'Archivo Narrow\', Inter, var(--ui)' : 'Inter, var(--ui)', S.id + ': the face font (Inter its fallback)');
     // contrast (G11): text on its ground ≥ 4.5 : 1 (labels and values on the face, the title and the bar's text on the bar, menu text on a button), UI parts ≥ 3 : 1
+    // ((WC-2) on a glass skin's pane over the canvas — nothing behind it: an opaque skin's numbers are the same as before)
     for (const [fg, bg] of [['--sx-ink', '--rig-face'], ['--sx-mute', '--rig-face'], ['--sx-ink', '--sx-bg'], ['--sx-mute', '--sx-panel'], ['--rig-title', '--rig-bar'], ['--text', '--rig-bar'], ['--mute', '--rig-bar'], ['--sx-ink', '--sx-panel2'], ['--sx-accent', '--rig-face']])
-      assert.ok(contrast(v[fg], v[bg]) >= 4.5, `${S.id}: ${fg} on ${bg} ${contrast(v[fg], v[bg]).toFixed(2)} : 1`);
+      assert.ok(ratio(v, fg, bg, CANVAS) >= 4.5, `${S.id}: ${fg} on ${bg} ${ratio(v, fg, bg, CANVAS).toFixed(2)} : 1`);
     for (const [fg, bg] of [['--rig-jack-ring', '--rig-face'], ['--sx-graph', '--sx-line'], ['--sx-ink', '--sx-panel2'], ['--sx-neg', '--rig-face'], ['--rig-screw', '--rig-face'], ['--rig-line', '--rig-case']])
-      assert.ok(contrast(v[fg], v[bg]) >= (fg === '--rig-screw' || fg === '--rig-line' ? 1.2 : 3), `${S.id}: ${fg} against ${bg} ${contrast(v[fg], v[bg]).toFixed(2)} : 1`);
+      assert.ok(ratio(v, fg, bg, CANVAS) >= (fg === '--rig-screw' || fg === '--rig-line' ? 1.2 : 3), `${S.id}: ${fg} against ${bg} ${ratio(v, fg, bg, CANVAS).toFixed(2)} : 1`);
+    // ((WC-2) the pane's worst moment — the lightest cord right behind a word, unblurred (the Low preset): the face's words and the bar's
+    // title stay ≥ 3 : 1 (the blur of Medium / High spreads a cord to about a third of that); the pane really is see-through)
+    if (S.glass) {
+      for (const [fg, bg] of [['--sx-ink', '--rig-face'], ['--rig-title', '--rig-bar']]) assert.ok(ratio(v, fg, bg, CORD) >= 3, `${S.id}: ${fg} on ${bg} over a ${CORD} cord ${ratio(v, fg, bg, CORD).toFixed(2)} : 1`);
+      const a = alphaOf(v['--rig-case']);
+      assert.ok(a >= 0.45 && a <= 0.7, S.id + ': the pane lets the cords through (alpha ' + a.toFixed(2) + ')');
+    } else assert.ok(PANE_VARS.every(k => alphaOf(v[k]) === 1), S.id + ': opaque');
     V[S.id] = v;
   }
   // charcoal = the cord lab's colours (docs/canvas/ref/cord-lab.html :root), the contract's knob, jack, screw and screen values (§5.2)
@@ -1635,9 +1660,17 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.deepEqual([lab['--panel'], lab['--rack'], lab['--line'], lab['--ink'], lab['--muted'], lab['--accent']], ['#1f2023', '#17181a', '#2c2e32', '#ebe6d8', '#9c978a', '#e8a33d']);
   assert.deepEqual([C['--sx-panel2'], C['--sx-graph'], C['--rig-screen'], C['--rig-jack-ring'], C['--rig-jack-nut'], C['--rig-jack-hole'], C['--rig-screw'], C['--rig-screw-lo'], C['--sx-neg']],
     ['#141518', '#ebe6d8', '#141518', '#ebe6d8', '#7d7a72', '#0b0b0c', '#9c978a', '#55524a', '#ec6a4c'], 'black knob caps with cream pointers and arcs; cream-ringed jacks; warm grey screws');
+  // ((WC-2) ivory = §5.2's cream face, body, line, charcoal ink, screen frame and jack ring; the gate's corrections: the muted #5d574c and the
+  // accent #97431a (§5.2's #6d675c / #b5541f: 4.4 and 3.8 : 1 on the face), light caps (the kit draws the pointer in --sx-ink, the face's own
+  // text colour: a dark cap would hide it), the screws the one SVG's
+  const I = V.ivory;
+  assert.deepEqual([I['--rig-face'], I['--sx-bg'], I['--sx-panel'], I['--rig-bar'], I['--rig-case'], I['--rig-line'], I['--sx-line'], I['--sx-ink'], I['--rig-title'], I['--text'], I['--sx-mute'], I['--mute'], I['--sx-accent']],
+    ['#e9e3d3', '#e9e3d3', '#e9e3d3', '#e9e3d3', '#d9d2c0', '#bfb7a4', '#bfb7a4', '#1d1c1a', '#1d1c1a', '#1d1c1a', '#5d574c', '#5d574c', '#97431a'], 'cream faces on a darker cream body, charcoal engraving');
+  assert.deepEqual([I['--sx-panel2'], I['--sx-graph'], I['--rig-screen'], I['--rig-jack-ring'], I['--rig-jack-nut'], I['--rig-jack-hole'], I['--rig-screw'], I['--rig-screw-lo'], I['--sx-neg']],
+    ['#f8f5ee', '#97431a', '#f3efe4', '#2b2a27', '#6f6a60', '#0b0b0c', '#9c978a', '#55524a', '#a3301e'], 'light caps with charcoal pointers, a burnt-orange arc; charcoal-ringed jacks');
   // the chrome: every [data-cv-rig] rule outside the skins, colours only through custom properties (a #hex only as a var() fallback: the plain module's
   // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
-  const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !skins.includes(r));
+  const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !tail.includes(r));
   assert.deepEqual(chrome.map(r => r.sel), ['.cv-mod[data-cv-rig]', '.cv-mod[data-cv-rig] > .cv-bar', '.cv-mod[data-cv-rig][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-rig] .cv-title', '.cv-mod[data-cv-rig] > .cv-body',
     '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', '.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after',
     '.cv-mod[data-cv-rig] .cv-fjack', '#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no']);
@@ -1662,7 +1695,7 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
   // (the FX look, 2026-10-26) the FX modules' chrome: the case, the bar, the title in the face font, the body and its rack's ground, every
   // effect's face with the rig's four screws — colours only through the skin's variables, no skin variable set, before the skins
-  const fxc = rules.filter(r => r.sel.includes('[data-cv-fx]') && !skins.includes(r));
+  const fxc = rules.filter(r => r.sel.includes('[data-cv-fx]') && !tail.includes(r));
   assert.deepEqual(fxc.map(r => r.sel), ['.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after', '.cv-mod[data-cv-fx]', '.cv-mod[data-cv-fx] > .cv-bar', '.cv-mod[data-cv-fx][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-fx] .cv-title',
     '.cv-mod[data-cv-fx] > .cv-body, .cv-mod[data-cv-fx] .cv-body > .fxtab']);
   for (const r of fxc) {
@@ -1674,6 +1707,40 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   // an effect's face: the rig's screws — the very rule (the SVG screw of ffb64fd, its slot centred at every display scale), never a copy
   assert.equal(fxc[0], chrome.find(r => r.sel.startsWith('.cv-mod[data-cv-rig] > .cv-body::after')), 'an effect\'s face: the rig\'s screws, the same rule');
   assert.equal(rules.filter(r => r.sel.includes('fxr-face') && r.sel.includes('::after')).length, 1, 'no other rule draws a face\'s screws');
+});
+
+// (WC-2; the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when they are
+// in behind mode") a glass skin is a block like any (colours and the font) plus the glass's own rules, after the blocks — the gate's one
+// exception (a block sets custom properties only): three rules, each scoped to the glass skins alone, that change no box. The module is the
+// pane (--rig-case): the layers inside it that paint the case or the kit's ground again lose their colour (else the tint compounds — twice in
+// a rig's body, four times in an FX rack's — and the rig's .inst paints its fixed #0f1216); the two popovers over a face (the X-Shaper's,
+// the ⚙ drawer in the top layer) take the opaque --sx-panel (a see-through popover over the knobs it covers is unreadable); the frost —
+// backdrop-filter, the expensive part — on every preset but Low (#viewport's data-cv-perf, cv-world's: Low keeps the translucency alone)
+test('style.css (WC-2): the glass skin\'s own rules after the blocks — the pane is the module (the inner case layers cleared), the popovers over a face opaque, the frost (backdrop-filter, -webkit- too) on every preset but Low; scoped to the glass skins alone, no box changed', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length));
+  const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim(), at: m.index }));
+  const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
+  const tail = rules.filter(r => r.sel.includes('[data-cv-skin=')), glass = tail.filter(r => !decls(r.body).every(([k]) => k.startsWith('--')));
+  const G = SKINS.filter(S => S.glass).map(S => S.id);
+  assert.deepEqual(G, ['glass']);
+  const W = '#world[data-cv-skin="glass"]', MODS = ':is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx])';
+  assert.deepEqual(glass.map(r => r.sel), [
+    `${W} ${MODS} :is(.cv-body, .inst.custom, .fxtab, .fxr-root)`,
+    `${W} .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"]`,
+    `#viewport:not([data-cv-perf="low"]) ${W} ${MODS}`]);
+  assert.deepEqual(glass.map(r => decls(r.body)), [[['background-color', 'transparent']], [['background-color', 'var(--sx-panel)']],
+    [['-webkit-backdrop-filter', 'blur(12px) saturate(1.6)'], ['backdrop-filter', 'blur(12px) saturate(1.6)']]], 'the pane, the popovers, the frost (WebKit\'s prefix first)');
+  for (const r of glass) {
+    for (const part of r.sel.split(/,(?![^(]*\))/)) {
+      const ids = [...part.matchAll(/\[data-cv-skin="([a-z]+)"\]/g)].map(m => m[1]);
+      assert.ok(ids.length === 1 && G.includes(ids[0]), part + ': a glass skin\'s, alone');
+    }
+    assert.ok(decls(r.body).every(([k, x]) => ['background-color', 'backdrop-filter', '-webkit-backdrop-filter'].includes(k) && !/#[0-9a-f]{3,8}\b/i.test(x)), r.sel + ': no box, no colour of its own');
+  }
+  // the Low preset: its own frost off, the translucency kept (the selector's :not) — the attribute is the world's (cv-world setPerf)
+  assert.ok(glass.filter(r => /backdrop-filter/.test(r.body)).every(r => r.sel.split(/,(?![^(]*\))/).every(p => p.startsWith('#viewport:not([data-cv-perf="low"]) '))), 'never on Low');
+  assert.ok(glass.every(r => r.at > Math.max(...tail.filter(q => !glass.includes(q)).map(q => q.at))), 'after every block');
+  assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
 });
 
 // (WC, the user 2026-10-26: "the slot in the center is off center" on Windows) Blink rounds each background layer to whole layout px on its

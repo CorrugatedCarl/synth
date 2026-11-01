@@ -1273,6 +1273,70 @@ test('(the cables-behind toggle) the SVG fallback: behind(fn) masks each rope\'s
   eq(snap(), before, 'off: the markup as before');
 });
 
+// (WC-2) a layer whose canvases each get a context of their own (the glass layer's canvas is a second WebGL2 context)
+function setupG(o = {}) {
+  const d = dom.fresh(), win = d.defaultView, vp = d.createElement('div'), w = d.createElement('div');
+  vp.id = 'viewport'; w.id = 'world'; vp.append(w); d.body.append(vp);
+  const made = [], doc = { createElement: tag => { const el = d.createElement(tag); if (tag === 'canvas') { made.push(el); el.getContext = (k, attrs) => (k === 'webgl2' ? (el._gl || (el._gl = Object.assign(fakeGL(), { attrs }))) : null); } return el; },
+    createElementNS: (ns, t) => d.createElementNS(ns, t) };
+  const L = C.createCords(vp, Object.assign({ world: w, doc, win, now: () => 1000, onWake: () => {} }, o));
+  return { d, vp, w, made, L };
+}
+test('(WC-2; the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when they are in behind mode") behind(fn, true) — the glass layer: the rope bodies inside the boxes are drawn ALSO on a second canvas UNDER #world (before it in the viewport: under the panes, whose backdrop-filter frosts them), exactly the fragments the top canvas discards there (inside a box, not in front); the top canvas is behind(fn)\'s, call for call; the live rope, the cord in the finger and the selected one stay whole on top (none of them under); behind(fn) / behind(null): its buffer 0 × 0, no draw; the SVG fallback and \'under\': the cut-out alone', () => {
+  const boxes = [[150, 50, 350, 200]], fn = (out, max) => { boxes.forEach((b, i) => out.set(b, 4 * i)); return Math.min(max, boxes.length); };
+  const A = setupG(), B = setupG();
+  for (const X of [A, B]) { X.L.anchors(PORTS()); X.L.set(LIST); }
+  A.L.behind(fn); B.L.behind(fn, true);
+  A.L.draw(cam, 1000, 600, 2); B.L.draw(cam, 1000, 600, 2);
+  eq([A.made.length, B.made.length], [1, 2], 'a second canvas, the glass one only');
+  const top = B.made[0], g = B.made[1], tg = top._gl, gg = g._gl;
+  eq(tg.calls, A.made[0]._gl.calls, 'the top canvas: behind(fn)\'s frames, call for call');
+  eq([B.vp.childNodes.indexOf(g), B.vp.childNodes.indexOf(B.w), B.vp.childNodes.indexOf(top)], [0, 1, 2], 'under #world (the panes over it), the top canvas after it');
+  eq([g.className, g.getAttribute('aria-hidden'), /pointer-events:none/.test(g.style.cssText), /position:absolute/.test(g.style.cssText)], ['cv-cords cv-cords-glass', 'true', true, true]);
+  eq([g.width, g.height, g.style.width, g.style.height], [2000, 1200, '1000px', '600px'], 'the viewport in device px, as the top');
+  eq(gg.attrs, tg.attrs, 'the same context attributes');
+  eq([gg.count('createProgram'), gg.count('drawArraysInstanced')], [1, 0], 'one program, the strip (no plug)');
+  const fs = gg.src.find(x => /flat in float wpx/.test(x));
+  ok(/if\(!k\|\|fz>0\.5\)discard;/.test(fs) && /uniform vec4 hb\[64\]/.test(fs), 'its rule: discarded outside every box and in front — the top\'s complement');
+  ok(!tg.src.some(x => /if\(!k\|\|fz>0\.5\)discard;/.test(x)), 'the top\'s programs as they were');
+  const last = (G, k, u) => G.calls.filter(c => c[0] === k && c[1] === u).pop();
+  eq([last(gg, 'uniform1i', 'u:nh'), last(gg, 'uniform4fv', 'u:hb'), last(gg, 'uniform2iv', 'u:fr')], [['uniform1i', 'u:nh', 1], ['uniform4fv', 'u:hb', [150, 50, 350, 200]], ['uniform2iv', 'u:fr', [0, 0, 0, 0, 0, 0]]], 'the boxes, nothing in front');
+  const draws = G => G.calls.filter(c => c[0] === 'drawArrays');
+  eq([draws(gg).length, draws(gg)[0].slice(2), draws(tg).slice(-2).map(c => c.slice(2))], [2, [0, 138], [[0, 138], [0, 138]]], 'the shadow and the cord passes over the whole strip, as on top');
+  const subs = G => G.calls.filter(c => c[0] === 'bufferSubData');
+  eq(subs(gg)[0][3].slice(0, subs(gg)[0][5]), lastBytes(tg)[0], 'the same strip bytes');
+  ok(gg.count('clear') === 1 && gg.calls.findIndex(c => c[0] === 'clear') < gg.calls.findIndex(c => c[0] === 'drawArrays'), 'cleared before its draw');
+  // a frame later: the strip only when it changed (a camera-only frame uploads nothing)
+  const u0 = subs(gg).length;
+  B.L.draw({ tx: 10, ty: 0, k: 1 }, 1000, 600, 2);
+  eq([subs(gg).length, draws(gg).length, last(gg, 'uniform4fv', 'u:cam')[2]], [u0, 4, [10, 0, 1, 2]], 'camera only: no upload, drawn at the camera');
+  // in front: the selected cord, the one in the finger, the live rope — whole on top, none of it under
+  B.L.sel('c1'); B.L.draw(cam, 1000, 600, 2);
+  eq(last(gg, 'uniform2iv', 'u:fr')[2], [0, 0, 0, 0, 0, 69], 'the selected cord\'s range: discarded under');
+  B.L.sel(null);
+  // glass off (another skin, another canvas): the cut-out alone, the glass buffer 0 × 0, no draw there
+  B.L.behind(fn); B.L.draw(cam, 1000, 600, 2);
+  const d0 = draws(gg).length;
+  eq([g.width, g.height], [0, 0], 'off: no buffer');
+  B.L.draw({ tx: 3, ty: 0, k: 1 }, 1000, 600, 2);
+  eq(draws(gg).length, d0, 'no more draws under');
+  B.L.behind(fn, true); B.L.draw(cam, 1000, 600, 2);
+  eq([g.width, B.made.length, draws(gg).length], [2000, 2, d0 + 2], 'on again: the same canvas');
+  eq(B.L.stats().glass, { on: true, draws: 4, buffer: '2000×1200' }, 'stats');
+  B.L.behind(null, true); B.L.draw(cam, 1000, 600, 2);
+  eq([g.width, B.L.stats().glass.on], [0, false], 'no boxes, no glass: on top again');
+  // the SVG fallback, 'under': the cut-out alone (no second canvas)
+  const V = setupG({ mode: 'svg' });
+  V.L.anchors(PORTS()); V.L.set(LIST); V.L.behind(fn, true);
+  eq([V.made.length, V.L.stats().glass.on], [0, false], 'the SVG: its mask, no glass');
+  const U = setupG({ mode: 'under', under: () => null });
+  U.L.anchors(PORTS()); U.L.set(LIST); U.L.behind(fn, true); U.L.draw(cam, 1000, 600, 2);
+  eq([U.made.length, U.L.stats().glass.on], [0, false], '\'under\': none');
+  // gone with the layer
+  B.L.destroy();
+  eq([B.vp.childNodes.includes(g), gg.ext && gg.ext.lost], [false, 1], 'destroyed: removed, its context let go');
+});
+
 test('(FR §3 A2, P3-10) the layer owes a draw only when a rope stepped or an end moved — the world\'s High draw skip rests on it: at a 240 Hz tick a swaying rope is owed on every second tick (the 1/120 s step) and never on the ticks between; asleep, or under a camera-only frame, nothing is owed; an end moved owes one. The byte-for-byte scene (High = today) is the layer\'s own and unchanged', () => {
   const S = setup(), other = { tx: -40, ty: 12, k: 1.5 };
   S.L.anchors(PORTS()); S.L.set(LIST); S.L.draw(cam, 1000, 600, 2);

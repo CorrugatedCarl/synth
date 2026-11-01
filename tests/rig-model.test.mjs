@@ -30,7 +30,8 @@ test('RIG: the display name and the flippable constants (the header of IMPL-WC),
   assert.deepEqual([R.RIG.NAME, R.RIG.ID, R.RIG.VIEW, R.RIG.WIRES, R.RIG.GATE_MS, R.RIG.HUB_OPEN], ['Wavecraft', 'rig', 'rig', 'cords', 3, true]);
   assert.deepEqual(R.RIG.STARTER, { on: ['oscA', 'filter'], cords: [['oscA.out', 'filter.in'], ['filter.out', 'voice.main'], ['env1.out', 'voice.level']] }, 'Q7 (a): Oscillator → Filter → Amplifier, an Envelope on LEVEL, no LFO');
   assert.ok(Object.isFrozen(R.RIG) && Object.isFrozen(R.RIG.STARTER) && Object.isFrozen(R.GATE) && Object.isFrozen(R.GATE.p) && Object.isFrozen(R.MODULES) && Object.isFrozen(R.AUTOPLUG) && Object.isFrozen(R.SKINS));
-  assert.deepEqual([R.SKINS, R.SKIN_DEFAULT], [[{ id: 'charcoal', label: 'Charcoal', font: 'narrow' }], 'charcoal'], 'WC-1 ships one skin (ivory is WC-2)');
+  // ((WC-2, moved by design) the user's two more: Ivory (light) and Frosted glass (translucent: glass true — its block's pane may carry an alpha)
+  assert.deepEqual([R.SKINS, R.SKIN_DEFAULT], [[{ id: 'charcoal', label: 'Charcoal', font: 'narrow' }, { id: 'ivory', label: 'Ivory', font: 'narrow' }, { id: 'glass', label: 'Frosted glass', font: 'narrow', glass: true }], 'charcoal'], 'WC-1 shipped charcoal alone; WC-2 adds ivory and glass');
 });
 
 test('G4 the name rule: the literal RIG.NAME appears nowhere in the site\'s code (root *.js, panels/*.js, style.css, index.html, sw.js) but rig-core.js — every label, notice and tile reads the constant, so a rename is one line', () => {

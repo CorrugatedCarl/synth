@@ -2907,3 +2907,32 @@ test('(the cables-behind toggle) the real cv-cords through the world on a fake W
   b.click(); S.frame(8); // (the pan's own draws lead for a few frames: the tick draws once they are stale)
   eq(nh(), ['nh', 0], 'off again');
 });
+
+test('(WC-2; the user: "a translucent skin … so that we can see cables through the glass when they are in behind mode") setGlass(on) — the host\'s word that this canvas\'s modules are glass panes: with the cables behind, the layer is told behind(fn, true) (its ropes drawn under the panes too); setGlass(false): behind(fn) — every other skin\'s behind exactly as it was; the cables on top: nothing told; a layer built later is told at once; glassOn(). (P) The preset on #viewport (data-cv-perf, CSS: the glass skin\'s frost off on Low), at build and on setPerf', () => {
+  const log = [], made = [];
+  const fk = fakeCordsB(log, made), mk = (vp, o) => { const L = fk(vp, o); L.behind = (fn, g) => { L.hide = typeof fn === 'function' ? fn : null; log.push(['behind', typeof fn, g === true]); }; return L; };
+  const S = setup({ opts: { createCords: mk } });
+  S.frame();
+  eq([S.vp.getAttribute('data-cv-perf'), S.world.glassOn()], ['high', false], 'High at build; no glass');
+  S.world.setPerf('low');
+  eq(S.vp.getAttribute('data-cv-perf'), 'low', 'setPerf: the attribute');
+  S.world.setPerf('medium');
+  eq(S.vp.getAttribute('data-cv-perf'), 'medium');
+  const L = S.world.cords();
+  L.alloc(true);
+  S.world.setGlass(true);
+  eq([S.world.glassOn(), log.filter(e => e[0] === 'behind')], [true, []], 'the cables on top: nothing told');
+  S.world.setBehind(true);
+  eq(log.filter(e => e[0] === 'behind').pop(), ['behind', 'function', true], 'behind on a glass canvas: the ropes under the panes too');
+  S.world.setGlass(false);
+  eq(log.filter(e => e[0] === 'behind').pop(), ['behind', 'function', false], 'another skin / canvas: behind as it was');
+  const n = log.length;
+  S.world.setGlass(false);
+  eq(log.length, n, 'the same word again: nothing');
+  S.world.setGlass(true); S.world.setBehind(false);
+  eq(log.filter(e => e[0] === 'behind').slice(-2), [['behind', 'function', true], ['behind', 'object', false]], 'the cables on top again: behind(null)');
+  const S2 = setup({ prefs: [['synth.cv.behind', true]], opts: { createCords: (vp, o) => { const L = mk(vp, o); return L; }, perf: 'low' } });
+  S2.world.setGlass(true);
+  const L2 = S2.world.cords();
+  eq([S2.vp.getAttribute('data-cv-perf'), typeof L2.hide, log.filter(e => e[0] === 'behind').pop()], ['low', 'function', ['behind', 'function', true]], 'built later: told at once, glass and all');
+});
