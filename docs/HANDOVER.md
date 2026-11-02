@@ -211,6 +211,11 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    `shed` clients at drop levels 2–3 (lead: adopted beyond the brief, reversible). **WebKit / iPad: `FAST_WEBKIT = 0`** (Cut A motion)
    until G8i (`tests/ui-bench.html?fps=1&fast=60`, the protocol at the top level) and the iPad pass. Open: G9′ on the real 120 Hz
    panel (the user watching); the classic-mod N4 `row mk` timing gate is flaky under load (fails on c960ce1 too; passes alone).
+25. **(2026-11-02.)** **MOD1 deployed** (ROADMAP 27; canvas 589d966; contract IMPL-MOD1, §16 the skeptic's smaller re-plan, §15 every
+   lane / review / fixer note): every modulator in the rig look (rig-ui slot faces for LFO / Envelope / Macros / Chaos, plain faces on
+   the RIG grid), the Modulators view (the user's Q5), tiles add into a rig on a rig track (`modTile` → `rigAdd`) else `modAdd`,
+   `numsOf` / `rigNumber` numbering, `linkSources` lists a rig's on-canvas modules only, `faceMark` sets `data-cv-face=""` (cv-face's
+   gl / dom / svg untouched), `sxReshow` reshows the slot hosts. No schema change. Next: ROADMAP 28 (Serum out of canvas entirely).
 
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
