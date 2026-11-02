@@ -46,11 +46,11 @@ const LABEL = Object.freeze({ oscA: 'OSC A', oscB: 'OSC B', oscC: 'OSC C', sub: 
 export const SWITCHES = Object.freeze(['A', 'B', 'C', 'N', 'S'].flatMap(X => ['f.route' + X, 'f2.route' + X]));
 /** The tag of a source routed to Filter that no filter takes. */
 export const STUB_LABEL = '→ Filter (off)';
-/** The refusals (the cable drag's reasons; the host shows them as the notice). */
+/** The refusals (the cable drag's reasons; the host shows them as the notice; a rig shows rig-core's WORDS instead). */
 export const WHY = Object.freeze({
-  voice: 'Serum sources play through their VOICE', ro: 'Set this in the oscillator’s warp menu', fx: 'Edited in VOICE’s outputs',
-  self: 'A filter cannot feed itself', dir: 'Connect an output to an input', note: 'Only ARP and CLIP play notes into VOICE',
-  notes: 'ARP and CLIP play notes into VOICE', same: 'Already connected', none: 'Not connected', bad: 'Not a cable of this Serum',
+  voice: 'A source plays through a filter or its instrument', ro: 'Set this in the oscillator’s warp menu', fx: 'Edited in the instrument’s outputs',
+  self: 'A filter cannot feed itself', dir: 'Connect an output to an input', note: 'Only ARP and CLIP play notes into the instrument',
+  notes: 'ARP and CLIP play notes into the instrument', same: 'Already connected', none: 'Not connected', bad: 'Not a cable of this instrument',
   // (stage WC) the amp slot is rig-core's: ENV 1's output goes to LEVEL (rig-core.plug) or a knob, LEVEL takes an envelope only
   level: 'Only an envelope shapes the level', env: 'An envelope shapes the level or modulates a knob',
 });

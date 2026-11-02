@@ -105,6 +105,7 @@ import { normModDev, DEV_MAX } from './song.js?v=9';
 import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
 import { isSxId } from './models.js?v=9'; // ((WC) a Serum-engine device — the Serum and the rig — has its own FX rack, its matrix, its link rows)
+import { RIG } from './rig-core.js?v=9'; // ((SX0) the fallback name of an unnamed Serum-engine device)
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 // (IMPL-P §3.1) a track holds DEV_MAX devices (song.normDev's bound: a device past it would be dropped silently at the next load); every add path
@@ -332,7 +333,7 @@ export function setModel(t, id, modelId, o = {}) {
   d.preset = o.preset === undefined ? null : o.preset;
   if (isSxId(modelId) !== isSxId(was) && reshape(t, id, isSxId(modelId)) !== 'moved' && isSxId(modelId) && isObj(o.fx)) d.fx = o.fx; // (no panel state moved in: the caller's rack)
   const rows = dropGone(t, id);
-  const notice = rows.length ? `${rows.length} modulation cable${rows.length > 1 ? 's' : ''} to ${d.name || (was === 'serum' ? 'the Serum' : 'the instrument')} removed: the new model has no such knob${rows.length > 1 ? 's' : ''}` : '';
+  const notice = rows.length ? `${rows.length} modulation cable${rows.length > 1 ? 's' : ''} to ${d.name || 'the instrument'} removed: the new model has no such knob${rows.length > 1 ? 's' : ''}` : '';
   return Object.assign({ rows, notice }, OK);
 }
 export function sharedPanelFix(t, serumId, srcId) {
@@ -394,7 +395,7 @@ export function srcOk(t, src, p) {
   return srcDev(t, src) !== null;
 }
 const VALS_FULL = `This track’s value sources are full (${VAL_N}/${VAL_N})`;
-const fullWhy = (o, d) => `${(o && o.name) || d.name || 'Serum'}’s mod rows are full (64/64)`;
+const fullWhy = (o, d) => `${(o && o.name) || d.name || RIG.NAME}’s mod rows are full (64/64)`;
 export function addModDev(t, kind) {
   const pre = MOD_PREFIX[kind];
   if (!pre || !isObj(t) || !isObj(t.dev) || devFull(t)) return null;

@@ -509,8 +509,8 @@ const dbA = db => Math.pow(10, db / 20);
 const OTT = (o) => Object.assign({ 'fx.cmp.on': ON, 'fx.cmp.mb': ON, 'fx.cmp.thr': dbA(-24), 'fx.cmp.ratio': 6, 'fx.cmp.att': 2, 'fx.cmp.rel': 90,
   'fx.cmp.mbL': 1, 'fx.cmp.mbM': 1, 'fx.cmp.mbH': 1, 'fx.cmp.gain': dbA(9), 'fx.cmp.mix': 0.6 }, o);
 
-// Rack presets for any track (FX tab of every model, Serum's FX page): the library form the rack and SerumUI read and
-// write ({ type: 'synth.fxchains', v: 1, chains: [{ name, fx }] }, fx without ui / lock). Levels were checked on a
+// Rack presets for any track (FX tab of every model, Serum's FX page): the library form fx-ui's chain menu reads and
+// writes ({ type: 'synth.fxchains', v: 1, chains: [{ name, fx }] }, fx without ui / lock). Levels were checked on a
 // plain saw, a Serum pad and drum hits: each chain keeps the peak within a few dB of the dry signal.
 function chain(name, r) {
   const fx = defaultFxV1();

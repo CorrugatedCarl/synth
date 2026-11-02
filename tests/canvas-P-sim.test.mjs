@@ -21,6 +21,7 @@ import * as cvTray from '../cv-tray.js?v=9';
 import * as FACES from '../cv-face.js?v=9';
 import * as wk from '../wk.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const KEY = 'synthc.cv.perf'; // (store's synth.cv.perf in the app namespace, JSON)
 const FKEY = 'synthc.cv.fps'; // (synth.cv.fps: IMPL-FR §2.1 — the frame-rate setting, a string option id, JSON)
@@ -222,15 +223,15 @@ test('§3.1: a full track (CMOD.DEV_MAX devices) — a modulator, an instrument,
   } finally { for (const k of fill) CMOD.removeModDev(t, k); }
   assert.equal(JSON.stringify(t), before, '(the track as it was)');
   // a Serum replaced by a classic unfolds its FX into a panel: one more device
-  api.addTrack(MODELS.find(m => m.id === 'serum')); await settle(3);
+  api.addTrack(MODELS.find(m => m.id === RIG.ID)); await settle(3);
   const s = T(), sb = JSON.stringify(s), h1 = cv.hist.u.length, fs = fillTo(s);
   try {
-    assert.deepEqual([I(s, dev(s)).model, Object.keys(s.dev).length], ['serum', CMOD.DEV_MAX]);
+    assert.deepEqual([I(s, dev(s)).model, Object.keys(s.dev).length], [RIG.ID, CMOD.DEV_MAX]);
     sim.$('#notice').textContent = '';
     const r = cv.setTrackModel(s, 'minimoog');
-    assert.deepEqual([r, note(), I(s, dev(s)).model, cv.hist.u.length], ['A track holds at most 1024 devices', 'A track holds at most 1024 devices', 'serum', h1], 'refused before the step, said');
+    assert.deepEqual([r, note(), I(s, dev(s)).model, cv.hist.u.length], ['A track holds at most 1024 devices', 'A track holds at most 1024 devices', RIG.ID, h1], 'refused before the step, said');
     sim.$('#notice').textContent = '';
-    assert.deepEqual([cv.drop('minimoog', null), note(), I(s, dev(s)).model, cv.hist.u.length], [true, 'A track holds at most 1024 devices', 'serum', h1], 'a Replace from the Sources tray (cvDropInstrument): its reason, no "Replaced …" notice');
+    assert.deepEqual([cv.drop('minimoog', null), note(), I(s, dev(s)).model, cv.hist.u.length], [true, 'A track holds at most 1024 devices', RIG.ID, h1], 'a Replace from the Sources tray (cvDropInstrument): its reason, no "Replaced …" notice');
   } finally { for (const k of fs) CMOD.removeModDev(s, k); }
   assert.equal(JSON.stringify(s), sb, '(the Serum track as it was)');
   await settle(2);

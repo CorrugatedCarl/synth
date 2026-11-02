@@ -1,9 +1,8 @@
 import './v8-guard.mjs';
 // Milestone 3 lane D (docs/canvas/IMPL-3.md §2.1–2.7, §7 "UI") in the page simulation: a Serum's parts as canvas modules.
-// (Stage WC, IMPL-WC §6, §11.3: "Show parts" is gone — the Serum is the whole panel; the parts view is the rig's (the Serum-engine
-// model `rig`). This file runs the same assertions on a rig in parts view, made by `rigParts` below — lane H's conversion is not in
-// yet, so the sim sets what it will write. The Show parts / Bundle, D-R5 pref, Serum-tray-offer and Replace-with-Serum cases are
-// retired here; lane H rewrites them as rig cases in tests/canvas-WC-sim.test.mjs.)
+// (Stage WC, IMPL-WC §6, §11.3: "Show parts" is gone; the parts view is the rig's (the Serum-engine model `rig`). The Show parts / Bundle,
+// D-R5 pref, Serum-tray-offer and Replace-with-Serum cases are retired here; lane H rewrote them as rig cases in canvas-WC-sim. (SX0)
+// Serum complete is gone from canvas: the file runs on a rig holding the default Serum state, `serumIn` below.)
 // The view follows the lay flag and keeps the one host (its panel undo); the part modules follow the state (I1 / I2) — a preset
 // load adds modules, a part off dims; add / remove a part (a tile on a rig) with the ⏻ written back on undo / redo; the cable
 // drag resolver's three destinations (an internal cable through sx-edges, a mod-out onto a knob, a refusal); an internal cable
@@ -11,9 +10,11 @@ import './v8-guard.mjs';
 // with no module ends at VOICE with its tag; link rows from the parts' jacks; the slot hosts' gestures (one step, rollback,
 // N.modsHold, mval, menu edits, view edits); the bar ⏻ is an x.on cable end; the modulator column grows leftwards (modX / modW);
 // the track-level ModCore meters and mcx; the S0 notice.
-// The real Serum panels (serum-ui / sx-host / sx-ui-mod) in main-sim's DOM stub; the FX rack a stand-in. The world is
-// canvas-sim's scripted one. Accessor-free (instruments read as devices). One boot per file; strings, numbers and booleans
-// only into assert (never a stub DOM node).
+// (SX0, IMPL-SX0 §3, §15 P1-3: the stand-in path went) The boot instrument is a rig — the bundled model left canvas — holding the
+// default Serum state (serumIn below: what the old boot Serum held, W2); its host is sx-host's createHost, its modules rig-ui's faces
+// (canvas-WC-sim's loader), the Arpeggiator / Clip sx-ui-mod's view (Q1). Each case's fate is IMPL-SX0 §14's canvas-3 table. In
+// main-sim's DOM stub; the FX rack a stand-in. The world is canvas-sim's scripted one. Accessor-free (instruments read as devices).
+// One boot per file; strings, numbers and booleans only into assert (never a stub DOM node).
 // Run alone: node --max-old-space-size=2048 --test tests/canvas-3-sim.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,6 +28,7 @@ import * as CVM from '../cv-module.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { RIG } from '../rig-core.js?v=9';
 import * as RC from '../rig-core.js?v=9';
+import * as RU from '../rig-ui.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once — a pending one would hold each
 // destroyed host for wk.js's give-up timer (the fixture check's lesson)
@@ -53,7 +55,7 @@ function scriptedWorld(root) {
 }
 
 await (await import('../cv-mods-ui.js?v=9')).ready();
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIG.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 { // (the panels' graph editors animate through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box;
   // a SerumUI finds its document as its root's ownerDocument; a view switch takes elements out of the tree — remove(), a
   // cleared textContent and a move into another parent detach them here as in a browser, else a destroyed view's controls
@@ -67,6 +69,15 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
     e.append = (...n) => { for (const x of n) if (x && typeof x === 'object' && x.parentNode) detach(x); ap.apply(e, n); };
     let tc = '';
     Object.defineProperty(e, 'textContent', { get: () => tc, set: v => { tc = v == null ? '' : String(v); for (const c of e.children.splice(0)) if (c && typeof c === 'object') c.parentNode = null; }, configurable: true });
+    // ((SX0) the rig's faces take their donor panels' widgets by data-dest (rig-ui findDest): that one selector walks the subtree here; any
+    // other answers the stub's fresh div, fixed like every element (a box, the document) so a painted count can walk it)
+    const qs = e.querySelector;
+    e.querySelector = sel => {
+      const m = /^\[data-dest="([^"]+)"\]$/.exec(sel);
+      if (m) { const f = n => { for (const c of n.children || []) { if (c && c.attrs && c.attrs['data-dest'] === m[1]) return c; const r = c && f(c); if (r) return r; } return null; }; return f(e); }
+      const x = qs.call(e, sel); return x && typeof x === 'object' && x.__fixed !== true ? fix(x) : x;
+    };
+    e.__fixed = true;
     return e;
   };
   D0.createElement = tag => fix(ce(tag));
@@ -74,12 +85,9 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
   D0.querySelector('.scope').getClientRects = () => [{}]; // (the stub's one shared '.scope' element, which a module's body holds: a box too, for the painted count)
 }
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, M = cv.mod, PT = cv.parts;
-// the real Serum panels (the page's own modules); a stand-in FX rack (its UI is not under test here)
+// the rig's host and faces (the page's own modules); a stand-in FX rack (its UI is not under test here)
 class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
-acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
-// ((WC, lane H) the parts machinery with stage 3's panel views standing in for the rig's faces (rig-ui; the faces, the jack rows and the cords
-// are tests/canvas-WC-sim's): no rig-ui host — whichever loader resolves first — so a rig's modules mount stage 3's views)
-globalThis.__synthTest.cv.rig.setUi(false);
+acc.uiLoad(Promise.resolve({ host: await import('../sx-host.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 
@@ -99,20 +107,21 @@ const base = (id, t = T(), dev = 'i1') => C.destBase(t.dev[dev].vals.s, null, id
 const ID = {};
 // ((WC, lane H) a rig is always its modules: no lay flag is written for it (IMPL-WC §2.1) — 'parts' for a rig, else the stored flag)
 const uiOf = (dev = 'i1', t = T()) => (t.dev && t.dev[dev] && t.dev[dev].model === 'rig' ? 'parts' : ((t.lay || {})[dev] || {}).ui);
-// (WC) the selected track's instrument as a rig shown as its modules, holding the Serum's state (W2: the same sound): the model 'rig' and
-// the lay flag, then the view re-renders — what lane H's conversion / drop will write (its first layout is the placing rule's, I1)
-async function rigParts(dev = 'i1') {
-  const t = T();
-  t.dev[dev].model = 'rig';
-  t.lay = Object.assign({}, t.lay || {}, { [dev]: Object.assign({}, (t.lay || {})[dev] || { x: 0, y: 0 }, { ui: 'parts' }) });
+// ((SX0) the old sims' rigParts swapped a Serum's model for the rig's; that Serum is gone. serumIn writes the default Serum state — the boot
+// Serum's (serum.defaults with this sim's preferences: OS 2, no author) — into the selected track's rig, no step (a new vals: a new host),
+// then the view re-renders: the rig every later case starts from (its first layout the placing rule's, I1)
+async function serumIn(dev = 'i1') {
+  T().dev[dev].vals = { s: RC.applyPrefs(C.defaultSerum(), { defOs: 2, author: '' }) };
   cv.renderViews(); await settle(); await settle();
 }
 
-test('boot: the Serum is up as the whole panel (a real SerumUI host in its module); a Serum is never in parts view — a stored flag on one is ignored (WC §6); no Show parts hooks', () => {
-  assert.equal(I(T()).model, 'serum');
-  assert.deepEqual([!!host(), host().bundled, rec().mode, PT.isParts('i1'), PT.show, PT.newView, PT.VIEW_DEFAULT, PT.VIEW_PREF, PT.replace], [true, true, 'bundled', false, undefined, undefined, undefined, undefined, undefined]);
-  assert.equal(keys(), 'i1,i1/fx,out');
+test('boot (SX0: a rig, the bundled model gone): its host is createHost\'s — no shell —, it is always its modules (the starter\'s: Oscillator 1 → Filter → the Amplifier with Envelope 1, its own FX); no Show parts hooks', async () => {
+  assert.equal(I(T()).model, RIG.ID);
+  assert.deepEqual([!!host(), typeof host().buildShell, typeof host().dropShell, rec().mode, PT.isParts('i1'), PT.show, PT.newView, PT.VIEW_DEFAULT, PT.VIEW_PREF, PT.replace], [true, 'undefined', 'undefined', 'parts', true, undefined, undefined, undefined, undefined, undefined]);
+  assert.equal(keys(), 'i1,i1/env1,i1/filter,i1/fx,i1/oscA,out');
   ID.a = T().id;
+  await serumIn();
+  assert.deepEqual([I(T()).model, keys()], [RIG.ID, 'i1,i1/env1,i1/filter,i1/fx,i1/oscA,out'], 'the default Serum state: the same modules (OSC A into the off Filter, I1\'; ENV 1 the amp slot)');
 });
 
 test('the sim\'s null DSP globals cover main.js\'s whole DSP list (IMPL-9 §3.7\'s two scripts too): the page\'s load of it resolves at once — no 20 s give-up wait, no "could not load"', async () => {
@@ -125,17 +134,17 @@ test('the sim\'s null DSP globals cover main.js\'s whole DSP list (IMPL-9 §3.7\
   assert.deepEqual([list.length, Object.keys(r).length, Object.values(r).every(v => v === null)], [17, 17, true]); // ((M) master-dsp.js: MASTERDSP
 });
 
-test('a rig in parts view (WC: the sim\'s stand-in for the conversion — model and lay only, no step): the state is byte-identical (N2), the one host — its panel undo — survives it, each module\'s panel is a view of it; a Serum carrying the same flag stays the whole panel', async () => {
+// ((SX0) the Serum half — a Serum carrying the parts flag stays the whole panel; the model swap keeps the host — left with the bundled model;
+// what stays: a lay-only change (the parts flag) keeps the state (N2) and the one host with its panel undo, each module's face a view of it)
+test('a rig in parts view — a lay-only change (the parts flag, no step): the state is byte-identical (N2), the one host — its panel undo — survives it, each module\'s face is a view of it', async () => {
   const t = T(), H0 = host(), s0 = state(), n0 = hsteps();
-  t.lay = Object.assign({}, t.lay || {}, { i1: Object.assign({}, (t.lay || {}).i1 || { x: 0, y: 0 }, { ui: 'parts' }) });
-  cv.renderViews(); await settle();
-  assert.deepEqual([rec().mode, host() === H0, H0.bundled, PT.isParts('i1'), partKeys(), state() === s0], ['bundled', true, true, false, '', true], 'a Serum with the parts flag: still the whole panel (the flag is ignored, WC §6)');
   H0.edit(s => { s.p['f.res'] = 0.31; }, { label: 'RES' }); sim.raf(); // (a panel edit: the host's own undo step)
   assert.equal(H0.undo.canUndo(), true);
   const s1 = state();
   assert.notEqual(s1, s0);
-  await rigParts();
-  assert.deepEqual([hsteps(), uiOf(), host() === H0, rec().mode, H0.bundled, H0.undo.canUndo(), state() === s1, I(T()).model], [n0, 'parts', true, 'parts', false, true, true, 'rig']);
+  t.lay = Object.assign({}, t.lay || {}, { i1: Object.assign({}, (t.lay || {}).i1 || { x: 0, y: 0 }, { ui: 'parts' }) });
+  cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([hsteps(), uiOf(), host() === H0, rec().mode, H0.undo.canUndo(), state() === s1, I(T()).model], [n0, 'parts', true, 'parts', true, true, RIG.ID]);
   // ((WC, lane H) rig-core partKeys: + Filter 1 — OSC A routes into it, off (I1') — and Envelope 1 — a Serum's ENV 1 is no key gate (the amp slot)
   assert.deepEqual([partKeys(), V().modules.has('i1/fx'), base('a.on') >= 0.5, base('f.on') >= 0.5], ['i1/env1,i1/filter,i1/oscA', true, true, false], 'the Amplifier (i1), OSC A, the Filter it feeds (off: I1\'), ENV 1 (the amp slot) and the own FX');
   assert.deepEqual([...rec().views.keys()].sort().join(','), 'i1,i1/env1,i1/filter,i1/oscA', 'each module\'s panel is a view of the one host');
@@ -365,12 +374,11 @@ test('the ModCore meters are track-level (role none, no part: lane E\'s \'mods\'
   assert.deepEqual([+H.snap.lfoPh[0].toFixed(2), +H.snap.lfoY[0].toFixed(2), +H.liveV.toFixed(2)], [0.25, 0.7, 0.4]);
 });
 
-test('WC §6 (D-R5 retired): no ⚙ "New Serums open as" line and no pref — a new Serum track opens as the whole panel; Tidy carries a rig\'s parts flag and lays the group out by its rule; a track switch away and back makes the host again in parts view', async () => {
+// ((SX0) "a new Serum track opens as the whole panel" left with the bundled model: a new track here is a rig, its starter's modules)
+test('WC §6 (D-R5 retired): no ⚙ "New Serums open as" line and no pref; a new rig track opens as its modules; Tidy carries a rig\'s parts flag and lays the group out by its rule; a track switch away and back makes the host again in parts view', async () => {
   assert.equal(sh.shell.sxView, undefined);
-  const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
-  assert.deepEqual([uiOf('i1', t), rec().mode, partKeys()], [undefined, 'bundled', '']);
-  await rigParts();
-  assert.deepEqual([uiOf('i1', T()), rec().mode, partKeys()], ['parts', 'parts', 'i1/env1,i1/filter,i1/oscA']); // ((WC) rig-core's parts: I1' and the amp slot
+  const t = api.addTrack(MOD(RIG.ID)); sim.raf(); cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([uiOf('i1', t), rec().mode, partKeys()], ['parts', 'parts', 'i1/env1,i1/filter,i1/oscA']); // ((WC) the starter: Oscillator 1 → Filter, Envelope 1 the amp slot
   cv.tidy(); await settle();
   assert.equal(uiOf('i1', T()), 'parts', 'Tidy carries the parts flag');
   const L = T().lay;
@@ -394,7 +402,6 @@ const keysOf = L => [...new Set(L)].map(p => 'i1/' + p).sort().join(',');
 
 test('review 1 F2 (the lead\'s rule): browsing every factory preset in parts view leaves the last preset\'s parts only — places the rule wrote are automatic and a load prunes those now neither on nor read; a part the user moved stays; no History step; the panel undo of the last load prunes likewise', async () => {
   host().edit(s => { Object.assign(s.p, { 'b.on': 1, 'f.on': 1 }); }, { label: 'on' }); await settle(); // (OSC B and FILTER 1 on: what the retired F1 set up)
-  if (!PT.isParts('i1')) await rigParts();
   assert.equal(partKeys().includes('i1/oscB'), true);
   assert.deepEqual([T().lay['i1/oscB'].auto, T().lay['i1/filter'].auto], [1, 1], 'placed by the rule (I1): automatic');
   const n0 = hsteps();
@@ -413,7 +420,6 @@ test('review 1 F2 (the lead\'s rule): browsing every factory preset in parts vie
 
 test('review 1 F3: a canvas cable undone inside the Serum (its panel undo), then the top ↶ named for the cable: it consumes the cable step alone (said: already undone) — never the step before it —; ↷ writes the cable again', async () => {
   host().edit(s => { s.p['b.on'] = 1; s.p['f2.on'] = 1; s.osc[1].route = 1; }, { label: 'on' }); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   const F = () => [T().dev.i1.vals.s.osc[1].route, base('b.fbal'), base('f2.routeB')];
   const f0 = F(), n0 = hsteps(), L0 = cv.hist.undoLabel; // (L0: the step before the cable's — it must stay)
   assert.equal(PT.connect('i1/oscB.out', 'i1/filter2.in'), true); await settle(); await settle();
@@ -448,44 +454,29 @@ test('review 1 F4: a matrix row without a destination reads nothing — its LFO 
 
 // (WC §6) review 1 F5 — "Replace with Serum" acts on the track it was offered for — is retired: a part tile no longer offers a Serum (lane H's first drop is tested in canvas-WC-sim)
 
-test('review 2 P1-5: a stub\'s tap opens the source\'s routing popover after the tap\'s click — never inside it (the world takes a click while its gesture lasts); a selection without a tap opens it at once', async () => {
-  api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
-  host().edit(s => { s.p['b.on'] = 1; s.osc[1].route = 0; s.p['f.routeB'] = 0; s.p['f2.routeB'] = 0; }, { label: 'stub' }); await settle(); await settle();
-  const c = V().cables.list().find(x => x.int && x.stub && x.a === 'i1/oscB.out');
-  assert.equal(!!c, true, 'OSC B\'s stub');
-  const open = () => (host().pop ? host().pop.o : null), shut = () => { if (host().pop) host().pop.close(); };
-  const Vb = rec().views.get('i1/oscB').V, b = (Vb.panel.panel || Vb.panel).route.btn; // (the stub DOM's click() runs onclick only: a browser's runs the listeners)
-  b.click = () => b.dispatchEvent({ type: 'click', target: b, currentTarget: b, preventDefault() {}, stopPropagation() {} });
-  shut();
-  M.sel(c.id); await settle();
-  assert.equal(open(), 'route1', 'no tap: at once');
-  shut();
-  M.sel(c.id, 'mouse'); await settle(); await settle();
-  assert.equal(open(), null, 'not inside the tap');
-  sim.win('click'); await settle(); await settle();
-  assert.equal(open(), 'route1', 'after its click: OSC B routing');
-  shut();
-});
+// (SX0) review 2 P1-5 — a stub's tap opens the source's routing popover after the tap's click — is removed with the stand-in path: it drove
+// stage 3's OSC view (its ROUTE button's popover) and sx-edges' stub cable; a rig's modules are rig-ui's faces and its connections rig-core's
+// cords (no stub: an unrouted source has no cable; the Filter it would feed stands as a module, I1' — P1-6 below, canvas-WC-sim §4.1, P2-2)
 
+// ((SX0) re-pointed onto the rig's Macros face: the stub DOM builds the face without its donor's name tiles (they are found by class), so the
+// paint is read off the face's view — stale = skipped by a paint while hidden, painted on its next showing — as canvas-MOD1-sim reads its slot
+// faces; the mechanism under test is the same: the module's on-screen change → the host's reshow)
 test('review 2 P1-2: a part view a paint skipped while its module was off screen is painted when the module comes back on screen — engine off (the module\'s on-screen change → the host\'s reshow)', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   if (!V().modules.has('i1/macros')) { PT.add('i1', 'macros'); await settle(); await settle(); }
-  const m = V().modules.get('i1/macros');
-  const name1 = () => (walk(m.el, q => /\bsx-tl\b/.test(String(q.className || '')))[0] || {}).textContent;
-  assert.equal(name1(), T().dev.i1.vals.s.macros[0].name || 'Macro 1');
+  const m = V().modules.get('i1/macros'), Vm = () => rec().views.get('i1/macros').V;
+  const st = () => (Vm().shown() ? 'shown' : 'hidden') + (Vm().stale ? '+stale' : '');
+  assert.equal(st(), 'shown', 'painted');
   m.onScreen(false); await settle();
   host().edit(s => { s.macros[0].name = 'Bright'; }, { label: 'name' }); await settle(); await settle();
-  assert.notEqual(name1(), 'Bright', 'off screen: skipped (H4)');
+  assert.equal(st(), 'hidden+stale', 'off screen: skipped (H4)');
   m.onScreen(true); await settle(); await settle();
-  assert.equal(name1(), 'Bright', 'on screen again: painted');
+  assert.equal(st(), 'shown', 'on screen again: painted');
   host().edit(s => { s.macros[0].name = 'Macro 1'; }, { label: 'name' }); await settle();
 });
 
 test('review 2 P1-6 → (WC, skeptic P1-2, I1\'): OSC A routed into an off Filter 1 — the default Serum\'s routing — is no stub any more: the Filter stands as a module, ⏻ off, and the cable goes into it (it passes its input); Remove re-plugs OSC A where the Filter\'s OUT went', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   host().edit(s => { s.p['f.on'] = 0; s.p['a.on'] = 1; s.osc[0].route = 0; s.p['f.routeA'] = 1; s.p['a.fbal'] = 0; }, { label: 'default routing' }); await settle(); await settle();
   assert.equal(partKeys().split(',').includes('i1/filter'), true, 'I1\': a powered source routes into it');
   const c = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
@@ -499,7 +490,6 @@ test('review 2 P1-6 → (WC, skeptic P1-2, I1\'): OSC A routed into an off Filte
 
 test('review 2 P1-7: a row into a knob no mounted view shows ends at VOICE\'s top-left corner (its tagged badge right of it, above the bar: never over FILTER 1\'s bar left of VOICE)', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   if (V().modules.has('i1/oscC')) { PT.remove('i1/oscC'); await settle(); await settle(); }
   const q = V().destPort('i1', 'c.pan'), v = V().modules.get('i1').rect();
   assert.deepEqual([!!q.hid, q.x, q.y], [true, v.x, v.y]);
@@ -535,7 +525,6 @@ test('review 2 P2: a canvas ENV cabled to a Serum knob (injected into that Serum
 
 test('review 2 P2 places: a preset load that turns OSC B / C and both filters on lays them out in order once settled (OSC A · B · C, FILTER 1 · 2 top to bottom, whatever Tidy\'s guessed heights); a part tile dropped on VOICE lands clear of it', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   for (const k of ['i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2']) if (T().lay[k]) { PT.remove(k); await settle(); await settle(); }
   const ks = ['i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2'], H = { 'i1/oscB': 700, 'i1/oscC': 700, 'i1/filter': 520, 'i1/filter2': 520 };
   assert.equal(api.sxLoad(cv.view1e('i1'), 'f:Drift Machine'), true);
@@ -556,7 +545,6 @@ test('review 2 P2 places: a preset load that turns OSC B / C and both filters on
 
 test('review 2 P2 (§2.2): an LFO\'s bar carries its GLOBAL / PER NOTE badge (its MONO) — a canvas LFO and a Serum\'s own LFO part; a mode badge, not a warning', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
-  if (!PT.isParts('i1')) await rigParts();
   const t = T(), l = [...V().modules.keys()].find(q => /^l\d+$/.test(q)) || M.add('lfo'); await settle();
   const badge = k => { const m = V().modules.get(k), b = walk(m.bar, q => /\bcv-badge\b/.test(String(q.className || '')))[0]; return [m.badge, b && b.attrs ? b.attrs['data-tone'] || null : null]; };
   globalThis.__synthTest.modUI.editState(l, { lfo: Object.assign({}, t.dev[l].lfo, { mono: 1 }) }); await settle(); await settle();
@@ -599,12 +587,13 @@ test('S0 notice (IMPL-3 §9.9; WC: the rig\'s modules, its words): on a touch de
   const HEAVY = `This many ${RIG.NAME} modules may stutter when zooming on this device.`;
   const WAIT = (PT.HEAVY_MS || 600) + 250, W = cv.world();
   assert.equal(PT.HEAVY, 1866, 'sx1\'s painted count (bench.json "ui-m3")');
-  const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
-  assert.deepEqual([uiOf('i1', t), rec().mode], [undefined, 'bundled'], 'a new Serum: the whole panel, and the whole panel never says it');
+  // ((SX0) "a new Serum: the whole panel never says it" left with the bundled model: the new track is a rig, its starter's modules)
+  const t = api.addTrack(MOD(RIG.ID)); sim.raf(); cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([uiOf('i1', t), rec().mode], ['parts', 'parts']);
   api.notice('', 0);
-  // touch, a rig under the count (VOICE, OSC A and the own FX): nothing
+  // touch, a rig under the count (the default Serum state's modules — serumIn — and the own FX): nothing
   cv.touch(true);
-  await rigParts();
+  await serumIn();
   await sim.settle(WAIT);
   assert.deepEqual([PT.painted() <= PT.HEAVY, note() === HEAVY], [true, false]);
   // a desktop: every part opened (a fully opened rig is far past the count), nothing said
@@ -643,4 +632,21 @@ test('S0 notice (IMPL-3 §9.9; WC: the rig\'s modules, its words): on a touch de
   assert.equal(/^Added LFO 4/.test(note()), true, note());
   await sim.settle(8400);
   assert.equal(note() === HEAVY, true, 'after the undo notice');
+});
+
+test('review 1 P2-1 (SX0, Q1): a rig whose state has the Arpeggiator / the Clip sequencer on mounts their views through main.js sxViews (sx-ui-mod mountPart: bare, 1184 wide, column P) — rec.views holds i1/arp and i1/clip with a built panel; off, no view', async () => {
+  await serumIn();
+  for (const k of ['i1/arp', 'i1/clip']) if (partKeys().split(',').includes(k)) assert.equal(PT.remove(k), true, 'start without ' + k); // (the S0 case above opened every part: its places stay)
+  await settle(); await settle();
+  const kinds = () => ['i1/arp', 'i1/clip'].map(k => { const r = rec().views.get(k); return r ? r.V.kind : 'none'; });
+  assert.deepEqual(kinds(), ['none', 'none'], 'off: no view');
+  host().edit(s => { s.p['arp.on'] = 1; s.p['clip.on'] = 1; }, { label: 'arp' }); await settle(); await settle();
+  cv.renderViews(); await settle(); await settle();
+  assert.deepEqual(['i1/arp', 'i1/clip'].map(k => partKeys().split(',').includes(k)), [true, true], 'the two modules stand: ' + partKeys());
+  assert.deepEqual(kinds(), ['arp', 'clip'], 'sxViews mounts them: ' + [...rec().views.keys()].sort());
+  for (const k of ['i1/arp', 'i1/clip']) {
+    const V = rec().views.get(k).V, a = V.args, r = V.root;
+    assert.deepEqual([V.dead, V.panel !== null, a.bare, a.width, a.col, a.part, a.phase, a.k, a.dev], [false, true, true, 1184, 'P', k.slice(3), null, 0, 'i1'], k + ' mountPart\'s args');
+    assert.deepEqual([r.attrs['data-col'], r.style.width, r.attrs['data-dev']], ['P', '1184px', 'i1'], k + ' root');
+  }
 });

@@ -186,7 +186,7 @@
       ]
     },
     "cv-module.js": {
-      "n": 6,
+      "n": 5,
       "sites": [
         {
           "has": "if (!D) return [{ key: ID.inst, kind: 'inst', model: t.model || null",
@@ -202,10 +202,6 @@
         },
         {
           "has": "defaultW(ID.inst, T.model) } } : null;",
-          "why": "the 1b legacy path (no host.devices)"
-        },
-        {
-          "has": "((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)",
           "why": "the 1b legacy path (no host.devices)"
         },
         {
@@ -252,7 +248,7 @@
           "why": "a render-farm job record"
         },
         {
-          "has": "if (x.model !== 'serum') {",
+          "has": "if (x.model !== SX_FARM) {",
           "why": "a render-farm job record"
         },
         {

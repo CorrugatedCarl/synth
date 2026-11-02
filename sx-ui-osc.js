@@ -6,11 +6,11 @@
 // Render OSC Warp v2 (§13.3.1).
 // Extracted from serum-ui.js in M1a by U1; owned by U2 from M1b; M2 = the full panels of §13.3.
 //
-// The panels never see the SerumUI or the main.js host's edit path: they receive the binding kit (serum-ui makeKit,
+// The panels never see the SerumHost or the main.js host's edit path: they receive the binding kit (serum-ui makeKit,
 // §11.14) — destination widgets (kit.knob / menu / toggle / num) with halos, drag-to-modulate drops, knob menus, MIDI
 // learn and locks; state edits through kit.edit (undo, dirty state, repaint); the panel shell, canvases, repaint and
 // popover hooks of the kit's M1a members. The wavetable helpers of wt.js arrive as kit.wt (§0.2 gives this module no
-// wt import); the WT editor overlay stays serum-ui's (kit.openWtEditor); sample data arrives through kit.host.smp.
+// wt import); the WT editor overlay is the host's (kit.openWtEditor = SerumHost.openWtEditor); sample data arrives through kit.host.smp.
 // Every widget is built while serum-ui builds the page (so it registers on that page): popover contents are built with
 // their panel and moved into kit.popover when it opens.
 //
@@ -2969,7 +2969,7 @@ export class OscPanel {
     const K = this.kit, o = this.o, P = this.P;
     let ok = true;
     K.edit(s => { ok = core.swapWarps(s, o); if (ok && typeof core.syncS1 === 'function') core.syncS1(s, P + '.w1'); }, { label: 'Swap Warps' });
-    if (!ok) K.notify((K.sx && K.sx.host && K.sx.host.words && K.sx.host.words.s1Warp) || 'S1 mode: WARP 2’s mode has no Serum 1 equivalent for WARP 1'); // ((WC, G13) a rig's host: its words
+    if (!ok) K.notify((K.sx && K.sx.host && K.sx.host.words && K.sx.host.words.s1Warp) || 'S1 mode: WARP 2’s mode has no S1 equivalent for WARP 1'); // ((WC, G13) a rig's host: its words
   }
   // remap curve popover (Remap 1–4 of either slot; the Phase-1 modes 13–16 in S1 mode)
   remap(anchor) {

@@ -23,6 +23,7 @@
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as smp from '../smp.js?v=9';
 import { playbackEntry, specEntry, irEntry } from '../smpwork.js?v=9';
 import { convShapeOf } from '../assets.js?v=9';
@@ -76,7 +77,7 @@ function sx(edit, o) {
   s.global.os = 2;
   edit(s);
   const st = core.normalizeSerum(s);
-  return Object.assign({ patch: patchFor('serum', { s: st }, core.defaultFx2(), { sr: SR, bpm: 120 }), state: st }, o);
+  return Object.assign({ patch: patchFor(RIG.ID, { s: st }, core.defaultFx2(), { sr: SR, bpm: 120 }), state: st }, o);
 }
 const chord = (k, base = 48, step = 3) => Array.from({ length: k }, (_, i) => [base + step * i, 0.8]);
 function gran(s, o, dens, glen) {
@@ -194,7 +195,7 @@ function extTrack(ext) {
   rowD(s);
   s.matrix[4] = row(ext ? 'ext1' : 'fixed', 'f.cutoff', 0.3);
   const st = core.normalizeSerum(s), fx = core.defaultFx2();
-  const patch = patchFor('serum', { s: st }, fx, { sr: SR, bpm: 120 });
+  const patch = patchFor(RIG.ID, { s: st }, fx, { sr: SR, bpm: 120 });
   if (ext) Object.assign(patch, core.compileSerum(st, { bpm: 120, smooth: 1, fx, qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0, ext: true }));
   const Z = { lo: 0, hi: 127, xp: 0 };
   const mods = ext ? modsOf(s2 => { globalLfo(s2, 0, 2); }, st2 => { st2.matrix[0] = row('lfo1', 'a.level', 0.01); return { rows: [], ext: [{ k: 1, src: 5 }], keep: [5] }; }) : null;
@@ -517,7 +518,7 @@ function fastSx(on) {
   s.matrix[3] = row('env2', 'f.drive', 0.4);
   const st = core.normalizeSerum(s), Z = { lo: 0, hi: 127, xp: 0 };
   return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [], edges: [['i1', 'out', 1]], out: 'out', key: 'fast-sx' },
-    patches: { i1: patchFor('serum', { s: st }, fx, { sr: SR, bpm: 120 }) }, chains: {}, notes: chord(4), host: 'track', mon: ['i1'],
+    patches: { i1: patchFor(RIG.ID, { s: st }, fx, { sr: SR, bpm: 120 }) }, chains: {}, notes: chord(4), host: 'track', mon: ['i1'],
     fast: on ? { hz: 120, ids: ['i1'], ix: { i1: Int16Array.from([VIX('a.pan'), VIX('f.cutoff'), VIX('f.res'), VIX('f.drive'), core.NSV + 8]) }, ixv: 1 } : null };
 }
 function fastFx(on) {

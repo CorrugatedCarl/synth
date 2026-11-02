@@ -20,6 +20,11 @@
 //       a zoom, the live cable, a removal, a port move, a bypass), serialised from tests/wk-dom.mjs (tag, attributes in insertion
 //       order, the style keys set, children) — the full markup when it fits 64 KB, else its sha256. No master session: the
 //       master canvas draws no cables (its rack feeds OUT inside master-ui; cv-cables is not mounted there).
+// (SX0, IMPL-SX0 §6.2) Serum complete left the canvas: the 94 fixtures that held a Serum (the 86 presets, 1e:b, 2a:0–2, 2b:0–3) and the G12
+// `serum` / `fade` sessions hold a rig (RIG.ID) now — the same state, the same patch. base.json is NOT re-recorded: the `mods`, `cables`,
+// `destOk` and `messages` columns hash the same by construction (all key on isSxId; graph-1e's osCap too), and the `track` / `graph`
+// columns, which echo the device's model id, are hashed with that one field written back (back(): a synth device's, a v1's or a patch's
+// `model` that is RIG.ID → 'serum') — "the base output with the input's id renamed"; tests/sx0-model.test.mjs pins back() as the only transform.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { MODELS, classicOf } from '../../models.js?v=9';
@@ -35,6 +40,7 @@ import { tracks as tracks2a } from '../fixtures/mods-2a.mjs';
 import { tracks as tracks2b } from '../fixtures/mods-2b.mjs';
 import { normModDev } from '../../song.js?v=9';
 import { fresh } from '../wk-dom.mjs';
+import { RIG } from '../../rig-core.js?v=9';
 
 const OUT = new URL('./base.json', import.meta.url);
 const sha = s => createHash('sha256').update(s).digest('hex');
@@ -59,8 +65,8 @@ const base = (id, name) => ({ id, name, color: '#e8a23a', ch: 0, mute: false, so
 const classicTrack = (model, dev) => Object.assign(base('trk_' + model, model), { prim: 'i1', nid: 2,
   dev: { i1: Object.assign({ kind: 'synth', model, vals: vals(model), preset: null }, dev || {}), fx1: { kind: 'panel', fx: C.defaultFx2() }, out: { kind: 'out' } },
   wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] });
-const serumTrack = (name, s, fx) => Object.assign(base('trk_sx', name), { prim: 'i1', nid: 2,
-  dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, preset: name, fx }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] });
+const serumTrack = (name, s, fx) => Object.assign(base('trk_sx', name), { prim: 'i1', nid: 2, // ((SX0) a rig holding the Serum state: the keys stay 'serum:<preset>')
+  dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s }, preset: name, fx }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] });
 export function fixtures() {
   const F = {};
   for (const p of C.FACTORY_PRESETS) {
@@ -89,12 +95,22 @@ function probes(t) {
   }
   return out;
 }
+// (SX0) the base's model id: a synth device's, a v1's (compileTrack) or a patch's (compileGraph's patches) `model` that is RIG.ID → 'serum',
+// nothing else (a new object; arrays / typed arrays / Maps / Sets kept as they are below a written object)
+export function back(x, at) {
+  if (!x || typeof x !== 'object' || ArrayBuffer.isView(x) || x instanceof Map || x instanceof Set) return x;
+  if (Array.isArray(x)) return x.map(v => back(v, ''));
+  const o = {}, own = at === 'v1' || at === 'patch' || x.kind === 'synth';
+  for (const k of Object.keys(x)) o[k] = own && k === 'model' && x[k] === RIG.ID ? 'serum' : back(x[k], k === 'patches' ? 'patches' : at === 'patches' ? 'patch' : k);
+  return o;
+}
+export const holdsRig = t => !!t && !!t.dev && Object.values(t.dev).some(d => d && d.kind === 'synth' && d.model === RIG.ID);
 export function g1() {
   const F = fixtures(), R = {};
   for (const key of Object.keys(F)) {
-    const t = F[key], P = PROJECT(t);
+    const t = F[key], P = PROJECT(t), W = holdsRig(t) ? x => back(x, '') : x => x;
     R[key] = {
-      track: H(G.compileTrack(t)), graph: H(G.compileGraph(t)), mods: H(G.compileMods(t, P, {})),
+      track: H(W(G.compileTrack(t))), graph: H(W(G.compileGraph(t))), mods: H(G.compileMods(t, P, {})),
       cables: H(CB.cablesOf(t, { project: P, presetRows: true })), messages: H(messages(clone(t))), destOk: H(probes(t)),
     };
   }

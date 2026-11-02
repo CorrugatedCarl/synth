@@ -12,6 +12,7 @@ import * as cvWorld from '../cv-world.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1400, bottom: 1000 }; // (the bottom: tall enough for a 1i instrument with keys, 864 px, at k 1: its height fit is canvas-1i-sim's)
 function scriptedWorld(root) {
@@ -136,7 +137,7 @@ test('default camera while ROLL shows: owed (the band has no size there), comput
 
 test('a Serum preset load (sxLoad: the browser, next / previous, a MIDI program change) re-derives the canvas titles and route label', async () => {
   const t = api.addTrack(undefined); sim.raf();
-  api.setTrackModel(t, 'serum'); sim.raf(); await sim.settle(5); sim.raf(); sim.raf();
+  api.setTrackModel(t, RIG.ID); sim.raf(); await sim.settle(5); sim.raf(); sim.raf();
   const v = V();
   let n = 0;
   const was = v.refresh;

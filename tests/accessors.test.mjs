@@ -21,7 +21,8 @@ import * as CMOD from '../cv-model.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import * as S from '../song.js?v=9';
 import * as core from '../serum-core.js?v=9';
-import { MODELS } from '../models.js?v=9';
+import { MODELS, isSxId } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 function scriptedWorld(root) {
   const L = {};
@@ -41,7 +42,7 @@ function scriptedWorld(root) {
   };
   return W;
 }
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIG.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell;
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const PJ = () => api.project(), T = () => PJ().tracks.find(t => t.id === PJ().selTrack);
@@ -65,7 +66,7 @@ function canon(x) {
 const sha = m => createHash('sha1').update(canon(structuredClone(m))).digest('hex').slice(0, 16);
 const fresh = id => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (selected; its switch mounted)
 const menuAct = (key, label) => { const it = cv.menu(key).find(x => x.label === label); assert.ok(it, 'menu item ' + label); it.action(); };
-const sxT = PJ().tracks.find(t => P(t).model === 'serum'); // the boot's Serum track (#serum)
+const sxT = PJ().tracks.find(t => P(t).model === RIG.ID); // the boot's Serum track (#serum)
 const lfoFx = fx => { const id = core.newInstance(fx, 'cho', { rack: 0 }); const I = fx.racks[0].mods.find(x => x.id === id); I.p.on = 1; return id; };
 const choPh = fx => { const I = fx.racks[0].mods.find(x => x.type === 'cho'); return I ? I.ph : undefined; };
 const fxOfK = (t, k) => t.dev[k].fx; // (a rack by its key: a Serum's own FX, a panel's)
@@ -100,9 +101,9 @@ test('R0 Serum presets: host save → current → rename follows the track; the 
 });
 
 test('R0 program change: each Serum target loads the n-th preset of the browser\'s list; a classic target is skipped', async () => {
-  const SU = await import('../serum-ui.js?v=9');
+  const SU = await import('../sx-host.js?v=9');
   const H = api.sxHost(sxT), c = fresh('minimoog'), want = SU.browserList(H.presets.list(), api.store.get(SU.BROWSER_KEY, null))[2];
-  const cv0 = JSON.stringify(P(c).vals), was = acc.uiLoad(Promise.resolve({ sx: SU })); // (the panel modules: in node they never finish loading)
+  const cv0 = JSON.stringify(P(c).vals), was = acc.uiLoad(Promise.resolve({ host: SU })); // (the panel modules: in node they never finish loading)
   try {
     acc.sxDirty.clear();
     acc.programChange([sxT, c], 2);
@@ -221,7 +222,7 @@ test('R0 MIDI import: new tracks of the current instrument\'s model, each with i
   const add = PJ().tracks.slice(n0);
   assert.equal(add.length, 1);
   const t = add[0], f = CMOD.fxDevOf(t);
-  assert.deepEqual([P(t).model, !!t.dev, !!f, f && f.dev.fx.v, t.notes.length, CMOD.isAdopted(t)], ['serum', true, true, 2, 2, true]);
+  assert.deepEqual([P(t).model, !!t.dev, !!f, f && f.dev.fx.v, t.notes.length, CMOD.isAdopted(t)], [RIG.ID, true, true, 2, 2, true]);
 });
 
 test('R0 add / duplicate track: a v2 track of the model (its rack, the tray\'s Simple layout); the copy\'s devices equal and its own', () => {
@@ -240,8 +241,8 @@ test('R0 the track list and the instrument menu name each track\'s instrument mo
   for (const b of pop.children) { const tx = b.children && b.children[2]; if (tx && tx.children && tx.children[1]) txt.push(tx.children[1].textContent); }
   const want = PJ().tracks.map(t => MOD(P(t).model).name + ' · ' + (acc.voiceShown.get(VK(t)) || acc.trackVoice(P(t)).label));
   assert.deepEqual(txt, want);
-  const items = sh.instItems(sxT), it = items.find(x => x.value === 'serum');
-  assert.equal(it.label, 'Serum · ' + (acc.voiceShown.get(VK(sxT)) || acc.trackVoice(P(sxT)).label));
+  const items = sh.instItems(sxT), it = items.find(x => x.value === RIG.ID);
+  assert.equal(it.label, RIG.NAME + ' · ' + (acc.voiceShown.get(VK(sxT)) || acc.trackVoice(P(sxT)).label));
 });
 
 test('R0 the multisample zone: zoneWarm reads the shown Serum\'s multisample records, zoneOf gives the recent voice\'s zone sample', async () => {
@@ -264,40 +265,33 @@ test('R0 the multisample zone: zoneWarm reads the shown Serum\'s multisample rec
 // (the UI holds one instrument per track since 1f: the hook __synthTest.cv.add puts a second one into the data)
 const duo = (prim, other) => { const t = fresh(prim), id = cv.add(other, null); sim.raf(); return { t, id }; };
 
-test('R2 MPE detection: any Serum of the track with MPE on (not only the primary); the MIDI routes follow', async () => {
-  const M = await import('../midi.js?v=9');
-  const { t, id } = duo('juno60', 'serum');
-  assert.equal(M.isMpe(t), false);
-  t.dev[id].vals.s.global.mpe.on = 1;
-  t.ch = 3;
-  assert.deepEqual([M.isMpe(t), M.noteCh(t, 5), M.targets(PJ().tracks, PJ().selTrack, 7).includes(t)], [true, 5, true], 'the second Serum\'s MPE');
-  t.dev[id].vals.s.global.mpe.on = 0;
-  assert.equal(M.isMpe(t), false);
-});
+// (SX0, IMPL-SX0 §6.1 / §15 P1-5) "R2 MPE detection: any Serum of the track with MPE on" is removed: MPE input on canvas leaves with Serum
+// complete (§11.3) — midi.js (byte-identical, IMPL-B) routes MPE to main's 'serum' alone, which no canvas device holds any more; midi.test
+// keeps midi.js's own isMpe / noteCh / targets cases
 
 test('R2 MIDI file export: a track\'s instrument name is its primary\'s model (a second instrument is not it)', () => {
-  const { t } = duo('dx7', 'serum');
+  const { t } = duo('dx7', RIG.ID);
   const bytes = S.exportMIDI({ name: 'x', bpm: 120, sig: [4, 4], bars: 1, tracks: [t] }, {}), txt = new TextDecoder('latin1').decode(bytes);
-  assert.deepEqual([txt.includes('dx7'), txt.includes('serum')], [true, false]);
+  assert.deepEqual([txt.includes('dx7'), txt.includes(RIG.ID)], [true, false]);
 });
 
 test('R2 program change: the primary, named — a Serum that is not the primary keeps its preset', async () => {
-  const SU = await import('../serum-ui.js?v=9');
-  const { t, id } = duo('minimoog', 'serum'), H = api.sxHost(t, id), was = acc.uiLoad(Promise.resolve({ sx: SU }));
+  const SU = await import('../sx-host.js?v=9');
+  const { t, id } = duo('minimoog', RIG.ID), H = api.sxHost(t, id), was = acc.uiLoad(Promise.resolve({ host: SU }));
   const before = H.presets.current(), pre = t.dev[id].preset;
   try { acc.programChange([t], 4); for (let k = 0; k < 10; k++) await sim.settle(2); } finally { acc.uiLoad(was); }
   assert.deepEqual([H.presets.current(), t.dev[id].preset], [before, pre]);
 });
 
 test('R2 the rate line names every Serum\'s oversampling (a second Serum\'s too); the multisample zone records of any Serum', () => {
-  const { t, id } = duo('juno60', 'serum');
-  const all = () => PJ().tracks.flatMap(x => CMOD.instIds(x).filter(k => x.dev[k].model === 'serum').map(k => x.dev[k]));
+  const { t, id } = duo('juno60', RIG.ID);
+  const all = () => PJ().tracks.flatMap(x => CMOD.instIds(x).filter(k => isSxId(x.dev[k].model)).map(k => x.dev[k]));
   for (const d of all()) d.vals.s.global.os = 1;
   t.dev[id].vals.s.global.os = 4;
   acc.rateText();
   const sr = sim.ctx().sampleRate, kHz = x => (x / 1000).toFixed(1).replace(/\.0$/, ''), txt = sim.$('#rate').textContent;
   for (const d of all()) d.vals.s.global.os = 2;
-  assert.equal(txt.includes('Serum ' + kHz(sr) + '/' + kHz(sr * 4) + ' kHz'), true, txt);
+  assert.equal(txt.includes(RIG.NAME + ' ' + kHz(sr) + '/' + kHz(sr * 4) + ' kHz'), true, txt); // ((SX0, §5) the rate line names the instrument, RIG.NAME
   t.dev[id].vals.s.osc[1].type = 'multi'; t.dev[id].vals.s.osc[1].multi = 'smp:accms2';
   acc.zoneWarm(t.id, id, { zone: [-1, 0, -1] });
   assert.equal(acc.msRecs.has('smp:accms2'), true);
@@ -305,7 +299,7 @@ test('R2 the rate line names every Serum\'s oversampling (a second Serum\'s too)
 });
 
 test('R3 the FX phase memory per rack: syncPhases asks each rack of a graphed track by part and stores each one\'s answer; a Serum\'s preset save takes its own rack\'s', async () => {
-  const { t, id } = duo('juno60', 'serum'), pid = CMOD.destOf(t, CMOD.primId(t));
+  const { t, id } = duo('juno60', RIG.ID), pid = CMOD.destOf(t, CMOD.primId(t));
   lfoFx(t.dev[pid].fx); lfoFx(t.dev[id].fx); api.sendPatch(t); sim.raf();
   api.selectTrack(sxT.id); sim.raf(); // (t not shown: its racks are asked)
   const N = api.nodes.get(t.id), node = N.node, n0 = node.posted.length;
@@ -336,7 +330,7 @@ test('R5 a load normalises every device, the primary and its FX too: a classic\'
   const raw = { name: 'R5', schema: CM.SCHEMA, uid: 'p_r5test0001', tracks: [
     { id: 'trk_r1', name: 'J', prim: 'i1', nid: 3, dev: { i1: { kind: 'synth', model: 'juno60', vals: { cf: cf.def + 1 }, preset: null }, fx1: { kind: 'panel', fx: { p: { 'fx.cho.on': 1 } } }, out: { kind: 'out' } },
       wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] },
-    { id: 'trk_r2', name: 'S', prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'serum', vals: {}, preset: null }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] },
+    { id: 'trk_r2', name: 'S', prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: RIG.ID, vals: {}, preset: null }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] },
   ] };
   const p = acc.loadProject(JSON.stringify(raw)), [a, b] = p.tracks;
   assert.deepEqual(Object.keys(a.dev.i1.vals).sort(), juno.controls.map(c => c.id).sort(), 'every control of the model');
@@ -346,7 +340,7 @@ test('R5 a load normalises every device, the primary and its FX too: a classic\'
 });
 
 test('R4 the session maps are keyed trackId/dev, the primary\'s too: two Serums keep their own preset key, dirty mark and current preset; a rename follows the one that loaded it', () => {
-  const { t, id } = duo('serum', 'serum'), prim = CMOD.primId(t), H1 = api.sxHost(t, prim), H2 = api.sxHost(t, id);
+  const { t, id } = duo(RIG.ID, RIG.ID), prim = CMOD.primId(t), H1 = api.sxHost(t, prim), H2 = api.sxHost(t, id);
   acc.sxDirty.clear();
   assert.equal(H2.presets.save({ name: 'Acc Two' }), 'u:Acc Two');
   assert.deepEqual([acc.sxKeys.get(VK(t, id)), acc.sxKeys.has(VK(t)), acc.sxKeys.has(t.id)], ['u:Acc Two', false, false], 'the second Serum\'s key only');
@@ -373,7 +367,7 @@ test('R4 a classic\'s preset key and its hardware state (DX7 select-and-set, TB-
 });
 
 test('R4 the asset manager reads every Serum and panel (states()): a sample a second Serum plays is in use; a relink edits that Serum', async () => {
-  const { t, id } = duo('juno60', 'serum');
+  const { t, id } = duo('juno60', RIG.ID);
   t.dev[id].vals.s.osc[0].type = 'sample'; t.dev[id].vals.s.osc[0].smp = 'smp:accuser1';
   const S0 = api.tables.host.smp;
   assert.deepEqual(S0.users('smp:accuser1'), [t.name], 'in use (named by its track)');
@@ -394,7 +388,7 @@ test('R6 the per-model value memory is the current instrument\'s view (no global
 });
 
 test('R6 homes and singletons: every instrument\'s body and panel record its own, the primary\'s too; zoneOf reads the asked Serum\'s record', () => {
-  const { t, id } = duo('serum', 'serum'), prim = CMOD.primId(t);
+  const { t, id } = duo(RIG.ID, RIG.ID), prim = CMOD.primId(t);
   assert.deepEqual([cv.bodyEl(prim) === cv.bodyEl(id), 'inst' in cv.parts, 'fx' in cv.parts, cv.sxRec(t, prim) === cv.sxRec(t, id)], [false, false, false, false]);
   assert.equal(cv.fxRec(t, prim + '/fx') === cv.fxRec(t, id + '/fx'), false);
   const recs = [acc.sxRec(t, prim), acc.sxRec(t, id)], was = recs.map(r => ({ ui: r.ui, trackId: r.trackId }));
@@ -444,7 +438,7 @@ test('R4 voice labels per instrument: a second instrument\'s live patch updates 
 });
 
 test('R6 the FX host without a mounted rack record (its default, detached): its edits are the current instrument\'s FX — a Serum\'s own, marked edited', () => {
-  const t = fresh('serum'), prim = CMOD.primId(t);
+  const t = fresh(RIG.ID), prim = CMOD.primId(t);
   api.selectTrack(sxT.id); sim.raf(); // (t not shown: no FX module record)
   acc.sxDirty.clear();
   api.fxHost(t).editFx(fx => { core.newInstance(fx, 'dly', { rack: 0 }); });
@@ -452,7 +446,7 @@ test('R6 the FX host without a mounted rack record (its default, detached): its 
 });
 
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {
-  const { t, id } = duo('juno60', 'serum');
+  const { t, id } = duo('juno60', RIG.ID);
   const iv = acc.instView(t, id), want = sha(api.buildInstPatch(t, id, 44100, true)), prim = JSON.stringify(P(t).vals);
   await api.resampleTo(iv, 'A');
   assert.deepEqual([sha(sim.lastOffline.nodes[0].po.patch), /^user:/.test(t.dev[id].vals.s.osc[0].wt), JSON.stringify(P(t).vals) === prim], [want, true, true]);

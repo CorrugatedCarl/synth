@@ -82,13 +82,18 @@ const upTo = (seq, pred) => { const k = seq.findIndex(pred); return k < 0 ? Infi
 const monotone = (seq, up) => seq.every((x, k) => k === 0 || (up ? x.e >= seq[k - 1].e - 1e-12 : x.e <= seq[k - 1].e + 1e-12));
 
 /* ================================================================ G2: a rig = its Serum (W2) */
-test('G2 / W2: patchFor(rig) ≡ patchFor(serum) and the engine renders a rig track and a Serum track with the same state bit-identically — 10 s of keys, wheel, bends, sustain and a song with transport, for the starter, Init on the sine and a factory preset', () => {
+// (SX0) the bundled model left canvas's MODELS (and golden-harness renders 'serum' as the rig), so W2's Serum side is that model's entry as it
+// stood at ⟨B⟩ 3db44a8 (models.js :704–719), frozen here: custom, no sections, its map Serum's compile (serum-core stays whole, S1) — patchFor
+// and the harness take a model object. tests/sx0-model.test pins the rig against ref-SX0's frozen Serum hashes besides
+const SERUM_B = Object.freeze({ id: 'serum', custom: true, sections: [], controls: [],
+  map(P, v, G) { return C.compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi, ext: G.ext }); } });
+test('G2 / W2: patchFor(rig) ≡ patchFor(the Serum at ⟨B⟩) and the engine renders a rig track and a Serum track with the same state bit-identically — 10 s of keys, wheel, bends, sustain and a song with transport, for the starter, Init on the sine and a factory preset', () => {
   const states = [['starter', R.rigStarter().s], ['init', sineRig(2)], ['preset', C.normalizeSerum(clone(C.FACTORY_PRESETS[5].v.s))]];
   const fx = C.defaultFx2();
   for (const [name, s] of states) {
-    assert.ok(isDeepStrictEqual(patchFor('rig', { s }, fx, { sr: 48000, bpm: 120 }), patchFor('serum', { s }, fx, { sr: 48000, bpm: 120 })), name + ': the same patch');
+    assert.ok(isDeepStrictEqual(patchFor('rig', { s }, fx, { sr: 48000, bpm: 120 }), patchFor(SERUM_B, { s }, fx, { sr: 48000, bpm: 120 })), name + ': the same patch');
     const a = H.renderTrack(B, { id: 'W2:' + name, model: 'rig', vals: { s }, fx, os: 2, hostOS: 2, seconds: 10, events: H.script(48000) });
-    const b = H.renderTrack(B, { id: 'W2:' + name, model: 'serum', vals: { s }, fx, os: 2, hostOS: 2, seconds: 10, events: H.script(48000) });
+    const b = H.renderTrack(B, { id: 'W2:' + name, model: SERUM_B, vals: { s }, fx, os: 2, hostOS: 2, seconds: 10, events: H.script(48000) });
     assert.ok(H.finite(a) && H.peak(a) > 0.01, name + ': it plays');
     const d = H.compare(a, b);
     assert.equal(d.max, 0, name + ': ' + H.describe(d));

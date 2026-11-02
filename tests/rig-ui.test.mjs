@@ -3,7 +3,8 @@ import './v8-guard.mjs';
 // (FACE) and their geometry (layoutOf: the module widths 64·n + 32 on the 32 px dots, the row tops and heights, every knob and jack on
 // a column centre, a short row centred at the column pitch), the injected CSS carrying GRID's numbers as custom properties, every WC-1
 // face mounted by rigHost on a real SerumHost (the fake DOM; graph.js / wt.js / fx-ui.js / wtedit.js the serum-ui stubs): its rows and
-// cells as the recipe says, the data-dest parity with the stage-3 panel of the same part (⊇), the jacks and their labels (Σ, the
+// cells as the recipe says, the data-dest parity with the stage-3 panel of the same part (⊇; (SX0, lane K) the panels left with the parts
+// machinery: their sets frozen from ⟨B⟩ in tests/fixtures/sx0-dests.json, IMPL-SX0 §4), the jacks and their labels (Σ, the
 // LEVEL's KEYS normal struck while an Envelope holds it), the ⏻ handed to the bar, the drawer kept on the face, an oscillator's type
 // switch re-laying it, Envelope 1's variant, the dim policy; the jack row's tap menu over stubbed rules (Connect to…, the plug menu,
 // "Which cord?", Pull, a refusal, a read-only jack, the amp slot from an Envelope); applySkin. G11 itself (the browser's boxes) is tests/ui-layout-wc.mjs. Never passes fake-DOM nodes to
@@ -12,6 +13,7 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assertBase from 'node:assert/strict';
 import * as nodeModule from 'node:module';
+import { readFileSync } from 'node:fs';
 import { redirect } from './serum-ui.hooks.mjs';
 
 if (typeof nodeModule.registerHooks === 'function') {
@@ -47,18 +49,16 @@ function rig(edit) {
   const X = H.createHost(host, { doc });
   return { doc, host, X, s: () => st.s };
 }
-// a face and the stage-3 panel of the same part (a second host over a copy of the state)
+// (SX0, lane K) the stage-3 panels' data-dest sets, frozen from the pristine ⟨B⟩ (tests/ref-SX0/dests.mjs): state 'rig' is rig() below
+// (the blank, every WC-1 part on, on the second host both() used: dev 'i9'), 'sample' the same with Oscillator 1 a sample
+const DESTS3 = JSON.parse(readFileSync(new URL('./fixtures/sx0-dests.json', import.meta.url), 'utf8'));
+// a face (and, as `ref`, the frozen data-dest ids of the stage-3 panel of the same part on the same state)
 async function both(kind, part, edit) {
   const R = rig(edit), box = R.doc.createElement('div');
   R.doc.body.appendChild(box);
   const rh = RU.rigHost({ doc: R.doc }), V = rh.face(kind, box, { host: R.X, part, dev: 'i1' });
-  const st3 = { s: JSON.parse(JSON.stringify(R.s())), fx: core.defaultFx2() };
-  const X3 = H.createHost({ state: () => st3.s, fx: () => st3.fx, edit: fn => fn(st3.s), editFx: fn => fn(st3.fx), bpm: () => 120, dev: 'i9', storage: { get: (k, d) => d, set() {} }, notify() {} }, { doc: R.doc });
-  const b3 = R.doc.createElement('div');
-  R.doc.body.appendChild(b3);
-  M.mountPart(X3, part, b3);
   await D.flush(R.doc);
-  return Object.assign(R, { V, b3, box, rh });
+  return Object.assign(R, { V, box, rh, ref: new Set(DESTS3.parts.rig[part]) });
 }
 
 /* ================================================================ the grid and the recipes */
@@ -177,9 +177,10 @@ for (const [kind, part, prefix, variant] of [['osc', 'oscA', 'a', 'osc'], ['sub'
       const r = FACE[variant].rows[i];
       if (r.t === 'knobs' || r.t === 'switches' || r.t === 'jacks') assert.equal(re.children.filter(c => c.classList.contains('rig-cell')).length, r.items.length, variant + ' row ' + i + ' cells');
     });
-    const mine = ids(el), theirs = ids(R.b3);
+    const mine = ids(el), theirs = R.ref;
     for (const id of RECIPE_IDS(variant, prefix)) if (core.DEST_INDEX[id] !== undefined) assert.ok(mine.has(id), variant + ': ' + id + ' on the face');
     if (kind === 'amp') for (const x of Array.from(theirs)) if (/^e\d\./.test(x)) theirs.delete(x); // (ENV 1 is Envelope 1's module now)
+    assert.ok(theirs.size > 0, part + ': the frozen set');
     assert.deepEqual(Array.from(theirs).filter(x => !mine.has(x)), [], 'every stage-3 data-dest id on the face');
     assert.deepEqual(V.dests().sort(), Array.from(mine).sort());
     // jacks: cv-module's inline anchors, labelled
@@ -327,7 +328,7 @@ test('a face\'s bar title reads the fixed display ordinal (args.n, dev.rig.n): E
 
 test('rigHost.face refuses without a host or for an unknown kind; the Macros\' tiles are its jacks (k1…k8)', async () => {
   const rh = RU.rigHost({});
-  assert.throws(() => rh.face('osc', null, {}), /SerumHost/);
+  assert.throws(() => rh.face('osc', null, {}), /createHost/);
   const R = rig(), box = R.doc.createElement('div');
   R.doc.body.appendChild(box);
   assert.throws(() => rh.face('arp', box, { host: R.X }), /no face/);
@@ -356,8 +357,15 @@ test('(MOD1 §2.2) a rig\'s Macros face reads "Macros 1"; (MOD1 §4.1) a Macros 
 
 /* ================================================================ (MOD1 §4.1) the slot faces: a canvas modulator's slot host */
 // a modulator device on its slot host (sx-host slotHost, as cv-mods-ui slotBody makes it) and a face with slot: true; the old body's panel
-// beside it (the registered view of the kind on a second slot host: what the body mounted before MOD1)
+// beside it (the panel of the kind on a second slot host: what the body mounted before MOD1 — (SX0, lane K) its registered view left with
+// the parts machinery, so the donor class is mounted as that view mounted it: oldPanel; its data-dest ids are also frozen, sx0-dests.json)
 const SLOT = { lfo: ['lfo', 'lfo1'], env: ['env', 'env2'], macro: ['macros', 'macros'], chaos: ['chaos', 'chaos1'] };
+const OLD = { lfo: (r, K, k) => new M.LfoPanel(r, K, k), env: (r, K, k) => new M.EnvPanel(r, K, k), macros: (r, K) => new M.MacrosPanel(r, K), chaos: (r, K, k) => new M.ChaosRow(r, K, k, {}) };
+// the old body's view: the donor, its ⋯ the panel's own (LFO, ENV, Chaos) or the shell's module menu (Macros), as the registration was
+const oldPanel = face => (r, K, A) => {
+  const P = OLD[face](r, K, A.k), sh = P.shell || {};
+  return { el: P.el, panel: P, power: sh.power || null, module: sh.module || null, menuItems: () => (face === 'macros' ? (sh.menuItems ? sh.menuItems() : []) : P.menuItems()), destroy: () => P.destroy() };
+};
 async function slotFace(kind, dev, o) {
   const doc = D.fresh(), box = doc.createElement('div'), log = [];
   doc.body.appendChild(box);
@@ -368,7 +376,7 @@ async function slotFace(kind, dev, o) {
   const V = RU.rigHost({}).face(face, box, { host: X, part, slot: true, dev });
   const b3 = doc.createElement('div');
   doc.body.appendChild(b3);
-  const X3 = mk(), V3 = X3.mount(face, b3, { k: X3.slot, bare: true, dev });
+  const X3 = mk(), V3 = X3.mount(oldPanel(face), b3, { kind: face, k: X3.slot, bare: true, dev });
   await D.flush(doc);
   return { doc, X, V, X3, V3, b3, st, log, done: () => { V.destroy(); X.destroy(); X3.destroy(); } };
 }
@@ -383,6 +391,7 @@ test('(MOD1 §4.1) slot faces: the face of each kind on its slot host — titled
     assert.ok(ctl.length && ctl.every(e => e.getAttribute('data-nomod') === '1'), kind + ': every control data-nomod');
     const mine = ids(el);
     assert.deepEqual(Array.from(ids(R.b3)).filter(x => !mine.has(x)), [], kind + ': the old panel\'s data-dest ids on the face');
+    assert.deepEqual(DESTS3.slots[kind].filter(x => !mine.has(x)), [], kind + ': the frozen set (sx0-dests.json) on the face');
     const n = elCount(el), n3 = elCount(R.b3);
     assert.ok(n <= 1.2 * n3, kind + ': ' + n + ' elements vs ' + n3);
     if (!R.V.drawer || !R.V.drawer.el.firstChild) assert.equal(el.querySelectorAll('.rig-drawer').length, 0, kind + ': no empty drawer');

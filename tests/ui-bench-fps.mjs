@@ -59,7 +59,7 @@ export const BUDGET = Object.freeze({
   rate: 0.8,
   delivered: 0.8, // frames delivered ≥ 0.8 × the virtual display's (a starved main thread says so)
 });
-export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'serum', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) mods: a Juno's modulators — the serum scene leaves with Serum complete (ROADMAP 28)
+export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) mods: a Juno's modulators; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
 /** The scenes whose layout + style budget (< 1 ms / s, "idle-animating") is gated: the engine on, nothing playing. The others are recorded — a
  * playing project writes the transport's text every frame (IMPL-FR §3 A1: "the recorded exception"). `--layout-gate all` gates every scene. */
 export const LAYOUT_SCENES = Object.freeze(['idle']);
@@ -102,13 +102,6 @@ export const EXPECT = Object.freeze({
     { name: 'filter cutoff marker', kind: 'canvas', sel: '[data-cv-mod*="filter"] canvas.sxo-fmark', rate: 'snap', tol: 0.4, fast: true }, // ((Cut B §4.3) the marker overlay at the view's cutoff: every frame under fast — it exists only then (fast: not asked with the lane off)
     { name: 'wavetable position dot', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live', box: '[data-dest]', rate: 'snap', any: true },
     { name: 'Ducker GR bar', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', tol: 0.4 }, // keyed to the kick: it moves with each hit (≈ 18 Hz at 128 BPM), not every post
-  ]),
-  serum: Object.freeze([
-    { name: 'OUT scope', kind: 'canvas', sel: 'canvas#scope', rate: 'eff' },
-    { name: 'LFO / ENV playheads', kind: 'canvas', sel: '.gx-lfo canvas.gx-ov, .gx-env canvas.gx-ov', rate: 'snap', min: 6 },
-    { name: 'wavetable display', kind: 'canvas', sel: 'canvas.sx-disp', rate: 'heavy', any: true },
-    { name: 'compressor GR', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', any: true },
-    { name: 'LFO-driven knob dots', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live, [data-dest="f.res"] .wk-live, [data-dest="a.level"] .wk-live', box: '[data-dest]', rate: 'snap', any: true, min: 2, tol: 0.5 }, // ((Cut B §5.6) change-gated writers: a dot whose rounded position held writes nothing
   ]),
   // (MOD1 G6) a Juno's modulators — one face each, every LFO and Envelope cabled and moving: the six LFO / Envelope faces' playheads (the donors'
   // overlays keep their classes; the LFO's carries the smooth probe's arc hook). The camera frames the modulators and the Juno (the OUT is
@@ -658,22 +651,6 @@ const BUILD = {
     }, { label: 'ui-bench-fps' });
     const kick = await kickTrack(A);
     H.editFx(fx => { for (const rk of fx.racks) for (const m of rk.mods) if (m.type === 'duck' && m.sub) m.sub.src = kick; }, { label: 'ui-bench-fps' });
-    await fitCanvas(A);
-    A.cv.setProjectBpm(128);
-    await audioOn(A);
-    A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
-    await sleep(300); await startPlay(A);
-  },
-  async serum(A) { // a Serum (complete) with 4 canvas LFOs + 2 canvas ENVs cabled on its knobs, a compressor in its FX
-    await prelude(A, 0);
-    A.shell.srcPick('serum', 'track'); await mounted(A);
-    const t = A.trk(), dev = t.prim, made = {};
-    for (const [w, k] of [['l1', 'lfo'], ['l2', 'lfo'], ['l3', 'lfo'], ['l4', 'lfo'], ['e1', 'env'], ['e2', 'env']]) { try { made[w] = A.cv.mod.add(k, null); } catch (e) { A.notes.push('mod ' + k + ': ' + e.message); } }
-    await mounted(A);
-    for (const [w, pid] of [['l1', 'f.cutoff'], ['l2', 'a.wt'], ['l3', 'f.res'], ['l4', 'a.level'], ['e1', 'f.cutoff'], ['e2', 'f.drive']]) {
-      try { if (!A.cv.mod.connect(made[w] + '.out', dev + ':' + pid)) A.notes.push('row ' + w + ' → ' + pid + ' refused'); } catch (e) { A.notes.push('row ' + w + ': ' + e.message); }
-    }
-    try { if (!A.cv.fx.addEffect(dev + '/fx', 'cmp')) A.notes.push('the compressor was refused'); } catch (e) { A.notes.push('cmp: ' + e.message); }
     await fitCanvas(A);
     A.cv.setProjectBpm(128);
     await audioOn(A);

@@ -19,6 +19,7 @@ import { fakeStorage } from './fakes.mjs';
 import * as CMOD from '../cv-model.js?v=9';
 import * as PC from '../pads-core.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const SHIM = readFileSync(new URL('../app/ios/SYNTH/MidiShim.js', import.meta.url), 'utf8');
 const WK = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'; // (a WKWebView: no Version/… Safari/)
@@ -166,9 +167,9 @@ test('B3 a hot-plug through midiPorts: the pad port unplugged → the button, in
 });
 
 test('B3 a Serum MIDI learn through the shim: learn a.wt → CC 74 from the controller → s.midi[\'74\'] = \'a.wt\'; the learned controller then writes the knob\'s value', async () => {
-  api.addTrack(MODELS.find(m => m.id === 'serum')); await settle(4);
+  api.addTrack(MODELS.find(m => m.id === RIG.ID)); await settle(4);
   const t = T(), s = CMOD.instOf(t).vals.s;
-  assert.equal(CMOD.instOf(t).model, 'serum');
+  assert.equal(CMOD.instOf(t).model, RIG.ID);
   const done = api.midi.learn(t.id, 'a.wt');
   midiIn(PAD_IN.id, [0xb0, 74, 64]);
   assert.equal(await done, 74);

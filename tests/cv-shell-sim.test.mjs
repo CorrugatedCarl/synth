@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as cvTray from '../cv-tray.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
@@ -120,22 +121,26 @@ test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds 
   assert.equal(sh.shell.tiles.mode(), 'replace');
 });
 
-test('Sources views (2026-10-19, the dropdown that replaced "Hardware | Simple"): the saved view comes back (\'serum\' too; an unknown one → Hardware); + Track keeps it; a pick from #srcViewMenu saves it and re-words the intro; closing the tray closes the dropdown', async () => {
-  const ls = fakeStorage({ 'synthc.cv.trayLayout': '"serum"' });
+// ((SX0) the saved view that comes back is the rig's — the Serum view left with the bundled model —, and a stored 'serum' opens Hardware as an
+// unknown view does (IMPL-SX0 §2)
+test('Sources views (2026-10-19, the dropdown that replaced "Hardware | Simple"): the saved view comes back (the rig\'s too; an unknown one — a stored \'serum\' among them — → Hardware); + Track keeps it; a pick from #srcViewMenu saves it and re-words the intro; closing the tray closes the dropdown', async () => {
+  const ls = fakeStorage({ 'synthc.cv.trayLayout': JSON.stringify(RIG.VIEW) });
   const s = await bootMain({ hash: '#minimoog', ls }), sh = shellOf(), T = sh.shell.tiles, vm = s.$('#srcViewMenu'), vb = s.$('#srcView');
   const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
   assert.deepEqual([T.view(), T.layout(), vb.children[0].textContent, T.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), s.$('#srcModSec').hidden, s.$('#srcNote').textContent],
-    ['serum', 'hw', 'Serum', ['serum'], false, 'Drop a modulator on the canvas and cable its jack to any knob.']);
+    [RIG.VIEW, 'hw', RIG.NAME, [RIG.ID], false, cvTray.SRC_VIEWS.find(v => v.id === RIG.VIEW).note]);
   s.$('#aAdd').onclick();
-  assert.deepEqual([sh.shell.src.isOpen(), T.mode(), T.view()], [true, 'track', 'serum'], '+ Track: the view last used');
+  assert.deepEqual([sh.shell.src.isOpen(), T.mode(), T.view()], [true, 'track', RIG.VIEW], '+ Track: the view last used');
   tap(vb); tap(vm.children[0]);
   assert.deepEqual([T.view(), JSON.parse(ls.m.get('synthc.cv.trayLayout')), T.mode(), T.viewOpen(), s.$('#srcModSec').hidden], ['hw', 'hw', 'track', false, true]);
   assert.match(s.$('#srcMode').children.map(c => c.textContent || '').join(''), /a new track/, 'the intro redrawn in its mode');
   tap(vb);
   sh.shell.src.close();
   assert.deepEqual([T.viewOpen(), vb.getAttribute('aria-expanded')], [false, 'false'], 'no dropdown left over a closed tray');
-  const s2 = await bootMain({ ls: fakeStorage({ 'synthc.cv.trayLayout': '"nope"' }) });
-  assert.deepEqual([shellOf().shell.tiles.view(), s2.$('#srcView').children[0].textContent], ['hw', 'Hardware']);
+  for (const v of ['nope', 'serum']) {
+    const s2 = await bootMain({ ls: fakeStorage({ 'synthc.cv.trayLayout': JSON.stringify(v) }) });
+    assert.deepEqual([shellOf().shell.tiles.view(), s2.$('#srcView').children[0].textContent], ['hw', 'Hardware'], v);
+  }
 });
 
 test('Sources tray, replace mode: a tap replaces the selected track\'s instrument (one undo step, the undo notice); the tray stays open; the same model in the tray\'s layout does nothing', async () => {
@@ -315,14 +320,14 @@ test('the "+" menus\' load estimates (2026-10-22): an FX module\'s rack gets the
   // the rack as built on the canvas: a stand-in FXRackUI records its options
   const got = [];
   class FXRec { constructor(box, host, opts) { got.push(opts); this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
-  const was = acc.uiLoad(Promise.resolve({ sx: { SerumUI: class {} }, fxui: { FXRackUI: FXRec }, wk: await import('../wk.js?v=9'), mod: {} }));
+  const was = acc.uiLoad(Promise.resolve({ host: { createHost: () => ({ refresh() {}, destroy() {} }) }, fxui: { FXRackUI: FXRec }, wk: await import('../wk.js?v=9'), mod: {} }));
   try {
     cv.renderViews(); await s.settle(10); s.raf(); await s.settle(5);
     assert.ok(got.length > 0, 'an FX module built');
     assert.deepEqual([typeof got[0].cost, got[0].cost('rev'), got[0].v2Fx], ['function', cv.fx.cost('rev'), true], 'its cost: the host\'s');
   } finally { acc.uiLoad(was); }
-  const st = api.addTrack(MODELS.find(m => m.id === 'serum'));
-  assert.equal(api.sxHost(st, 'i1').fxCost('rev'), cv.fx.cost('rev'), 'a Serum\'s FX page: its host\'s fxCost');
+  // ((SX0) "a Serum's FX page: its host's fxCost" is removed with serum-ui's FX page, the host member's one reader; every FX module's rack
+  // takes the cost as above — a rig's own FX too)
   void sh;
 });
 

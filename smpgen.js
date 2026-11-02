@@ -121,6 +121,10 @@ export const FACTORY_MULTI = deepFreeze(MULTI_DEF.map(([name, model, preset, lo,
 /** §10.1 memory budget (bytes of raw Float32 PCM): per instrument and for the whole FACTORY_MULTI set. */
 export const MULTI_BUDGET = deepFreeze({ instrument: 16e6, total: 150e6 });
 
+// the render farm's Serum-engine loops (Drum Loop / Break / Arp Loop): rig-core RIG.ID — (SX0, IMPL-SX0 §6.2) the Serum left the canvas, the rig
+// plays its factory presets with Serum's map (the same patch, the same sample bytes: tests/ref-SX0 farm:*). Not imported: smpgen stays a leaf
+// of smp.js / wt.js for the smp worker (tests/smpgen.test.mjs pins the id)
+export const SX_FARM = 'rig';
 // §10.2 table: [name, category, seconds, root, source ('proc' = procedural generate(), 'farm' = render farm), extra]
 const SAMPLE_DEF = [
   ['Vowel Phrase', 'Vocal', 3.2, 48, 'proc', {}],
@@ -130,9 +134,9 @@ const SAMPLE_DEF = [
   ['Glass Bell', 'Tonal', 4, 72, 'proc', {}],
   ['Piano Phrase', 'Tonal', 4, 60, 'farm', { model: 'dx7', preset: 'Tine E.Piano' }],
   ['Pad Chord', 'Tonal', 6, 60, 'farm', { model: 'jupiter8', preset: 'Lush Pad', loop: [2, 3.9] }],
-  ['Drum Loop 120', 'Loops', 4, 60, 'farm', { model: 'serum', presets: ['Punch Kick', 'Noise Snare', 'Tight Hat', 'Electro Clap'], bpm: 120, bars: 2, stereo: 1 }],
-  ['Break 96', 'Loops', 2.5, 60, 'farm', { model: 'serum', presets: ['Punch Kick', 'Noise Snare', 'Tight Hat'], bpm: 96, bars: 1, stereo: 1 }],
-  ['Arp Loop 128', 'Loops', 3.75, 60, 'farm', { model: 'serum', presets: ['Octave Runner'], bpm: 128, bars: 2, stereo: 1 }],
+  ['Drum Loop 120', 'Loops', 4, 60, 'farm', { model: SX_FARM, presets: ['Punch Kick', 'Noise Snare', 'Tight Hat', 'Electro Clap'], bpm: 120, bars: 2, stereo: 1 }],
+  ['Break 96', 'Loops', 2.5, 60, 'farm', { model: SX_FARM, presets: ['Punch Kick', 'Noise Snare', 'Tight Hat'], bpm: 96, bars: 1, stereo: 1 }],
+  ['Arp Loop 128', 'Loops', 3.75, 60, 'farm', { model: SX_FARM, presets: ['Octave Runner'], bpm: 128, bars: 2, stereo: 1 }],
   ['Wind Field', 'Textures', 8, 60, 'proc', { stereo: 1 }],
   ['Metal Scrape', 'Textures', 6, 60, 'proc', { stereo: 1 }],
   ['FM Drone', 'Textures', 10, 57, 'proc', { stereo: 1 }],
@@ -821,7 +825,7 @@ export function renderPlan(id) {
   }
   if (k !== 'sample' || x.src !== 'farm') return null;
   const base = { id, kind: 'sample', name: x.name, model: x.model, root: x.root, seconds: x.seconds, frames: sec(x.seconds) };
-  if (x.model !== 'serum') {
+  if (x.model !== SX_FARM) {
     let events;
     if (x.name === 'Piano Phrase') events = [60, 64, 67, 72].flatMap((nn, j) => [[sec(0.5 * j), 1, nn, 90], [sec(0.5 * j + 0.45), 0, nn, 0]]);
     else events = [48, 55, 60, 64].map(nn => [0, 1, nn, 100]).concat([48, 55, 60, 64].map(nn => [sec(4), 0, nn, 0]));
@@ -846,10 +850,10 @@ export function renderPlan(id) {
   let notes;
   if (x.name === 'Arp Loop 128') {
     const chord = [57, 60, 64, 67], end = stepFrames(bpm, steps);
-    notes = [{ rid: id + '/Octave Runner', model: 'serum', preset: 'Octave Runner', events: chord.map(nn => [0, 1, nn, 100]).concat(chord.map(nn => [end, 0, nn, 0])), frames: sec(x.seconds) + extra }];
+    notes = [{ rid: id + '/Octave Runner', model: SX_FARM, preset: 'Octave Runner', events: chord.map(nn => [0, 1, nn, 100]).concat(chord.map(nn => [end, 0, nn, 0])), frames: sec(x.seconds) + extra }];
   } else {
     notes = x.presets.map(pr => ({
-      rid: id + '/' + pr, model: 'serum', preset: pr, frames: sec(x.seconds) + extra,
+      rid: id + '/' + pr, model: SX_FARM, preset: pr, frames: sec(x.seconds) + extra,
       events: (hits[pr] || []).flatMap(([s, v]) => [[stepFrames(bpm, s), 1, 60, v], [stepFrames(bpm, s) + half, 0, 60, 0]]),
     }));
   }

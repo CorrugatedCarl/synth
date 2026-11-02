@@ -16,6 +16,7 @@ import * as CG from '../cv-graph.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as CM from '../cv-mods.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
@@ -41,7 +42,7 @@ function scriptedWorld(root) {
 
 // (milestone 3) the LFO / ENV / Macro / Chaos bodies are Serum's own panels: their modules (loaded on demand) first
 await (await import('../cv-mods-ui.js?v=9')).ready();
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIG.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 { // (the panels' graph editors animate their playheads through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box)
   const ce = globalThis.document.createElement;
   globalThis.document.createElement = tag => { const e = ce(tag); e.getClientRects = () => [{}]; return e; };
@@ -58,7 +59,7 @@ const keys = () => [...V().modules.keys()].sort().join(',');
 const note = () => sim.$('#notice').textContent;
 const tiles = () => sh.shell.tiles;
 const MOD = id => MODELS.find(m => m.id === id);
-const fresh = (id = 'serum') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; };
+const fresh = (id = RIG.ID) => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; };
 const posted = (t, kind) => sim.nodeOf(t.id).posted.map(x => x.m).filter(m => !kind || m.t === kind);
 const clearPosted = t => { sim.nodeOf(t.id).posted.length = 0; };
 const lastPatch = (t, i) => { const L = posted(t, 'patch').filter(m => !i || m.i === i); return L.length ? L[L.length - 1].p : null; };
@@ -70,25 +71,37 @@ const clsOf = c => String(c.className || (c.attrs && c.attrs.class) || '');
 const pop = () => walk(sim.$('#ov'), c => /\bcv-ml-pop\b/.test(clsOf(c))).pop() || null;
 const inPop = f => { const p = pop(); return p ? walk(p, f) : []; };
 const ev = (type, o) => Object.assign({ type, preventDefault() {}, stopPropagation() {} }, o || {});
-const drop = (kind, at) => { assert.equal(M.drag.drop(kind, { over: 'canvas', x: 200, y: 400, at: at || { x: -600, y: 300 } }), true); sim.raf(); };
+// ((SX0) the boot instrument and every fresh one are rigs — the bundled model left canvas. On a rig the Modulators tile puts an LFO / Envelope /
+// Macros INTO the rig (MOD1 §5; canvas-MOD1-sim, canvas-WC-sim pin it); this file's modulators are the track's own, the device that tile made on
+// a Serum: main.js modAdd (the same step "Add LFO 1", the same notice) at the drop point. Any other kind, and any kind on another instrument,
+// is the tile's drop as before)
+const RIG_IN = ['lfo', 'env', 'macro'];
+const drop = (kind, at) => {
+  const p = at || { x: -600, y: 300 };
+  if (I(T()).model === RIG.ID && RIG_IN.includes(kind)) { assert.ok(M.add(kind, p)); sim.raf(); return; }
+  assert.equal(M.drag.drop(kind, { over: 'canvas', x: 200, y: 400, at: p }), true); sim.raf();
+};
+// ((SX0) a rig is always its modules: the starter's Oscillator 1 → Filter → the Amplifier (i1) with Envelope 1, its own FX — where the Serum stood
+// whole; every keys() pin on a rig track carries them, by design (IMPL-WC §2.1))
+const RK = (...more) => ['i1', 'i1/env1', 'i1/filter', 'i1/fx', 'i1/oscA', 'out', ...more].sort().join(',');
 const ID = {};
 
 test('an LFO tile drop adds l1 with Serum\'s default LFO state (GLOBAL, one step "Add LFO 1", the notice undoes it); its tile never greys; a second drop adds l2; the badge toggles PER NOTE (one step)', () => {
   const t = T(), n0 = hsteps();
   ID.a = t.id;
-  tiles().setView('serum');
-  assert.deepEqual([keys(), tiles().modTiles().length, tiles().modTile('lfo').hasAttribute('data-multi')], ['i1,i1/fx,out', 10, true]);
+  tiles().setView('mods'); // ((MOD1 §5) the Modulators' own view; (SX0) the Serum view that held them too is gone)
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().modTile('lfo').hasAttribute('data-multi')], [RK(), 10, true]);
   drop('lfo');
-  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], ['i1,i1/fx,l1,out', n0 + 1, 'Add LFO 1', 'Added LFO 1 · tap to undo']);
+  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], [RK('l1'), n0 + 1, 'Add LFO 1', 'Added LFO 1 · tap to undo']);
   const d = t.dev.l1, L0 = C.normLfo({ mono: 1 });
   assert.deepEqual([d.kind, d.lfo.mono, d.lfo.mode, typeof d.rate], ['lfo', 1, L0.mode, 'number'], 'Serum\'s default LFO, GLOBAL');
   assert.deepEqual([tiles().placed('lfo'), V().modules.get('l1').kind, !!M.bodies.get('l1')], [null, 'mod', true]);
   assert.equal(!!api.nodes.get(t.id).graphed, false, 'no rows: the node stays canonical (N1: no payload)');
   assert.equal(api.buildMods(t).off, true);
   drop('lfo', { x: -600, y: 600 });
-  assert.deepEqual([keys(), cv.hist.undoLabel], ['i1,i1/fx,l1,l2,out', 'Add LFO 2']);
+  assert.deepEqual([keys(), cv.hist.undoLabel], [RK('l1', 'l2'), 'Add LFO 2']);
   cv.undo(); sim.raf();
-  assert.equal(keys(), 'i1,i1/fx,l1,out');
+  assert.equal(keys(), RK('l1'));
   // GLOBAL ↔ PER NOTE: (milestone 3) Serum's own MONO button in the LFO panel, through the body's edit → setModState, one step
   const mono = () => walk(M.bodies.get('l1').el, c => !!c.attrs && c.attrs['aria-label'] === 'MONO')[0];
   assert.equal(mono().getAttribute('aria-pressed'), 'true');
@@ -260,7 +273,9 @@ test('a refused row by the ModCore budgets goes again (eleven GLOBAL LFOs: the e
   assert.equal(api.modBudget(j, 'i1').slots.lfo.join('/'), '10/10');
   assert.ok(U.srcList(j).some(s => s.kind === 'link' && /ENV 2$/.test(s.label)) === false, 'a Juno track: no Serum to link from');
   const a = P().tracks.find(x => x.id === ID.a);
-  assert.ok(CM.linkSources(a).some(s => s.id === 'i1/lfo2.out' && s.label === 'Serum LFO 2'), 'the Serum track lists its own LFOs');
+  // ((SX0) the boot rig: its own sources are the modules standing on its canvas (MOD1 reviewer 1 P2, mod1-model's linkSources case) — the
+  // starter's Envelope 1 (on LEVEL), not a Serum's every LFO slot
+  assert.ok(CM.linkSources(a).some(s => s.id === 'i1/env1.out' && /^Envelope 1\b/.test(s.label)), 'the rig track lists its own Envelope');
   for (let k = 0; k < 19; k++) cv.undo();
   sim.raf();
   assert.deepEqual([keys(), hsteps()], ['c1,fx1,i1,l1,m1,out', n0]);
@@ -314,11 +329,11 @@ test('(U6) the Serum\'s hooks label a canvas row by its source module: sxExtra r
   U.editState('l1', { lfo: Object.assign({}, a.dev.l1.lfo, { mono: 0 }) }); sim.raf();
   assert.deepEqual(api.sxHost(a).extraMatrix().map(r => [r.src, r.tag]), [['lfo1', 'LFO 1']], 'the injected slot');
   cv.undo(); sim.raf();
-  assert.deepEqual([V().modules.get('l1').title, V().modules.get('i1').title], ['LFO 1', 'Serum']);
+  assert.deepEqual([V().modules.get('l1').title, V().modules.get('i1').title], ['LFO 1', 'Amplifier']); // ((SX0) a rig's i1 is its Amplifier (rig-core MODULES.amp), where the Serum's module bore its name
   drop('lfo', { x: -600, y: 700 }); drop('velo', { x: -600, y: 1100 });
   assert.deepEqual([V().modules.get('l2').title, V().modules.get('ve').title], ['LFO 2', 'Velocity']);
   cv.undo(); cv.undo(); sim.raf();
-  assert.equal(keys(), 'i1,i1/fx,l1,out');
+  assert.equal(keys(), RK('l1'));
 });
 
 test('(U5) a Serum\'s OWN FX knob with a canvas cable: the FX module\'s rack is painted with the rows (fx-ui paintMods through modHalos, and when the rack is built) and its host\'s extraRows names them for the rack\'s control menu', () => {
@@ -469,7 +484,7 @@ test('(U10, U11) setTrackModel names the device being replaced and drops the hal
 });
 
 test('(canvas 2b) the Serum filter\'s routing switches S A B C N take no cable: canMod refuses, the drag marks nothing on them, a programmatic connect adds no row, the parameter list greys them; the sources\' filter-balance destinations stay open; a row that already points at one keeps compiling', () => {
-  const a = fresh('serum');
+  const a = fresh(RIG.ID);
   drop('lfo');
   const SW = ['f.routeS', 'f.routeA', 'f.routeC', 'f2.routeN', 'f2.routeB'], BAL = ['a.fbal', 'b.fbal', 'c.fbal', 's.fbal', 'n.fbal'];
   assert.deepEqual(SW.map(id => M.opts.canMod('l1.out', 'i1:' + id).ok), SW.map(() => false));
@@ -522,7 +537,7 @@ test('(2b halos) a shared panel\'s knob with a canvas cable: modHalos paints the
     assert.equal(calls.length, 2, 'no such rack: nothing');
   } finally { Object.assign(rec, was); }
   // a Serum's own FX: the dot from the Serum snapshot's eff
-  const a = fresh('serum');
+  const a = fresh(RIG.ID);
   drop('lfo');
   assert.equal(cv.fx.addEffect('i1/fx', 'rev'), 'rev'); sim.raf();
   M.opts.onMod('l1.out', 'i1:fx.rev.mix'); sim.raf();
@@ -535,7 +550,7 @@ test('(2b halos) a shared panel\'s knob with a canvas cable: modHalos paints the
 });
 
 test('(bug 2) a PER NOTE LFO cabled to the Serum\'s LFO 1 Rate is injected into LFO 2 — never into LFO 1, the LFO the row moves (it would modulate its own rate); a GLOBAL one reads ext1', () => {
-  const a = fresh('serum');
+  const a = fresh(RIG.ID);
   drop('lfo');
   M.opts.onMod('l1.out', 'i1:l1.rate'); sim.raf();
   let cp = lastPatch(a, 'i1').serum;
@@ -548,7 +563,7 @@ test('(bug 2) a PER NOTE LFO cabled to the Serum\'s LFO 1 Rate is injected into 
 });
 
 test('(ENV curves) a dropped ENV module holds Serum\'s real curve values (0…1, 0.5 linear: 0.5 / 0.666 / 0.666) and its body shows them as Serum\'s ENV panel does — 50 / 67 / 67 %, not +50 / +67 / +67; values written to the device round-trip to the display', () => {
-  const a = fresh('serum');
+  const a = fresh(RIG.ID);
   const e = dropNew('env', { x: -600, y: 2300 }), B = M.bodies.get(e);
   // (milestone 3: Serum's own ENV panel — its A / D / R CURVE knobs, e2.ca / cd / cr of the slot host)
   const knob = id => walk(B.el, c => !!c.attrs && c.attrs['data-dest'] === id)[0];

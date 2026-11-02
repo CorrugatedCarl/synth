@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fresh, place } from './wk-dom.mjs';
 import { bootMain } from './main-sim.mjs';
+import { RIG } from '../rig-core.js?v=9';
 import { fakeStorage } from './fakes.mjs';
 import * as wk from '../wk.js?v=9';
 import * as U from '../master-ui.js?v=9';
@@ -90,7 +91,7 @@ test('G4: the master OUT\'s true peaks, the Master row\'s bars and the Curve / E
 test('G4: the head meters (analysers non-zero only at the shared 60 Hz frames) and the transport texts agree at the shared frames at 60 and 240 fps; the fall is 0.88^60 a second at both', async () => {
   const runs = {};
   for (const hz of [60, 240]) {
-    const s = await bootMain({ clock: 'std', hash: '#serum', ls: fakeStorage({}) });
+    const s = await bootMain({ clock: 'std', hash: '#' + RIG.ID, ls: fakeStorage({}) });
     await s.power(); await s.settle(5);
     const api = s.api;
     api.addTrack(); s.raf(); await s.settle(3);

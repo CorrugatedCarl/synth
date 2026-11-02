@@ -405,6 +405,7 @@ test('render(req): render-farm requests to the classic worker by q; failures ans
 /* ------------------------------------------------------------------ v2 entry points (§9.5, §9.6, §11.15) */
 const core = await imp('serum-core.js');
 const models = await imp('models.js');
+const { RIG } = await imp('rig-core.js');
 const smp = await imp('smp.js');
 const gen = await imp('smpgen.js');
 const SxBase = (() => { const S = dspScope({ files: ['sx-base.js'] }); return S.global('SxBase'); })();
@@ -437,7 +438,7 @@ function sxState(sid, mid, iid) {
   fx.racks[0].mods.find(I => I.id === cid).sub.ir = iid;
   return { s, fx, conv: fx.racks[0].mods.find(I => I.id === cid) };
 }
-const needsOf = (s, fx, sr = 48000) => models.patchFor('serum', { s }, fx, { sr }).needs;
+const needsOf = (s, fx, sr = 48000) => models.patchFor(RIG.ID, { s }, fx, { sr }).needs;
 // user assets in the manager's store: a stereo sample, a 96 kHz zone sample + multisample, a stereo IR
 async function userAssets(M) {
   const sid = await M.saveRecord({ kind: 'smp', name: 'Tone', rate: 44100, ch: 2, len: 22050, L: sine(22050, 220, 44100), R: sine(22050, 330, 44100), root: 57, loop: { start: 1000, end: 20000 } }, { name: 'Tone' });

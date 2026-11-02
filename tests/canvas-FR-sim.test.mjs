@@ -23,6 +23,7 @@ import * as cvWorld from '../cv-world.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as wk from '../wk.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
@@ -47,7 +48,7 @@ function scriptedWorld(root) {
 }
 
 await (await import('../cv-mods-ui.js?v=9')).ready();
-const sim = await bootMain({ ls: fakeStorage({}), clock: 'std', outLat: 0.02, hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), clock: 'std', outLat: 0.02, hash: '#' + RIG.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 { // (the panels' graph editors animate through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box)
   const ce = globalThis.document.createElement;
   globalThis.document.createElement = tag => { const e = ce(tag); e.getClientRects = () => [{}]; return e; };
@@ -55,12 +56,13 @@ const sim = await bootMain({ ls: fakeStorage({}), clock: 'std', outLat: 0.02, ha
   globalThis.document.createElementNS = (ns, tag) => { const e = cn(ns, tag); e.getClientRects = () => [{}]; return e; };
 }
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, MS = globalThis.__synthTest.master, U = globalThis.__synthTest.modUI;
-// the Serum host and the FX rack: recording stubs (lane M-B's SerumUI and the real FXRackUI are tested in their own files) — the host
-// surface main.js reads: setSnapshot / setFast / fastIx / fastReset / fastLive; the rack: setLive / moddedIds / paintMods
+// the Serum host and the FX rack: recording stubs (sx-host's SerumHost and the real FXRackUI are tested in their own files) — the host
+// surface main.js reads: setSnapshot / setFast / fastIx / fastReset / fastLive; the rack: setLive / moddedIds / paintMods. (SX0) The host is
+// createHost's (no box: the record's box is the Amplifier's face, which this loader has none of)
 const LOG = [];
 const SX = [], FXS = [];
 class SxStub {
-  constructor(box, host) { this.host = host; this.el = globalThis.document.createElement('div'); box.append(this.el); this.snap = null; this.dead = false; this.ix = Int16Array.of(3, 7); this.fast = []; this.resets = 0; SX.push(this); host.monitor(true); }
+  constructor(host) { this.host = host; this.el = globalThis.document.createElement('div'); this.snap = null; this.dead = false; this.ix = Int16Array.of(3, 7); this.fast = []; this.resets = 0; SX.push(this); host.monitor(true); }
   refresh() {} paintMods() {}
   destroy() { this.dead = true; this.host.monitor(false); }
   setSnapshot(d) { this.snap = d.s; LOG.push('snap'); }
@@ -75,7 +77,7 @@ class FXStub {
   setLive(f) { this.lives.push(f); }
   moddedIds() { return this.ids; }
 }
-acc.uiLoad(Promise.resolve({ sx: { SerumUI: SxStub }, fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: null }));
+acc.uiLoad(Promise.resolve({ host: { createHost: (h, o) => new SxStub(h) }, fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: null }));
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 sim.$('#modal').hidden = true;
@@ -486,7 +488,7 @@ test('§5.1 P1-2: fastOn follows on — a power cycle (fastReset: the hosts\' ri
   assert.deepEqual([f2.ids.every(x => lastOf(n2, 'mon').ids.includes(x)), f2.ids.includes('i0')], [true, false], 'the new ids (devices), ⊆ the watched: ' + f2.ids.join());
   // a model change: fast live again on whatever node the track has then
   cv.setTrackModel(T(), 'juno60'); cv.renderViews(); await settle(4);
-  cv.setTrackModel(T(), 'serum'); cv.renderViews(); await settle(6);
+  cv.setTrackModel(T(), RIG.ID); cv.renderViews(); await settle(6);
   const f3 = lastOf(nodeOf(T()), 'fastOn');
   assert.ok(f3 && f3.hz === 120 && f3.ids.length > 0, 'fast live after the model change: ' + JSON.stringify(f3 && { hz: f3.hz, ids: f3.ids }));
 });

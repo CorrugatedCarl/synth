@@ -25,6 +25,7 @@ import { SRC_INDEX } from './serum-core.js?v=9';
 import { amtText } from './cv-cables.js?v=9';
 import { CurveEditor } from './graph.js?v=9'; // ((2b) Curve: Custom… — the Serum matrix's editable curve on a canvas row)
 import { bend, MC_K } from './serum-core.js?v=9';
+import { RIG } from './rig-core.js?v=9'; // ((SX0) the fallback name of an instrument the host does not name)
 const bendOf = (t, c) => bend(t, MC_K * c); // (the curve amount's law, as the matrix page draws it)
 
 /** A Serum's matrix size (serum-core N_MATRIX): the "n/64" budget's denominator when the host gives none. */
@@ -73,7 +74,7 @@ export function refusal(code, ctx) {
   }
   if (code === 'full') {
     const max = num(c.max, MAX_ROWS);
-    return (c.dev || 'This Serum') + '\'s mod rows are full (' + Math.min(max, num(c.used, max)) + '/' + max + ')';
+    return (c.dev || RIG.NAME) + '\'s mod rows are full (' + Math.min(max, num(c.used, max)) + '/' + max + ')';
   }
   if (code === 'slots') { const t = slotsText(c.slots, ['lfo', 'env', 'chaos', 'macro', 'vals']); return 'ModCore slots full' + (t ? ': ' + t : ''); } // (2b)
   if (code === 'ext') { const t = slotsText(c.slots, ['ext']); return 'Ext slots full' + (t ? ' (' + t.replace(/^ext /, '') + ')' : ''); }
@@ -225,7 +226,7 @@ export function createModLayer(host) {
   // ((milestone 3) a row of a Serum's matrix whose source is its own LFO / ENV / macro … (the parts view's Mod list): own, not "preset")
   const ownRow = (R, pre) => !!pre && !!R.own;
   // ((WC, G13, lane H) an own row's tag and the preset's owner: the instrument's name (a rig's own name; a Serum's 'Serum')
-  const ownTag = dev => { const n = dev ? label(dev) : ''; return n && !/^i\d+$/.test(n) ? n : 'Serum'; };
+  const ownTag = dev => { const n = dev ? label(dev) : ''; return n && !/^i\d+$/.test(n) ? n : RIG.NAME; };
 
   /* ---------------------------------------------------------------- the popover shell (inspector, parameter list) */
   let P = null; // { box, kind, offs, widgets, sync, T? }

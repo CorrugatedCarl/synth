@@ -14,6 +14,7 @@ import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { memoryStore } from '../wtstore.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { loadFixture } from './fixtures/load.mjs';
 import { dspScope, DSP_TABLE, DSP_FILES, noAlloc } from './dsp-scope.mjs';
 import * as MG from '../moog-core.js?v=9';
@@ -22,7 +23,7 @@ import * as PT from '../patch-core.js?v=9';
 const ROOT = new URL('../', import.meta.url);
 const SRC = f => readFileSync(new URL(f, ROOT), 'utf8');
 const ENGINE = SRC('engine.js'), SERUM_SRC = SRC('serum-dsp.js'), FX_SRC = SRC('fx-dsp.js');
-const SERUM = MODELS.find(m => m.id === 'serum');
+const SERUM = MODELS.find(m => m.id === RIG.ID);
 const quietConsole = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
 
 /* ------------------------------------------------------------------ harness */
@@ -70,7 +71,7 @@ function sState(edit) { const s = core.defaultSerum(); s.global.s1 = 1; if (edit
 const row = (src, dst, amt = 1, o = {}) => Object.assign({ src, amt, dst, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1 }, o);
 // the patch main.js sends for a Serum track (buildPatch = models.js patchFor + live-session fields)
 function sxPatch(s, o = {}) {
-  const p = patchFor('serum', { s }, o.fx || core.defaultFx(), { sr: o.sr || 48000, bpm: o.bpm || 120, prefs: { smooth: 1, silenceTails: 1 }, seed: !!o.seed });
+  const p = patchFor(RIG.ID, { s }, o.fx || core.defaultFx(), { sr: o.sr || 48000, bpm: o.bpm || 120, prefs: { smooth: 1, silenceTails: 1 }, seed: !!o.seed });
   if (o.osCap) p.osCap = o.osCap;
   return p;
 }
@@ -806,7 +807,7 @@ test('§12.4: smp / smpdel messages and processorOptions.smps reach SxBase; mpe 
 test('§12.7: patchFor — Serum compiles its FX rows against the track rack (CP.fxKey = FXP key), FXP v2 for every model', () => {
   const fx = fxWith(f => { f.p['fx.fil.on'] = 1; });
   const s = sState(st => { st.matrix[0] = row('env1', 'fx.fil.cutoff', 0.5); st.matrix[1] = row('lfo1', 'g.master', 0.2); });
-  const p = patchFor('serum', { s }, fx, { bpm: 100, prefs: { smooth: 2, silenceTails: 0 } });
+  const p = patchFor(RIG.ID, { s }, fx, { bpm: 100, prefs: { smooth: 2, silenceTails: 0 } });
   assert.equal(p.serum.ver, 2); assert.equal(p.fxr.ver, 2);
   assert.equal(p.serum.fxKey, p.fxr.key, 'one layout');
   assert.equal(p.serum.NFX, p.fxr.NFX);
@@ -815,7 +816,7 @@ test('§12.7: patchFor — Serum compiles its FX rows against the track rack (CP
   assert.ok(dsts.some(d => d <= -9), 'fx.fil.cutoff row → an FX parameter');
   assert.equal(p.bpm, 100); assert.equal(p.fxr.bpm, 100); assert.equal(p.fxr.smooth, 2); assert.equal(p.fxr.silence, 0);
   assert.equal(p.fxr.base[0], s.p['g.master']);
-  assert.equal(patchFor('serum', { s }, fx, { qr: { uniMax: 4 } }).serum.qr[0], 4, 'the unison cap travels as CP.qr[0] (§14.3)');
+  assert.equal(patchFor(RIG.ID, { s }, fx, { qr: { uniMax: 4 } }).serum.qr[0], 4, 'the unison cap travels as CP.qr[0] (§14.3)');
   // without the FX state the instrument has no FX layout: its FX parameter rows are inactive (§4.1)
   const bare = SERUM.map({}, { s }, { bpm: 120, smooth: 1 }).serum;
   assert.equal(bare.fxKey, '');
@@ -1148,7 +1149,7 @@ test('§15.13 bounce equivalence (§10.7f) with arp + clip + granular + Convolve
     st.osc[1].type = 'gran'; st.osc[1].smp = 'smp:eqv'; st.p['b.on'] = 1; st.p['b.dens'] = 0.6; st.p['b.glen'] = 0.5;
     st.p['a.rand'] = 0; st.p['b.rand'] = 0;
   });
-  const pt = () => patchFor('serum', { s }, fx, { sr, bpm, prefs: { smooth: 1, silenceTails: 1 } });
+  const pt = () => patchFor(RIG.ID, { s }, fx, { sr, bpm, prefs: { smooth: 1, silenceTails: 1 } });
   const P0 = pt(), irId = P0.needs.find(id => /^ir:eqv@/.test(id));
   assert.ok(irId && P0.needs.includes('smp:eqv'), 'needs: the sample and the shaped IR');
   const irE = () => irEntry(irId, { rate: sr, ch: 2, len: irL.length, L: irL, R: irR, hash: 'eqv' }, sr, convShapeOf(conv.p));

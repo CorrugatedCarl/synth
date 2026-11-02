@@ -25,6 +25,11 @@
 // Run: node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
 // Re-record (only from main's tree, never from canvas code): extract the merge base into the scratchpad
 // (git archive a02ab5d | tar -x -C <dir>), then STREAM_REC=<dir> node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
+// (SX0, IMPL-SX0 §6.2, §15 P2-1) Serum complete left the canvas: project-p1's two Serums open as Wavecrafts (cv-migrate serumOut) and the
+// classic → Serum step is a classic → <NAME> one carrying the default Serum (the preferences applied, keepLay: true — without it
+// setTrackModel loads the rig's starter), so the same Serum-engine patch is posted. The script picks by the root it runs: the rig when that
+// tree's MODELS has it (every canvas tree, ⟨SX0⟩'s phase 0 included — the rig is proven while `serum` still exists), else 'serum' and its
+// defaults (main's tree, the STREAM_REC path); rig-core.js is imported only from a root that has the rig
 import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -60,6 +65,13 @@ async function session(root) {
   const { fakeStorage, fakeIDB } = await import(new URL('tests/fakes.mjs', root));
   const FC = await import(new URL('fx-core.js?v=9', root));
   const { MODELS } = await import(new URL('models.js?v=9', root));
+  // ((SX0) the Serum-engine model of this tree: the rig on canvas — the same presets and map —, main's 'serum' on main)
+  const RIGM = MODELS.find(x => x.id === 'rig' && x.custom), SXM = RIGM || MODELS.find(x => x.id === 'serum');
+  const toSx = async () => { // classic → Serum (main) / → <NAME> holding the default Serum (canvas): the same patch
+    if (!RIGM) return ['serum'];
+    const [core, RCm] = await Promise.all([import(new URL('serum-core.js?v=9', root)), import(new URL('rig-core.js?v=9', root))]);
+    return [RCm.RIG.ID, { keepLay: true, vals: { s: RCm.applyPrefs(core.defaultSerum(), api.prefs()) } }];
+  };
   const s = await bootMain({ ls: fakeStorage({}), idb: fakeIDB(), clock: 'std' });
   // processorOptions hashed as the node is built (the processor reads and may consume them while it runs)
   const AWN = globalThis.AudioWorkletNode, born = new Map();
@@ -80,8 +92,7 @@ async function session(root) {
   { // a classic preset (applyPreset's data: the defaults with the preset's values, its name) and a Serum one
     const t = tr('trk_5'), m = MODELS.find(x => x.id === 'juno60'), p = m.presets[2];
     I(t).vals = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), p.v); I(t).preset = p.name; api.sendPatch(t); await step();
-    const sx = MODELS.find(x => x.id === 'serum');
-    api.sxLoad(tr('trk_2'), 'f:' + sx.presets[3].name); await step();
+    api.sxLoad(tr('trk_2'), 'f:' + SXM.presets[3].name); await step();
   }
   { // effects added and removed (the FX module's host on a classic track, the Serum panel's on a Serum one)
     const c = tr('trk_6'), x = tr('trk_1');
@@ -92,7 +103,7 @@ async function session(root) {
   }
   // model changes: classic → classic, classic → Serum → classic (today: the rack is kept), then undo / redo
   api.setTrackModel(tr('trk_5'), 'prophet5'); await step();
-  api.setTrackModel(tr('trk_3'), 'serum'); await step();
+  api.setTrackModel(tr('trk_3'), ...(await toSx())); await step();
   api.setTrackModel(tr('trk_3'), 'minimoog'); await step();
   for (const b of ['#tUndo', '#tUndo', '#tRedo', '#tUndo']) { $(b).onclick(); await step(); }
   $('#os').value = '2'; $('#os').onchange(); await step();

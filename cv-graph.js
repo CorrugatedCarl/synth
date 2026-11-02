@@ -19,8 +19,8 @@
 //   isV2(track)
 //   powered(track)         the instruments that sound: on, and soloed when any instrument of the track is (§2.7)
 //   validate(track)        { ok, errors: [{ code, msg, at }] } — codes: out (not exactly one OUT), end (unknown device or
-//                          port), dir (not an out → in cable), dup, own-fx (into an instrument: a Serum's own FX take only
-//                          that Serum), cycle, fan-out / chain (one output into several inputs, panel → panel: stage 4;
+//                          port), dir (not an out → in cable), dup, own-fx (into an instrument: its own FX take only
+//                          that instrument), cycle, fan-out / chain (one output into several inputs, panel → panel: stage 4;
 //                          fan-in — several outputs into one input — is allowed), g (a level not a finite number ≥ 0),
 //                          zone (lo / hi ints 0…127, lo ≤ hi, xp an int −48…48), flag (on / solo not booleans), inst /
 //                          panels / fx (limits), prim (not an instrument), nomod (a mod row to a knob that cannot be
@@ -221,7 +221,7 @@ export function validate(t) {
     if (w.g !== undefined && !gOk(w.g)) err('g', 'A cable level is a number ≥ 0', at);
     const ka = K(a.dev), kb = K(b.dev);
     if (kb === 'inst') {
-      if (isSxId(dev[b.dev].model)) err('own-fx', dev[b.dev].model === 'serum' ? 'A Serum’s own FX take only that Serum · Make a shared panel' : 'Its own FX take only this instrument · Make a shared panel', at); // ((WC, G13) a rig's: no Serum word
+      if (isSxId(dev[b.dev].model)) err('own-fx', 'Its own FX take only this instrument · Make a shared panel', at); // ((WC, G13; SX0) no Serum word
       else err('end', 'An instrument has no audio input', at);
       continue;
     }

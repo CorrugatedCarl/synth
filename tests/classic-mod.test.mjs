@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as V from '../cv-mods.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { defaultFx2 } from '../serum-core.js?v=9';
 import { dspScope, noAlloc } from './dsp-scope.mjs';
 import { timeInterleaved } from './golden-harness.mjs';
@@ -56,7 +57,7 @@ test('every sm / apply / proc control of the twelve models has a target (slot or
   assert.equal(V.slotOf('juno60', 'lr').field, 'lfo.rate');
   assert.equal(V.slotOf('minimoog', 'mm'), null, 'a knob that changes nothing');
   assert.equal(V.slotOf('prophet5', 'un').slot, S.LEV, 'a struct knob still reports what it touches (destOk refuses it by class)');
-  assert.equal(V.xferOf('serum', {}, 'x'), null);
+  assert.equal(V.xferOf(RIG.ID, {}, 'x'), null);
 });
 
 // exact for the linear laws (a + b·x against map() at points off the grid), bounded for the others: the engine interpolates

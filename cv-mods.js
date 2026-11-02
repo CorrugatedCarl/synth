@@ -551,7 +551,7 @@ export function linkSources(t) {
   for (const id of Object.keys(D)) {
     const d = D[id];
     if (!isObj(d) || d.kind !== 'synth' || !isSxId(d.model)) continue;
-    const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || (MODELS.find(m => m.id === d.model) || { name: 'Serum' }).name; // ((WC, G13) the model's own name: a rig's not 'Serum'
+    const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || (MODELS.find(m => m.id === d.model) || { name: RIG.NAME }).name; // ((WC, G13) the model's own name
     const used = x => M.some(r => isObj(r) && r.dst && (r.src === x || r.src === x + 'y' || r.aux === x));
     const rig = d.model === RIG.ID;
     let lab = p => name + ' ' + p.replace(/\d+$/, '').toUpperCase() + ' ' + p.replace(/^\D+/, ''), on = null;

@@ -14,13 +14,17 @@ import * as C from '../cv-cost.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import { FXTYPES } from '../fx-core.js?v=9';
+import { isSxId } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { scenarios } from './bench-scenarios.mjs';
 
 const ROOT = new URL('../', import.meta.url);
 const read = f => readFileSync(new URL(f, ROOT), 'utf8');
 const BENCH = JSON.parse(read('tests/bench.json'));
 const near = (a, b, tol, what) => assert.ok(Math.abs(a / b - 1) <= tol, `${what}: ${a.toFixed(4)} vs ${b} (±${tol * 100} %)`);
-const sx = edit => { const s = core.defaultSerum(); if (edit) edit(s); return { kind: 'synth', model: 'serum', vals: { s: core.normalizeSerum(s) } }; };
+// ((SX0, IMPL-SX0 §6.1) a Serum-engine instrument is a rig (RIG.ID) — costed by the Serum's terms, the same estimates; SX its id)
+const SX = RIG.ID;
+const sx = edit => { const s = core.defaultSerum(); if (edit) edit(s); return { kind: 'synth', model: SX, vals: { s: core.normalizeSerum(s) } }; };
 const syn = (model, vals, o) => Object.assign({ kind: 'synth', model, vals: vals || null }, o);
 const fxWith = (types, o = {}) => {
   const fx = core.defaultFx2();
@@ -38,7 +42,7 @@ test('COST covers every model of models.js and every effect type of fx-core; eve
   for (const id of ids.concat(FXTYPES.map(t => t.id), ['panel'])) assert.ok(C.estimate(id) > 0 && C.estimate(id) < 1, id + ' ' + C.estimate(id));
   for (const m of MODELS) {
     const v = Object.fromEntries(m.controls.map(c => [c.id, c.def]));
-    const d = m.id === 'serum' ? sx() : syn(m.id, v);
+    const d = isSxId(m.id) ? Object.assign(sx(), { model: m.id }) : syn(m.id, v);
     assert.ok(C.estimate(d) > 0, m.id + ' device');
     assert.equal(C.estimate(syn(m.id, null, { on: false })), C.COST.off, m.id + ' powered off');
   }
@@ -201,8 +205,8 @@ test('estimates are monotone in voices, unison, oscillators, filters and effect 
   ];
   for (const L of chain) for (let i = 1; i < L.length; i++) assert.ok(C.estimate(L[i]) > C.estimate(L[i - 1]), 'serum chain step ' + i);
   assert.equal(C.estimate(sx(s => { s.voicing.mono = 1; s.voicing.poly = 8; })), C.estimate(sx(s => { s.voicing.poly = 1; })), 'mono = 1 voice');
-  assert.ok(C.estimate('serum') > 0.02 && C.estimate('serum') < 0.05, 'the default Serum (8 notes)');
-  near(C.estimate(sx()), C.estimate('serum'), 1e-9, 'id = default device');
+  assert.ok(C.estimate(SX) > 0.02 && C.estimate(SX) < 0.05, 'the default Serum state (8 notes)');
+  near(C.estimate(sx()), C.estimate(SX), 1e-9, 'id = default device');
   // a Serum's own FX count
   const own = sx(); own.fx = fxWith(['rev', 'dly']);
   assert.ok(C.estimate(own) > C.estimate(sx()));
@@ -224,7 +228,7 @@ test('estimates are monotone in voices, unison, oscillators, filters and effect 
   const revOf = t => { const fx = fxWith(['rev']); fx.racks[0].mods[0].p.type = t / 4; return C.estimate({ kind: 'panel', fx }) - C.COST.panel; };
   for (let t = 0; t < 5; t++) near(revOf(t), C.COST.rev[t], 1e-9, 'reverb type ' + t);
   // the factor
-  for (const x of ['prophet5', 'serum', 'conv', sx(), { kind: 'panel', fx: f3 }]) {
+  for (const x of ['prophet5', SX, 'conv', sx(), { kind: 'panel', fx: f3 }]) {
     near(C.estimate(x, 1.7), 1.7 * C.estimate(x), 1e-12, 'factor');
     assert.equal(C.estimate(x, 0), C.estimate(x), 'a bad factor is 1'); assert.equal(C.estimate(x, NaN), C.estimate(x));
   }
@@ -233,7 +237,7 @@ test('estimates are monotone in voices, unison, oscillators, filters and effect 
 test('estimates match the bench: Serum rows d–h\' (node, ±15 %), the iPad c-rows (≈ 0.75–1.0 × node), REF.c1', () => {
   for (const s of scenarios()) if (s.kind === 'voice' && !s.base) {
     const b = s.build();
-    near(C.estimate({ kind: 'synth', model: 'serum', vals: { s: b.state } }, 1, { notes: b.notes.length }), BENCH.node.rows[s.id], 0.15, 'row ' + s.id);
+    near(C.estimate({ kind: 'synth', model: SX, vals: { s: b.state } }, 1, { notes: b.notes.length }), BENCH.node.rows[s.id], 0.15, 'row ' + s.id);
   }
   const CL = { c1: 'prophet5', c2: 'juno60', c3: 'minimoog', c4: 'dx7', c5: 'solina', c6: 'jupiter8' };
   for (const [row, model] of Object.entries(CL)) {
@@ -246,7 +250,7 @@ test('estimates match the bench: Serum rows d–h\' (node, ±15 %), the iPad c-r
   near(C.COST.fx.conv, BENCH.node.rows.j, 1e-9, 'Convolve = row j'); near(C.COST.fx.bode, BENCH.node.rows.l, 1e-9, 'Bode = row l');
   for (let t = 0; t < 5; t++) near(C.COST.rev[t], BENCH.node.rows['k' + t], 1e-9, 'k' + t);
   // the §9.2 worked example: Prophet-5 + Juno-60 + default Serum + one 3-effect panel ≈ 0.10 (Mac)
-  const ex = C.estimate('prophet5') + C.estimate('juno60') + C.estimate('serum') + C.estimate({ kind: 'panel', fx: fxWith(['eq', 'cho', 'dly']) });
+  const ex = C.estimate('prophet5') + C.estimate('juno60') + C.estimate(SX) + C.estimate({ kind: 'panel', fx: fxWith(['eq', 'cho', 'dly']) });
   assert.ok(ex > 0.1 && ex < 0.15, 'worked example ' + ex);
 });
 
@@ -257,17 +261,17 @@ test('label: "~N %", "<1 %" under 0.5 %', () => {
 
 test('estimateTrack: v2 devices (instruments + panels), v1 tracks', () => {
   const t = { dev: { i1: syn('juno60', {}), i2: sx(), i3: syn('minimoog', {}, { on: false }), fx1: { kind: 'panel', fx: fxWith(['eq']) }, out: { kind: 'out' } } };
-  near(C.estimateTrack(t), C.estimate('juno60') + C.estimate('serum') + C.COST.off + C.COST.panel + C.COST.fx.eq, 1e-9, 'v2');
+  near(C.estimateTrack(t), C.estimate('juno60') + C.estimate(SX) + C.COST.off + C.COST.panel + C.COST.fx.eq, 1e-9, 'v2');
   near(C.estimateTrack(t, 2), 2 * C.estimateTrack(t), 1e-9, 'factor');
   near(C.estimateTrack({ model: 'prophet5', vals: {}, fx: fxWith(['rev']) }), C.estimate('prophet5') + C.COST.panel + C.COST.rev[0], 1e-9, 'v1 classic');
-  near(C.estimateTrack({ model: 'serum', vals: { s: null }, fx: fxWith(['rev']) }), C.estimate('serum') + C.COST.rev[0], 1e-9, 'v1 Serum');
+  near(C.estimateTrack({ model: SX, vals: { s: null }, fx: fxWith(['rev']) }), C.estimate(SX) + C.COST.rev[0], 1e-9, 'v1 Serum-engine track');
   assert.equal(C.estimateTrack(null), 0); assert.equal(C.estimateTrack({}), 0);
 });
 
 test('softCap (§9.2): touch only; a 4th instrument warns; a second heavy Serum confirms', () => {
   const heavy = sx(s => { for (const k of ['a', 'b', 'c']) { s.p[k + '.on'] = 1; s.p[k + '.uni'] = 6 / 15; s.p[k + '.w1'] = 0.1; s.p[k + '.w2'] = 0.2; } s.p['f.on'] = 1; s.p['f2.on'] = 1; });
   const mid = sx(s => { s.p['a.uni'] = 7 / 15; s.p['f.on'] = 1; });
-  assert.ok(C.estimate(heavy) > C.HEAVY && C.estimate(mid) < C.HEAVY && C.estimate(mid, 2) > C.HEAVY && C.estimate('serum', 3) < C.HEAVY);
+  assert.ok(C.estimate(heavy) > C.HEAVY && C.estimate(mid) < C.HEAVY && C.estimate(mid, 2) > C.HEAVY && C.estimate(SX, 3) < C.HEAVY);
   const tr = (...ds) => ({ dev: Object.assign(Object.fromEntries(ds.map((d, i) => ['i' + (i + 1), d])), { fx1: { kind: 'panel', fx: fxWith([]) }, out: { kind: 'out' } }) });
   const J = syn('juno60', {}), T = { touch: true };
   const rows = [
@@ -281,12 +285,12 @@ test('softCap (§9.2): touch only; a 4th instrument warns; a second heavy Serum 
     [tr(heavy, J, J), heavy, T, true, true],                         // both
     [tr(heavy), heavy, { touch: false }, false, false],
     [tr(sx()), heavy, T, false, false],                              // the first heavy one
-    [tr(heavy), 'serum', T, false, false],                           // the default Serum is light
+    [tr(heavy), SX, T, false, false],                                // the default Serum state is light
     [tr(heavy), sx(), T, false, false],
     [tr(Object.assign({}, heavy, { on: false })), heavy, T, false, false], // a powered-off one does not count
     [tr(mid), mid, T, false, false],                                 // medium on a reference-class device
     [tr(mid), mid, { touch: true, factor: 2 }, false, true],         // … heavy on a device twice as slow
-    [{ model: 'serum', vals: heavy.vals, fx: fxWith([]) }, heavy, T, false, true], // a v1 Serum track
+    [{ model: SX, vals: heavy.vals, fx: fxWith([]) }, heavy, T, false, true],     // a v1 Serum-engine track
     [{ model: 'juno60', vals: {} }, 'juno60', T, false, false],
   ];
   rows.forEach(([t, a, o, w, c], i) => {
@@ -296,6 +300,7 @@ test('softCap (§9.2): touch only; a 4th instrument warns; a second heavy Serum 
   const r = C.softCap(tr(J, J, J), 'juno60', T);
   assert.match(r.warn, /4 instruments/); assert.match(r.warn, /~\d+ %/);
   assert.match(C.softCap(tr(heavy), heavy, T).confirm, /heavy.*~\d+ %.*anyway\?/s);
+  assert.equal(C.softCap(tr(heavy), heavy, T).confirm.includes('This ' + RIG.NAME + ' patch is heavy') && !/Serum/.test(C.softCap(tr(heavy), heavy, T).confirm), true, '(SX0) by the model\'s name');
   assert.deepEqual(C.softCap(null, null, T), { warn: null, confirm: null });
 });
 

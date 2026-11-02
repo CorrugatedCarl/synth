@@ -15,14 +15,15 @@ import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import * as CMOD from '../cv-model.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const SR = 48000, Q = Math.ceil(SR / 4 / 128); // (quanta per stats report: the engine posts every ≥ 0.25 s of audio)
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', clock: 'std' });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIG.ID, clock: 'std' });
 await sim.power(); await sim.settle(30); sim.raf();
 const api = sim.api, P = () => api.project(), MODEL = id => MODELS.find(m => m.id === id);
 for (const id of ['minimoog', 'tr808']) { api.addTrack(MODEL(id)); sim.raf(); await sim.settle(10); sim.raf(); }
 const byModel = m => P().tracks.find(t => CMOD.instOf(t).model === m);
-const SX = byModel('serum'), MM = byModel('minimoog'), DR = byModel('tr808');
+const SX = byModel(RIG.ID), MM = byModel('minimoog'), DR = byModel('tr808');
 const OS0 = api.settings().os; // (4: the sim's ⚙ select has no options — main.js falls back to 4×)
 const master = () => sim.ctx().nodes.find(n => n.name === 'synth-master');
 // forced loads: every track node's report → F.track, MASTER's → F.master (the summed load: 3 × F.track + F.master)

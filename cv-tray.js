@@ -36,7 +36,7 @@
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
-import { classicOf, isSerumModel, isRigModel } from './models.js?v=9';
+import { classicOf, isRigModel } from './models.js?v=9';
 import { RIG, MODULES } from './rig-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
 import { MAX_MODS } from './patch-core.js?v=9';
@@ -58,7 +58,7 @@ export const SETTLE_MS = 100;
  * less than PULL_SLOP px is a tap (it toggles the tray), more a pull (the tray follows it); a release faster than FLICK_V
  * px / s is a flick (it goes its way, however far it was pulled); SNAP_MS the snap's glide (none with reduced motion). */
 export const PULL_SLOP = 6, FLICK_V = 500, SNAP_MS = 220;
-/** The drag ghost's lift above a finger (serum-ui.js ghostAt). */
+/** The drag ghost's lift above a finger (sx-host.js ghostAt). */
 export const GHOST_LIFT = 40;
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -589,12 +589,10 @@ const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymba
   sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
 const DR_META = { sdsv: 'drum synth' };
 // ((9) CLASSIC: a classic keyboard synth — models.js classicOf, so a patch instrument (family 'patch') is never in Hardware / Simple)
-const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_MODS = 'Modulators: the Modulators view. Serum: the Serum view (the menu above).'; // ((MOD1 §5) Hardware / Simple's pointer)
+const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_MODS = 'Modulators: the Modulators view (the menu above).'; // ((MOD1 §5) Hardware / Simple's pointer; (SX0) its Serum sentence left with the Serum view)
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
-  { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'Drop a modulator on the canvas and cable its jack to any knob.',
-    sections: [{ id: 'serum', models: isSerumModel }, { id: 'mods' }] }, // ((WC, IMPL-WC §6, §7) the Serum tile and the modulators: no Serum parts, no note tools (the part tiles are the rig's — its own view); the rig (custom too) is not here)
   // (WC, IMPL-WC §7) the rig: its tile, its module tiles (o.parts: RIG_TILES, group 'rigmods'), Note tools (group 'rignotes': the next
   // cut's — a placeholder until RIG_CUT reaches them), the modulators; no layout of its own (the classics' kept)
   { id: RIG.VIEW, label: RIG.NAME, tip: 'Our own modular synth, patched with cords', // (the menu shows the label above the tip: the name once)

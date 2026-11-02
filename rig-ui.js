@@ -678,7 +678,7 @@ export function rigHost(deps) {
   function face(kind, root, args) {
     const A = Object.assign({}, args), H = A.host;
     if (!BUILDERS[kind]) throw new Error('rig-ui: no face for ' + kind);
-    if (!H || typeof H.mount !== 'function') throw new Error('rig-ui: a face needs its rig\'s SerumHost (args.host)');
+    if (!H || typeof H.mount !== 'function') throw new Error('rig-ui: a face needs its rig\'s host (args.host: sx-host createHost)');
     if (A.slot && !(fin(A.n) && A.n > 0)) { const m = /(\d+)$/.exec(String(A.dev || '')); if (m) A.n = +m[1]; }
     const part = A.part || (kind === 'amp' ? 'voice' : kind);
     const opts = Object.assign({}, A.opts, kind === 'macros' ? { tiles: 'jack' } : null);

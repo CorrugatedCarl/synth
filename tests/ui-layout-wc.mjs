@@ -1,11 +1,13 @@
 // tests/ui-layout-wc.mjs — G11, the layout system measured (docs/canvas/IMPL-WC.md §3.8, §10 G11; stage WC lane F): every WC-1 face
-// mounted by rig-ui's rigHost over one rig's SerumHost (the app's own SerumUI parts host) on a page of its own, measured from
+// mounted by rig-ui's rigHost over one rig's SerumHost (the app's own host: (SX0) sx-host createHost) on a page of its own, measured from
 // getBoundingClientRect in world px (100 %): the module width (64·n + 32, on the 32 px dots), every row's top and height against
 // layoutOf, every knob's SVG 40 × 40 on a column centre and on its row's knob line, the jacks (28 px at column centres, hit ≥ 44),
 // every text box ≥ 6 px from the face edge and from every control box (its own excepted), ≥ 8 px from every other text box (a cell's
 // label / value stack is one), nothing clipped (an asset name in a menu excepted: it ellipsizes), the font-size minima, the fill
 // ratio (control ∪ screen ∪ text boxes over the face area) in GRID.fill, label / face contrast ≥ 4.5 : 1, the data-dest parity with
-// the stage-3 panel of the same part (mounted beside it, hidden) and the element count against it; (review 2 P3-2) each module's bar as
+// the stage-3 panel of the same part and the element count against it ((SX0, lane K) the stage-3 views left with the parts machinery:
+// their data-dest ids frozen from ⟨B⟩, tests/fixtures/sx0-dests.json state 'wc'; the count against the part's donor panel mounted as
+// its view was, beside it, hidden — VOICE's panel has no donor left: its ids alone); (review 2 P3-2) each module's bar as
 // cv-module builds it (⏻ slot, stripe, title — rig-core barOf —, ⋯, ▾): its title never clipped. Then the contact sheets: a PNG per size
 // of every face side by side in the charcoal skin.
 // (MOD1 G5, lane F) the ten modulators' faces too: LFO, Envelope, Macros and Chaos (cv-mods-ui slotBody: rig-ui's slot faces on their slot
@@ -49,7 +51,15 @@ html, body { margin: 0; background: #0c0d0f; }
 export async function page(o) {
   const O = o || {}, d = document, v = '?v=9';
   window.__wcStep = 'imports';
-  const [core, wt, SU, MOD, RU, RC, wk] = await Promise.all(['../serum-core.js', '../wt.js', '../serum-ui.js', '../sx-ui-mod.js', '../rig-ui.js', '../rig-core.js', '../wk.js'].map(p => import(p + v)));
+  const [core, wt, SU, MOD, RU, RC, wk, OSC] = await Promise.all(['../serum-core.js', '../wt.js', '../sx-host.js', '../sx-ui-mod.js', '../rig-ui.js', '../rig-core.js', '../wk.js', '../sx-ui-osc.js'].map(p => import(p + v)));
+  // (SX0) the stage-3 panels' frozen data-dest ids (tests/ref-SX0/dests.mjs) and the donors their views were (bare, as the registration
+  // built them; their ⏻ in the shell)
+  const DESTS3 = await fetch(new URL('./fixtures/sx0-dests.json', import.meta.url)).then(r => r.json());
+  const DONOR = { oscA: (r, K) => new OSC.OscPanel(r, K, 0), oscB: (r, K) => new OSC.OscPanel(r, K, 1), oscC: (r, K) => new OSC.OscPanel(r, K, 2), filter: (r, K) => new OSC.FilterPanel(r, K, 0),
+    sub: (r, K) => new OSC.SubPanel(r, K), noise: (r, K) => new OSC.NoisePanel(r, K), env1: (r, K) => new MOD.EnvPanel(r, K, 0), env2: (r, K) => new MOD.EnvPanel(r, K, 1),
+    lfo1: (r, K) => new MOD.LfoPanel(r, K, 0), macros: (r, K) => new MOD.MacrosPanel(r, K),
+    'slot:lfo': (r, K) => new MOD.LfoPanel(r, K, 0), 'slot:env': (r, K) => new MOD.EnvPanel(r, K, 1), 'slot:macro': (r, K) => new MOD.MacrosPanel(r, K), 'slot:chaos': (r, K) => new MOD.ChaosRow(r, K, 0, {}) };
+  const donorView = (Hx, key, root, A) => Hx.mount((r, K) => { const P = DONOR[key](r, K); return { el: P.el, panel: P, power: (P.shell || {}).power || null, destroy: () => P.destroy() }; }, root, Object.assign({ bare: true }, A));
   window.__wcStep = 'skin';
   const st = d.createElement('style'); st.textContent = SKIN; d.head.appendChild(st); // ((review 2 P3-8) the faces come with the page's /__fonts.css: Archivo Narrow only in the narrow pass
   // the rig: the blank, every WC-1 part on — Oscillator 1 a wavetable, 2 a sample, 3 a granular (the kit interior); Envelope 1 a real
@@ -70,8 +80,8 @@ export async function page(o) {
   title.textContent = RC.RIG.NAME + ' WC-1 faces · RIG grid · charcoal · ' + (O.narrow ? 'Archivo Narrow' : 'Inter (fallback)') + ' · ' + innerWidth + ' × ' + innerHeight + (O.touch ? ' touch' : '') + ' · 100 %';
   const s3 = d.createElement('div'); s3.id = 'stage3';
   d.body.append(title, world, s3);
-  const H = new SU.SerumUI(d.createElement('div'), mkHost(s, 'i1'), { parts: true });
-  const H3 = new SU.SerumUI(d.createElement('div'), mkHost(JSON.parse(JSON.stringify(s)), 'i9'), { parts: true });
+  const H = SU.createHost(mkHost(s, 'i1'), { doc: d }); // ((SX0) the app's host: SerumUI's parts host was this plus unread shell fields
+  const H3 = SU.createHost(mkHost(JSON.parse(JSON.stringify(s)), 'i9'), { doc: d });
   const rig = RU.rigHost({ doc: d });
   // the faces of the sheet: [key, kind, part, title, the stage-3 part (parity)]
   const FACES = [['osc1', 'osc', 'oscA', 'Oscillator 1', 'oscA'], ['filter1', 'filter', 'filter', 'Filter 1', 'filter'], ['amp', 'amp', 'voice', 'Amplifier', 'voice'],
@@ -96,9 +106,9 @@ export async function page(o) {
     window.__wcStep = 'face ' + key;
     const V = rig.face(kind, body, { host: H, part, dev: 'i1', shown: () => true });
     if (V.power) { pow.className = 'cv-pow cv-powslot'; pow.appendChild(V.power); } else pow.hidden = true;
-    const b3 = d.createElement('div'); s3.appendChild(b3);
-    const V3 = MOD.mountPart(H3, p3, b3, {});
-    views.push({ key, kind, part, V, V3, b3, mod });
+    let b3 = null, V3 = null;
+    if (DONOR[p3]) { b3 = d.createElement('div'); s3.appendChild(b3); V3 = donorView(H3, p3, b3, { kind: 'stage3' }); }
+    views.push({ key, kind, part, V, V3, b3, mod, ref: DESTS3.parts.wc[p3] });
   }
   // (MOD1 G5) the modulators: [key, kind, module id, title]; a slot kind's old panel (its view kind on a second slot host) for parity
   window.__wcStep = 'modulators';
@@ -139,12 +149,12 @@ export async function page(o) {
     if (slot) {
       b3 = d.createElement('div'); s3.appendChild(b3);
       const H3 = SXH.slotHost(kind, { doc: d, get: () => dev, edit() {}, live() {}, cancel() {}, devKey: dk, rows: rows0 });
-      H3.mount(SLOTV[kind], b3, { k: H3.slot, bare: true, dev: dk });
+      donorView(H3, 'slot:' + kind, b3, { kind: SLOTV[kind], k: H3.slot, dev: dk });
       H3.paint(true);
     }
     const V = slot ? B.view() : { el: B.el, face: B.face, menuItems: () => [] };
     mod.style.width = V.face.w + 'px'; // (cv-module's fixed width: the bar never wider than the face)
-    views.push({ key, kind, part: dk, V, b3, mod, recipe: slot ? null : CMU.MOD_FACE[kind], slot, plain: !slot, host: slot ? B.host() : null, body: B });
+    views.push({ key, kind, part: dk, V, b3, mod, recipe: slot ? null : CMU.MOD_FACE[kind], slot, plain: !slot, host: slot ? B.host() : null, body: B, ref: slot ? DESTS3.slots[kind] : null });
   }
   window.__wcStep = 'mounted';
   for (const F of views) if (F.host) F.host.paint(true);
@@ -315,7 +325,9 @@ function measure(F, RU, d) {
   if (out.contrastVal != null && out.contrastVal < 4.5) fails.push('value contrast ' + out.contrastVal);
   // parity with the stage-3 panel: every data-dest it shows is on the face (Envelope 1's ids are the amp's no longer: §3.1)
   const ids = el => new Set(Array.from(el.querySelectorAll('[data-dest]')).map(e => e.getAttribute('data-dest')));
-  const mine = ids(face), theirs = F.b3 ? ids(F.b3) : new Set(); // ((MOD1) a plain modulator face: no old panel)
+  const mine = ids(face), theirs = new Set(F.ref || []); // ((MOD1) a plain modulator face: no old panel; (SX0) the frozen ids)
+  if (F.b3) for (const x of ids(F.b3)) theirs.add(x); // (the donor beside it: the same ids)
+  if (!F.plain && !theirs.size) fails.push('no stage-3 data-dest ids to compare');
   if (F.kind === 'amp') for (const x of Array.from(theirs)) if (/^e\d\./.test(x)) theirs.delete(x);
   out.missing = Array.from(theirs).filter(x => !mine.has(x));
   if (out.missing.length) fails.push('data-dest missing: ' + out.missing.join(' '));

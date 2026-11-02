@@ -142,7 +142,8 @@ test('precache: sw.js lists exactly what the page requests (tools/precache.mjs c
     .concat(readdirSync(new URL('panels/', ROOT)).filter(f => f.endsWith('.js')).map(f => 'panels/' + f)).sort();
   assert.deepEqual(R.versioned.filter(f => f.endsWith('.js')), js);
   assert.ok(R.versioned.includes('style.css') && R.versioned.includes('pwa.js') && R.versioned.includes('engine.js'));
-  for (const f of ['wtwork.js', 'smpwork.js', 'smprender.js', 'sx-ui-mix.js', 'serum-ui.js']) assert.ok(R.versioned.includes(f), f);
+  for (const f of ['wtwork.js', 'smpwork.js', 'smprender.js', 'sx-ui-mix.js', 'sx-host.js']) assert.ok(R.versioned.includes(f), f); // ((SX0) sx-host.js: the lazily loaded panel module in serum-ui.js's place (main.js uiMods); serum-ui.js is gone
+  assert.equal(R.versioned.includes('serum-ui.js'), false);
   for (const s of S.statics) if (s !== './') assert.ok(existsSync(new URL(s, ROOT)), s);
   for (const m of HTML.matchAll(/\?v=(\d+)/g)) assert.equal(m[1], N, 'index.html ?v=');
   // DSP scripts: the worklet list of main.js, the render farm's list and wk.loadDSP's are one list
@@ -304,7 +305,7 @@ test('sw ?v= files offline: AudioWorklet modules (addModule), module Workers and
   const before = E.fetches.length;
   const reqs = [['engine.js', 'audioworklet'], ['sx-base.js', 'audioworklet'], ['fx-dsp.js', 'audioworklet'], ['serum-dsp.js', 'audioworklet'],
     ['wtwork.js', 'worker'], ['smpwork.js', 'worker'], ['smprender.js', 'worker'], ['wt.js', 'script'], ['smpgen.js', 'script'],
-    ['sx-base.js', 'script'], ['engine.js', 'script'], ['main.js', 'script'], ['pwa.js', 'script'], ['serum-ui.js', 'script'], ['sx-ui-mix.js', 'script'],
+    ['sx-base.js', 'script'], ['engine.js', 'script'], ['main.js', 'script'], ['pwa.js', 'script'], ['sx-host.js', 'script'], ['sx-ui-mix.js', 'script'],
     ['cv-panel.js', 'script'], ['panels/index.js', 'script'], ['panels/minimoog.js', 'script'], ['style.css', 'style']];
   for (const [f, dest] of reqs) {
     const res = await E.get('/' + f + '?v=' + N, { dest });

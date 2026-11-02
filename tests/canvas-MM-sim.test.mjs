@@ -57,7 +57,7 @@ class FXStub {
   constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); this.paints = []; this.lives = []; }
   refresh() {} destroy() {} paintMods(f) { this.paints.push(f); } setLive(f) { this.lives.push(f); }
 }
-globalThis.__synthTest.acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
+globalThis.__synthTest.acc.uiLoad(Promise.resolve({ host: await import('../sx-host.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
 await sim.power(); sim.raf(); await sim.settle(10); sim.raf();
 
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();

@@ -33,7 +33,6 @@ export const SIL = Object.freeze({
   jupiter8: Object.freeze({ body: 'keyboard', keys: 25 }),
   juno60: Object.freeze({ body: 'keyboard', keys: 22 }),
   dx7: Object.freeze({ body: 'keyboard', keys: 25, screen: true }),
-  serum: Object.freeze({ body: 'box', screen: true }),
   tr808: Object.freeze({ body: 'box', steps: 16 }), // (7a) a drum machine: a wide low case, 12 knob columns, 16 step keys in four colours
   tr606: Object.freeze({ body: 'desktop', steps: 16 }), // (7b) the TB-303's body family: a silver case, six knobs, a dark programming panel over 16 grey keys
   tr909: Object.freeze({ body: 'box', steps: 16 }), // (7c) the 808's body family: a wide low light case, nine blocks of dark knobs, a red display, 16 cream step keys
@@ -481,28 +480,6 @@ const DRAW = {
     });
     return s;
   },
-  // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel
-  serum(th, lo) {
-    const A = th.accent || '#4fb3ff';
-    let s = shadow(5, 91, 52) + RR(6, 5, 84, 45, 4, th.panel, ' stroke="#2a333d" stroke-width="0.8"') + RR(6, 5, 84, 7, 4, th.face) + R(6, 9, 84, 3, th.face);
-    s += R(10, 7.6, 14, 1.8, A, OP(0.65)) + R(27, 7.6, 10, 1.8, '#7f8b98', OP(0.5));
-    const waves = lo ? 3 : 7;
-    for (let k = 0; k < waves; k++) {
-      const ox = 12 + k * 2.6, oy = 40 - k * 3, amp = 6 - k * 0.35, ph = k * 0.5;
-      let d = `M${f(ox)} ${f(oy)}`;
-      for (let i = 1; i <= 24; i++) { const t = i / 24; d += `L${f(ox + t * 34)} ${f(oy - amp * Math.sin(t * Math.PI * 2 + ph) * (0.6 + 0.4 * Math.sin(t * Math.PI * 4 + k)))}`; }
-      s += S(d, A, lo ? 1.1 : 0.7, OP(f(0.35 + 0.65 * (k + 1) / waves)));
-    }
-    if (!lo) {
-      for (let i = 0; i < 6; i++) {
-        const cx = 66 + (i % 3) * 8, cy = 20 + Math.floor(i / 3) * 9, a = 0.6 + 3.6 * rnd(i, 31);
-        const arc = (r, a1) => `M${f(cx + r * Math.sin(-2.4))} ${f(cy - r * Math.cos(-2.4))}A${r} ${r} 0 ${a1 > Math.PI ? 1 : 0} 1 ${f(cx + r * Math.sin(a1 - 2.4))} ${f(cy - r * Math.cos(a1 - 2.4))}`;
-        s += S(arc(3.1, 4.8), '#2a333d', 0.8) + S(arc(3.1, a), A, 0.9) + C(cx, cy, 2.1, '#1c232b') + S(`M${f(cx)} ${f(cy)}L${f(cx + 1.8 * Math.sin(a - 2.4))} ${f(cy - 1.8 * Math.cos(a - 2.4))}`, '#dfe6ee', 0.5);
-      }
-      s += S('M62 44C70 44 74 44 77 38.6C79 35 81 42 86 46', '#ff8a5b', 0.9) + R(62, 46, 26, 0.5, '#2a333d');
-    } else s += C(70, 22, 3, A, OP(0.6)) + C(80, 22, 3, A, OP(0.6));
-    return s;
-  },
   // (WC, IMPL-WC §7; lane U) the rig — ours, the cord lab's look in miniature: three charcoal faces side by side on a dark rack, each
   // with four screws, a cream rule where the name would be engraved (no text) over a hairline, black knobs with cream pointers and two
   // cream-ringed jacks at its foot — an oscillator's (a little screen with its wave, two knobs), a filter's (one big knob over two), an
@@ -719,10 +696,10 @@ export function glyph(kind, o) {
   cache.set(k, s);
   return s;
 }
-/** Tile text from models.js: {id, name, year, maker, label} (label: the tray's name, 'Serum (complete)' for serum; the 900 Series tile
- * is "Model 15": it brings the whole set, patched — IMPL-9 §4.6).
+/** Tile text from models.js: {id, name, year, maker, label} (label: the tray's name; the 900 Series tile is "Model 15": it brings the
+ * whole set, patched — IMPL-9 §4.6).
  * @param {string} id @returns {{id: string, name: string, year: number, maker: string, label: string}} */
 export function tileMeta(id) {
   const m = byId(id) || { id, name: String(id), year: 0, maker: '' };
-  return { id: m.id, name: m.name, year: m.year, maker: m.maker, label: m.id === 'serum' ? 'Serum (complete)' : m.id === 'm900' ? 'Model 15' : m.name };
+  return { id: m.id, name: m.name, year: m.year, maker: m.maker, label: m.id === 'm900' ? 'Model 15' : m.name };
 }

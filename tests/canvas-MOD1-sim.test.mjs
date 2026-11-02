@@ -78,7 +78,7 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#juno60', synthTest: { 
 }
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, RG = cv.rig, X = cv.mod, MS = globalThis.__synthTest.master;
 class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
-acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
+acc.uiLoad(Promise.resolve({ host: await import('../sx-host.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 

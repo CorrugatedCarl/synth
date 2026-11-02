@@ -26,6 +26,7 @@ import { dspScope, noAlloc } from './dsp-scope.mjs';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as G from '../cv-graph.js?v=9';
 import * as MO from '../cv-model.js?v=9';
 import * as S from '../song.js?v=9';
@@ -89,7 +90,7 @@ const IX0 = () => Int16Array.from([VI('a.pan'), VI('f.cutoff'), VI('f.res'), VI(
 
 // scene 1: the legacy Serum (no graph: i0 the Serum, c0 its own FX)
 function legacyScene() {
-  const patch = patchFor('serum', { s: sxState() }, sxFx(true), PO);
+  const patch = patchFor(RIG.ID, { s: sxState() }, sxFx(true), PO);
   return {
     id: 'legacy', mon: ['i0', 'c0'], fast: { ids: ['i0', 'c0'], ix: { i0: IX0() }, ixv: 3 }, events: beats(4),
     make(D) {
@@ -105,7 +106,7 @@ function graphScene(o = {}) {
   const fxS = sxFx(true), fxP = core.defaultFx2();
   const pc = o.noGr ? fxInst(fxP, 'eq', { gainL: 0.6 }) : fxInst(fxP, 'cmp', { thr: Math.pow(10, -30 / 20), ratio: 4, att: 2, rel: 80 });
   const t = { id: TID, name: 'F', notes: [], cc: [], prim: 'i1', nid: 5,
-    dev: { i1: { kind: 'synth', model: 'serum', vals: { s: sxState() }, preset: null, fx: fxS }, i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null },
+    dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s: sxState() }, preset: null, fx: fxS }, i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null },
       fx1: { kind: 'panel', fx: fxP }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'fx1.in' }, { id: 'w3', a: 'fx1.out', b: 'out.in' }], mods: [] };
   t.dev.l1 = S.normModDev({ kind: 'lfo', lfo: { mono: 1, mode: 'free', bpm: 1, anchor: 0, pts: SINE }, rate: ladN('1/4') });
@@ -452,7 +453,7 @@ test('FR1b: no allocation per post — the message objects and their arrays are 
 /* ------------------------------------------------------------------ review 2: the lane idles (P2-1) */
 // a legacy Serum at rest (the default state: nothing moves without a voice) with its own FX compressor; a note at quantum `at`
 function restScene(at) {
-  const patch = patchFor('serum', { s: core.normalizeSerum(core.defaultSerum()) }, sxFx(false), PO);
+  const patch = patchFor(RIG.ID, { s: core.normalizeSerum(core.defaultSerum()) }, sxFx(false), PO);
   return {
     id: 'rest', mon: ['i0', 'c0'], fast: { ids: ['i0', 'c0'], ix: { i0: Int16Array.from([VI('f.cutoff')]) }, ixv: 2 }, events: at >= 0 ? [[at, { t: 'on', n: 60, v: 0.8 }]] : [],
     make(D) { const p = new D.Proc({ processorOptions: { os: 2, hostOS: 4, trackId: TID } }); p.msg({ t: 'patch', p: patch }); tables(p, patch); return p; },

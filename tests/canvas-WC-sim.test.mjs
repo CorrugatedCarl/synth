@@ -95,7 +95,7 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#juno60', synthTest: { 
 }
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, RG = cv.rig;
 class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
-acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
+acc.uiLoad(Promise.resolve({ host: await import('../sx-host.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 
@@ -436,7 +436,7 @@ test('G13: no Serum word on a rig — its modules\' titles, texts, labels and to
   for (const n of NOTES) if (bad.test(n)) hits.push('notice: ' + n);
   const W = api.sxHost(T(), 'i1').words; // (the kit's texts the Amplifier's Info… / Preferences… dialogs show)
   for (const k of ['build', 's1Tip', 's1Warp']) if (!W || bad.test(W[k] || 'missing')) hits.push('host words ' + k + ': ' + (W && W[k]));
-  assert.equal(api.sxHost({ id: 'no-such-track', dev: { i1: { kind: 'synth', model: 'serum' } } }, 'i1').words, null, 'a Serum: the kit\'s own words');
+  // ((SX0) "a Serum: the kit's own words" (words null off a rig) is removed: no Serum-engine device but a rig exists on canvas)
   assert.deepEqual(hits, []);
 });
 
@@ -491,17 +491,8 @@ test('(WC pre-deploy [amp-held]) Envelope 2 on LEVEL: the module named Envelope 
 const lastPatch = t => { const L = node(t).posted.map(x => x.m).filter(m => m.t === 'patch'); return L.length ? L[L.length - 1] : null; };
 const stable = x => JSON.stringify(x, (k, v) => (ArrayBuffer.isView(v) ? Array.from(v) : v));
 
-test('§3.5 the first drop on a Serum (complete) replaces it too (a Filter tile: its OUT into the Amplifier, its IN empty; "Replaced Serum with <NAME> · Filter 1"), undo brings the Serum back whole — its own FX and state; on a new (empty) Minimoog track a Noise tile the same way', async () => {
-  const t = await fresh('serum');
-  assert.equal(I(t).model, 'serum');
-  assert.equal(keys(), 'i1,i1/fx,out', 'a Serum is the whole panel (no parts view, §6)');
-  const before = snap(t);
-  await tile('filter');
-  assert.deepEqual([I().model, note(), ends()], ['rig', 'Replaced Serum with ' + RIG.NAME + ' · Filter 1 · tap to undo', 'filter.out>voice.main']);
-  assert.equal(keys(), 'i1,i1/filter,i1/fx,out');
-  cv.undo(); await settle(3);
-  assert.equal(snap(), before, 'the Serum back whole');
-  assert.equal(keys(), 'i1,i1/fx,out');
+// ((SX0) the Serum (complete) half — a Filter tile replacing a Serum, undo bringing it back whole — left with the bundled model)
+test('§3.5 the first drop on a new (empty) Minimoog track: a Noise tile replaces it (its OUT into the Amplifier); + Track from a rig track: the starter', async () => {
   const e = await fresh('minimoog');
   assert.equal(e.notes.length, 0, 'an empty track');
   await tile('noise');
@@ -512,59 +503,61 @@ test('§3.5 the first drop on a Serum (complete) replaces it too (a Filter tile:
   assert.ok(keys().includes('i1/oscA') && Object.keys(n.lay || {}).includes('i1/oscA'), 'its modules laid out by Tidy\'s rule (auto places)');
 });
 
-test('Q4 (a) / G5: ⋯ → Make it a <NAME> on a Serum — one step, the same state (adopt: only the AMP ENV switches), its FX, its preset name, its rows; the parts\' old places kept (keepLay); "Now a <NAME> · same sound · tap to undo"; the default Serum: OSC A into the off Filter 1 → a Filter 1 module ⏻ off with the cord into it (I1\'); the posted patch the Serum\'s (W2, host level); undo: the Serum', async () => {
-  const t = await fresh('serum');
-  await settle(3);
-  const d = I(t), s0 = JSON.stringify(d.vals.s), fx0 = JSON.stringify(d.fx), p0 = stable(api.buildPatch(t));
-  t.lay = Object.assign({}, t.lay || {}, { 'i1/oscA': { x: -704, y: 96 }, 'i1/env2': { x: -704, y: -480 } }); // (a parts view's old places, kept by STEPS[15])
-  const n0 = hsteps(), ml = cv.menu('i1').map(i => i.label);
-  assert.ok(!ml.some(l => /Show parts|Bundle|^Add$/.test(l || '')) && ml.includes('Make it a ' + RIG.NAME), 'the Serum\'s ⋯: no Show parts / Bundle / Add (§6), Make it a <NAME>');
-  cv.menu('i1').find(i => i.label === 'Make it a ' + RIG.NAME).action(); await settle(4);
-  assert.deepEqual([I().model, hsteps() - n0, note()], ['rig', 1, 'Now a ' + RIG.NAME + ' · same sound · tap to undo']);
-  assert.deepEqual([JSON.stringify(S()), JSON.stringify(I().fx)], [s0, fx0], 'the same state and FX (no AMP ENV switch was off)');
-  assert.deepEqual([T().lay['i1/oscA'].x, T().lay['i1/oscA'].y], [-704, 96], 'the old place kept');
-  assert.ok(keys().includes('i1/filter') && keys().includes('i1/oscA'), 'the default Serum: OSC A and the Filter it feeds (⏻ off: I1\')');
-  assert.ok(ends().includes('oscA.out>filter.in'), 'the cord into the off Filter');
-  assert.equal(stable(api.buildPatch(T())), p0, 'W2 (host level): the rig\'s live patch is the Serum\'s, field for field');
-  cv.undo(); await settle(3);
-  assert.deepEqual([I().model, JSON.stringify(I().vals.s)], ['serum', s0]);
-  cv.redo(); await settle(3);
-  ID.conv = T().id;
-});
+// ((SX0) "Q4 (a) / G5: ⋯ → Make it a <NAME> on a Serum" is removed with rigConvert and the bundled model (an old Serum converts on load:
+// the G5 case below); "G2 (host level): a rig track's posted patch deep-equals a Serum track's" is removed with the Serum track it compared
+// against — the rig's patch stays pinned against the bundled model's compile by rig-sound W2 (its ⟨B⟩ entry, frozen) and sx0-model (ref-SX0),
+// and the live path by project-p1's Serums playing as rigs exact: canonical-stream's stream-main.json (main's posts), ref-M / ref-MM / ref-SC)
 
-test('G2 (host level): the posted {t: \'patch\'} of a rig track deep-equals a Serum track\'s with the same state and FX (qr, osCap, ext, fxr: the live path, not patchFor alone)', async () => {
-  const r = T(), d = I(r);
-  assert.equal(d.model, 'rig');
-  api.sendPatch(r); await settle(3);
-  const twin = await fresh('serum');
-  const e = I(twin);
-  e.vals = JSON.parse(JSON.stringify(d.vals)); e.fx = JSON.parse(JSON.stringify(d.fx)); e.preset = d.preset;
-  api.sendPatch(twin); await settle(3);
-  const a = lastPatch(r), b = lastPatch(twin);
-  assert.ok(a && b, 'both posted');
-  assert.equal(stable(a.p), stable(b.p), 'the same payload');
-});
-
-test('G5: a schema-15 project with a Serum shown as parts opens with the Serum whole (its flag gone, its parts\' places kept), the same state, the notice "… was shown as parts — it opens whole now. ⋯ → Make it a <NAME> …"; no module over another', async () => {
-  const t = await fresh('serum'), s0 = JSON.stringify(I(t).vals.s);
-  t.lay = Object.assign({}, t.lay || {}, { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: -704, y: 96, auto: 1 }, 'i1/filter': { x: -352, y: 96, auto: 1 } });
+// ((SX0, IMPL-SX0 §2, G2) WC's G5 case is the load pass's now: a schema-15 Serum shown as parts, and a schema-17 Serum shown whole (no part places,
+// the common case, §15 P3-1), open as Wavecrafts — the same state, the one note, the parts' old places kept as its modules' places; every module
+// it shows gets a place (main.js sxPlaceNew: with no place at all, Tidy's group, sxLayParts; else sxSpot beside the kept ones) and none lies over another
+const SX0_OPENS = name => '“' + name + '”: its wavetable synth opens as a ' + RIG.NAME + ' — the same sound';
+// ((SX0) no Serum can be added on canvas any more: a new rig track's device is written into the file as the old project's Serum held it —
+// main's id, the default Serum state (serum.defaults: OS 2, no author), no rig record, the default track name "Serum <n>" (the id capitalised))
+const SX_OLD = () => JSON.stringify(RC.applyPrefs(C.defaultSerum(), { defOs: 2, author: '' }));
+const sx0Load = async (t, schema, lay) => {
   const j = JSON.parse(await acc.projectFile());
   assert.equal(j.schema, CM.SCHEMA);
-  j.schema = 15;
-  const tr = j.tracks.find(x => x.id === t.id);
-  tr.lay = { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: -704, y: 96, auto: 1 }, 'i1/filter': { x: -352, y: 96, auto: 1 } };
+  j.schema = schema;
+  const tr = j.tracks.find(x => x.id === t.id), id = 'serum';
+  tr.dev.i1 = Object.assign({}, tr.dev.i1, { model: id, vals: { s: JSON.parse(SX_OLD()) } });
+  delete tr.dev.i1.rig;
+  tr.name = id[0].toUpperCase() + id.slice(1) + ' ' + (j.tracks.indexOf(tr) + 1);
+  tr.lay = lay;
   const p = cv.loadProject(JSON.stringify(j));
   cv.applyRestore(p); await settle(4);
-  const u = p.tracks.find(x => x.id === t.id);
-  assert.deepEqual([CMOD.instOf(u).model, JSON.stringify(CMOD.instOf(u).vals.s), u.lay.i1.ui, !!u.lay['i1/oscA']], ['serum', s0, undefined, true]);
-  assert.match(note(), new RegExp('“' + t.name + '”: its Serum was shown as parts — it opens whole now\\. ⋯ → Make it a ' + RIG.NAME + ' keeps the parts as a ' + RIG.NAME + ' \\(same sound\\)'));
-  api.selectTrack(t.id); await settle(4);
-  assert.equal(keys(), 'i1,i1/fx,out', 'whole: no part module');
+  const u = p.tracks.find(x => x.id === t.id), name = /^Serum( \d+)?$/.test(tr.name) ? RIG.NAME + ' ' + (p.tracks.indexOf(u) + 1) : tr.name;
+  return { u, name };
+};
+const sx0Placed = (u, label) => {
+  const shown = RC.partKeys(CMOD.instOf(u).vals.s, u.lay, 'i1', null, CMOD.instOf(u).rig).map(k => 'i1/' + k);
+  for (const k of shown) assert.ok(V().modules.has(k) && u.lay[k], label + ': ' + k + ' mounted and placed');
   const R = V().rects(), ks = Object.keys(R), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-  for (let i = 0; i < ks.length; i++) for (let k = i + 1; k < ks.length; k++) assert.ok(!hit(R[ks[i]], R[ks[k]]), ks[i] + ' over ' + ks[k]);
+  for (let i = 0; i < ks.length; i++) for (let k = i + 1; k < ks.length; k++) assert.ok(!hit(R[ks[i]], R[ks[k]]), label + ': ' + ks[i] + ' over ' + ks[k]);
+  return shown;
+};
+test('G5 → (SX0) the load pass: a schema-15 project with a Serum shown as parts opens as a <NAME> — the same state, its flag gone, its parts\' places kept as its modules\' places, the note "… its wavetable synth opens as a <NAME> — the same sound"; a schema-17 Serum shown whole opens as a <NAME> whose modules stand as Tidy\'s group; no module over another', async () => {
+  const t = await fresh(RIG.ID), s0 = SX_OLD();
+  const { u, name } = await sx0Load(t, 15, { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: -704, y: 96, auto: 1 }, 'i1/filter': { x: -352, y: 96, auto: 1 } });
+  assert.deepEqual([CMOD.instOf(u).model, JSON.stringify(CMOD.instOf(u).vals.s), u.lay.i1.ui, u.name], [RIG.ID, s0, undefined, name]);
+  const n1 = note(); // (one note per Serum the project held: the earlier cases' Serum tracks open as Wavecrafts too)
+  assert.ok(n1.split(' · ').includes(SX0_OPENS(name)) && !/Serum/.test(n1), n1);
+  assert.equal(P().tracks.some(x => Object.values(x.dev || {}).some(d => d.model === 'serum')), false, 'no Serum left in the project');
+  api.selectTrack(t.id); await settle(4);
+  assert.deepEqual([u.lay['i1/oscA'].x, u.lay['i1/oscA'].y], [-704, 96], 'Oscillator 1 where its part stood');
+  assert.ok(sx0Placed(u, 'parts once').includes('i1/oscA'));
+  // shown whole at ⟨B⟩: no part place — the modules get Tidy's group on the first render
+  const t2 = await fresh(RIG.ID), s2 = SX_OLD();
+  const L = await sx0Load(t2, 17, { i1: { x: 0, y: 0 } });
+  assert.deepEqual([CMOD.instOf(L.u).model, JSON.stringify(CMOD.instOf(L.u).vals.s), L.u.name], [RIG.ID, s2, L.name]);
+  const n2 = note();
+  assert.ok(n2.split(' · ').includes(SX0_OPENS(L.name)) && !/Serum/.test(n2), n2);
+  api.selectTrack(t2.id); await settle(4);
+  const shown = sx0Placed(L.u, 'shown whole');
+  assert.ok(shown.length >= 2, shown.join());
 });
 
-test('G12: every other canvas as today — a Juno, a Serum complete, an 808, a 900 Series: drawMode lines, nothing claimed, no cord group or badge in cv-cables\' markup, the rig\'s cords gone from the layer (the 900 Series\' its own patch cords), the buffer only on the 900 Series; the master canvas refuses a module tile', async () => {
+test('G12: every other canvas as today — a Juno, an 808, a 900 Series ((SX0) a Serum complete\'s left with it): drawMode lines, nothing claimed, no cord group or badge in cv-cables\' markup, the rig\'s cords gone from the layer (the 900 Series\' its own patch cords), the buffer only on the 900 Series; the master canvas refuses a module tile', async () => {
   // (the view's own layers: the last cv-cables / cv-cable-ends pair in #world — the boot view's were made before the sim's DOM fix and
   // stay in the stub's tree after their remove(); the badges and the × are #world's children too)
   const hasCord = () => {
@@ -575,7 +568,7 @@ test('G12: every other canvas as today — a Juno, a Serum complete, an 808, a 9
     for (const c of kids) if (c && c.getAttribute && /cv-mbadge/.test(c.getAttribute('class') || c.className || '') && c.getAttribute('data-cord') != null && c.isConnected !== false) f = true;
     return f;
   };
-  for (const [m, buf] of [['juno60', false], ['serum', false], ['tr808', false], ['m900', true]]) {
+  for (const [m, buf] of [['juno60', false], ['tr808', false], ['m900', true]]) {
     await fresh(m);
     assert.deepEqual([I().model, RG.mode(), claimed().length, hasCord(), REC.on], [m, 'lines', 0, false, buf], m);
     if (m !== 'm900') assert.equal((REC.list || []).length, 0, m + ': the layer empty');
@@ -708,11 +701,10 @@ test('review 1 (observation): Envelope 1 standing as the gate (a row reads it) �
   assert.deepEqual([cv.hist.u.at(-1).label, keys().includes('i1/env2'), RC.isGate(S())], ['Add Envelope 2', true, true], 'a new Envelope at slot 2, the gate kept');
 });
 
-test('review 1 P2-3 (the lead: MPE is the Serum\'s in WC-1, §13): with "MPE on by default" a new Serum has MPE on, a new rig (+ Track, Init) keeps it off; the Amplifier\'s MPE… is disabled with the words', async () => {
+// ((SX0) "a new Serum has MPE on" left with the bundled model — MPE input on canvas with it, IMPL-SX0 §11.3)
+test('review 1 P2-3 (the lead: MPE is the Serum\'s in WC-1, §13): with "MPE on by default" a new rig (+ Track, Init) keeps it off; the Amplifier\'s MPE… is disabled with the words', async () => {
   api.store.set('synth.sx.prefs', { mpeDefault: 1 }); api.prefsChanged();
   try {
-    await fresh('serum');
-    assert.equal(S().global.mpe.on, 1, 'a Serum: on');
     await fresh(RIG.ID);
     assert.deepEqual([I().model, S().global.mpe.on], [RIG.ID, 0], 'a rig\'s starter: off');
     RG.init(); await settle(3);
@@ -1004,7 +996,7 @@ function firstKeys(lead) {
   const A = box('i1'), row = rigKeys().filter(k => k !== 'i1' && k !== 'i1/fx' && !MODK.test(k) && box(k).y < A.y + A.h && box(k).y + box(k).h > A.y).sort((a, b) => box(a).x - box(b).x);
   return [lead || row[0], 'i1', 'i1/env1'].filter(k => k && V().modules.has(k));
 }
-test('integration fixer L, review WC-int B3 (tightened after its checks, 2026-10-26: a first view whose knobs answer, what matters in it) — a new <NAME> is framed on every entry point: the <NAME> tile on another instrument, a new track from the tray (its starter: the track\'s default camera), a rig track never moved switched back to (a grown one too: two LFOs at the band\'s left end), ⋯ → Make it a <NAME>, a module tile\'s Replace — once its faces have mounted (the fit reads their heights, not their bars) and NEVER below READ_K (cv-world: below it a press on a module pans instead of turning its knob — the 900 Series default\'s floor): the whole rig (the band, the chain, the Amplifier, its FX panel; OUT where the old one stood excepted) ≥ 0.9 inside the band when it fits there at READ_K or more, else at READ_K with WHAT MATTERS first (reworked after its second checks: in priority order — the module just added, else the chain\'s start; the Amplifier; its Envelope 1 — on each side the rig does not fit, the longest head of it that fits there whole, Envelope 1 dropped before the chain row, the chain\'s start\'s top-left in view when even that does not fit; centred, slid back only so far that no blank band opens where the rig goes on; the head BOTH sides hold — a split view centres the chain\'s start, after its third check) — past the open Sources tray, landscape and upright, the keyboard tray up and the short screens (the four cases met); a press on the canvas while the faces mount, or a finger still down on it then, leaves the camera to the user (no fit)', async () => {
+test('integration fixer L, review WC-int B3 (tightened after its checks, 2026-10-26: a first view whose knobs answer, what matters in it) — a new <NAME> is framed on every entry point: the <NAME> tile on another instrument, a new track from the tray (its starter: the track\'s default camera), a rig track never moved switched back to (a grown one too: two LFOs at the band\'s left end), a module tile\'s Replace — once its faces have mounted (the fit reads their heights, not their bars) and NEVER below READ_K (cv-world: below it a press on a module pans instead of turning its knob — the 900 Series default\'s floor): the whole rig (the band, the chain, the Amplifier, its FX panel; OUT where the old one stood excepted) ≥ 0.9 inside the band when it fits there at READ_K or more, else at READ_K with WHAT MATTERS first (reworked after its second checks: in priority order — the module just added, else the chain\'s start; the Amplifier; its Envelope 1 — on each side the rig does not fit, the longest head of it that fits there whole, Envelope 1 dropped before the chain row, the chain\'s start\'s top-left in view when even that does not fit; centred, slid back only so far that no blank band opens where the rig goes on; the head BOTH sides hold — a split view centres the chain\'s start, after its third check) — past the open Sources tray, landscape and upright, the keyboard tray up and the short screens (the four cases met); a press on the canvas while the faces mount, or a finger still down on it then, leaves the camera to the user (no fit)', async () => {
   const met = { whole: 0, floor: 0, dropped: 0, start: 0 };
   const check = async (what, act, band = TRAY_BAND, press = false, lead = null) => {
     const C = camera(band), reads = [];
@@ -1066,8 +1058,7 @@ test('integration fixer L, review WC-int B3 (tightened after its checks, 2026-10
     const rt = T().id;
     await fresh('juno60');
     await check('a rig track never moved, switched back to' + B, () => api.selectTrack(rt), band);
-    await fresh('serum');
-    await check('Make it a ' + RIG.NAME + B, () => RG.convert(), band);
+    // ((SX0) ⋯ → Make it a <NAME>'s entry point left with rigConvert)
     await fresh('juno60');
     await check('an Oscillator tile\'s Replace' + B, () => RG.drop('osc'), band, false, 'i1/oscA');
     // a rig grown with two LFOs (no target yet: the band's left end, left of the chain) — its left edge first would leave the Amplifier out

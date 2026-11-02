@@ -31,6 +31,7 @@ import * as C from '../fx-core.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { lawNorm } from '../laws.js?v=9';
 
 const SR = 48000, QPS = SR / 128;
@@ -164,7 +165,7 @@ test('a Serum panel holding a Ducker (a live sidechain unit) + a short Delay + R
   inst(fx, 'dly', { feed: 0.6, mix: 0.3, timeL: nOf('dly', 'timeL', 20), timeR: nOf('dly', 'timeR', 30), bpm: 0 });
   inst(fx, 'rev', { mix: 0.4, size: 0.3, decay: 0.3 });
   // (silenceTails 0: the tails ring out as a live keyboard stop leaves them — the transport's stop is not what ended the notes)
-  const patch = patchFor('serum', { s: core.normalizeSerum(core.defaultSerum()) }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 0 } });
+  const patch = patchFor(RIG.ID, { s: core.normalizeSerum(core.defaultSerum()) }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 0 } });
   D.ctx.currentFrame = 0;
   const p = new Track({ processorOptions: { os: 2, hostOS: 4, trackId: 'trk_s' } });
   p.port.postMessage = () => {};

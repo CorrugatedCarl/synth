@@ -17,6 +17,7 @@ import { dspScope } from './dsp-scope.mjs';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as DC from '../drum-core.js?v=9';
 import * as C from '../fx-core.js?v=9';
 import { lawNorm } from '../laws.js?v=9';
@@ -27,7 +28,7 @@ const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
 const tables = (p, patch) => { for (const id of patch.needs || []) if (/^(factory|noise):/.test(id)) p.msg(Object.assign({ t: 'wt' }, id.startsWith('noise:') ? W.makeNoise(id) : W.makeEntry(id, W.factoryTable(id)))); };
 const vals = (m, o) => Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), o || {});
 const classic = (id, fx, o) => { const m = MODELS.find(x => x.id === id); return patchFor(m, vals(m, o), fx || core.defaultFx2(), { sr: SR, bpm: 120 }); };
-const serum = (edit, fx) => { const s = core.defaultSerum(); if (edit) edit(s); return patchFor('serum', { s: core.normalizeSerum(s) }, fx || core.defaultFx2(), { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } }); };
+const serum = (edit, fx) => { const s = core.defaultSerum(); if (edit) edit(s); return patchFor(RIG.ID, { s: core.normalizeSerum(s) }, fx || core.defaultFx2(), { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } }); };
 const nOf = (type, pid, v, var_) => { const r = C.FXP_TAB[type][var_ || 2].find(x => x.pid === pid); return lawNorm(r.law, r.lo, r.hi, v, r.def); };
 const DB20 = x => Math.pow(10, x / 20);
 // an FX state with one Ducker (depth 1, att 0, smooth 0, LENGTH ms, the Classic curve) keyed from `src`

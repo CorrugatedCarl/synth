@@ -23,9 +23,8 @@
   within 0.5 device px of (i·MAJOR·k + tx)·d; a dot whose window lands on a face — alpha 255 texels, no centroid — is skipped
   and counted, the probe runs on the first track which has a face on screen). The GL stats also carry the faces' windows
   (`windows`, `soft`: sampled below 1:1 after the raster ceilings, `winPx`: the adaptive window cap, `paintMax`).
-  Milestone 3 (IMPL-3 §1.5, the S0 spike): ?m3=1 loads tests/ui-bench-m3.mjs instead — real Serum panels as part modules and
-  the Serum-faithful modulators, scenes hw5 / sx1 / p1 / p1x / hwm / t2 / t3 with audio running, runs M0–M5, the P1 / P2
-  probes; &hand=1 the on-screen hand protocol, &hold=1 the rest test (screenshots), &diff=1 the screenshot diff (on the Mac).
+  Milestone 3 (IMPL-3 §1.5, the S0 spike): ?m3=1 loaded tests/ui-bench-m3.mjs — gone with the bundled panel it measured (SX0);
+  the "ui-m3" rows of tests/bench.json stay as history, and ?m3=1 now only says so.
   Stage 9 (IMPL-9 §5 b, c: the phase-0 spikes): ?m9=1 loads tests/ui-bench-m9.mjs instead — stand-in module faces cut from
   panels/modular.js (GL faces, live face-jack spans), scenes hw5 / m13 / m13w / m20 / m30 / m30h / m13s, a prototype cord
   layer (a second WebGL2 canvas above #world, the Studio physics), the glue probe; &hand=1 the hand protocol, &cords=1 the
@@ -41,7 +40,7 @@
   a 60 s zoom sweep); &auto=1 for the CDP harness (window.__wc), &wires=lines the regret path; one JSON (kind "ui-WC-mac").
   Stage FR (IMPL-FR §9 G7): ?fps=1 loads tests/ui-bench-fps.mjs instead — the launcher of the frame-rate harness on a device: Run opens the
   app's own page, ../index.html?fpsdev=1 (FR Cut B review 2: the protocol runs at the top level, never in a frame — WebKit's AudioWorklet
-  in a srcdoc / iframe is not the app's), one scene a page load: scenes idle / play8 / roll8 / tutorial / serum / master / busy / clip built
+  in a srcdoc / iframe is not the app's), one scene a page load: scenes idle / play8 / roll8 / tutorial / mods / master / busy / clip built
   with the app's own hooks, each played for a few seconds on the browser's own frames (the iPad's 60), per scene the cost of a frame (every
   rAF callback + the message handlers), paints per animated display against its expected-live list, the clock's own numbers; the results in
   the app page at the end; &scenes=a,b a subset, &caps=120 more caps, &load=1 &post=1 (G8i), &auto=1 for a driver (window.__fpsBench, in
@@ -74,11 +73,11 @@
 <div id="res"></div>
 <textarea id="out" readonly></textarea>
 <script type="module">
-  // (milestone 3, IMPL-3 §1.5 S0) ?m3=1: the rendering spike's page (tests/ui-bench-m3.mjs) replaces this one; the 1h bench
-  // below stays as it was. The module is loaded without ?v= (a test page: the service worker fetches it network first), a
-  // fresh URL per load (no HTTP-cached copy of an earlier deploy)
+  // (milestone 3, IMPL-3 §1.5 S0) ?m3=1 was the rendering spike's page (tests/ui-bench-m3.mjs, the bundled panel against its parts): it went
+  // with that panel (SX0) — the flag now says so and runs nothing. The pages below are loaded without ?v= (a test page: the service worker
+  // fetches it network first), a fresh URL per load (no HTTP-cached copy of an earlier deploy)
   const M3 = /[?&]m3=1/.test(location.search);
-  if (M3) import('./ui-bench-m3.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m3.mjs did not load: ' + (e && e.message); });
+  if (M3) document.body.textContent = 'The milestone-3 spike (?m3=1) is gone with the panel it measured; its results stay in tests/bench.json ("ui-m3").';
   // (stage 9, IMPL-9 §5 b / c) ?m9=1: the modules-and-cords spike's page (tests/ui-bench-m9.mjs), loaded the same way
   const M9 = !M3 && /[?&]m9=1/.test(location.search);
   if (M9) import('./ui-bench-m9.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m9.mjs did not load: ' + (e && e.message); });

@@ -75,7 +75,8 @@ test('chip(): the CHIP size and a simpler level of detail than the tile; glyph()
   assert.match(A.glyph('nope'), /data-glyph="fx"/, 'an unknown kind: the FX glyph');
 });
 
-test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complete)")', () => {
+// ((SX0) the bundled model's silhouette, drawing and "Serum (complete)" label left with it: SIL is MODELS' ids)
+test('SIL describes every model; tileMeta() is models.js', () => {
   assert.deepEqual(Object.keys(A.SIL).sort(), MODELS.map(m => m.id).sort());
   for (const m of MODELS) {
     const s = A.SIL[m.id];
@@ -83,7 +84,7 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
     assert.ok(Object.isFrozen(s));
     const t = A.tileMeta(m.id);
     assert.deepEqual([t.id, t.name, t.year, t.maker], [m.id, m.name, m.year, m.maker]);
-    assert.equal(t.label, m.id === 'serum' ? 'Serum (complete)' : m.id === 'm900' ? 'Model 15' : m.name);
+    assert.equal(t.label, m.id === 'm900' ? 'Model 15' : m.name);
   }
   assert.equal(A.SIL.tb303.body, 'desktop');
   assert.equal(A.SIL.tb303.steps, 16);
@@ -282,9 +283,9 @@ test('rig art (IMPL-WC §7): SIL.rig + its own tile and chip — three charcoal 
   assert.equal(count(c, /fill="#1f2023"/g), 3, 'the chip keeps the faces');
   assert.ok(count(c, /<[a-z]+ /g) < count(t, /<[a-z]+ /g) / 2, 'far fewer elements');
   assert.equal(count(c, /fill="#9c978a"/g) + count(c, /stroke-width="0.7"/g), 0, 'no screws, no pointers at chip size');
-  // ours: not the 900 Series' case, not the Serum's box; no name (the data-art id is plain), no Serum / Xfer word
-  assert.notEqual(t, A.art('m900')); assert.notEqual(t, A.art('serum'));
-  assert.notEqual(c, A.chip('m900')); assert.notEqual(c, A.chip('serum'));
+  // ours: not the 900 Series' case ((SX0) the Serum's box went with it); no name (the data-art id is plain), no Serum / Xfer word
+  assert.notEqual(t, A.art('m900'));
+  assert.notEqual(c, A.chip('m900'));
   for (const s of [t, c, A.art('rig', { w: 300, h: 120 }), A.art('rig', { w: 40, h: 40 })]) {
     const lo = s.toLowerCase().replace('data-art="rig"', '');
     for (const bad of ['<text', 'href', 'font', 'serum', 'xfer', 'wavecraft', 'rig']) assert.ok(!lo.includes(bad), 'no ' + bad);
@@ -311,8 +312,8 @@ test('(WC pre-deploy [chip-art]) the rig\'s chip reads on the dark chrome: its c
     ...[...c.matchAll(/<path d="M([\d.]+)[^"]*" fill="none" stroke="(#[0-9a-f]{6})" stroke-width="([\d.]+)"/g)].filter(m => +m[3] >= 1.4 && lumOf(m[2]) >= 0.4 && !/e6b83a|3f80d8/.test(m[2])).map(m => +m[1] + 8)];
   for (const [l, r] of [[6, 32], [35, 61], [64, 90]]) assert.ok(marks.filter(x => x >= l && x <= r).length >= 3, `light marks on the face at ${l}: ${marks.filter(x => x >= l && x <= r).length}`);
   for (const col of ['e6b83a', '3f80d8']) { const m = new RegExp(`stroke="#${col}" stroke-width="([\\d.]+)"`).exec(c); assert.ok(m && +m[1] >= 2.2, col + ': the cord reads (' + (m && m[1]) + ')'); }
-  // the 900 Series' chip and the Serum's: their own (unchanged by it)
-  assert.ok(A.chip('m900').includes('fill="#1e1c19"') && A.chip('serum').includes('data-art="serum"'));
+  // the 900 Series' chip: its own (unchanged by it; (SX0) the Serum's went with it)
+  assert.ok(A.chip('m900').includes('fill="#1e1c19"'));
   // the tile (≥ 48 px wide) keeps its drawing: the rack th.panel, black knob caps with cream pointers
   assert.equal(count(A.art('rig'), /fill="#17181a"/g), 1);
   assert.equal(count(A.art('rig'), /<circle [^>]*fill="#141518"/g), 9);

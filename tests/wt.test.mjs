@@ -468,8 +468,9 @@ test('6 WAV: round trips (32f exact, 24, 16, 8 bit), stereo, clm, extensible, pa
     const w = readWav(writeWav({ sr: 44100, ch: [L], bits: 32, float: true, clm: { size: 2048, morph: m, factory: 0 } }));
     assert.deepEqual(w.clm, { size: 2048, morph: m, factory: 0 });
   }
-  assert.deepEqual(parseClm('<!>2048 01000000 wavetable (www.xferrecords.com)'), { size: 2048, morph: 0, factory: 1 });
-  assert.equal(clmText({ size: 2048, morph: 2, factory: 0 }), '<!>2048 20000000 wavetable (www.xferrecords.com)');
+  assert.deepEqual(parseClm('<!>2048 01000000 wavetable (www.example.com)'), { size: 2048, morph: 0, factory: 1 }); // (another synth's own URL: the reader takes the size and the two digits only)
+  assert.equal(clmText({ size: 2048, morph: 2, factory: 0 }), '<!>2048 20000000 wavetable (SYNTH)');
+  assert.deepEqual(parseClm(clmText({ size: 2048, morph: 2, factory: 0 })), { size: 2048, morph: 2, factory: 0 });
   assert.equal(parseClm('garbage'), null);
   // smpl loop
   const lw = readWav(writeWav({ sr: 48000, ch: [L], bits: 16, loop: { start: 10, end: 900 } }));
@@ -497,7 +498,7 @@ test('6 WAV: round trips (32f exact, 24, 16, 8 bit), stereo, clm, extensible, pa
   dv.setUint16(12, 4, true); dv.setUint16(14, 32, true); dv.setUint16(16, 22, true); dv.setUint16(18, 32, true); dv.setUint32(20, 4, true);
   dv.setUint16(24, 3, true); // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT (first 2 bytes)
   const data = new Float32Array([0.5, -0.25, 0.125]);
-  const clmBytes = Array.from('<!>2048 01000000 wavetable (www.xferrecords.com)', c => c.charCodeAt(0));
+  const clmBytes = Array.from('<!>2048 01000000 wavetable (www.example.com)', c => c.charCodeAt(0));
   for (const pad of [true, false]) {
     const buf = build([['fmt ', fmtExt], ['junk', new Uint8Array(3)], ['clm ', clmBytes], ['data', data.buffer]], pad);
     const w = readWav(buf);

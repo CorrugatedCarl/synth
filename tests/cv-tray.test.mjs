@@ -23,8 +23,9 @@ import { PALETTE } from '../cv-cords.js?v=9'; // ((WC-2) the lightest cord that 
 const RIG_NOTE = `Drop a ${RIG.NAME} module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`; // ((MOD1 §5) its own modules only: the modulators are the next view's)
 // (MOD1 §5, Q5) the Modulators view: its words, and what Hardware / Simple point to; the views in menu order (the Modulators after the rig)
 const MODS_NOTE = `Drop a modulator on the canvas and cable its jack to any knob. On a ${RIG.NAME} an LFO, Envelope or Macros goes into it; the others are modules of the track.`; // ((MOD1 review) true: only those three go into a rig
-const TO_MODS = 'Modulators: the Modulators view. Serum: the Serum view (the menu above).';
-const VIEW_IDS = ['hw', 'flow', 'serum', 'rig', 'mods', 'drums', 'ctl', 'moog'];
+const TO_MODS = 'Modulators: the Modulators view (the menu above).'; // ((SX0) its Serum sentence went with the Serum view)
+// ((SX0) the Serum view left with the bundled model: a stored 'serum' is an unknown view now — Hardware, as any)
+const VIEW_IDS = ['hw', 'flow', 'rig', 'mods', 'drums', 'ctl', 'moog'];
 // (integration fixer L, review WC-int P3-8: our own words through RIG.NAME — the old "Arrive with the next cut." was the plan's jargon)
 const RIG_SOON = `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.`;
 const RIG_TIP = n => `${n} — tap to add it to this track's ${RIG.NAME} (or start one with it), or drag it onto the canvas`;
@@ -567,10 +568,10 @@ test('sourcesTray: one tile per model (its drawing, name, year · maker), the cu
   assert.deepEqual(tiles.map(t => t.getAttribute('data-model')), MODELS.map(m => m.id));
   const t0 = tileOf(R, 'minimoog');
   assert.deepEqual(t0.children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta', 'cv-tbadge']);
-  assert.deepEqual(tileOf(R, 'serum').children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta'], 'Serum: no SIMPLE badge (no hardware panel)');
+  assert.deepEqual(tileOf(R, RIG.ID).children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta'], 'the rig: no SIMPLE badge (no hardware panel; (SX0) the Serum tile, the other one, is gone)');
   assert.equal(t0.children[1].textContent, 'Minimoog');
   assert.equal(t0.children[2].textContent, '1970 · Moog Music');
-  assert.equal(tileOf(R, 'serum').children[1].textContent, 'Serum (complete)');
+  assert.equal(tileOf(R, 'serum'), undefined, '(SX0) no Serum tile');
   assert.equal(t0.children[0].getAttribute('aria-hidden'), 'true');
   R.S.setCurrent('juno60');
   assert.deepEqual(tiles.filter(t => t.classList.contains('on')).map(t => t.getAttribute('data-model')), ['juno60']);
@@ -758,7 +759,7 @@ test('sheet: a dialog in the layer (title, ✕, labelled), focus on ✕ and back
 
 // (2026-10-19, the user's request: "make the hardware/simple switch … into a dropdown menu that includes a new section called
 // serum … to keep them separate") — was the 1c "Hardware | Simple" segmented pair (aria-pressed buttons): now a dropdown
-test('sourcesTray (views): the dropdown — a button showing the view (aria-haspopup menu, aria-expanded), a menu of menuitemradio views; Hardware / Simple show the classic synths only, Serum the Serum tile, the Modulators and the placeholder sections; onView on a change only; setView / setLayout restore without a call; the note follows', () => {
+test('sourcesTray (views): the dropdown — a button showing the view (aria-haspopup menu, aria-expanded), a menu of menuitemradio views; Hardware / Simple show the classic synths only, the rig view its tile, its sections and the Modulators ((SX0) where the Serum view\'s walk was); onView on a change only; setView / setLayout restore without a call; the note follows', () => {
   const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), out = mkEl(d), got = [];
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, layoutEl: host, secEl: sec, noteEl: note, layout: 'flow', onLayout: l => got.push(l) });
   const [btn, menu] = host.children, items = menu.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
@@ -767,25 +768,26 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   assert.deepEqual([btn.tagName, btn.className, btn.type, btn.getAttribute('aria-haspopup'), btn.getAttribute('aria-expanded'), btn.children[0].textContent, btn.getAttribute('aria-label')],
     ['BUTTON', 'cv-vbtn', 'button', 'menu', 'false', 'Simple', 'Sources view: Simple']);
   assert.deepEqual([menu.getAttribute('role'), menu.hidden, items.map(b => [b.getAttribute('role'), b.getAttribute('data-view'), b.children[0].textContent, b.getAttribute('aria-checked')])],
-    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'rig', RIG.NAME, 'false'], ['menuitemradio', 'mods', 'Modulators', 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
+    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'rig', RIG.NAME, 'false'], ['menuitemradio', 'mods', 'Modulators', 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
   assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', VIEW_IDS, 'flow', 'flow']);
   assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
   assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808') && !classic.includes('tr606') && !classic.includes('rig'));
   assert.deepEqual([secs(), note.textContent], [['rigmods:hidden', 'rignotes:hidden'], TO_MODS], '((MOD1 §5) Hardware / Simple point to the Modulators view; (WC, IMPL-WC §6, §7) no Serum parts / Note tools sections any more; the rig view\'s two (placeholders here: no o.parts) hidden');
-  // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
+  // a tap opens; the rig item picks (one call), closes it; the classics hide, the rig tile and its placeholders show ((SX0) the walk was the Serum
+  // view's — the third item then as now)
   btn.click();
   assert.deepEqual([menu.hidden, btn.getAttribute('aria-expanded'), S.viewOpen()], [false, 'true', true]);
   items[2].click();
   assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
-    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false,false,false,false,false']);
+    ['rig', ['rig'], true, 'false', RIG.NAME, 'false,false,true,false,false,false,false']);
   assert.deepEqual([shown(), secs(), list.getAttribute('data-layout'), S.layout()],
-    [['serum'], ['rigmods:hidden', 'rignotes:hidden'], 'flow', 'flow'], 'Serum: its tile alone ((WC) no placeholders of its own; the rig view\'s hidden); the classics\' layout kept');
-  assert.equal(note.textContent, 'Drop a modulator on the canvas and cable its jack to any knob.');
+    [['rig'], ['rigmods', 'rignotes'], 'flow', 'flow'], 'the rig view: its tile alone, its two placeholders; the classics\' layout kept');
+  assert.equal(note.textContent, RIG_NOTE);
   // the same view again: no call; a press outside closes it (nothing picked); the button again closes it
   btn.click(); items[2].click();
-  assert.deepEqual([got, S.viewOpen()], [['serum'], false], 'no change: no call');
+  assert.deepEqual([got, S.viewOpen()], [['rig'], false], 'no change: no call');
   btn.click(); ptr(out, 'pointerdown', 5, 5);
-  assert.deepEqual([S.viewOpen(), S.view()], [false, 'serum'], 'outside');
+  assert.deepEqual([S.viewOpen(), S.view()], [false, 'rig'], 'outside');
   btn.click(); btn.click();
   assert.equal(S.viewOpen(), false, 'the button again');
   // keys: ↓ on the button opens it on the current view; Escape (on the button or in the menu) closes it, focus on the button
@@ -800,12 +802,12 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   fire(btn, 'click', { detail: 0 });
   assert.deepEqual([S.viewOpen(), d.activeElement === items[2]], [true, true]);
   fire(items[0], 'click', { detail: 0 });
-  assert.deepEqual([S.view(), S.layout(), got, S.viewOpen(), d.activeElement === btn, shown(), secs()], ['hw', 'hw', ['serum', 'hw'], false, true, classic, ['rigmods:hidden', 'rignotes:hidden']]);
+  assert.deepEqual([S.view(), S.layout(), got, S.viewOpen(), d.activeElement === btn, shown(), secs()], ['hw', 'hw', ['rig', 'hw'], false, true, classic, ['rigmods:hidden', 'rignotes:hidden']]);
   // restores: no call
   S.setLayout('flow');
   assert.deepEqual([S.view(), list.getAttribute('data-layout'), btn.children[0].textContent, got.length], ['flow', 'flow', 'Simple', 2], 'setLayout (a restore) does not call back');
   S.setView('serum'); S.setView('nope');
-  assert.deepEqual([S.view(), S.layout(), got.length], ['hw', 'hw', 2], 'an unknown view: the first');
+  assert.deepEqual([S.view(), S.layout(), got.length], ['hw', 'hw', 2], 'an unknown view — (SX0) a stored \'serum\' among them —: the first');
   assert.deepEqual([S.closeView(), (btn.click(), S.closeView()), S.viewOpen()], [false, true, false]);
   // (WC, IMPL-WC §7) the rig view: its tile alone, its two sections (placeholders without o.parts) — the module tiles, Note tools —, its note; the classics' layout kept
   S.setView(RIG.VIEW);
@@ -825,7 +827,7 @@ test('sourcesTray (views): data-driven — o.views lists the views in order (a l
   const views = [...T.SRC_VIEWS, { id: 'later', label: 'Later', tip: 'A later family', sections: [{ id: 'kits', head: 'A later family', note: 'Arrive later.' }] }];
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, viewBtn: btn, viewMenu: menu, secEl: sec, views, view: 'flow', onView: v => got.push(v) });
   assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [[...VIEW_IDS, 'later'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
-  btn.click(); menu.children[8].click();
+  btn.click(); menu.children[7].click(); // ((SX0) after the seven)
   assert.deepEqual([S.view(), S.layout(), got, S.tiles().filter(b => !b.hidden).length, sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''))],
     ['later', 'flow', ['later'], 0, ['rigmods:hidden', 'rignotes:hidden', 'kits']]);
   S.destroy();
@@ -834,7 +836,7 @@ test('sourcesTray (views): data-driven — o.views lists the views in order (a l
 
 // (7a, IMPL-7a §8 item 1) the Drums view: the drum machines only, with their real front panel ('hw'); Hardware / Simple list
 // the twelve classic synths; a drum tile has no SIMPLE badge, no simple / hardware aria text and names no maker (D4); a
-// stored view 'drums' opens Drums; the dropdown reads Hardware · Simple · Serum · Drums
+// stored view 'drums' opens Drums; the dropdown reads Hardware · Simple · <NAME> · Modulators · Drums … ((SX0) no Serum)
 test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, the TR-909 and the SDS-V, layout hw; no SIMPLE badge, no maker on their tiles; Hardware / Simple without them; a stored "drums" view opens it', () => {
   const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), got = [], picks = [];
   const S = T.sourcesTray(list, { models: MODELS, pick: (id, m) => picks.push([id, m]), drag: {}, layoutEl: host, secEl: sec, noteEl: note, view: 'drums', onView: v => got.push(v) });
@@ -844,7 +846,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
     ['drums', 'hw', ['tr808', 'tr606', 'tr909', 'sdsv'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
   assert.equal(note.textContent, 'More machines later.');
-  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules']);
+  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules']);
   assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
   // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
   assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
@@ -876,8 +878,8 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
     assert.deepEqual([shown().length, shown().includes('tr808'), shown().includes('tr606'), shown().includes('tr909'), shown().includes('sdsv'), tile.hidden, tile6.hidden, tile9.hidden, tileV.hidden, tile9.getAttribute('aria-description')],
       [12, false, false, false, false, true, true, true, true, null], v);
   }
-  S.setView('serum'); assert.deepEqual(shown(), ['serum']);
-  btn.click(); menu.children[5].click();
+  S.setView(RIG.VIEW); assert.deepEqual(shown(), [RIG.ID]); // ((SX0) a view of one model tile: the rig's, where the Serum's was
+  btn.click(); menu.children[4].click(); // ((SX0) Drums, one lower)
   assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606', 'tr909', 'sdsv']], 'picked: layout hw (a drum machine has no Simple layout)');
   tile.click(); tile6.click(); tile9.click(); tileV.click();
   assert.deepEqual(picks, [['tr808', 'replace'], ['tr606', 'replace'], ['tr909', 'replace'], ['sdsv', 'replace']], 'a tap picks any of them as any instrument');
@@ -951,7 +953,7 @@ function modRig(o = {}) {
   const log = [], picks = [];
   let leaves = 0;
   const S = T.sourcesTray(list, Object.assign({
-    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), mods: MODS, modsEl: box, modsSec: sec, view: 'serum', // (2026-10-19: the Serum view's)
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), mods: MODS, modsEl: box, modsSec: sec, view: RIG.VIEW, // (2026-10-19: the Serum view's; (SX0) the rig view's, which closes with them too)
     overOf: (t, x, y) => (y < 100 ? 'tracks' : x > 300 ? 'canvas' : null), canvasGhost: () => true, onLeave: () => { leaves++; },
     toWorld: (x, y) => ({ x: x * 2, y: y - 100 }),
     drag: {
@@ -970,8 +972,8 @@ test('sourcesTray (2a): the Modulators section — one tile per modulator (an or
   assert.deepEqual([R.sec.hidden, R.S.modTiles().map(b => b.getAttribute('data-mod')), R.box.children.length], [false, ['wheel', 'velo', 'at', 'bend'], 4]);
   assert.equal(R.S.tiles().length, MODELS.length, 'tiles(): the synths only');
   R.S.setView('hw');
-  assert.equal(R.sec.hidden, true, '(2026-10-19) Hardware / Simple: no Modulators (the Serum view\'s)');
-  R.S.setView('serum');
+  assert.equal(R.sec.hidden, true, '(2026-10-19) Hardware / Simple: no Modulators');
+  R.S.setView(RIG.VIEW); // ((SX0) the rig view closes with the Modulators, as the Serum view did)
   assert.equal(R.sec.hidden, false);
   const w = mtile(R, 'wheel');
   assert.deepEqual([w.tagName, w.className, w.type, w.getAttribute('data-scope'), w.children.map(c => c.className), w.children[1].textContent, w.children[2].hidden],
@@ -991,8 +993,8 @@ test('sourcesTray (2a): the Modulators section — one tile per modulator (an or
   const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: MODS.slice(0, 2), pick: () => mp.push('synth pick'), modPick: id => mp.push('mod ' + id), drag: {} });
   assert.deepEqual(list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-mod'))), [MODELS[0].id, MODELS[1].id, '#Modulators', 'wheel', 'velo']);
   assert.deepEqual(list.children.map(n => n.hidden), [false, false, true, true, true], '(2026-10-19) Hardware: the heading and the modulators hidden');
-  S2.setView('serum');
-  assert.deepEqual(list.children.map(n => n.hidden), [true, true, false, false, false], 'Serum: the modulators, no classic');
+  S2.setView(RIG.VIEW);
+  assert.deepEqual(list.children.map(n => n.hidden), [true, true, false, false, false], 'the rig view ((SX0) the Serum view\'s place): the modulators, no classic');
   S2.modTile('wheel').click();
   assert.deepEqual(mp, ['mod wheel']);
   S2.destroy();
@@ -1095,17 +1097,16 @@ test('sourcesTray (2b): MOD_TILES lists every kind ((MOD1 §5) LFO · Envelope �
   lfo.click(); lfo.click();
   assert.deepEqual(R.picks, ['lfo:replace', 'lfo:replace'], 'picks again and again');
   R.S.destroy();
-  const serum = T.SRC_VIEWS.find(v => v.id === 'serum');
-  assert.deepEqual([serum.note, serum.sections.map(s => s.id)], ['Drop a modulator on the canvas and cable its jack to any knob.', ['serum', 'mods']], '((WC) the Serum view: its tile and the modulators — the part tiles are the rig view\'s, lane U)');
+  assert.equal(T.SRC_VIEWS.find(v => v.id === 'serum'), undefined, '(SX0) the Serum view (its tile and the modulators) is gone with the bundled model');
 });
 
 /* ---------------------------------------------------------------- (MOD1 §5, IMPL-MOD1 Q5; lane U) the Modulators view */
 // the user (2026-11-02): "Own Modulators menu" — a view of its own in the Sources menu, and the Modulators section stays under the rig (and Serum, until ROADMAP 28)
 test('sourcesTray (MOD1 §5, Q5): the Modulators view — SRC_VIEWS lists it after the rig view (label, tip, note, the Modulators section alone, no layout of its own); all ten tiles, LFO · Envelope · Macros first, and no synth tile, part row, Controllers or Moog row; the section stays in the rig and Serum views; Hardware / Simple point to it, the rig view\'s note speaks of its own modules only; a menu pick, a stored "mods" view, the classics\' layout kept', () => {
   const V = T.SRC_VIEWS.find(v => v.id === 'mods'), rigV = T.SRC_VIEWS.find(v => v.id === RIG.VIEW);
-  assert.deepEqual([T.SRC_VIEWS.indexOf(V), V.label, V.tip, V.note, V.layout, V.sections], [4, 'Modulators', 'LFO, Envelope, Macros and the rest, cabled to any knob', MODS_NOTE, undefined, [{ id: 'mods' }]]);
-  assert.deepEqual(T.SRC_VIEWS.filter(v => v.sections.some(s => s.id === 'mods')).map(v => v.id), ['serum', 'rig', 'mods'], 'the section: the Serum view (until 28), the rig view, its own');
-  assert.deepEqual([T.SRC_VIEWS.find(v => v.id === 'hw').note, T.SRC_VIEWS.find(v => v.id === 'flow').note], [TO_MODS, TO_MODS], 'Hardware / Simple point to the Modulators view (and Serum\'s)');
+  assert.deepEqual([T.SRC_VIEWS.indexOf(V), V.label, V.tip, V.note, V.layout, V.sections], [3, 'Modulators', 'LFO, Envelope, Macros and the rest, cabled to any knob', MODS_NOTE, undefined, [{ id: 'mods' }]]);
+  assert.deepEqual(T.SRC_VIEWS.filter(v => v.sections.some(s => s.id === 'mods')).map(v => v.id), ['rig', 'mods'], 'the section: the rig view, its own ((SX0) the Serum view\'s went with it, ROADMAP 28)');
+  assert.deepEqual([T.SRC_VIEWS.find(v => v.id === 'hw').note, T.SRC_VIEWS.find(v => v.id === 'flow').note], [TO_MODS, TO_MODS], 'Hardware / Simple point to the Modulators view');
   assert.ok(/Modulators view/.test(TO_MODS) && !T.SRC_VIEWS.some(v => /Serum and its modulators/.test(v.note)), 'the Serum view no longer owns "its modulators"');
   assert.deepEqual([rigV.note, /modulator/i.test(rigV.note), rigV.sections.at(-1).id], [RIG_NOTE, false, 'mods'], 'the rig view: its note speaks of its own modules; the Modulators still close it');
   const got = [], R = mastRig({ view: 'mods', onView: v => got.push(v) });
@@ -1114,14 +1115,14 @@ test('sourcesTray (MOD1 §5, Q5): the Modulators view — SRC_VIEWS lists it aft
   assert.deepEqual([visible(), modIds(R.S), R.S.tiles().filter(b => !b.hidden).length, R.S.setTiles().filter(b => !b.hidden).length],
     [['list', 'mods'], T.MOD_TILES.map(m => m.id), 0, 0], 'the Modulators section alone (the parts, Note tools, Controllers and Moog sections hidden): its ten tiles in MOD_TILES\' order, no synth or set tile');
   assert.deepEqual(modIds(R.S).slice(0, 3), ['lfo', 'env', 'macro'], 'LFO · Envelope · Macros first');
-  // the section follows the views: the Serum and rig views keep it, every other view hides it
-  for (const v of VIEW_IDS) { R.S.setView(v); assert.equal(R.mods.s.hidden, !['serum', 'rig', 'mods'].includes(v), v + ': the Modulators section'); }
-  // the menu: the fifth item, a pick calls back once; the classics' layout is kept through it (a view of its own with no layout)
+  // the section follows the views: the rig view keeps it, every other view hides it
+  for (const v of VIEW_IDS) { R.S.setView(v); assert.equal(R.mods.s.hidden, !['rig', 'mods'].includes(v), v + ': the Modulators section'); }
+  // the menu: the fourth item ((SX0) the fifth while the Serum view stood), a pick calls back once; the classics' layout is kept through it
   R.S.setView('flow');
   const [btn, menu] = R.host.children;
-  btn.click(); menu.children[4].click();
+  btn.click(); menu.children[3].click();
   assert.deepEqual([R.S.view(), got, R.S.layout(), R.list.getAttribute('data-layout'), btn.children[0].textContent, menu.children.map(b => b.getAttribute('aria-checked')).join()],
-    ['mods', ['mods'], 'flow', 'flow', 'Modulators', 'false,false,false,false,true,false,false,false']);
+    ['mods', ['mods'], 'flow', 'flow', 'Modulators', 'false,false,false,true,false,false,false']);
   // a tap picks in the tray's mode, a drag drops as a Modulators tile (the master's four are the same tiles)
   R.S.modTile('env').click(); R.S.setMode('track'); R.S.modTile('macro').click();
   assert.deepEqual(R.picks, ['mod env:replace', 'mod macro:track']);
@@ -1132,17 +1133,17 @@ test('sourcesTray (MOD1 §5, Q5): the Modulators view — SRC_VIEWS lists it aft
   R.S.destroy();
 });
 
-test('sourcesTray (MOD1 review, reviewer 2 P3): the Modulators view says "Modulators" once — its section\'s own heading (index.html\'s h3.cv-tgrp) hidden in that view only; the rig and Serum views and the master (no view menu there) keep it', () => {
+test('sourcesTray (MOD1 review, reviewer 2 P3): the Modulators view says "Modulators" once — its section\'s own heading (index.html\'s h3.cv-tgrp) hidden in that view only; the rig view and the master (no view menu there) keep it ((SX0) the Serum view too, while it stood)', () => {
   const R = mastRig({ view: 'hw' }), h = R.d.createElement('h3');
   h.className = 'cv-tgrp'; h.textContent = 'Modulators';
   R.mods.s.insertBefore(h, R.mods.b);
   const st = () => [R.S.view(), R.mods.s.hidden, h.hidden].join(':');
   const got = [];
-  for (const v of ['mods', 'rig', 'serum', 'mods']) { R.S.setView(v); got.push(st()); }
+  for (const v of ['mods', 'rig', 'mods']) { R.S.setView(v); got.push(st()); }
   R.S.setMaster(true); got.push(st());
   R.S.setMaster(false); got.push(st());
   R.S.setView('hw'); got.push(st());
-  assert.deepEqual(got, ['mods:false:true', 'rig:false:false', 'serum:false:false', 'mods:false:true', 'mods:false:false', 'mods:false:true', 'hw:true:false']);
+  assert.deepEqual(got, ['mods:false:true', 'rig:false:false', 'mods:false:true', 'mods:false:false', 'mods:false:true', 'hw:true:false']);
   R.S.destroy();
 });
 
@@ -1150,7 +1151,7 @@ test('sourcesTray (MOD1 review, reviewer 2 P3): the Modulators view says "Modula
 // (milestone 3's Serum parts / Note tools tiles became the rig's: RIG_TILES — nine kinds, two of them (ARP, CLIP) the next cut's, so WC-1's Note tools
 // section is a placeholder — in the rig view only; the machinery (o.parts, partTiles / partTile / setPartPlaced / partPlaced) is milestone 3's;
 // (MOD1 §5) six kinds: the Envelope, LFO and Macros tiles are the Modulators' — one tile per type)
-test('sourcesTray (WC): the rig view — SRC_VIEWS\'s fourth (after Serum: RIG.NAME, its tip, note and sections); the rig tile alone in it (its own art, "2026 · modular synth", no maker word, no SIMPLE badge), hidden elsewhere; a stored "rig" view opens it', () => {
+test('sourcesTray (WC): the rig view — SRC_VIEWS\'s third ((SX0) after Simple — the Serum view stood between them: RIG.NAME, its tip, note and sections); the rig tile alone in it (its own art, "2026 · modular synth", no maker word, no SIMPLE badge), hidden elsewhere; a stored "rig" view opens it', () => {
   const V = T.SRC_VIEWS.find(v => v.id === RIG.VIEW);
   assert.deepEqual(T.SRC_VIEWS.map(v => v.id), VIEW_IDS);
   assert.deepEqual([V.label, V.tip, V.note, V.layout, V.sections.map(s => s.id + (s.head ? ':' + s.head : '') + (s.note ? ':' + s.note : ''))],
@@ -1165,7 +1166,7 @@ test('sourcesTray (WC): the rig view — SRC_VIEWS\'s fourth (after Serum: RIG.N
   assert.equal(tile.title, `${RIG.NAME} (2026) — our modular synth: modules patched with cords, a small starter rig that plays — tap to use it, or drag it onto the canvas or the track list`);
   assert.ok(!/undefined|serum|xfer/i.test(tile.title + tile.textContent), tile.title);
   assert.equal(tile.children[0].innerHTML, cvArt.art('rig', cvArt.TILE));
-  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl', 'moog']) { S.setView(v); assert.equal(tile.hidden, true, v); }
+  for (const v of ['hw', 'flow', 'mods', 'drums', 'ctl', 'moog']) { S.setView(v); assert.equal(tile.hidden, true, v); }
   S.setView('rig'); tile.click();
   assert.deepEqual([tile.hidden, picks], [false, ['rig:replace']]);
   S.destroy();
@@ -1188,7 +1189,7 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   assert.deepEqual([kids(ps), ps.getAttribute('aria-label'), ps.className], [['H3.cv-tgrp:' + RIG.NAME + ' modules', 'DIV'], RIG.NAME + ' modules', '']);
   assert.deepEqual([kids(ns), ns.getAttribute('aria-label'), ns.classList.contains('cv-tsoon'), ne.hidden], [['H3.cv-tgrp:Note tools', 'DIV', 'P.cv-tnote:' + RIG_SOON], 'Note tools', true, true]);
   assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the rig view');
-  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
+  for (const v of ['hw', 'flow', 'mods', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
   R.S.setView('rig');
   const osc = R.S.partTile('osc');
   assert.deepEqual([osc.className, osc.getAttribute('data-group'), osc.children.map(c => c.className), osc.children[1].textContent, osc.title],
@@ -1285,7 +1286,7 @@ function ctlRig(o = {}) {
 test('sourcesTray (8): the Controllers view — SRC_VIEWS lists it after Drums (its tip and note); one Pads tile in a row of its own (an original 3 × 3 glyph, one lit; the name, a hidden reason) in its own section, shown only in this view; tiles() stays the synths\' (all hidden here); a tap picks in the tray\'s mode (ctlPick, else modPick, else pick); the view is remembered (a stored "ctl"), an unknown one opens Hardware', () => {
   const V = T.SRC_VIEWS.map(v => v.id);
   assert.deepEqual(V, VIEW_IDS); // ((9) the Moog modules view after it; (WC) the rig view after Serum; (MOD1) the Modulators after the rig)
-  const ctl = T.SRC_VIEWS[6];
+  const ctl = T.SRC_VIEWS[5]; // ((SX0) one lower: the Serum view went)
   assert.deepEqual([ctl.label, ctl.tip, ctl.note, ctl.sections, ctl.layout], ['Controllers', 'Pad grids that play and modulate any track',
     'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', [{ id: 'ctls' }], undefined], 'no layout of its own: the classics\' is kept');
   assert.deepEqual(T.CTL_TILES.map(t => [t.id, t.name]), [['pads', 'Pads']]);
@@ -1298,7 +1299,7 @@ test('sourcesTray (8): the Controllers view — SRC_VIEWS lists it after Drums (
   const g = p.children[0].innerHTML;
   assert.deepEqual([p.children[0].getAttribute('aria-hidden'), (g.match(/<rect /g) || []).length, (g.match(/fill="currentColor"/g) || []).length, /<(text|image)|href|url\(/.test(g)], ['true', 9, 1, false], 'a 3 × 3 of rounded squares, one lit; monochrome');
   assert.equal(p.title, 'Pads — tap to add a Pads module (it plays any track), or drag it onto the canvas');
-  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums']) { R.S.setView(v); assert.equal(R.sec.hidden, true, v + ': no Controllers row'); }
+  for (const v of ['hw', 'flow', 'mods', 'drums']) { R.S.setView(v); assert.equal(R.sec.hidden, true, v + ': no Controllers row'); }
   R.S.setView('ctl');
   assert.deepEqual([R.sec.hidden, R.S.layout()], [false, 'hw'], 'back; the layout kept (no layout of its own)');
   p.click();
@@ -1415,10 +1416,10 @@ function moogRig(o = {}) {
   return { d, tray, list, scroll, layer, S, log, picks, sec: () => scroll.children.find(c => c.getAttribute('data-sec') === 'moog') || null };
 }
 
-test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s eighth ((WC) the rig view, (MOD1) the Modulators view before it; tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
+test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s seventh ((WC) the rig view, (MOD1) the Modulators view before it; (SX0) the Serum view gone; tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
   const V = T.SRC_VIEWS.find(v => v.id === 'moog');
   assert.deepEqual([T.SRC_VIEWS.map(v => v.id).indexOf('moog'), V.label, V.tip, V.layout, V.sections.map(s => s.id), V.note],
-    [7, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
+    [6, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
       'Model 15, System 35, System 55 and System IIIc bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.']);
   assert.deepEqual(MODELS.filter(m => V.sections[0].models(m)).map(m => m.id), ['m900'], 'the m15 section: the 900 Series model tile only');
   assert.deepEqual(T.MOOG_TILES.map(t => [t.id, t.name, t.group]), [['921', '921 Oscillator', 'src'], ['921a', '921A Driver', 'src'], ['921b', '921B Oscillator', 'src'],
@@ -1463,7 +1464,7 @@ test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s eighth ((WC) t
   }
   assert.ok(/width="34"/.test(T.MOOG_GLYPH['907a']) && /width="20"/.test(T.MOOG_GLYPH['921']) && /width="12"/.test(T.MOOG_GLYPH['911']), 'the 907A wide, the 921 2 MU, the rest 1 MU');
   // only in this view; Hardware / Simple: the twelve classics (classicOf: the 900 Series is not one); back
-  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(sec.hidden, true, v); }
+  for (const v of ['hw', 'flow', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(sec.hidden, true, v); }
   R.S.setView('flow');
   assert.deepEqual(shown(), MODELS.filter(classicOf).map(m => m.id));
   assert.equal(shown().length, 12);
@@ -1597,7 +1598,7 @@ test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — S
   // only in the Moog view
   const vis = () => [b.hidden, b5.hidden, b3.hidden].join();
   assert.equal(vis(), 'false,false,false');
-  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(vis(), 'true,true,true', v); }
+  for (const v of ['hw', 'flow', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(vis(), 'true,true,true', v); }
   R.S.setView('moog');
   // a tap: setPick in the tray's mode, never the model pick
   b.click(); R.S.setMode('track'); b5.click(); R.S.setMode('replace'); b3.click();
@@ -1959,7 +1960,7 @@ function mastRig(o = {}) {
   place(tray, 0, 100, 284, 600);
   const log = [], picks = [];
   const S = T.sourcesTray(list, Object.assign({
-    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), layoutEl: host, secEl: scroll, noteEl: note, view: 'serum',
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), layoutEl: host, secEl: scroll, noteEl: note, view: RIG.VIEW, // ((SX0) the Serum view's place
     mods: T.MOD_TILES, modsEl: mods.b, modsSec: mods.s, modPick: (id, mode) => picks.push('mod ' + id + ':' + mode),
     ctls: T.CTL_TILES, ctlsEl: ctls.b, ctlsSec: ctls.s, ctlPick: (id, mode) => picks.push('ctl ' + id + ':' + mode),
     parts: true, partsEl: parts.b, partsSec: parts.s, notesEl: notes.b, notesSec: notes.s, moog: T.MOOG_TILES, sets: T.SET_TILES,
@@ -2006,7 +2007,7 @@ test('sourcesTray (MM): setMaster(true) — the view menu is hidden, every model
   }
 });
 
-test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was (the hidden flags of tiles, sections, the view menu, the view\'s note); the Modulators\' other tiles are back in the Serum view; calling it twice changes nothing', () => {
+test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was (the hidden flags of tiles, sections, the view menu, the view\'s note); the Modulators\' other tiles are back in the rig view ((SX0) the Serum view\'s place); calling it twice changes nothing', () => {
   for (const view of VIEW_IDS) {
     const R = mastRig({ view }), before = trayShape(R);
     assert.equal(before.mnote, -1, view + ': no master note in the other canvases\' tray before the first visit (node for node as it was)');
@@ -2018,8 +2019,8 @@ test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was
     assert.deepEqual(trayShape(R), Object.assign({}, before, { mnote: 0 }), view + ': off twice');
     R.S.destroy();
   }
-  const R = mastRig({ view: 'serum' });
-  assert.equal(modIds(R.S).length, 10, 'the Serum view: all ten tiles (their section shows)');
+  const R = mastRig({ view: RIG.VIEW });
+  assert.equal(modIds(R.S).length, 10, 'the rig view: all ten tiles (their section shows)');
   R.S.setMaster(true);
   assert.equal(modIds(R.S).length, 4);
   R.S.setMaster(false);
@@ -2030,7 +2031,7 @@ test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was
 });
 
 test('sourcesTray (MM): while the master canvas shows, a view restore (setView — the stored pref, a menu pick) keeps the master state; leaving it shows the view that was set meanwhile', () => {
-  const R = mastRig({ view: 'serum' });
+  const R = mastRig({ view: RIG.VIEW });
   R.S.setMaster(true);
   R.S.setView('hw');
   const sh = trayShape(R);
@@ -2094,7 +2095,7 @@ test('sourcesTray (MM): an open view menu closes when the master canvas comes up
 test('sourcesTray (MM): without a section element (a flat list) the heading "Modulators" and the four tiles show, the note follows the tiles, the rest is hidden; leaving restores the view\'s rule; the note goes with destroy', () => {
   const d = fresh(), list = d.createElement('div');
   d.body.append(list);
-  const S = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: T.MOD_TILES, ctls: T.CTL_TILES, pick() {}, drag: {}, view: 'serum' });
+  const S = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: T.MOD_TILES, ctls: T.CTL_TILES, pick() {}, drag: {}, view: RIG.VIEW }); // ((SX0) the rig view: the Modulators with their heading, as the Serum view showed them
   const names = () => list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.tagName === 'P' ? 'p' : n.getAttribute('data-model') || n.getAttribute('data-mod') || n.getAttribute('data-ctl')) + (n.hidden ? '!' : ''));
   assert.equal(list.children.length, 2 + 1 + 10 + 1 + 1, 'before the first visit: the synths, the Modulators\' heading and ten tiles, the Controllers\' heading and tile — no note');
   S.setMaster(true);

@@ -24,6 +24,7 @@ import * as cvTray from '../cv-tray.js?v=9';
 import * as MUI from '../master-ui.js?v=9';
 import * as cvModule from '../cv-module.js?v=9'; // ((MM, phase 0) devicesOf / tidy on the master's track-shaped record)
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
 for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
@@ -588,7 +589,7 @@ test('R1-8 — no MASTER in a resample or a render-last offline context (renderO
   const ce = console.error; // (the sim's stub DOM cannot style a Serum panel: its own error, not under test)
   console.error = (e, ...r) => { if (!(e && /getElementById/.test(String(e.message || e)))) ce(e, ...r); };
   try {
-    const sx = api.addTrack(MODELS.find(m => m.id === 'serum')); await settle(4);
+    const sx = api.addTrack(MODELS.find(m => m.id === RIG.ID)); await settle(4);
     api.selectTrack(sx.id); await settle(3);
     const T0 = 2e6;
     api.noteOn(62, 0.8, 0, T0); api.noteOff(62, 0, T0 + 200);

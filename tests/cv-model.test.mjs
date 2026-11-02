@@ -10,11 +10,12 @@ import * as MO from '../cv-model.js?v=9';
 import * as G from '../cv-graph.js?v=9';
 import * as S from '../song.js?v=9';
 import * as C from '../serum-core.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const jclone = x => JSON.parse(JSON.stringify(x));
 // an adopted Serum track with a Juno beside it feeding a panel (a reverb), as the fixture of cv-graph's 2b tests
 function duo() {
-  const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0]; // (R7: the guard)
+  const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: RIG.ID }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0]; // (R7: the guard)
   const i2 = MO.addInst(t, 'juno60', { vals: {} }), fx = MO.addPanel(t, {});
   C.newInstance(t.dev[fx].fx, 'rev', { rack: 0 });
   MO.connect(t, i2 + '.out', fx + '.in');
@@ -98,6 +99,8 @@ test('2b addMod from every source to every destination: Serum (the Serum\'s drop
   const s = t.dev.i1.vals.s;
   for (let k = 0; k < 64; k++) if (!s.matrix[k].src) s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
   assert.deepEqual([add('l1.out', 'i1:f.cutoff').code, add('l1.out', i2 + ':cf').ok], ['full', true], 'full for the Serum, not for the Juno');
+  assert.equal(add('l1.out', 'i1:f.cutoff').why, RIG.NAME + '’s mod rows are full (64/64)', 'an unnamed device: the model\'s name (SX0: never "Serum")');
+  assert.equal(add('l1.out', 'i1:f.cutoff', { name: 'Lead' }).why, 'Lead’s mod rows are full (64/64)');
 });
 
 test('2b setMod on non-native rows (normRow\'s rules by proxy): fields, never the ends; refusals leave the row', () => {
@@ -129,7 +132,7 @@ test('2b rows go with what they end on or start at: a model change keeps the row
   assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r3', 'r4'], '2 modulation cables to the instrument removed: the new model has no such knobs']);
   assert.deepEqual(t.mods.map(x => x.id), ['r1', 'r2', 'r5', 'r6', 'r7']);
   // → a Serum: the classic ids are not Serum knobs
-  const q = MO.setModel(t, i2, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } });
+  const q = MO.setModel(t, i2, RIG.ID, { vals: { s: C.normalizeSerum(C.defaultSerum()) } });
   assert.deepEqual([q.rows, t.mods.map(x => x.id)], [['r1', 'r2', 'r5'], ['r6', 'r7']]);
   MO.addMod(t, 'i1/lfo2.out', i2 + ':f.cutoff'); MO.addMod(t, 'i1/env2.out', i2 + ':a.wt');
   assert.deepEqual(MO.removeInst(t, 'i1').rows, ['r6', 'r7', 'r8', 'r9'], 'the Serum\'s own rows and the rows linked from it');
@@ -179,7 +182,7 @@ test('(canvas 2b) the Serum filter\'s routing switches take no NEW cable (addMod
   t.mods.push({ id: 'r9', src: 'l1.out', dst: 'i1:f.routeS', amt: -1, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 });
   assert.deepEqual(MO.setMod(t, 'r9', { amt: -0.5 }).ok, true);
   assert.deepEqual(MO.pruneRows(t, 'i1'), []);
-  assert.deepEqual(MO.setModel(t, 'i1', 'serum', {}).rows, [], 'the same model: nothing dropped');
+  assert.deepEqual(MO.setModel(t, 'i1', RIG.ID, {}).rows, [], 'the same model: nothing dropped');
   assert.equal(t.mods.some(r => r.id === 'r9' && r.amt === -0.5), true);
   assert.equal(G.compileMods(t, p) !== undefined, true);
 });
@@ -301,7 +304,7 @@ test('P devices: 1024 a track — addModDev / addPanel / addInst / setModel refu
   assert.equal(MO.devFull(t), '');
   assert.equal(MO.addModDev(t, 'lfo'), 'l' + (Math.max(...Object.keys(t.dev).filter(k => /^l\d+$/.test(k)).map(k => +k.slice(1)))), 'the highest + 1');
   // setModel Serum → classic adds a panel: refused at the bound, nothing moved; classic → Serum needs no room
-  const q = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0];
+  const q = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: RIG.ID }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0];
   while (MO.addModDev(q, 'macro')) { /* fill */ }
   const before = JSON.stringify(q);
   assert.equal(Object.keys(q.dev).length, 1024);

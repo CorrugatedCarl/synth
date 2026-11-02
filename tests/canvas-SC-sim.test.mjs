@@ -21,6 +21,7 @@ import * as CMOD from '../cv-model.js?v=9';
 import * as FC from '../fx-core.js?v=9';
 import * as DC from '../drum-core.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const LANE_D = /\bSCREG\b/.test(readFileSync(new URL('../engine.js', import.meta.url), 'utf8'));
 const TODO_D = LANE_D ? false : 'lane D (engine.js SCREG, the Ducker / keyed compressor DSP) not merged in this tree';
@@ -330,10 +331,10 @@ test('§1.1 (skeptic #10) the edge exists before the FXP naming its source lands
 });
 
 test('§1.1 every FX path re-syncs the edges (sendPatch): a Serum\'s own rack, a Serum preset load, a model change', async () => {
-  const S = api.addTrack(model('serum')); await settle(4);
+  const S = api.addTrack(model(RIG.ID)); await settle(4);
   addUnit(S, 'duck', K.id); await settle(2);
   assert.deepEqual(SC.edges(S), [[K.id, 0]], 'a Ducker in a Serum\'s own FX');
-  assert.equal(api.sxLoad(S, 'f:' + model('serum').presets[3].name), true); await settle(3);
+  assert.equal(api.sxLoad(S, 'f:' + model(RIG.ID).presets[3].name), true); await settle(3);
   assert.deepEqual([mods(S).some(I => I.type === 'duck'), SC.edges(S)], [false, []], 'a Serum preset replaces the rack: the edge goes');
   addUnit(S, 'cmp', K.id); await settle(2);
   assert.deepEqual(SC.edges(S), [[K.id, 1]]);
@@ -395,7 +396,7 @@ test('§7.2 the bounce\'s closure: a keying chain of muted sources at gain 0 —
   await sim.power(); await settle(4);
   clearUnits(X); clearUnits(Y); Y.mute = false; Z.mute = false; cv.mix(); await settle(3);
   // a muted kick with no notes of its own, played by a Serum's arpeggiator through MIDI OUT: keyed by the heard bass
-  const S = api.addTrack(model('serum')), G = api.addTrack(model('tr808')); await settle(4);
+  const S = api.addTrack(model(RIG.ID)), G = api.addTrack(model('tr808')); await settle(4);
   S.notes = [{ id: 's0', t: 0, d: 1800, n: 60, v: 100 }];
   api.sxHost(S).edit(st => { st.p['arp.on'] = 1; st.arp.midiOut = 2; st.arp.outTrack = G.id; }, { label: 'arp out' }); await settle(3);
   G.mute = true; cv.mix();
@@ -427,7 +428,7 @@ test('§6.1 scSources: self, the project\'s uid, the list in project order (a sh
 });
 
 test('§1.3 (skeptic #14) payloads that leave the project carry no track id: a Serum user preset and its exported file blank the sources; the track keeps its own', async () => {
-  const S = api.addTrack(model('serum')); await settle(4);
+  const S = api.addTrack(model(RIG.ID)); await settle(4);
   addUnit(S, 'duck', K.id); await settle(2);
   assert.ok(api.sxSave(S, 'SC keyed', 'User'));
   const e = api.store.get('synth.user.serum', []).find(p => p.name === 'SC keyed');

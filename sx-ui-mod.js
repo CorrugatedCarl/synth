@@ -1,29 +1,20 @@
-// sx-ui-mod.js — Serum's own module panels, one implementation for every view (SYNTH Canvas milestone 3,
-// docs/canvas/IMPL-3.md §2.2–2.3): the bundled panel's row C and GLOBAL page, a Serum's parts on the canvas and the canvas
-// modulators' slot hosts all mount these classes — identical look and editing, the bundled ids, classes and CSS.
+// sx-ui-mod.js — the module panels of the wavetable engine (SYNTH Canvas milestone 3, docs/canvas/IMPL-3.md §2.2–2.3): the
+// donors a rig's faces (rig-ui) and the canvas modulators' slot faces build on — the ids, classes and CSS of the kit.
 //   new XPanel(root, kit, args) → { el, power?, module?, menuItems(), destroy() }   (root: appended to when given)
-//     MacrosPanel   Serum's MACROS 4 × 2 (knobs m1…m8, the name tiles: Serum's drag sources, or with kit.opts.tiles
-//                   'jack' the canvas jacks k1…k8; rename ≤ kit.opts.nameMax)
-//     EnvPanel(·, k)     ENV k (0…3) in a fixed slot; k undefined: the bundled ENV with its 1–4 tabs (s.ui.env)
-//     LfoPanel(·, k)     LFO k (0…9) in a fixed slot (no VELO / NOTE area, H3); k undefined: the bundled editor (the
-//                        selected LFO / VELO / NOTE); the PATH editor is built at the first Path type (H3), then kept
-//     CurvePanel(·, which)   VELO / NOTE curve (VOICE's fold-outs; the bundled LFO panel's curve area: { shell: false })
-//     VoicingPanel, ChaosRow(·, c) (one chaos source: RATE, BPM, MONO, S&H), VoiceHeader (preset ◀ name ▶, save, undo /
-//     redo, menu, MASTER + meter, voices, render-last; args.lead: elements after the wave icon — the bundled logo and
-//     tabs), OutputsPanel (sx-ui-mix: BUS 1 / BUS 2 / MAIN / DIRECT), QualityPanel, TuningPanel, MpePanel, VcPanel,
-//     PrefsPanel, InfoPanel (the GLOBAL page's; VOICE's ⋯ dialogs: panelDialog), VoicePanel (VOICE: the header, VOICING
-//     beside ENV 1, the outputs, the fold-outs)
-//   PART_W           each panel's width in the 1200 px bundled Serum (the look the user compares with), layout px
-//   PART_PH          each panel body's device-pixel phase there (look parity: a part's panel moved to it)
-//   partView(part)   'oscB' → { kind: 'osc', k: 1 } … (serum-core MODULE_FIELDS names, 'macros', 'voice')
-//   mountPart(host, part, root, args)   host.mount of a Serum part (args.bare default true: the canvas bar's chrome)
-//   mountSlot(slotHost, root, args)     the panel of a canvas modulator's slot host (cv-mods-ui's bodies)
+//     MacrosPanel   MACROS 4 × 2 (knobs m1…m8, the name tiles: drag sources, or with kit.opts.tiles 'jack' the canvas jacks
+//                   k1…k8; rename ≤ kit.opts.nameMax)
+//     EnvPanel(·, k)     ENV k (0…3) in a fixed slot; k undefined: the ENV with its 1–4 tabs (s.ui.env)
+//     LfoPanel(·, k)     LFO k (0…9) in a fixed slot (no VELO / NOTE area, H3); k undefined: the selected LFO / VELO / NOTE
+//                        editor; the PATH editor is built at the first Path type (H3), then kept
+//     CurvePanel(·, which)   VELO / NOTE curve (the Amplifier's dialogs; the LFO panel's curve area: { shell: false })
+//     VoicingPanel, ChaosRow(·, c) (one chaos source: RATE, BPM, MONO, S&H), OutputsPanel (sx-ui-mix: BUS 1 / BUS 2 / MAIN /
+//     DIRECT), QualityPanel, TuningPanel, VcPanel, PrefsPanel, InfoPanel (the Amplifier's drawer and ⋯ dialogs: panelDialog)
+//   mountPart(host, part, root, args)   (SX0, Q1) host.mount of the Arpeggiator / the Clip sequencer ('arp' | 'clip'; else null)
 //   MONO_LOCK_TIP    (MM, IMPL-MM §7.2) the tip of a locked MONO switch: a slot host made with lock: { mono: 1 } (the master's
 //                    modulators; it has no notes) shows an LFO's / a Chaos row's MONO lit, disabled, its tap ignored — but said:
 //                    the kit's notice with the tip (MM UI fixer, review MM-2 P3-2: touch has no hover tip)
-// The view kinds registered on sx-host (defineView): osc, sub, noise, filter, env, lfo, macros, voicing, chaos, curve,
-// arp, clip, voice, quality, tuning, mpe, vc, outputs, header.
-// Panels reach the host through the kit (kit.sx for the host services VOICE's header and the GLOBAL panels use).
+// The view kinds registered on sx-host (defineView): arp, clip.
+// Panels reach the host through the kit (kit.sx for the host services the Amplifier's panels use).
 //
 // Browser ES module: nothing touches document / window / storage at module top level.
 import * as core from './serum-core.js?v=9';
@@ -39,37 +30,6 @@ import {
 } from './sx-host.js?v=9';
 
 const { DESTS, DEST_INDEX, MODULE_FIELDS } = core;
-
-/* ================================================================ sizes (IMPL-3 §2.2) */
-// Each part's panel width in the 1200 px bundled Serum (measured once from that reference with every module on, frozen;
-// the look-parity gate re-measures): row A's columns (SUB / NOISE, the three oscillators, the filters), row C's
-// (MACROS / ENV / LFO / VOICING), the GLOBAL page's (QUALITY, TUNING, MPE, VOICE CONTROL, CHAOS), the ARP / CLIP pages
-// (the page width); VOICE = VOICING + gap + ENV 1 (its layout below). Measured 2026-10-20 in Chrome (1200 px root: 1184 of
-// content; row A 0.75 / 3.6 / 1 fr, row C 0.9 / 1.2 / 1.5 / 0.8 fr, the GLOBAL grid three columns), layout px; cv-module
-// rounds them up to the 32 px grid (MOD_W). (Review 2: to the layout unit, 1/64 px — a panel 0.05 px narrower than its
-// bundled self lays its text out at other fractions.)
-export const PART_W = Object.freeze({
-  osc: 256.65625, sub: 163.734375, noise: 163.734375, filter: 218.328125, macros: 237.265625, env: 316.375, lfo: 395.453125, voicing: 210.90625,
-  curve: 395.5, chaos: 389.34375, quality: 389.3, tuning: 389.3, mpe: 389.3, vc: 389.3, arp: 1184, clip: 1184, voice: 535.28125, outputs: 535.28125,
-});
-// (review 2, look parity) each panel BODY's device-pixel phase in the 1200 px bundled Serum: its world offset mod 1 layout px
-// [x, y] (the bundled module stands on the dots; Chrome, measured with PART_W — OSC B's column at .390625, row C at y
-// .765625 …). The world layer rasters text at each element's own fractional origin, so a part's or a canvas modulator's
-// panel is moved (< 1 px, relative: sx-host alignPhase) to the same phase — its text then rasters as in the whole panel.
-// VOICE: its VOICING and ENV 1 apart. Parts without an entry stay as laid out.
-export const PART_PH = Object.freeze({
-  oscA: [0.734375, 0], oscB: [0.390625, 0], oscC: [0.03125, 0], sub: [0, 0], noise: [0, 0.390625], filter: [0.6875, 0],
-  macros: [0, 0.765625], env: [0.265625, 0.765625], lfo: [0.640625, 0.765625], voicing: [0.09375, 0.765625], chaos: [0.328125, 0.078125],
-});
-// a view's phase spec (sx-host mount args.phase): [[selector ('' = the view's panel), x, y]]
-function phaseOf(part, kind) {
-  if (kind === 'voice') return [['.sx-vrow > section.sx-panel:nth-child(1)', ...PART_PH.voicing], ['.sx-vrow > section.sx-panel:nth-child(2)', ...PART_PH.env]];
-  const P = PART_PH[part] || PART_PH[kind];
-  return P ? [['', ...P]] : null;
-}
-// the bundled column a part comes from (the part root's data-col: the 1200 px rules restated for it, .sx-part[data-col])
-const COL = { osc: 'O', sub: 'SN', noise: 'SN', filter: 'F', macros: 'C', env: 'C', lfo: 'C', voicing: 'C', curve: 'C', voice: 'C',
-  chaos: 'GL', quality: 'GL', tuning: 'GL', mpe: 'GL', vc: 'GL', outputs: 'C', arp: 'P', clip: 'P' };
 
 /* ================================================================ small helpers */
 const pToggle = (K, o) => K.bind(wk.toggle(Object.assign({ kind: 'led' }, o)));
@@ -557,95 +517,6 @@ export class ChaosRow {
   destroy() { this.el.remove(); }
 }
 
-/* ================================================================ VOICE's header (§13.2) */
-// The preset area, panel undo / redo, the main menu, the touch modifier bar, the voice counter, MASTER + the output meter
-// and the render-last wave icon — the bundled header without its logo and page tabs (args.lead: elements after the wave
-// icon). The host keeps the pieces its paint loop updates (vcEl, meter, mkeys, waveBtn).
-export class VoiceHeader {
-  constructor(root, kit, args) {
-    const K = this.kit = kit, H = K.sx, d = K.doc, A = isObj(args) ? args : {}, el = mk(d, 'div', 'sx-head');
-    this.el = el;
-    // wave icon: render the last played note group (§13.2.5); Shift: download the preset; Alt: the Renders folder
-    const wave = btn(d, 'sx-hbtn sx-wave', icon(d, 'wave'), 'Render the last played notes to a WAV file (Shift: download the preset; Alt: open Renders)', e => {
-      // the click that ends a drag acted on in dragstart (below) renders nothing more
-      if (Date.now() - H.waveDragT < 1000) { H.waveDragT = -1e9; return; }
-      H.renderLast(e);
-    });
-    // drag-export (§13.2.5, deviation 21): a desktop drag hands the most recent render of the current note group and
-    // patch to the drop target through the DownloadURL drag type (Chromium: into a DAW or a folder); while there is
-    // none (nothing rendered yet, a newer note group, an edit since), or with Shift / Alt, the drag acts as a click.
-    // Touch devices keep the plain button (long-press = menus).
-    wave.draggable = !H.touch;
-    wave.addEventListener('dragstart', e => {
-      const m = wk.modifierBar && wk.modifierBar.mods ? wk.modifierBar.mods(e) : { alt: !!e.altKey, shift: !!e.shiftKey };
-      const R = H.lastRender, dt = e.dataTransfer;
-      if (R && !m.alt && !m.shift && R.notes === H.noteGroup && R.edits === H.editSeq && dt && typeof dt.setData === 'function') {
-        try {
-          dt.setData('DownloadURL', R.type + ':' + R.name + ':' + R.url);
-          dt.setData('text/uri-list', R.url);
-          dt.effectAllowed = 'copy';
-          return;
-        } catch (err) { /* no DownloadURL support: a click */ }
-      }
-      e.preventDefault();
-      H.waveDragT = Date.now();
-      H.renderLast(e);
-    });
-    H.waveBtn = wave;
-    H.waveDragT = -1e9;
-    const pa = mk(d, 'div', 'sx-preset');
-    const save = btn(d, 'sx-hbtn', icon(d, 'save'), 'Save preset (Alt-click: overwrite)', e => H.savePresetUI(e));
-    const prev = btn(d, 'sx-hbtn', '◀', 'Previous preset in category', () => H.stepPresetUI(-1));
-    const name = btn(d, 'sx-hbtn sx-pname', '', 'Browse presets', () => { const B = H.browser || H.initBrowser(); if (B) B.open(); });
-    const next = btn(d, 'sx-hbtn', '▶', 'Next preset in category', () => H.stepPresetUI(1));
-    const info = btn(d, 'sx-hbtn', icon(d, 'info'), 'Artist, description and tags', () => H.authorDialog());
-    pa.append(save, prev, name, next, info);
-    K.custom(() => {
-      // the key and the list are cached (syncPreset: refresh() and the panel's own preset actions), not read per paint
-      const cur = H.currentPreset(), nm = cur ? cur.name : H.nameOverride || 'Init';
-      const t = (cur && cur.cat ? cur.cat + ' · ' : '') + nm + (H.dirty ? ' *' : '');
-      if (name.textContent !== t) {
-        name.textContent = '';
-        if (cur && cur.cat) name.appendChild(mk(d, 'span', 'sx-pcat', cur.cat));
-        name.appendChild(mk(d, 'span', H.dirty ? 'sx-dirty' : '', nm));
-        name.setAttribute('aria-label', 'Preset ' + nm + (H.dirty ? ' (edited)' : '') + ', browse presets');
-      }
-    });
-    // panel undo / redo (§13.2.4)
-    const ur = mk(d, 'div', 'sx-undo');
-    const ub = btn(d, 'sx-hbtn', icon(d, 'undo'), 'Undo (Cmd/Ctrl-Z)', () => H.undoRedo(false));
-    const rb = btn(d, 'sx-hbtn', icon(d, 'redo'), 'Redo (Shift-Cmd/Ctrl-Z)', () => H.undoRedo(true));
-    ur.append(ub, rb);
-    K.custom(() => {
-      ub.disabled = !H.undo.canUndo() && !H.undoPend;
-      rb.disabled = !H.undo.canRedo();
-      const ul = H.undo.label(), rl = H.undo.redoLabel();
-      ub.title = 'Undo' + (ul ? ' ' + ul : '') + ' (Cmd/Ctrl-Z)';
-      rb.title = 'Redo' + (rl ? ' ' + rl : '') + ' (Shift-Cmd/Ctrl-Z)';
-    });
-    const menuB = btn(d, 'sx-hbtn', 'Menu', 'Main menu', () => H.mainMenu(menuB));
-    menuB.setAttribute('aria-haspopup', 'menu');
-    // touch modifier latches (wk.modifierBar; shown on touch devices, §13.1)
-    let mkeys = null;
-    if (typeof wk.modifierBar === 'function') {
-      try { mkeys = wk.modifierBar({}); mkeys.el.classList.add('sx-mkeys'); H.mkeys = mkeys; } catch (err) { mkeys = null; }
-    }
-    H.vcEl = mk(d, 'span', 'sx-vc');
-    H.vcEl.title = 'Oscillator voices sounding (grains included) / maximum';
-    const master = mk(d, 'div', 'sx-master');
-    master.appendChild(K.knob('g.master', { label: 'MASTER', size: 'sm' }).el);
-    if (typeof wk.meter === 'function') {
-      try { H.meter = wk.meter({ ch: 1, label: 'Output', floor: -60, top: 6 }); master.appendChild(H.meter.el); } catch (err) { H.meter = null; }
-    }
-    el.append(wave, ...arr(A.lead), pa, ur, menuB);
-    if (mkeys) el.appendChild(mkeys.el);
-    el.append(H.vcEl, master);
-    if (root) root.appendChild(el);
-  }
-  menuItems() { return []; }
-  destroy() { this.el.remove(); }
-}
-
 /* ================================================================ the outputs (sx-ui-mix: BUS 1 / BUS 2 / MAIN / DIRECT) */
 export const OutputsPanel = mix.OutputsPanel;
 
@@ -686,7 +557,7 @@ export class QualityPanel {
       assetsRow.classList.toggle('sx-hidden', !t);
     });
     const s1 = pToggle(K, { label: 'S1 Compatibility Mode', kind: 'led', get: () => (s1On(s0()) ? 1 : 0), set: v => H.setS1(v) });
-    s1.el.title = (H && H.host && H.host.words && H.host.words.s1Tip) || 'Serum 1 renditions: OSC A/B warp slot 1 uses the 23 legacy warps, the sub its 5 shapes and level law, Filter 1 its 96 types and the gliding key-track reference, Hz LFOs ignore HOST, PHASE/RAND knob ends set the phase memory, and the bend ranges are ±24. Every other feature works in both modes. Switching back restores the S1 sound exactly.';
+    s1.el.title = (H && H.host && H.host.words && H.host.words.s1Tip) || 'S1 renditions (the first engine version): OSC A/B warp slot 1 uses the 23 legacy warps, the sub its 5 shapes and level law, Filter 1 its 96 types and the gliding key-track reference, Hz LFOs ignore HOST, PHASE/RAND knob ends set the phase memory, and the bend ranges are ±24. Every other feature works in both modes. Switching back restores the S1 sound exactly.';
     const diff = mk(d, 'p', 'sx-note');
     K.custom(() => {
       const L = s1Diff(s0()), t = L.length ? 'S1 rendition differs: ' + L.join(', ') : '';
@@ -729,24 +600,6 @@ export class TuningPanel {
     const mts = pToggle(K, { label: 'MTS-ESP', kind: 'led', get: () => 0, set: () => {}, disabled: () => true });
     mts.el.title = 'Not available in the browser';
     p.body.append(row(d, a4.el, lock.el), row(d, tun), prefLine(d, mts.el, 'Not available in the browser'));
-    this.el = p.el;
-    if (root) root.appendChild(this.el);
-  }
-  menuItems() { return []; }
-  destroy() { this.el.remove(); }
-}
-// MPE: enabled, bend range (1–96, default 48), XYZ→Macro 1,2,3 / YZ→Macro 1,2 / Y→Mod Wheel (radio + off)
-export class MpePanel {
-  constructor(root, kit, args) {
-    const K = this.kit = kit, d = K.doc, A = isObj(args) ? args : {}, p = K.panel('MPE', null, null, '', A.bare !== undefined ? { bare: A.bare } : undefined), m0 = () => K.s().global.mpe || { on: 0, bend: 48, xyz: 0 };
-    this.shell = p;
-    const mEdit = (fn, label) => K.edit(s => { if (!isObj(s.global.mpe)) s.global.mpe = { on: 0, bend: 48, xyz: 0 }; fn(s.global.mpe); }, { label });
-    const onT = pToggle(K, { label: 'MPE Enabled', kind: 'led', get: () => (m0().on ? 1 : 0), set: v => mEdit(m => { m.on = v ? 1 : 0; }, 'MPE') });
-    const bend = pNum(K, { label: 'BEND RANGE', min: 1, max: 96, step: 1, def: core.MPE_BEND_DEF || 48, px: 300, get: () => m0().bend || 48,
-      fmt: v => v + ' st', set: (v, ph) => mEdit(m => { m.bend = v; }, 'MPE bend range'), parse: t => { const v = parseFloat(String(t).replace(',', '.')); return fin(v) ? v : null; } });
-    const xyz = pSeg(K, { label: 'MPE expression mapping', items: ['Off', 'XYZ→M1,2,3', 'YZ→M1,2', 'Y→Wheel'], get: () => clamp(m0().xyz | 0, 0, 3),
-      set: i => mEdit(m => { m.xyz = i; }, 'MPE mapping') });
-    p.body.append(prefLine(d, onT.el), row(d, bend.el), row(d, xyz.el));
     this.el = p.el;
     if (root) root.appendChild(this.el);
   }
@@ -913,132 +766,13 @@ export function panelDialog(H, Make, title) {
   return O;
 }
 
-/* ================================================================ VOICE (the Serum's hub, IMPL-3 §2.2) */
-// VOICE = the header, VOICING beside ENV 1 (the amp envelope), the outputs (MAIN / DIRECT / BUS 1 / BUS 2), then the
-// fold-outs of the GLOBAL page and the voice's curves: QUALITY, TUNING, MPE, VOICE CONTROL, VELO, NOTE, KEYS (s.kbd) and,
-// in S1 mode, CHAOS 1 / 2 — each built at its first opening, then kept (view state of the host: not saved, no undo step)
-const FOLDS = [
-  ['quality', 'QUALITY', (b, K) => new QualityPanel(b, K)], ['tuning', 'TUNING', (b, K) => new TuningPanel(b, K)], ['mpe', 'MPE', (b, K) => new MpePanel(b, K)],
-  ['vc', 'VOICE CONTROL', (b, K) => new VcPanel(b, K)], ['velo', 'VELO', (b, K) => new CurvePanel(b, K, 'velo')], ['note', 'NOTE', (b, K) => new CurvePanel(b, K, 'note')],
-  ['keys', 'KEYS', (b, K) => (typeof seq.KeyboardPanel === 'function' ? new seq.KeyboardPanel(b, K) : null)],
-  ['chaos', 'CHAOS 1 / 2', (b, K) => { const a = new ChaosRow(b, K, 0, { bare: false }), c = new ChaosRow(b, K, 1, { bare: false }); return { el: b, destroy() { a.destroy(); c.destroy(); } }; }, K => s1On(K.s())],
-];
-export class VoicePanel {
-  constructor(root, kit, args) {
-    const K = this.kit = kit, H = K.sx, d = K.doc, A = isObj(args) ? args : {}, page = K.page, el = mk(d, 'div', 'sx-voice');
-    this.el = el;
-    this.parts = [];
-    this.header = new VoiceHeader(el, K, { lead: [] });
-    if (H && !H.statusEl) {
-      H.statusEl = this.status = mk(d, 'div', 'sx-status');   // (the host's touch tip line; it goes with this VOICE)
-      H.statusEl.setAttribute('role', 'status');
-      H.statusEl.setAttribute('aria-live', 'polite');
-      el.appendChild(H.statusEl);
-    }
-    const vrow = mk(d, 'div', 'sx-vrow');
-    this.parts.push(new VoicingPanel(vrow, K, { bare: false }), new EnvPanel(vrow, K, 0, { bare: false }));
-    el.appendChild(vrow);
-    if (typeof OutputsPanel === 'function') { try { this.parts.push(new OutputsPanel(el, K)); } catch (err) { console.error('sx-ui-mod: outputs', err); } }
-    const folds = H ? (H.uiState.folds || (H.uiState.folds = new Set())) : new Set();
-    const fbox = mk(d, 'div', 'sx-folds');
-    for (const [key, title, make, when] of FOLDS) {
-      const sec = mk(d, 'div', 'sx-fold'), body = mk(d, 'div', 'sx-foldbody');
-      const b = btn(d, 'sx-hbtn sx-foldbtn', '', title + ' (show / hide)', () => { if (folds.has(key)) folds.delete(key); else folds.add(key); paint(); });
-      b.setAttribute('aria-expanded', 'false');
-      sec.append(b, body);
-      fbox.appendChild(sec);
-      let built = null;
-      const paint = () => {
-        const open = folds.has(key), vis = !when || when(K);
-        if (open && vis && !built) built = K.under(page, () => make(body, K)) || { el: body };
-        sec.classList.toggle('sx-hidden', !vis);
-        body.classList.toggle('sx-hidden', !open);
-        const t = (open ? '▾ ' : '▸ ') + title;
-        if (b.textContent !== t) b.textContent = t;
-        b.setAttribute('aria-expanded', open ? 'true' : 'false');
-        if (open && built) K.queue();
-      };
-      this.parts.push({ destroy: () => { if (built && built.destroy) built.destroy(); } });
-      K.custom(paint);
-    }
-    el.appendChild(fbox);
-    void A;
-    if (root) root.appendChild(el);
-  }
-  // for the canvas bar ⋯ (VOICE's own items; the app adds Show parts / Bundle, Add ▸ …): the app dialogs of the GLOBAL page
-  menuItems() {
-    const H = this.kit.sx;
-    return H ? [{ label: 'Preferences…', action: () => panelDialog(H, PrefsPanel, 'Preferences') }, { label: 'Info…', action: () => panelDialog(H, InfoPanel, 'Info') }] : [];
-  }
-  destroy() {
-    for (const p of this.parts) if (p && p.destroy) { try { p.destroy(); } catch (err) { /* gone */ } }
-    const H = this.kit.sx;
-    if (H && this.status && H.statusEl === this.status) H.statusEl = null;   // a remounted VOICE builds its own line (a stale one wrote to a detached element)
-    this.header.destroy(); this.el.remove();
-  }
-}
-
-/* ================================================================ the view kinds (sx-host mount) */
-// a Serum part → its view kind and slot (serum-core MODULE_FIELDS names, + 'macros', 'voice', 'chaos1/2')
-export function partView(part) {
-  const p = String(part || ''), m = /^osc([ABC])$/.exec(p);
-  if (m) return { kind: 'osc', k: 'ABC'.indexOf(m[1]) };
-  if (p === 'filter' || p === 'filter2') return { kind: 'filter', k: p === 'filter2' ? 1 : 0 };
-  let n = /^env([1-4])$/.exec(p);
-  if (n) return { kind: 'env', k: +n[1] - 1 };
-  n = /^lfo([1-9]|10)$/.exec(p);
-  if (n) return { kind: 'lfo', k: +n[1] - 1 };
-  n = /^chaos([12])$/.exec(p);
-  if (n) return { kind: 'chaos', k: +n[1] - 1 };
-  if (['sub', 'noise', 'macros', 'arp', 'clip', 'voice', 'voicing', 'velo', 'note'].includes(p)) return p === 'velo' || p === 'note' ? { kind: 'curve', k: p } : { kind: p, k: 0 };
-  return null;
-}
-// host.mount of a Serum part into root: bare by default (the canvas bar has the chrome), its PART_W width, its column
+/* ================================================================ the Arpeggiator and the Clip sequencer (sx-host mount) */
+// (SX0, Q1) the last stage-3 views: a rig whose state has them on shows them until they get faces. mountPart(host, part, root,
+// args) → the host's View of 'arp' | 'clip' — bare (the canvas bar's chrome), the page's width (1184 layout px), column P — else null
+const SEQ_W = 1184;
 export function mountPart(host, part, root, args) {
-  const v = partView(part);
-  if (!v) throw new Error('sx-ui-mod: no part ' + part);
-  return host.mount(v.kind, root, Object.assign({ k: v.k, bare: true, width: PART_W[v.kind], col: COL[v.kind], part, phase: phaseOf(part, v.kind) }, args));
+  if (part !== 'arp' && part !== 'clip') return null;
+  return host.mount(part, root, Object.assign({ k: 0, bare: true, width: SEQ_W, col: 'P', part, phase: null }, args));
 }
-// a slot host's panel (sx-host slotHost: a canvas LFO / ENV / Chaos / Macro module): LfoPanel 0, EnvPanel 1 (ENV 2's
-// layout), ChaosRow 0, MacrosPanel — bare, at the bundled panel's width, in the column it comes from
-const SLOT_VIEW = { lfo: 'lfo', env: 'env', chaos: 'chaos', macro: 'macros' };
-export function mountSlot(H, root, args) {
-  const kind = SLOT_VIEW[H.kind];
-  return H.mount(kind, root, Object.assign({ k: H.slot, bare: true, width: PART_W[kind], col: COL[kind], dev: H.dev, phase: phaseOf(kind, kind) }, args));
-}
-// the pressing / selection rules the bundled OSC page applies, for a mounted oscillator (s.ui.osc: the Render OSC Warp /
-// Resample target; its tab while expanded), and its look there (sx-opan / data-o: the colour rule and the selection ring)
-function oscSel(K, el, o) {
-  const H = K.sx;
-  el.classList.add('sx-opan');
-  el.setAttribute('data-o', String(o));
-  if (!H) return;
-  const sel = () => { if (H.selOsc() !== o) uiEdit(K, s => { s.ui.osc = o; }, { noRebase: true }); };
-  el.addEventListener('pointerdown', sel, true);
-  el.addEventListener('click', sel, true);
-  K.custom(() => el.classList.toggle('sx-osel', H.selOsc() === o));
-}
-defineView('osc', (root, K, A) => { const k = clamp(A.k | 0, 0, 2), p = new osc.OscPanel(root, K, k); oscSel(K, p.el, k); return asView(p, p.shell); });
-defineView('sub', (root, K) => { const p = new osc.SubPanel(root, K); return asView(p, p.shell); });
-defineView('noise', (root, K) => { const p = new osc.NoisePanel(root, K); return asView(p, p.shell); });
-defineView('filter', (root, K, A) => {
-  const k = A.k ? 1 : 0, p = new osc.FilterPanel(root, K, k);
-  p.el.classList.add('sx-fpan');
-  p.el.setAttribute('data-f', String(k));
-  return asView(p, p.shell);
-});
-defineView('env', (root, K, A) => { const p = new EnvPanel(root, K, clamp(A.k | 0, 0, N_ENV - 1)); return asView(p, p.shell, { menuItems: () => p.menuItems() }); });
-defineView('lfo', (root, K, A) => { const p = new LfoPanel(root, K, clamp(A.k | 0, 0, 9)); return asView(p, p.shell, { menuItems: () => p.menuItems() }); });
-defineView('macros', (root, K) => { const p = new MacrosPanel(root, K); return asView(p, p.shell); });
-defineView('voicing', (root, K) => { const p = new VoicingPanel(root, K); return asView(p, p.shell); });
-defineView('chaos', (root, K, A) => { const n = /^h(\d+)$/.exec(A.dev || ''), p = new ChaosRow(root, K, A.k ? 1 : 0, n ? { label: 'CHAOS ' + n[1] } : {}); return asView(p, p.shell, { menuItems: () => p.menuItems() }); }); // (a canvas Chaos module h<n>: its row "CHAOS <n>")
-defineView('curve', (root, K, A) => { const p = new CurvePanel(root, K, A.k === 'note' ? 'note' : 'velo'); return asView(p, p.shell); });
 defineView('arp', (root, K) => { const p = new seq.ArpPage(root, K); return asView(p, p.shell); });
 defineView('clip', (root, K) => { const p = new seq.ClipPage(root, K, { twins: true }); return asView(p, p.shell); });
-defineView('voice', (root, K, A) => { const p = new VoicePanel(root, K, A); return asView(p, null, { menuItems: () => p.menuItems() }); });
-defineView('header', (root, K, A) => { const p = new VoiceHeader(root, K, A); return asView(p, null); });
-defineView('outputs', (root, K) => { const p = new OutputsPanel(root, K); return asView(p, null); });
-defineView('quality', (root, K) => { const p = new QualityPanel(root, K); return asView(p, p.shell); });
-defineView('tuning', (root, K) => { const p = new TuningPanel(root, K); return asView(p, p.shell); });
-defineView('mpe', (root, K) => { const p = new MpePanel(root, K); return asView(p, p.shell); });
-defineView('vc', (root, K) => { const p = new VcPanel(root, K); return asView(p, p.shell); });

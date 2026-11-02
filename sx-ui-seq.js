@@ -1,6 +1,6 @@
-// sx-ui-seq.js — the sequencer and keyboard panels of the Serum-style instrument (SPEC-serum2 §11.14, §13.7–§13.9;
-// inv B21–B23): the ARP page (with the pattern editor overlay), the CLIP page with its piano roll, lanes, recording and
-// macros pane, the keyboard strip at the bottom of every page and the OSC MAPPING editor. Owner U4. Touch first: every
+// sx-ui-seq.js — the sequencer panels of the wavetable engine (SPEC-serum2 §11.14, §13.7–§13.8; inv B21–B23): the ARP
+// page (with the pattern editor overlay) and the CLIP page with its piano roll, lanes, recording and macros pane (SX0: the
+// keyboard strip and the OSC MAPPING editor went with the bundled panel). Owner U4. Touch first: every
 // gesture works with one finger (long-press = context menu with every action, double-tap = add / delete / typed entry),
 // two fingers pan / pinch-zoom the piano roll; the touch modifier latches (wk.modifierBar) stand in for Shift / Alt.
 //
@@ -34,12 +34,6 @@
 //                                   RECORD · MIDI OUT · MACROS pane (hidden until toggled). Members: el, sec, slots,
 //                                   roll (PianoRoll on the selected clip), lanes, rec (recording state or null),
 //                                   record(on), commitTake(), undoTake(), finishRecord()
-//   new KeyboardPanel(root, kit)    keyboard strip (§13.9): TRANSPOSE · KEY · SCALE · SWING (+ division) · OSC MAPPING ·
-//                                   piano keys (2–7 octaves by width) · ARP keys (purple) · CLIP keys (green);
-//                                   collapsible (s.ui.kbdOpen). Members: el, sec, keys, arpKeys, clipKeys
-//   new OscMapEditor(root, kit)     OSC MAPPING editor (§13.9): rows OSC A · OSC B · OSC C · Noise · Sub · ARP, KEY / VEL
-//                                   tabs, a range bar per row (drag edges / body, double-tap to type "C1–G7" / "1–127"),
-//                                   FOLD and WARP per row (no WARP for ARP); opened by KeyboardPanel through kit.popover
 //   new PianoRoll(root, o)          piano roll widget (below); also the graph of the arp pattern editor (o.kind 'pat')
 //   rollHit(notes, view, x, y)      pure: piano-roll hit test
 //   laneValueAt(lane, x)            pure: automation-lane value
@@ -63,7 +57,7 @@
 // through the kit: each page registers ONE kit.custom (its own widget list, so widgets made after the build — overlays,
 // popovers, rebuilt menus — never land on serum-ui's page lists) and one kit.live (snapshot-driven play states,
 // playheads, recording; fn(shown): nothing is painted while the page is hidden, §13.1, but a CLIP recording goes on).
-// OscMapEditor and PianoRoll are editors: refresh() redraws when what they show changed.
+// PianoRoll is an editor: refresh() redraws when what it shows changed.
 //
 // Virtual destinations (§3.11.3): arp.rate … arp.wrange and clip.trans / clip.rate / clip.offset have no s.p entry —
 // their base is the selected slot's / clip's n.* (§2.4). Their knobs are wk knobs bound here to slots[sel].n and carry
@@ -521,16 +515,6 @@ export function clipHeadAt(p, b, hb, rate, dir, st, len, wrap, s, d) {
 // SWING field: s ∈ [−1, 1] ↔ n ∈ [0, 1] over 300 steps (s step 1/150 = 0.25 % in Live's 50 + 37.5·s % convention)
 export const swingN = s => clamp01(((fin(s) ? clamp(s, -1, 1) : 0) + 1) / 2);
 export const swingS = n => r5(Math.round(clamp01(+n || 0) * 300) / 150 - 1);
-function swingParse(t) {
-  const q = String(t).trim().toLowerCase().replace(',', '.');
-  if (q === 'off' || q === '0' || q === '50' || q === '50%') return swingN(0);
-  const m = /^([+-]?\d*\.?\d+)\s*%?$/.exec(q);
-  if (!m) return null;
-  const p = +m[1];
-  if (!(p >= 12.5 && p <= 87.5)) return null;
-  return swingN((p - 50) / 37.5);
-}
-
 /* ================================================================ shared page machinery */
 
 // One live-input event: (on, n, vel, t) or ({on, n, vel, t}) → {on, n, vel 1–127, t} or null. vel = MIDI velocity
@@ -2171,242 +2155,6 @@ export class ClipPage extends SeqPage {
     if (this.roll) this.roll.destroy();
     if (this.lanes) this.lanes.destroy();
     super.destroy();
-  }
-}
-
-/* ================================================================ keyboard strip and OSC MAPPING (§13.9) */
-
-const KBD_SECS = [['transpose', 'TRANSPOSE'], ['key', 'KEY'], ['scale', 'SCALE'], ['swing', 'SWING'], ['oscmap', ''], ['keys', ''],
-  ['arpkeys', 'ARP'], ['clipkeys', 'CLIP']];
-// SCALE menu groups (§3.15.7 order: each group is a contiguous run of indices)
-const SCALE_GROUPS = [[0, 'Diatonic'], [9, 'Pentatonic & Blues'], [13, 'Symmetric'], [18, 'Exotic'], [28, 'World']];
-const scaleGroup = i => { let g = SCALE_GROUPS[0][1]; for (const [k, n] of SCALE_GROUPS) if (i >= k) g = n; return g; };
-
-export class KeyboardPanel extends SeqPage {
-  constructor(root, kit) {
-    super(kit);
-    this.keys = null;
-    this.arpKeys = null;
-    this.clipKeys = null;
-    this.inHeld = new Set();     // input notes of this track held now (host.onInput), lit on the piano keys
-    this.shown = true;
-    this.unIn = null;
-    this.el = this.build();
-    if (root) root.appendChild(this.el);
-  }
-  K() { return this.kit.s().kbd; }
-  build() {
-    const K = this.kit, d = this.doc;
-    injectSeqStyles(d);
-    const { el, head, body } = K.panel('KEYBOARD', null, null, 'sx-kbd');
-    this.el = el;
-    // collapse to the 40 px strip (s.ui.kbdOpen: UI state, not an undo step)
-    const fold = btn(d, 'sx-hbtn', '', 'Collapse keyboard', () => K.edit(s => { s.ui.kbdOpen = s.ui.kbdOpen ? 0 : 1; }, { label: 'View', ui: true }));
-    head.appendChild(fold);
-    K.custom(() => {
-      const open = !!K.s().ui.kbdOpen;
-      el.classList.toggle('sx-collapsed', !open);
-      fold.textContent = open ? '▾' : '▴';
-      const t = open ? 'Collapse keyboard' : 'Expand keyboard';
-      fold.title = t; fold.setAttribute('aria-label', t);
-      fold.setAttribute('aria-expanded', open ? 'true' : 'false');
-    });
-    this.sec = sections(d, body, KBD_SECS);
-    this.buildTranspose();
-    this.sec.key.appendChild(this.menu('', [{ v: -1, label: '--' }].concat(core.KEY_NAMES.map((k, i) => ({ v: i, label: k }))), () => this.K().key,
-      v => K.edit(s => { s.kbd.key = v; }, { label: 'Key' })).el);
-    this.sec.scale.appendChild(this.menu('', core.SCALES.map((sc, i) => ({ v: i, label: sc.name, group: scaleGroup(i) })), () => this.K().scale,
-      v => K.edit(s => { s.kbd.scale = v; }, { label: 'Scale' })).el);
-    this.buildSwing();
-    const map = btn(d, 'sx-hbtn sx-oscmapbtn', 'OSC MAPPING', 'OSC MAPPING: key and velocity ranges per oscillator', () => this.openMap(map));
-    map.setAttribute('aria-haspopup', 'dialog');
-    this.sec.oscmap.appendChild(map);
-    this.buildKeys();
-    K.custom(() => this.update());
-    K.live(on => this.live(on));
-    return el;
-  }
-  // TRANSPOSE −24…+24: field (drag / type / keys ±1), ◀ ▶ ±1, wheel ±12
-  buildTranspose() {
-    const K = this.kit, d = this.doc, B = this.sec.transpose;
-    const set = (v, ph) => { const t = clamp(Math.round(v), -24, 24); if (t !== this.K().trans || ph) K.edit(s => { s.kbd.trans = t; }, { label: 'Transpose', phase: ph }); };
-    const wrap = mk(d, 'div', 'sx-trans');
-    const nb = this.own(wk.numBox({ label: '', get: () => (this.K().trans + 24) / 48, set: (n, ph) => set(Math.round(clamp01(n) * 48) - 24, ph), def: 0.5,
-      fmt: n => { const t = Math.round(n * 48) - 24; return (t > 0 ? '+' : '') + t + ' st'; },
-      parse: t => { const m = /^\s*([+-]?\d+)\s*(st)?\s*$/i.exec(String(t)); return m ? (clamp(+m[1], -24, 24) + 24) / 48 : null; }, steps: 48 }));
-    const dn = btn(d, 'sx-seqbtn', '◀', 'Transpose down', () => set(this.K().trans - 1));
-    const up = btn(d, 'sx-seqbtn', '▶', 'Transpose up', () => set(this.K().trans + 1));
-    wrap.append(dn, nb.el, up);
-    B.appendChild(wrap);
-    const take = wk.wheelGate(wrap, nb.el);
-    const wh = e => {
-      const k = take(e);
-      if (k === null) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (k) set(this.K().trans + 12 * k);
-    };
-    wrap.addEventListener('wheel', wh, { passive: false, capture: true });
-    this.offs.push(() => { wrap.removeEventListener('wheel', wh, { passive: false, capture: true }); if (take.destroy) take.destroy(); });
-  }
-  // SWING 12.5…87.5 % ("OFF" at 50 %), division 1/8 · 1/16 · 1/32 once it is not OFF
-  buildSwing() {
-    const K = this.kit, B = this.sec.swing;
-    B.appendChild(this.own(wk.numBox({ label: '', get: () => swingN(this.K().swing), set: (n, ph) => K.edit(s => { s.kbd.swing = swingS(n); }, { label: 'Swing', phase: ph }),
-      def: 0.5, fmt: n => core.swingLabel(swingS(n)), parse: swingParse, steps: 300 })).el);
-    const div = this.menu('', core.SWING_DIVS.map((e, i) => ({ v: i, label: e.label })), () => this.K().div, v => K.edit(s => { s.kbd.div = v; }, { label: 'Swing division' }), { arrows: false });
-    B.appendChild(div.el);
-    this.fn(() => { div.el.style.display = this.K().swing === 0 ? 'none' : ''; });
-  }
-  // The piano keys play through host.audition and are this track's live input as well: their notes go to the input hub
-  // (a CLIP recording takes them; host.onInput does not report audition calls). Input notes from host.onInput light up
-  // as held keys (§13.9 — generated notes cannot be shown: the snapshot carries no note list, §7.10 / §6.20).
-  buildKeys() {
-    const K = this.kit;
-    const aud = () => (K.host && K.host.audition) || null;
-    hubOf(K).keys++;
-    this.unIn = hubAdd(K, ev => this.onInput(ev));
-    // 2–7 octaves by width around C4 (wk's fit: a ResizeObserver re-fits, so a repaint never reads the layout)
-    this.keys = this.own(wk.pianoKeys({ lo: 48, hi: 72, label: 'Keyboard', labels: true, fit: { center: 60, min: 2, max: 7 },
-      on: (n, v) => {
-        const a = aud(), vel = clamp(Math.round(+v || 100), 1, 127);
-        if (a && a.on) a.on(n, vel / 127);
-        hubEmit(K, { on: true, n, vel, t: now(), src: 'keys' });
-      },
-      off: n => {
-        const a = aud();
-        if (a && a.off) a.off(n);
-        hubEmit(K, { on: false, n, vel: 0, t: now(), src: 'keys' });
-      },
-      held: () => this.inHeld,
-      scale: () => { const k = this.K(); const sc = core.SCALES[k.scale]; return k.key >= 0 && sc ? { key: k.key, steps: sc.steps } : null; } }));
-    this.sec.keys.appendChild(this.keys.el);
-    this.arpKeys = this.own(wk.pianoKeys({ lo: 0, hi: 11, vel: 100, label: 'ARP slots', color: '#b07cff',
-      on: n => this.cmd('arpLaunch', n), off: () => {},
-      lit: () => { const q = seqOf(K); return q && q[0] >= 0 ? [q[0]] : []; } }));
-    this.sec.arpkeys.appendChild(this.arpKeys.el);
-    this.clipKeys = this.own(wk.pianoKeys({ lo: 0, hi: 11, vel: 100, label: 'CLIP slots', color: '#3ddc84',
-      on: n => { const q = seqOf(K, true); this.cmd(q && ((q[4] | 0) >> n & 1) ? 'clipStop' : 'clipLaunch', n); }, off: () => {},
-      lit: () => { const q = seqOf(K), m = q ? q[4] | 0 : 0, out = []; for (let j = 0; j < 12; j++) if (m >> j & 1) out.push(j); return out; } }));
-    this.sec.clipkeys.appendChild(this.clipKeys.el);
-  }
-  // the OSC MAPPING editor, anchored to its button (a second press closes it)
-  openMap(anchor) {
-    const K = this.kit;
-    return K.popover('oscmap', anchor, 'OSC MAPPING', box => new OscMapEditor(box, K), () => oscMapSig(K.s()));
-  }
-  // host input (not the strip's own notes, src 'keys': the keys show those pressed already)
-  onInput(ev) {
-    if (this.dead || !ev || ev.src === 'keys') return;
-    const had = this.inHeld.has(ev.n);
-    if (ev.on) this.inHeld.add(ev.n); else this.inHeld.delete(ev.n);
-    if (had !== this.inHeld.has(ev.n) && this.shown && this.keys) this.keys.update();
-  }
-  live(shown) {
-    if (this.dead) return;
-    const was = this.shown;
-    this.shown = shown !== false;
-    if (!this.shown) return;
-    if (!was && this.keys) this.keys.update();
-    if (this.arpKeys) this.arpKeys.update();
-    if (this.clipKeys) this.clipKeys.update();
-  }
-  destroy() {
-    if (this.dead) return;
-    for (const P of [this.keys, this.arpKeys, this.clipKeys]) if (P && P.release) P.release();
-    if (this.unIn) { this.unIn(); this.unIn = null; }
-    const H = hubOf(this.kit);
-    if (H.keys > 0) H.keys--;
-    super.destroy();
-  }
-}
-
-// what the OSC MAPPING editor shows: the maps of OSC A–C, Noise, Sub and the ARP row
-const oscMapSig = s => JSON.stringify(s ? [arr(s.osc).map(o => o && o.map), s.noise && s.noise.map, s.sub && s.sub.map, s.kbd && s.kbd.arpMap] : null);
-const MAP_ROWS = [['a', 'OSC A'], ['b', 'OSC B'], ['c', 'OSC C'], ['noise', 'Noise'], ['sub', 'Sub'], ['arp', 'ARP']];
-// the map object of a row in a state
-function mapOf(s, k) {
-  if (!s) return null;
-  if (k === 'a' || k === 'b' || k === 'c') { const o = arr(s.osc)['abc'.indexOf(k)]; return o ? o.map : null; }
-  if (k === 'noise') return s.noise ? s.noise.map : null;
-  if (k === 'sub') return s.sub ? s.sub.map : null;
-  return s.kbd ? s.kbd.arpMap : null;
-}
-const DEF_MAP = { k: [0, 127], v: [1, 127], fold: 0, warp: 0 };
-
-export class OscMapEditor {
-  constructor(root, kit) {
-    this.kit = kit;
-    this.dead = false;
-    this.tab = 0;                 // 0 KEY · 1 VEL
-    this.rows = null;
-    this.last = null;
-    this.ws = [];
-    this.el = this.build();
-    if (root) root.appendChild(this.el);
-  }
-  map(k) { return mapOf(this.kit.s(), k) || DEF_MAP; }
-  edit(k, fn, o) { this.kit.edit(s => { const m = mapOf(s, k); if (m) fn(m); }, o); }
-  build() {
-    const d = this.kit.doc || globalThis.document, el = this.el = mk(d, 'div', 'sx-oscmap');
-    injectSeqStyles(d);
-    el.setAttribute('aria-label', 'OSC MAPPING');
-    const tabs = mk(d, 'div', 'sx-oscmaptabs');
-    tabs.setAttribute('role', 'tablist');
-    const mkTab = (label, k) => {
-      const b = btn(d, 'sx-hbtn', label, label + ' ranges', () => { this.tab = k; this.last = null; this.refresh(); });
-      b.setAttribute('role', 'tab');
-      b.setAttribute('data-tab', String(k));
-      return b;
-    };
-    this.tabBtns = [mkTab('KEY', 0), mkTab('VEL', 1)];
-    tabs.append(...this.tabBtns);
-    const list = mk(d, 'div', 'sx-oscmaprows');
-    this.rows = {};
-    this.bars = {};
-    for (const [k, label] of MAP_ROWS) {
-      const r = mk(d, 'div', 'sx-oscmaprow');
-      r.setAttribute('data-row', k);
-      const box = mk(d, 'div', 'sx-oscmapbar');
-      const key = () => this.tab === 0;
-      const bar = wk.rangeBar({ label: () => label + (key() ? ' keys' : ' velocity'), min: () => (key() ? 0 : 1), max: 127,
-        get: () => (key() ? this.map(k).k : this.map(k).v),
-        set: (v, ph) => this.edit(k, m => { m[key() ? 'k' : 'v'] = [v[0], v[1]]; }, { label: label + (key() ? ' key range' : ' velocity range'), phase: ph }),
-        fmt: v => (key() ? noteName(v) : String(v)) });
-      box.appendChild(bar.el);
-      this.ws.push(bar);
-      this.bars[k] = bar;
-      const fold = wk.toggle({ label: 'FOLD', kind: 'led', get: () => (this.map(k).fold ? 1 : 0), set: v => this.edit(k, m => { m.fold = v ? 1 : 0; }, { label: label + ' fold' }) });
-      fold.el.setAttribute('data-flag', 'fold');
-      this.ws.push(fold);
-      r.append(mk(d, 'span', 'sx-ttl', label), box, fold.el);
-      if (k !== 'arp') {
-        const warp = wk.toggle({ label: 'WARP', kind: 'led', get: () => (this.map(k).warp ? 1 : 0), set: v => this.edit(k, m => { m.warp = v ? 1 : 0; }, { label: label + ' warp' }) });
-        warp.el.setAttribute('data-flag', 'warp');
-        this.ws.push(warp);
-        r.appendChild(warp.el);
-      } else r.appendChild(mk(d, 'span'));
-      list.appendChild(r);
-      this.rows[k] = r;
-    }
-    el.append(tabs, list);
-    this.refresh();
-    return el;
-  }
-  refresh() {
-    if (this.dead) return;
-    const sig = this.tab + '|' + oscMapSig(this.kit.s());
-    if (sig === this.last) return;
-    this.last = sig;
-    for (const b of this.tabBtns) b.setAttribute('aria-selected', +b.getAttribute('data-tab') === this.tab ? 'true' : 'false');
-    this.el.classList.toggle('sx-keytab', this.tab === 0);   // the KEY bars lie over a keyboard (one octave = 12 / 128)
-    for (const w of this.ws) w.update();
-  }
-  destroy() {
-    if (this.dead) return;
-    this.dead = true;
-    for (const w of this.ws.splice(0)) if (w.destroy) w.destroy();
-    this.el.remove();
   }
 }
 

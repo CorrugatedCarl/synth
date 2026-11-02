@@ -44,7 +44,7 @@ test('a main project (schema 0) is brought to SCHEMA: uid made, the input untouc
   assert.deepEqual(o, copy, 'never mutated');
   const p = MO.adopt(M.stamp(S.deserialize(up.p), up.p), G1);
   assert.deepEqual([p.uid, p.schema], [up.p.uid, M.SCHEMA]);
-  assert.deepEqual(p.tracks.map(t => MO.instOf(t).model), S.deserialize(copy).tracks.map(t => t.model));
+  assert.deepEqual(p.tracks.map(t => MO.instOf(t).model), S.deserialize(copy).tracks.map(t => (t.model === 'serum' ? RIG.ID : t.model)), '(SX0) its two Serums open as Wavecrafts');
   assert.deepEqual(p.tracks.map(t => t.prim), p.tracks.map(() => 'i1'), 'v2 tracks (stage 1c): the instrument is device i1, the primary');
   // saved, the stamps travel with it (song.serialize keeps every field); main's deserialize ignores them (the file opens there)
   const back = JSON.parse(S.serialize(p));
@@ -276,7 +276,7 @@ const wires = t => t.wires.map(w => w.a + '>' + w.b + (w.g !== undefined ? '@' +
 test('1e schema 4: additive (a 3 opens as before); song.normDev keeps on, solo, zone, name and the cable level', () => {
   const p3 = Object.assign(M.toV2(mainProject()), { schema: 3, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p3)));
   assert.deepEqual([up.from, up.readOnly, up.p.schema], [3, false, M.SCHEMA]);
-  assert.deepEqual(Object.assign({}, up.p, { schema: 3 }), p3, 'nothing converted');
+  assert.deepEqual(Object.assign({}, up.p, { schema: 3 }), M.serumOut(p3), 'nothing converted (but the load pass: its Serums open as Wavecrafts, IMPL-SX0 §2)');
   assert.deepEqual(M.STEPS[3]({ schema: 3, tracks: [1] }), { schema: 4, tracks: [1] });
   const d = S.normDev({ prim: 'i2', dev: {
     i1: { kind: 'synth', model: 'juno60', on: false, solo: true, zone: { lo: 48.4, hi: 300, xp: -60 }, name: 'Pad' },
@@ -421,9 +421,9 @@ test('H4: a classic primary cabled straight to OUT (its panel deleted) has no FX
   assert.deepEqual([shape(), MO.fxDevOf(t).own, !!t.dev.i1.fx], ['i1,out | i1.out>out.in', true, true]);
 });
 
-test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'s shared panel and silent instruments that sound in main', () => {
+test('H8: Save as classic project lists key zones, cable levels, solo, a Wavecraft\'s shared panel and silent instruments that sound in main', () => {
   const t = { id: 'trk_1', name: 'T', color: '#f00', notes: [], prim: 'i1', nid: 4,
-    dev: { i1: { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, preset: null, fx: C.defaultFx2() },
+    dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s: C.defaultSerum() }, preset: null, fx: C.defaultFx2() }, // ((SX0) a rig: no Serum device is left on canvas)
       i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null, zone: { lo: 48, hi: 72, xp: 12 }, solo: true },
       i3: { kind: 'synth', model: 'minimoog', vals: {}, preset: null },
       fx1: { kind: 'panel', fx: C.defaultFx2() }, out: { kind: 'out' } },
@@ -431,9 +431,10 @@ test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'
   const r = M.toV1({ schema: 4, tracks: [t] }), L = r.lost.join('\n');
   assert.deepEqual(r.p.tracks.map(x => x.model), ['serum', 'juno60', 'minimoog']);
   for (const [re, what] of [[/T · juno60”: its key zone/, 'the zone'], [/T · juno60”: its cable level/, 'the level'], [/“T”: solo/, 'solo'],
-    [/“T”: the panel fx1 after the Serum/, 'a Serum into a shared panel: its effects not copied'],
+    [new RegExp('“T”: the panel fx1 after the ' + RIG.NAME + ' \\(its effects are not in the ' + RIG.NAME + '’s track\\)'), 'a Wavecraft into a shared panel: its effects not copied'],
     [/T · minimoog”: was not connected/, 'an unconnected instrument sounds in main'], [/“T”: was silent/, 'the soloed-out primary sounds in main']]) assert.match(L, re, what + '\n' + L);
   assert.doesNotMatch(L, /copied for each instrument/, 'one classic source of fx1: nothing copied');
+  assert.doesNotMatch(L, /Serum/, '(SX0) no Serum word');
   // a one-instrument track with a zone (a graph shape now): its own track, the zone listed
   const z = M.trackToV2({ id: 'trk_2', name: 'Z', model: 'juno60', vals: {}, preset: null, fx: C.defaultFx2(), notes: [] });
   z.dev.i1.zone = { lo: 60, hi: 127, xp: 0 };
@@ -635,7 +636,7 @@ const OPT2 = { sr: 48000, bpm: 120 };
 test('2a schema 5: additive (a 4 opens as before); song.normDev keeps mod rows by normRow\'s rules and mid, drops invalid ones; perf', () => {
   const p4 = Object.assign(M.toV2(mainProject()), { schema: 4, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p4)));
   assert.deepEqual([up.from, up.readOnly, up.p.schema], [4, false, M.SCHEMA]);
-  assert.deepEqual(Object.assign({}, up.p, { schema: 4 }), p4, 'nothing converted');
+  assert.deepEqual(Object.assign({}, up.p, { schema: 4 }), M.serumOut(p4), 'nothing converted (but the load pass, IMPL-SX0 §2)');
   assert.deepEqual(M.STEPS[4]({ schema: 4, tracks: [1] }), { schema: 5, tracks: [1] });
   const raw2 = { id: 'r2', src: 've.out', dst: 'i1:a.level', amt: 3, bi: true, curve: -9, aux: 'lfo2', inv: 1, byp: 0.7, out: 2, acurve: 0.5, crv: [[0.5, 2, 9], 'x', [0, 0]], rise: 0.3, fall: 0.9, slink: 1, extra: 1 };
   const d = S.normDev({ dev: { i1: { kind: 'synth', model: 'serum' }, ve: { kind: 'velo' }, out: { kind: 'out' } }, wires: [], mid: 7, mods: [
@@ -750,11 +751,12 @@ test('2a cv-model addMod: serum-core addMod\'s drop rules, overrides through nor
   assert.deepEqual([G.modBudget(t, 'i1').preset, G.modBudget(t, 'i1').canvas, G.modBudget(t, 'i1').left], [64 - t.mods.length, t.mods.length, []]);
   const f = MO.addMod(t, 'wheel', 'i1:f.cutoff', { name: 'Serum 1' });
   assert.deepEqual([f.ok, f.code, f.why], [false, 'full', 'Serum 1’s mod rows are full (64/64)']);
-  assert.equal(MO.addMod(t, 'wheel', 'i1:f.cutoff').why, 'Serum’s mod rows are full (64/64)');
+  assert.equal(MO.addMod(t, 'wheel', 'i1:f.cutoff').why, RIG.NAME + '’s mod rows are full (64/64)'); // (SX0: an unnamed device reads the model's name)
 });
 
 test('2a cv-model: preset rows, Save with preset (toPreset) and Keep on canvas (fromPreset) — the compiled patch unchanged both ways', () => {
   const t = sxTrack(), d = t.dev.i1, s = d.vals.s, p = { perf: { wheel: { v: 1 } }, tracks: [t] };
+  d.model = RIG.ID; // ((SX0 D1) the compile below needs a model of this build: 'serum' left MODELS — the rig, the same patch (W2)
   MO.addModDev(t, 'velo');
   s.matrix[0] = C.normRow({ src: 'lfo1', amt: 0.2, dst: 'a.wt' });
   s.matrix[1] = C.normRow({ src: 'wheel', amt: 0.3, dst: 'f.res' });
@@ -793,7 +795,7 @@ test('2a cv-model: preset rows, Save with preset (toPreset) and Keep on canvas (
   assert.deepEqual(MO.fromPreset(t, 'i1', 1, { project: { tracks: [t] } }), { ok: false, why: 'Add the Mod Wheel module first' });
   assert.equal(MO.toPreset(t, 'r99', s).ok, false);
   for (let k = 0; k < 64; k++) if (!s.matrix[k].src) s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
-  assert.deepEqual(MO.toPreset(t, 'r1', s), { ok: false, why: 'Serum’s mod rows are full (64/64)' }, 'not compiled: no slot to take');
+  assert.deepEqual(MO.toPreset(t, 'r1', s), { ok: false, why: RIG.NAME + '’s mod rows are full (64/64)' }, 'not compiled: no slot to take');
 });
 
 test('2a cv-model: removeInst and setModel (Serum → classic; the primary too) drop the rows to that instrument and say so', () => {
@@ -801,7 +803,7 @@ test('2a cv-model: removeInst and setModel (Serum → classic; the primary too) 
   MO.addModDev(t, 'velo');
   MO.addMod(t, 'wheel', 'i1:f.cutoff'); MO.addMod(t, 've.out', i2 + ':a.level'); MO.addMod(t, 'wheel', i2 + ':f.res');
   const r = MO.setModel(t, i2, 'minimoog', { vals: {} });
-  assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r2', 'r3'], '2 modulation cables to the Serum removed: the new model has no such knobs']);
+  assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r2', 'r3'], '2 modulation cables to the instrument removed: the new model has no such knobs']); // (SX0: no 'the Serum' branch)
   assert.deepEqual(t.mods.map(x => x.id), ['r1']);
   assert.deepEqual(MO.setModel(t, i2, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } }).rows, [], 'classic → Serum: nothing to drop');
   MO.addMod(t, 'wheel', i2 + ':f.res');
@@ -843,17 +845,18 @@ test('2a review H3: Save as classic project names the modulation cables, modulat
   const T = F.tracks();
   assert.deepEqual(T.map(t => G.compileTrack(t).canonical), [true, true, true], '(each one canonical Serum)');
   const r = M.toV1({ schema: 5, perf: { wheel: { v: 1 } }, tracks: T });
-  assert.deepEqual(r.lost, ['the Mod Wheel', '“Mods 1”: 2 modulation cables', '“Mods 1”: its Velocity module', '“Mods 2”: 1 modulation cable',
+  const saved = n => '“Mods ' + n + '”: ' + RIG.NAME + ' is saved as the classic site’s wavetable synth (same sound)'; // ((SX0) the fixture's instruments are rigs)
+  assert.deepEqual(r.lost, ['the Mod Wheel', saved(1), saved(2), saved(3), '“Mods 1”: 2 modulation cables', '“Mods 1”: its Velocity module', '“Mods 2”: 1 modulation cable',
     '“Mods 2”: its Aftertouch module', '“Mods 3”: 1 modulation cable']);
   assert.deepEqual([r.p.tracks.length, 'perf' in r.p, r.p.tracks.some(t => 'mods' in t || 'mid' in t || 'dev' in t)], [3, false, false]);
-  assert.deepEqual(M.toV1({ schema: 5, perf: { wheel: null }, tracks: [Object.assign(F.tracks()[2], { mods: [] })] }).lost, [], 'nothing of 2a: nothing named');
+  assert.deepEqual(M.toV1({ schema: 5, perf: { wheel: null }, tracks: [Object.assign(F.tracks()[2], { mods: [] })] }).lost, [saved(3)], 'nothing of 2a: nothing named (the rig\'s own line only)');
 });
 
 /* ------------------------------------------------------------------ stage 2b: schema 6, every module's state, any port (IMPL-2b §1.4) */
 test('2b schema 6: additive (a 5 opens as before); song.normDev bounds every module kind\'s state through serum-core\'s normalisers; round trips', () => {
   const p5 = Object.assign(M.toV2(mainProject()), { schema: 5, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p5)));
   assert.deepEqual([up.from, up.readOnly, up.p.schema], [5, false, M.SCHEMA]);
-  assert.deepEqual(Object.assign({}, up.p, { schema: 5 }), p5, 'nothing converted (no stored modulator places: STEPS[6] moves none)');
+  assert.deepEqual(Object.assign({}, up.p, { schema: 5 }), M.serumOut(p5), 'nothing converted (no stored modulator places: STEPS[6] moves none; the load pass, IMPL-SX0 §2)');
   assert.deepEqual(M.STEPS[5]({ schema: 5, tracks: [1] }), { schema: 6, tracks: [1] });
   assert.equal(M.STEPS.length, M.SCHEMA);
   const raw = { dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' },
@@ -1678,11 +1681,10 @@ function p15() {
     lay: { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscB': { x: 5, y: 5 }, i2: { x: 900, y: 0 } } });
   return { name: 'WC', schema: 15, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [t1, t2, t3, t4] };
 }
-const NOTE1 = `“Lead”: its Serum was shown as parts — it opens whole now. ⋯ → Make it a ${RIG.NAME} keeps the parts as a ${RIG.NAME} (same sound)`;
-const NOTE1B = `“Lead”: 2 modulation cables from its parts are hidden while whole — Make it a ${RIG.NAME} shows them`;
-const NOTE4 = `“Duo”: its Serum “Bass” was shown as parts — it opens whole now. ⋯ → Make it a ${RIG.NAME} keeps the parts as a ${RIG.NAME} (same sound)`;
+// ((SX0, IMPL-SX0 §2) STEPS[15] says nothing now: the load pass after the steps opens every Serum as a <NAME>, one note each)
+const OPENS = (track, name) => `“${track}”: its wavetable synth${name ? ' “' + name + '”' : ''} opens as a ${RIG.NAME} — the same sound`;
 
-test('WC schema 16: STEPS[15] — a Serum shown as parts opens WHOLE: its lay flag goes, the iN/* entries (positions, fold, auto) and every other field byte for byte, the state and the FX untouched; a note per such device (the device\'s name when it has one) plus the hidden link-rows line (link rows only, not a canvas modulator\'s); a whole Serum, a classic and the project\'s other fields untouched (the same objects); the input untouched; upgrade() carries the notes and [] from every other step', () => {
+test('WC schema 16: STEPS[15] — a Serum shown as parts opens WHOLE: its lay flag goes, the iN/* entries (positions, fold, auto) and every other field byte for byte, the state and the FX untouched; (SX0) no note of its own — upgrade() carries the load pass\'s, one per Serum; a whole Serum, a classic and the project\'s other fields untouched (the same objects); the input untouched', () => {
   const p = deepFreeze(p15()), copy = jclone(p), notes = [], q = M.STEPS[15](p, notes);
   assert.deepEqual(p, copy, 'the input untouched');
   assert.deepEqual([q.schema, q.uid, q.name, q.perf], [16, 'p_abc123xyz0', 'WC', { wheel: null }]);
@@ -1692,19 +1694,50 @@ test('WC schema 16: STEPS[15] — a Serum shown as parts opens WHOLE: its lay fl
   assert.equal(JSON.stringify(u1.dev.i1.vals.s), JSON.stringify(copy.tracks[0].dev.i1.vals.s), 'the sound byte for byte');
   assert.deepEqual([u2 === p.tracks[1], u3 === p.tracks[2]], [true, true], 'a whole Serum and a classic: the same objects');
   assert.deepEqual(u4.lay, { i1: { x: 0, y: 0 }, 'i1/oscB': { x: 5, y: 5 }, i2: { x: 900, y: 0 } });
-  assert.deepEqual(notes, [NOTE1, NOTE1B, NOTE4]);
+  assert.deepEqual(notes, [], '(SX0) STEPS[15]\'s notes are gone');
   const up = M.upgrade(p);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.notes], [15, false, 17, [NOTE1, NOTE1B, NOTE4]]);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.notes], [15, false, 17, [OPENS('Lead'), OPENS('Pad'), OPENS('Duo', 'Bass'), OPENS('Duo')]], '(SX0) the load pass: one note per Serum');
   assert.deepEqual(up.p.tracks.map(t => t.lay.i1), [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0, ui: 'flow' }, { x: 0, y: 0 }], 'a classic\'s Simple flag stays');
-  assert.deepEqual(M.upgrade({ schema: 15, tracks: [p.tracks[1], p.tracks[2]] }).notes, [], 'no parts view: nothing to say');
-  assert.deepEqual(M.upgrade(up.p).notes, [], 'at 16 already');
+  assert.deepEqual(M.upgrade({ schema: 15, tracks: [p.tracks[2]] }).notes, [], 'no Serum: nothing to say');
+  assert.deepEqual(M.upgrade(up.p).notes, [], 'at 17 already: no Serum left');
   assert.deepEqual([M.upgrade({ schema: 0, tracks: [] }).notes, M.upgrade({ schema: 18, tracks: [] }).notes, M.upgrade({ schema: 18, tracks: [] }).readOnly], [[], [], true], 'every other step: []; a newer file: read-only, []');
   assert.deepEqual(M.STEPS[15]({ schema: 15, tracks: [1, null, { dev: 1 }] }), { schema: 16, tracks: [1, null, { dev: 1 }] }, 'nothing to convert: a copy');
   assert.deepEqual(M.STEPS[15]({ schema: 15 }), { schema: 16 });
-  // song.js reads the upgraded project as before: the part keys kept, no ui on the Serum, the link rows kept (they compile; cv-cables draws them once it is a rig)
+  // song.js reads the upgraded project as before: the part keys kept, no ui on the (SX0: former) Serum, the link rows kept (they compile; cv-cables draws them on the rig)
   const d = S.deserialize(up.p), t = d.tracks[0];
+  assert.equal(t.dev.i1.model, RIG.ID);
   assert.deepEqual([Object.keys(t.lay), t.lay.i1.ui, t.mods.length, t.lay['i1/lfo3'].auto], [['i1', 'i1/oscA', 'i1/filter2', 'i1/lfo3', 'i1/fx', 'l1'], undefined, 3, 1]);
   assert.equal(JSON.stringify(MO.adopt(d, G1).tracks[0].dev.i1.vals.s), JSON.stringify(copy.tracks[0].dev.i1.vals.s), 'adopt: the same sound');
+});
+
+test('review 1 P3-1 (SX0): the load note names the track its <NAME> ended up on — serumOut runs before splitTracks (a new track\'s name needs the <NAME>), so notesAfterSplit moves the note with the instrument; nothing stored changes, a project that did not split keeps its notes', () => {
+  const sx = o => Object.assign({ kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() }, o);
+  const base = (id, name) => ({ id, name, color: '#e8a23a', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [] });
+  const juno = () => ({ kind: 'synth', model: 'juno60', vals: {}, preset: null });
+  const nm = id => (id === RIG.ID ? RIG.NAME : id);
+  const run = tracks => { const up = M.upgrade({ name: 'x', schema: 17, uid: 'p_notesplit1', tracks }), sp = M.splitTracks(up.p, { name: nm }); return { up, sp, notes: M.notesAfterSplit(up, sp) }; };
+  const duo = (a, b) => Object.assign(base('trk_1', 'Duo'), { prim: 'i1', nid: 3, dev: { i1: a, i2: b, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'out.in' }] });
+  // a Juno and a Serum on one track (a 1e file): the Juno sounds first and keeps "Duo", the Wavecraft moves to "Duo · Wavecraft"
+  let r = run([duo(juno(), sx())]);
+  assert.deepEqual(r.sp.p.tracks.map(t => t.name), ['Duo', 'Duo · ' + RIG.NAME]);
+  assert.deepEqual(r.up.notes, [OPENS('Duo')], 'upgrade() alone (before the split) names the track it knew');
+  assert.deepEqual(r.notes, [OPENS('Duo · ' + RIG.NAME)], 'after the split: the track the Wavecraft is on');
+  assert.deepEqual(r.sp.p.tracks.map(t => t.dev[t.prim].model), [juno().model, RIG.ID], 'the model stored is the same either way');
+  // the Serum first: it keeps "Duo" (the note as it was); a named device keeps its name in the note
+  r = run([duo(sx({ name: 'Bass' }), juno())]);
+  assert.deepEqual([r.sp.p.tracks.map(t => t.name), r.notes], [['Duo', 'Duo · juno60'], [OPENS('Duo', 'Bass')]]);
+  // two Serums: the first keeps the track, the second ("Serum 2": a device's default name keeps its number) is on its own; each note to its track
+  r = run([duo(sx(), sx({ name: 'Serum 2' }))]);
+  assert.deepEqual([r.sp.p.tracks.map(t => t.name), r.notes], [['Duo', 'Duo · ' + RIG.NAME + ' 2'], [OPENS('Duo'), OPENS('Duo · ' + RIG.NAME + ' 2', RIG.NAME + ' 2')]]);
+  // a long track name is cut so " · Wavecraft" fits (splitTracks' rule): the note follows the cut name
+  const long = 'L'.repeat(98);
+  r = run([Object.assign(duo(juno(), sx()), { name: long })]);
+  assert.deepEqual([r.sp.p.tracks[1].name.length, r.notes[0] === OPENS(r.sp.p.tracks[1].name)], [100, true]);
+  // a single-instrument track: nothing moved, the note as upgrade() made it
+  r = run([Object.assign(base('trk_2', 'Lead'), { prim: 'i1', nid: 2, dev: { i1: sx(), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] })]);
+  assert.deepEqual([r.notes, r.sp.moved], [[OPENS('Lead')], []]);
+  assert.deepEqual(M.notesAfterSplit({ notes: ['a', 'b'] }, { moved: [] }), ['a', 'b'], 'upgrade\'s notes with no said list: as they are');
+  assert.deepEqual(M.notesAfterSplit({ notes: ['a'] }, undefined), ['a']);
 });
 
 test('WC schema 16: additive for everything else — a 15 opens as 16 (no rig, no parts: nothing converted but the number), a 16 is read-only in a schema-15 build (the store\'s gate: that build would read \'rig\' as a Minimoog, drop `rig` and autosave the loss) and an 18 in this one', async () => {
@@ -1740,8 +1773,148 @@ test('WC Save as classic project: a rig becomes a Serum device — the same vals
   assert.deepEqual(a.lay, { i1: { x: 0, y: 0 }, 'i1/fx': { x: 3, y: 3 }, out: { x: 4, y: 4 } }, 'the modules\' entries dropped, the device\'s and its FX\'s kept');
   assert.equal(sx.model, 'serum');
   assert.deepEqual([b.model, b.name, JSON.stringify(b.fx) === JSON.stringify(fx), b2.model, b2.name], ['serum', 'Duo', true, 'juno60', 'Duo · juno60'], 'two instruments: one track each, the rig as a Serum with its own FX (toV1 names the new tracks by the model id, as before)');
-  const line = `“Rig”: ${RIG.NAME} is saved as a Serum (same sound; the live site has no ${RIG.NAME})`;
-  assert.ok(r.lost.includes(line) && r.lost.includes(`“Duo”: ${RIG.NAME} is saved as a Serum (same sound; the live site has no ${RIG.NAME})`), r.lost.join(' | '));
+  const line = `“Rig”: ${RIG.NAME} is saved as the classic site’s wavetable synth (same sound)`; // ((SX0, IMPL-SX0 §2) no Serum word)
+  assert.ok(r.lost.includes(line) && r.lost.includes(`“Duo”: ${RIG.NAME} is saved as the classic site’s wavetable synth (same sound)`), r.lost.join(' | '));
   assert.equal(r.lost.filter(l => l.includes(RIG.NAME)).length, 2);
+  assert.ok(r.lost.every(l => !/Serum/.test(l)), r.lost.join(' | '));
   assert.deepEqual(M.toV1({ schema: 16, tracks: [jclone(sxTrack('trk_s'))] }).lost, [], 'a Serum track: nothing lost, no line');
+});
+
+/* ---------------------------------------------------------------- stage SX0: Serum out of the canvas — the load pass (IMPL-SX0 §2, G2's model half; phase 0) */
+import { adopt as rigAdopt, WORDS as RIG_WORDS } from '../rig-core.js?v=9';
+import { patchFor } from '../models.js?v=9';
+import { canon as sx0Canon, ODD as SX0_ODD } from './ref-SX0/record.mjs';
+const SX0_BASE = JSON.parse(readFileSync(new URL('./ref-SX0/base.json', import.meta.url), 'utf8')).hashes;
+const sx0Hash = p => createHash('sha256').update(sx0Canon(p)).digest('hex');
+const PRESET = C.FACTORY_PRESETS.find(p => p.fx && !C.normalizeSerum(jclone(p.v.s)).global.mpe.on); // (a factory preset with its own FX, MPE off)
+// a schema-17 project as a ⟨B⟩ build saves it: 0 "Anthem" a Serum holding a factory preset as stored (its FX); 1 "Juno" a classic; 2 "Serum 3" a
+// Serum (its own FX: a reverb; a preset name; a canvas LFO on its cutoff; a link row from its part i1/lfo3.out; MPE on; the ARP on; shown as parts
+// once: ui + part places) with a second Serum "Serum 2" and a user's "My Serum"; 3 "Serum" a Serum whose Oscillator 1 has its AMP ENV switch off
+function p17() {
+  const base = (id, name) => ({ id, name, color: '#e8a23a', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [] });
+  const sx = (o, edit) => { const s = C.normalizeSerum(C.defaultSerum()); if (edit) edit(s); return Object.assign({ kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: C.defaultFx2() }, o); };
+  const s0 = C.normalizeSerum(jclone(PRESET.v.s));
+  const t0 = Object.assign(base('trk_1', 'Anthem'), { prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'serum', vals: { s: s0 }, preset: PRESET.name, fx: PRESET.fx ? C.normalizeFx(jclone(PRESET.fx), s0) : C.defaultFx2() }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] });
+  const t1 = Object.assign(base('trk_2', 'Juno'), { prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'juno60', vals: {}, preset: null }, fx1: { kind: 'panel', fx: C.defaultFx2() }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] });
+  const t2 = Object.assign(base('trk_3', 'Serum 3'), { prim: 'i1', nid: 4, mid: 3,
+    dev: { i1: sx({ preset: 'Glass Lead', fx: fxW('rev') }, s => { s.global.mpe.on = 1; s.p['arp.on'] = 1; }), i2: sx({ name: 'Serum 2' }), i3: sx({ name: 'My Serum' }), out: { kind: 'out' }, l1: S.normModDev({ kind: 'lfo' }) },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'out.in' }, { id: 'w3', a: 'i3.out', b: 'out.in' }],
+    lay: { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: 10, y: 20 }, 'i1/lfo3': { x: 50, y: 60, auto: 1 }, 'i1/fx': { x: 1, y: 2 }, i2: { x: 900, y: 0 }, l1: { x: -320, y: 0 } },
+    mods: [mrow({ id: 'r1', src: 'l1.out', dst: 'i1:f.cutoff', amt: 0.3 }), mrow({ id: 'r2', src: 'i1/lfo3.out', dst: 'i2:a.semi', amt: 0.2 })] });
+  const t3 = Object.assign(base('trk_4', 'Serum'), { prim: 'i1', nid: 2, dev: { i1: sx({}, s => { s.osc[0].env = 0; }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] });
+  return { name: 'SX0', schema: 17, uid: 'p_sx0sx0sx01', perf: { wheel: null }, tracks: [t0, t1, t2, t3] };
+}
+const SX0_NOTES = [OPENS('Anthem'), OPENS(RIG.NAME + ' 3') + ' · ' + RIG_WORDS.mpeLater, OPENS(RIG.NAME + ' 3', RIG.NAME + ' 2'), OPENS(RIG.NAME + ' 3', 'My Serum'),
+  '“' + RIG.NAME + ' 4”: its wavetable synth opens as a ' + RIG.NAME + ' · Oscillator 1’s AMP ENV switch was off — it is on'];
+
+test('SX0 serumOut: every Serum device opens as a <NAME> — model RIG.ID, vals.s adopt\'s (the AMP ENV switches only), its FX, preset name, other fields and every row kept; its lay entry\'s ui gone, the part places kept; no rig record; a default name ("Serum", "Serum <n>": the primary\'s track by setTrackModel\'s rule, a device\'s keeping its number) renamed, a user\'s kept; one note per device, no "Serum" in any; the classic and the project\'s other fields the same objects', () => {
+  const p = deepFreeze(p17()), copy = jclone(p), notes = [], q = M.serumOut(p, notes);
+  assert.deepEqual(p, copy, 'the input untouched');
+  assert.notEqual(q, p);
+  assert.deepEqual([q.schema, q.uid, q.name, q.perf === p.perf, q.tracks[1] === p.tracks[1]], [17, 'p_sx0sx0sx01', 'SX0', true, true], 'no Serum on the Juno track: the same object');
+  const [a, , b, c] = q.tracks;
+  // the preset Serum: its state and FX as they were (adopt changes nothing on it), the preset name, the device's other fields
+  assert.deepEqual([a.name, a.dev.i1.model, a.dev.i1.preset, 'rig' in a.dev.i1, Object.keys(a.dev.i1).sort().join()], ['Anthem', RIG.ID, PRESET.name, false, 'fx,kind,model,preset,vals']);
+  assert.equal(JSON.stringify(a.dev.i1.vals), JSON.stringify(copy.tracks[0].dev.i1.vals), 'the sound state byte for byte');
+  assert.equal(JSON.stringify(a.dev.i1.fx), JSON.stringify(copy.tracks[0].dev.i1.fx), 'its own FX byte for byte');
+  assert.equal(a.dev.out, p.tracks[0].dev.out, 'the other devices: the same objects');
+  // the Serum shown as parts once, MPE on, the ARP on: the state kept (the ARP still plays; MPE said), the lay flag gone, the part places kept, the rows kept
+  assert.deepEqual([b.name, b.dev.i1.model, b.dev.i2.model, b.dev.i3.model, b.dev.i2.name, b.dev.i3.name], [RIG.NAME + ' 3', RIG.ID, RIG.ID, RIG.ID, RIG.NAME + ' 2', 'My Serum']);
+  assert.deepEqual([b.dev.i1.vals.s.global.mpe.on, b.dev.i1.vals.s.p['arp.on'], b.dev.i1.preset, b.dev.i1.fx.racks[0].mods.map(m => m.type)], [1, 1, 'Glass Lead', ['rev']]);
+  assert.deepEqual(b.lay, { i1: { x: 0, y: 0 }, 'i1/oscA': { x: 10, y: 20 }, 'i1/lfo3': { x: 50, y: 60, auto: 1 }, 'i1/fx': { x: 1, y: 2 }, i2: { x: 900, y: 0 }, l1: { x: -320, y: 0 } });
+  assert.deepEqual([b.mods, b.wires, b.dev.l1, b.mid, b.nid], [p.tracks[2].mods, p.tracks[2].wires, p.tracks[2].dev.l1, 3, 4], 'rows, cables, the modulator: as they were');
+  // the switch adopt turns on, said; the default track name "Serum" at position 4
+  assert.deepEqual([c.name, c.dev.i1.vals.s.osc[0].env, JSON.stringify(c.dev.i1.vals.s), c.dev.i1.model], [RIG.NAME + ' 4', 1, JSON.stringify(rigAdopt(copy.tracks[3].dev.i1.vals.s).s), RIG.ID]);
+  assert.deepEqual(notes, SX0_NOTES);
+  assert.ok(notes.every(n => !/Serum/.test(n.replace('“My Serum”', ''))), 'no Serum word but the user\'s own name');
+  // idempotent: nothing left to convert
+  const again = [];
+  assert.equal(M.serumOut(q, again), q);
+  assert.deepEqual(again, []);
+  // a track name that is not the default, a primary that is not the Serum: kept
+  const t = jclone(p.tracks[2]); t.prim = 'i3'; t.dev.i3.model = 'juno60';
+  assert.equal(M.serumOut({ tracks: [t] }).tracks[0].name, 'Serum 3', 'the track\'s name is the primary\'s: renamed only when the primary was the Serum (setTrackModel\'s rule)');
+  for (const nm of ['Serum lead', 'serum 2', 'Serum 2b', 'The Serum']) { const u = jclone(p.tracks[3]); u.name = nm; assert.equal(M.serumOut({ tracks: [u] }).tracks[0].name, nm, nm); }
+});
+
+test('SX0 upgrade(): the load pass after the steps at any schema — a file with no Serum comes out exactly as before (byte for byte, the "already at SCHEMA" copy); a Serum converts at 17 (no bump) and from main\'s schema 0 (project-p1: its two Serums, the same states); a newer file is not touched', () => {
+  // no Serum: what upgrade gave before the pass
+  const plain = deepFreeze({ name: 'no Serum', schema: 17, uid: 'p_plain00001', perf: { wheel: null }, tracks: [jclone(p17().tracks[1])] }), up0 = M.upgrade(plain);
+  assert.deepEqual([up0.from, up0.readOnly, up0.notes, up0.p !== plain, JSON.stringify(up0.p) === JSON.stringify(plain), up0.p.tracks === plain.tracks], [17, false, [], true, true, true]);
+  assert.equal(M.serumOut(plain), plain, 'serumOut: the identity, the same object');
+  for (const x of [null, 3, [], {}, { tracks: 'x' }, { tracks: [null, 1, { dev: 1 }, { dev: { i1: null } }] }]) assert.equal(M.serumOut(x), x);
+  // a Serum at 17: converted, notes, still 17
+  const p = deepFreeze(p17()), up = M.upgrade(p);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.notes], [17, false, 17, SX0_NOTES]);
+  assert.equal(JSON.stringify(up.p), JSON.stringify(M.serumOut(p)));
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [17, 17], 'no bump (IMPL-SX0 §15 P1-1)');
+  // main's project-p1 (schema 0, v1 Serum states): through every step, then the pass
+  const o = deepFreeze(JSON.parse(P1)), u1 = M.upgrade(o), ins = u1.p.tracks.map(t => t.dev[t.prim]);
+  assert.deepEqual(ins.map(d => d.model), [RIG.ID, RIG.ID, 'minimoog', 'tb303', 'juno60', 'dx7', 'solina']);
+  for (const k of [0, 1]) {
+    const r = o.tracks[k];
+    assert.deepEqual([u1.p.tracks[k].name, ins[k].preset, JSON.stringify(ins[k].vals.s), JSON.stringify(ins[k].fx)], [r.name, r.preset, JSON.stringify(r.vals.s), JSON.stringify(r.fx)], r.name + ': the same state, FX and preset');
+  }
+  assert.deepEqual(u1.notes, [OPENS('Anthem'), OPENS('Glide Bass')]);
+  // a newer file: read-only, as it is
+  const n = deepFreeze(Object.assign(p17(), { schema: 18 }));
+  assert.deepEqual([M.upgrade(n).p === n, M.upgrade(n).notes, M.upgrade(n).readOnly], [true, [], true]);
+});
+
+test('SX0 G2 (model half): the converted Serum compiles to the frozen Serum bytes — patchFor(RIG.ID) of the device the pass made = ref-SX0\'s stored:<preset> hash', () => {
+  const d = M.serumOut(p17()).tracks[0].dev.i1;
+  assert.equal(d.model, RIG.ID);
+  assert.equal(sx0Hash(patchFor(d.model, d.vals, d.fx, SX0_ODD)), SX0_BASE['stored:' + PRESET.name]);
+});
+
+test('SX0 G2 page (model half): the app\'s load paths — an IndexedDB autosave holding Serums, main\'s project-p1 and a 1e file (a Serum beside a Juno: split) opened from Files — open with no throw and no console error, each Serum a <NAME> (vals.s the input\'s, the FX, the name rules), the one notice without "Serum", saved as schema 17; the converted preset Serum posts its patch', async () => {
+  const { bootMain } = await import('./main-sim.mjs');
+  const errs = [], ce = console.error;
+  console.error = (...a) => { errs.push(String(a[0] && a[0].message || a[0])); };
+  try {
+    // (the page's tracks hold one instrument each, 1f: track 2 its Serum alone — its link row from i1/lfo3.out onto its own knob)
+    const p = p17(), t2 = p.tracks[2];
+    delete t2.dev.i2; delete t2.dev.i3; delete t2.lay.i2;
+    t2.wires = t2.wires.slice(0, 1); t2.mods[1].dst = 'i1:a.semi';
+    const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null });
+    seed.saveProject(p); await seed.flush(); await seed.close();
+    const s1 = await bootMain({ idb, ls: fakeStorage({}) }), api = s1.api, P = () => api.project();
+    const byId = id => P().tracks.find(t => t.id === id);
+    assert.deepEqual(P().tracks.map(t => t.name), ['Anthem', 'Juno', RIG.NAME + ' 3', RIG.NAME + ' 4']);
+    assert.deepEqual(P().tracks.map(t => Object.keys(t.dev).filter(k => t.dev[k].kind === 'synth').map(k => t.dev[k].model).join()), [RIG.ID, 'juno60', RIG.ID, RIG.ID]);
+    const b = byId('trk_3');
+    assert.equal(JSON.stringify(b.dev.i1.vals.s), JSON.stringify(C.normalizeSerum(jclone(p.tracks[2].dev.i1.vals.s))), 'the state kept (adopt\'s output = the input here)');
+    assert.deepEqual([b.dev.i1.preset, b.dev.i1.fx.racks[0].mods.map(m => m.type), b.mods.map(r => r.src + '>' + r.dst), b.lay.i1.ui, !!b.lay['i1/oscA']], ['Glass Lead', ['rev'], ['l1.out>i1:f.cutoff', 'i1/lfo3.out>i1:a.semi'], undefined, true]);
+    const nt = s1.$('#notice').textContent;
+    assert.equal(nt, [SX0_NOTES[0], SX0_NOTES[1], SX0_NOTES[4]].join(' · '), 'one notice: the notes, joined');
+    assert.ok(!/Serum/.test(nt), nt);
+    // the converted preset Serum: its patch reaches its node
+    await s1.power(); await s1.settle(30); s1.raf(); await s1.settle(5);
+    const a = byId('trk_1'), nd = s1.nodeOf(a.id), pp = nd.po.patch || (nd.po.patches && nd.po.patches.i1); // (its node's first patch: processorOptions)
+    assert.equal(pp && pp.engine, 'serum', 'the Serum engine plays it');
+    api.save(); await api.store.flush();
+    const head = JSON.parse(idb.data('synth-canvas', 'tracks').get('#head').m), rec = id => JSON.parse(idb.data('synth-canvas', 'tracks').get('t:' + id).j);
+    assert.deepEqual([head.schema, rec('trk_3').dev.i1.model, rec('trk_1').dev.i1.model], [17, RIG.ID, RIG.ID], 'saved as schema 17, the devices as Wavecrafts');
+    const s1b = await bootMain({ idb, ls: fakeStorage({}) });
+    assert.equal(s1b.$('#notice').textContent.includes('opens as a'), false, 'saved: nothing to convert the next time');
+    // Files: main's project-p1, then a 1e file whose track holds a Juno and a Serum (split: the Serum's own track, a <NAME>)
+    const open = async (s, name, text) => { await s.$('#fFile').onchange({ target: { files: [{ name, type: 'application/json', text: async () => text }], value: '' } }); await s.settle(30); };
+    await open(s1b, 'project-p1.synth.json', P1);
+    const q = s1b.api.project();
+    assert.deepEqual(q.tracks.map(t => t.dev[t.prim].model).slice(0, 3), [RIG.ID, RIG.ID, 'minimoog']);
+    assert.equal(s1b.$('#notice').textContent, [OPENS('Anthem'), OPENS('Glide Bass')].join(' · '));
+    const duo = Object.assign(S.newProject({ model: 'juno60', name: 'duo', trackName: 'Duo' }), { schema: 4, uid: 'p_duoduo1234' });
+    const t = M.trackToV2(duo.tracks[0]);
+    t.dev.i2 = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() };
+    t.wires.push({ id: 'w3', a: 'i2.out', b: 'out.in' }); t.nid = 3;
+    duo.tracks[0] = t;
+    await open(s1b, 'duo.synth.json', JSON.stringify(duo));
+    const r = s1b.api.project().tracks;
+    assert.deepEqual(r.map(x => x.name + ':' + MO.instOf(x).model), ['Duo:juno60', 'Duo · ' + RIG.NAME + ':' + RIG.ID]);
+    const nt2 = s1b.$('#notice').textContent;
+    assert.ok(nt2.startsWith('Track “Duo” held 2 instruments: now 2 tracks') && nt2.endsWith(OPENS('Duo · ' + RIG.NAME)) && !/Serum/.test(nt2), nt2); // (review 1 P3-1: the note names the track the Wavecraft is on)
+  } finally { console.error = ce; }
+  assert.deepEqual(errs.filter(e => !/^cv-cords: shader /.test(e)), [], 'no console error (but the sim\'s: main-sim has no WebGL, so a rig\'s cord layer falls back to SVG)');
 });

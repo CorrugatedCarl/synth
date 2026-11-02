@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { isDeepStrictEqual } from 'node:util';
 import { readFileSync, readdirSync } from 'node:fs';
 import * as R from '../rig-core.js?v=9';
-import { MODELS, classicOf, isSxModel, isSxId, isRigModel, isSerumModel, patchFor } from '../models.js?v=9';
+import { MODELS, classicOf, isSxModel, isSxId, isRigModel, patchFor } from '../models.js?v=9';
+import * as MJ from '../models.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as S from '../song.js?v=9';
@@ -23,7 +24,11 @@ import { POWER, PARTS as SX_PARTS } from '../sx-edges.js?v=9';
 const ROOT = new URL('../', import.meta.url);
 const J = x => JSON.stringify(x);
 const clone = x => JSON.parse(J(x));
-const serum = MODELS.find(m => m.id === 'serum'), rig = MODELS.find(m => m.id === 'rig');
+const rig = MODELS.find(m => m.id === 'rig');
+// ((SX0) the bundled model left MODELS: W2's Serum side is its entry as it stood at ⟨B⟩ 3db44a8 (models.js :704–719), frozen here — custom,
+// no sections, its map Serum's compile (serum-core stays whole, S1); patchFor takes a model object)
+const SERUM_B = Object.freeze({ id: 'serum', custom: true, sections: [], controls: [],
+  map(P, v, G) { return C.compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi, ext: G.ext }); } });
 const N3 = Math.pow(0.003 / 32, 0.2);
 
 test('RIG: the display name and the flippable constants (the header of IMPL-WC), frozen; the id, the family and the view say `rig`', () => {
@@ -87,23 +92,24 @@ test('rigInit (§2.2, §3.7 ⋯ → Init): the blank + Oscillator 1 into the Amp
   assert.deepEqual(s.env[0], { bpm: 0, legInv: 0, stealRe: 0 });
   assert.deepEqual(C.normalizeSerum(s), s);
   assert.deepEqual(rig.defaults(), st, 'the model\'s defaults() is the starter');
-  // the preferences, as serum.defaults applies them (rig-core applyPrefs: one function for both) — but "MPE on by default": a Serum's only
+  // the preferences, as serum.defaults applied them (rig-core applyPrefs: one function for both; (SX0) the bundled model's defaults(prefs) was
+  // { s: applyPrefs(defaultSerum(), prefs) } at ⟨B⟩) — but "MPE on by default": a Serum's only
   // (review 1 P2-3, the lead: midi.js stays byte-identical in WC-1, so a rig is no MPE zone — §13; pin moved)
-  const prefs = { defOs: 4, author: 'x'.repeat(80), view3d: 1, mpeDefault: 1 }, sx = serum.defaults(prefs).s, rs = R.rigStarter(prefs).s;
+  const prefs = { defOs: 4, author: 'x'.repeat(80), view3d: 1, mpeDefault: 1 }, sx = R.applyPrefs(C.defaultSerum(), prefs), rs = R.rigStarter(prefs).s;
   assert.deepEqual([rs.global.os, rs.author, rs.ui.view3d], [sx.global.os, sx.author, sx.ui.view3d]);
   assert.deepEqual([rs.global.os, rs.author.length, rs.ui.view3d, rs.global.mpe.on, sx.global.mpe.on], [4, 64, [1, 1, 1], 0, 1]);
-  assert.deepEqual(serum.defaults({ defOs: 3 }).s.global.os, C.defaultSerum().global.os, 'an invalid OS preference is ignored, as before');
-  assert.deepEqual(serum.defaults(), { s: C.defaultSerum() }, 'the Serum\'s defaults are what they were');
+  // ((SX0) "the Serum's defaults are what they were" left with the bundled model; the preference rule is rig-core applyPrefs', the starter's)
+  assert.deepEqual(R.applyPrefs(C.defaultSerum(), { defOs: 3 }).global.os, C.defaultSerum().global.os, 'an invalid OS preference is ignored, as before');
 });
 
-test('W2 / G2 (node): patchFor(\'rig\', { s }, fx) deep-equals patchFor(\'serum\', { s }, fx) — the blank, the starter, Init, 20 factory presets, random states; the same engine kind; the MODELS loop wrapped both maps', () => {
+test('W2 / G2 (node): patchFor(\'rig\', { s }, fx) deep-equals patchFor(the Serum at ⟨B⟩, { s }, fx) — the blank, the starter, Init, 20 factory presets, random states; the same engine kind; the MODELS loop wrapped the rig\'s map', () => {
   const states = [R.rigBlank(), R.rigStarter().s, R.rigInit(), ...C.FACTORY_PRESETS.slice(0, 20).map(p => C.normalizeSerum(clone(p.v.s)))];
   let seed = 7;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
   for (let k = 0; k < 8; k++) { const s = C.normalizeSerum(C.defaultSerum()); for (const id of Object.keys(s.p)) if (rnd() < 0.3) s.p[id] = rnd(); s.osc[1].route = k % 4; s.p['b.on'] = k & 1; states.push(C.normalizeSerum(s)); }
   const fx = C.defaultFx2(); C.newInstance(fx, 'rev', { rack: 0 });
   for (const [i, s] of states.entries()) {
-    const a = patchFor('rig', { s }, fx, { sr: 48000, bpm: 120 }), b = patchFor('serum', { s }, fx, { sr: 48000, bpm: 120 });
+    const a = patchFor('rig', { s }, fx, { sr: 48000, bpm: 120 }), b = patchFor(SERUM_B, { s }, fx, { sr: 48000, bpm: 120 });
     assert.ok(isDeepStrictEqual(a, b), 'state ' + i);
     assert.equal(a.engine, 'serum');
   }
@@ -163,22 +169,24 @@ test('normRig (§2.1): { v: 1, cc, n } — cc ≤ 512 entries keyed /^[a-z][a-zA
   assert.equal(R.pruneRig(r, {}, {}, 'i1'), r);
 });
 
-test('models.js: `rig` appended last (every earlier index unchanged), custom AND family rig, named RIG.NAME, no maker, Serum\'s presets, no sections; isSxModel / isSerumModel / isRigModel over every model; classicOf false; the tray\'s Serum section lists the Serum alone', () => {
-  assert.equal(MODELS.length, 19);
-  assert.deepEqual(MODELS.slice(0, 18).map(m => m.id), ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'serum', 'tr808', 'tr606', 'tr909', 'sdsv', 'm900']);
-  assert.equal(MODELS[18], rig);
+// ((SX0, IMPL-SX0 §10) the bundled model left MODELS: 18 models, every index past dx7 one lower (no site code reads them), the rig the
+// only Serum-engine model, isSerumModel and the tray's Serum view gone; isSxId keeps main's 'serum' (an old project's device until the load
+// pass, toV1's target))
+test('models.js: `rig` appended last, custom AND family rig, named RIG.NAME, no maker, Serum\'s presets, no sections; isSxModel / isRigModel over every model; classicOf false; no Serum model, predicate or tray view', () => {
+  assert.equal(MODELS.length, 18);
+  assert.deepEqual(MODELS.slice(0, 17).map(m => m.id), ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606', 'tr909', 'sdsv', 'm900']);
+  assert.equal(MODELS[17], rig);
   assert.deepEqual([rig.id, rig.name, rig.custom, rig.family, 'maker' in rig, rig.year, rig.sections, rig.presets === C.FACTORY_PRESETS, typeof rig.about, typeof rig.tag], ['rig', R.RIG.NAME, true, 'rig', false, 2026, [], true, 'string', 'string']);
   assert.ok(rig.about.includes(R.RIG.NAME) && !/serum/i.test(rig.name) && !/xfer/i.test(rig.about + rig.tag), 'our own words; the engine named plainly');
-  assert.deepEqual(MODELS.filter(isSxModel).map(m => m.id), ['serum', 'rig']);
-  assert.deepEqual(MODELS.filter(isSerumModel).map(m => m.id), ['serum']);
+  assert.deepEqual(MODELS.filter(isSxModel).map(m => m.id), ['rig']);
   assert.deepEqual(MODELS.filter(isRigModel).map(m => m.id), ['rig']);
   assert.deepEqual(MODELS.filter(classicOf).length, 12);
-  assert.deepEqual([isSxModel(null), isRigModel(undefined), isSerumModel({}), isRigModel({ family: 'rig' })], [false, false, false, true]);
+  assert.deepEqual([isSxModel(null), isRigModel(undefined), isRigModel({ family: 'rig' })], [false, false, true]);
+  assert.deepEqual([MODELS.some(m => m.id === 'serum'), 'isSerumModel' in MJ], [false, false]);
   // (lane S) isSxId: isSxModel for a model id — what a device record holds (the cv-* modules and main.js's isSxRec read it)
   assert.deepEqual(MODELS.filter(m => isSxId(m.id) !== isSxModel(m)).map(m => m.id), []);
   assert.deepEqual([isSxId('serum'), isSxId('rig'), isSxId('minimoog'), isSxId('m900'), isSxId(undefined), isSxId('')], [true, true, false, false, false, false]);
-  const sx = SRC_VIEWS.find(v => v.id === 'serum').sections[0].models;
-  assert.deepEqual([sx(serum), sx(rig)], [true, false], 'the Serum view: the Serum tile; the rig\'s view is lane U\'s');
+  assert.equal(SRC_VIEWS.some(v => v.id === 'serum'), false, 'no Serum view (the rig\'s view is lane U\'s)');
 });
 
 test('cv-model PARTS gains env1 (after filter2); song.normDev keeps `rig` on a rig device through normRig and drops it elsewhere; cv-cost COST.synth.rig is the Serum\'s row; cv-art SIL.rig + a drawing of its own, tileMeta from RIG.NAME', () => {

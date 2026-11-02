@@ -1,25 +1,24 @@
-// sx-host.js — the Serum host (SYNTH Canvas milestone 3, docs/canvas/IMPL-3.md §2.3; SPEC-serum2 §11.14, §13): today's
-// SerumUI minus its shell. One SerumHost per Serum (per slot host for the canvas modulators) owns the state access
+// sx-host.js — the wavetable engine's panel host (SYNTH Canvas milestone 3, docs/canvas/IMPL-3.md §2.3; SPEC-serum2 §11.14,
+// §13): the old whole panel minus its shell. One SerumHost per rig (per slot host for the canvas modulators) owns the state access
 // (host.state / host.edit / host.editFx), the panel undo, the binding kit (makeKit), the snapshot and the one paint loop
 // over its SHOWN views (H4), the mod layer (knob menus, halos, MIDI learn, locks, Alt depth drags), the tile / module-label
-// drags, the popover / overlay / dialog layer (#ov twin on the canvas), the shape library, OscData, the preferences, the
-// preset services (load / save / step / browser / Hybridize / render-last) and the main menu.
+// drags, the popover / overlay / dialog layer (#ov twin on the canvas), the shape library, OscData, the preferences and the
+// preset services (load / save / step / browser / Hybridize / render-last). (SX0) The bundled panel's shell — its header,
+// pages and main menu — left with serum-ui.js; a rig's faces (rig-ui) and the slot faces are this host's views.
 //   host.mount(kind, root, args) → View { id, kind, root, page, panel, power, shown(), menuItems(), labelDrag(el),
-//                                 destroy() }   builds a registered view kind (defineView; sx-ui-mod.js registers the
-//                                 panels and the Serum parts) — or a builder function — under kit.page = view.page (a page
+//                                 destroy() }   builds a registered view kind (defineView; sx-ui-mod.js registers 'arp' /
+//                                 'clip') — or a builder function (rig-ui's faces) — under kit.page = view.page (a page
 //                                 of the host's registry: painted while shown, rescaled, destroyed with the view). args: {
 //                                 k, shown: () => bool (the world's on-screen plan), bare (the canvas bar replaces the
 //                                 panel's chrome), opts (per-view kit options), col (O | SN | F | C | GL: the bundled
 //                                 column, the restated 1200 px rules), width (px), dev, inner (build into root itself: the
 //                                 bundled shell's pages) }
 //   host.viewOf(node) → View | null; host.owns(node): inside a view root of THIS host (hitTest, menus, label drags)
-// The bundled panel (serum-ui.js SerumUI) is a host plus its shell views (header, the seven pages, the keyboard foot).
 //   slotHost(dev, o) → a SerumHost over a memoised synthetic Serum state with a canvas modulator's device overlaid into one
 //                       slot (LFO → LFO 1, ENV → ENV 2, chaos → chaos 1, macro → macros 1–8); o = { get, live, edit,
 //                       cancel, set, bpm, rows, view?, devKey? } (§2.3: one History step per gesture, macro moves through
 //                       set, view edits nowhere); .sync() after an outside change, .live(v) the monitor values.
-// The pure helpers (node-tested through serum-ui.js's re-exports, tests/serum-ui.test.mjs) and the widget helpers live
-// here too; serum-ui.js re-exports every name it exported before.
+// The pure helpers (node-tested: tests/sx-helpers.test.mjs) and the widget helpers live here too.
 //
 // Browser ES module. Nothing touches document / window / localStorage / navigator at module top level.
 //
@@ -78,10 +77,8 @@ const { DESTS, DEST_INDEX, SOURCES, SRC_INDEX, SRC_MENU, UNI_STACKS, UNI_MODES, 
 export const PREFS_KEY = 'synth.sx.prefs';
 export const BROWSER_KEY = 'synth.sx.browser';
 export const META_KEY = 'synth.sx.meta';
-export const DEFAULT_KEY = 'synth.sx.default';
 export const VC_KEY = 'synth.sx.vc';
 const SHAPES_KEY = 'synth.sx.shapes';
-const CHAINS_KEY = 'synth.fxchains';
 export const PAGES = Object.freeze(['osc', 'mix', 'fx', 'matrix', 'arp', 'clip', 'global']);
 const PAGE_LABEL = { osc: 'OSC', mix: 'MIX', fx: 'FX', matrix: 'MATRIX', arp: 'ARP', clip: 'CLIP', global: 'GLOBAL' };
 const N_MX = core.N_MATRIX || 64, N_LFO = core.N_LFO || 10, N_ENV = core.N_ENV || 4, N_MAC = core.N_MACRO || 8, N_OSC = 3;
@@ -94,11 +91,10 @@ const LFO_TYPE_LABEL = { normal: 'Normal', path: 'Path', lorenz: 'Chaos: Lorenz'
 const LFO_DIRS = ['fwd', 'rev', 'pp'], LFO_DIR_LABEL = ['Forward', 'Reverse', 'Ping Pong'];
 const LFO_TOOL_IDS = ['point', 'flat', 'rampUp', 'rampDown'], LFO_TOOL_LABEL = ['Point', 'Flat', 'Ramp Up', 'Ramp Down'];
 const STEAL_LABEL = ['Newest', 'Oldest', 'Highest', 'Lowest', 'Velocity'];
-const MPE_XYZ_LABEL = ['Off', 'XYZ → Macro 1, 2, 3', 'YZ → Macro 1, 2', 'Y → Mod Wheel'];
 const QUALITY = [[1, 'Draft'], [2, 'High'], [4, 'Ultra']];
 const C = { bg: '#0f1216', panel: '#161b21', line: '#2a333d', ink: '#dfe6ee', mute: '#7f8b98', accent: '#4fb3ff',
   neg: '#ffb347', on: '#6fe3a1', warn: '#ff6a4a', graph: '#59c2ff', cur: '#ffd84a', grey: '#55606c' };
-const BUILD = 'Serum v2 panel · state v' + (core.VERSION || 2) + ' · CP v' + (core.CP_VER || 2);
+const BUILD = 'Wavetable engine · state v' + (core.VERSION || 2) + ' · CP v' + (core.CP_VER || 2);   // (a rig's host names its own: words.build)
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
@@ -115,14 +111,6 @@ const twoF = e => !!e && e.gesture === 'two-finger';
 // an FX parameter (base in the FX state): FX ids other than g.master / g.bypass (their base is in s.p). SPEC-serum2
 // §3.11.1: FX-ness is never derived from the static index (the SYN2 ids follow the FX block); isFxId is the only FX test.
 const isFxPar = id => core.isFxId(id) && id !== 'g.master' && id !== 'g.bypass';
-// the instances of a v2 FX state (racks in order, list order, a splitter's branches after it): fn(inst)
-function fxWalk(fx, fn) {
-  for (const R of arr(isObj(fx) ? fx.racks : null)) for (const I of arr(isObj(R) ? R.mods : null)) {
-    if (!isObj(I)) continue;
-    fn(I);
-    for (const B of arr(I.br)) for (const c of arr(B)) if (isObj(c)) fn(c);
-  }
-}
 const destOf = id => { const i = DEST_INDEX[id]; return i === undefined ? null : DESTS[i]; };
 // the row of a destination id: static rows by id, dynamic FX ids (fx.<inst>.<pid>) through fx-core's fxDest
 function rowOfDest(id, fx) {
@@ -977,7 +965,7 @@ const CSS = `
 .sx-mrow.sx-bad { border-color: var(--sx-warn); }
 .sx-mrow.sx-bad .sx-mdst .wk-mbtn { color: var(--sx-warn); }
 .sx-mrow.sx-dropline { box-shadow: 0 -2px 0 var(--sx-cur, #ffd84a); }
-/* (SYNTH Canvas 2b) the canvas cables compiled into this Serum, read-only under the slots */
+/* (SYNTH Canvas 2b) the canvas cables compiled into this instrument, read-only under the slots */
 .sx-mcv { display: grid; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--sx-line); }
 .sx-mcv.sx-hidden { display: none; }
 .sx-mcrow { display: grid; align-items: center; gap: 6px; grid-template-columns: 40px minmax(0, 1.2fr) 48px 18px minmax(0, 1.5fr) 30px; padding: 3px 6px; border-radius: 5px;
@@ -1095,10 +1083,10 @@ const CSS = `
 .sx-touch .sx-crv { width: 44px; height: 44px; }
 .sx-touch .sx-mh { min-width: 32px; }
 @media (prefers-reduced-motion: reduce) { .sx-root *, .pb-root * { transition: none !important; } }
-/* SYNTH Canvas milestone 3 (IMPL-3 §2.3): the view root of a Serum part or a canvas modulator. Container sxp, never the
-   whole panel's sx — no width query of the bundled layout restyles a single panel (the 28 px knobs below 900 px, the
-   rails, the tabs); no frame of its own (the canvas module's body and bar frame it); its PART_W width, centred, and never
-   squeezed by a flex body (flex: none) */
+/* SYNTH Canvas milestone 3 (IMPL-3 §2.3): the view root of a face, the Arpeggiator / Clip view or a canvas modulator.
+   Container sxp, never the whole panel's sx — no width query of the old whole-panel layout restyles a single panel (the
+   28 px knobs below 900 px, the rails, the tabs); no frame of its own (the canvas module's body and bar frame it); its own
+   width, centred, and never squeezed by a flex body (flex: none) */
 .sx-root.sx-part { container: sxp / inline-size; padding: 0; margin: 0 auto; background: none; border-radius: 0; box-shadow: none;
   flex: none; }
 .sx-part > .sx-panel, .sx-part > .sx-voice { width: 100%; }
@@ -1163,15 +1151,6 @@ const ICONS = {
 function icon(doc, name) {
   const s = svgEl(doc, 'svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' });
   for (const d of ICONS[name] || []) s.appendChild(svgEl(doc, 'path', { d }));
-  return s;
-}
-function logo(doc) {   // original mark: a wavetable "stack" of three offset waves
-  const s = svgEl(doc, 'svg', { class: 'sx-logo', viewBox: '0 0 32 32', 'aria-hidden': 'true', focusable: 'false' });
-  const g = svgEl(doc, 'g', { fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round' });
-  g.appendChild(svgEl(doc, 'path', { d: 'M4 22c3-9 5-9 8 0s5 9 8 0 5-9 8 0', opacity: '0.35' }));
-  g.appendChild(svgEl(doc, 'path', { d: 'M4 17c3-9 5-9 8 0s5 9 8 0 5-9 8 0', opacity: '0.65' }));
-  g.appendChild(svgEl(doc, 'path', { d: 'M4 12c3-9 5-9 8 0s5 9 8 0 5-9 8 0' }));
-  s.appendChild(g);
   return s;
 }
 function btn(doc, cls, label, title, onClick) {
@@ -1284,7 +1263,7 @@ function download(doc, name, text) {
     a.href = url; a.download = name;
     doc.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => U.revokeObjectURL(url), 4000);
-  } catch (err) { console.warn('serum-ui: download failed', err); }
+  } catch (err) { console.warn('sx-host: download failed', err); }
 }
 // one hidden <input type=file>; resolves the chosen file, or null when the dialog is cancelled ('cancel' event),
 // and removes the input either way
@@ -1617,7 +1596,7 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
   : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));
 
 /* ---------------------------------------------------------------- binding kit (SPEC-serum2 §11.14, B19) */
-// The U1 / U2–U4 boundary: the sub-panels (sx-ui-osc, sx-ui-mix, sx-ui-seq) receive this object, never the SerumUI or
+// The U1 / U2–U4 boundary: the sub-panels (sx-ui-osc, sx-ui-mix, sx-ui-seq) receive this object, never the SerumHost or
 // the main.js host's edit path; everything that touches modulation, undo or locks goes through it.
 // Normative members (§11.14):
 //   host                      the main.js host (host.wt, host.smp, host.tracks, host.seqCmd, host.storage …)
@@ -1670,7 +1649,7 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //   queue() / dead()          request a repaint (asynchronous data arrived) / the panel was destroyed
 //   paintSeq() / snapSeq()    counters of repaints / snapshots (per-repaint caches, redraw on every snapshot)
 //   prompt(title, label, value, ok)   text dialog; ok(text) returns false to keep it open
-//   popover(key, anchor, title, make, sig)   anchored editor popover (see SerumUI.popover)
+//   popover(key, anchor, title, make, sig)   anchored editor popover (see SerumHost.popover)
 //   shapes()                  the LFO shape library (graph editors' shape menus)
 //   openWtEditor(o)           the WT editor overlay for oscillator o
 //   wt                        the wt.js helpers (tables, WAV / PNG import, noises), injected for sx-ui-osc (§0.2)
@@ -1687,7 +1666,7 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //   opts                      (getter) the effective options of the page being built (HOST_OPTS + the host's + the view's)
 //   sx                        the SerumHost itself: VOICE's header and the global panels reach the host's services through
 //                             it (presets, undo, render, the main menu, preferences); null in the sub-panel test kit
-// tests/serum-ui-stubs/kit.js mirrors every member (export / member parity test in tests/serum-ui.test.mjs).
+// tests/serum-ui-stubs/kit.js mirrors every member (export / member parity test in tests/sx-helpers.test.mjs).
 export function makeKit(ui) {
   const opt = o => (typeof o === 'string' ? { label: o } : Object.assign({}, o));
   return Object.freeze({
@@ -1753,10 +1732,9 @@ const NO_OSCD = Object.freeze({ tinfo: () => ({ F: 256, R: 256, interp: 1 }), fo
   lfoToWavetable: () => Promise.resolve(), lfoToNoise: () => Promise.resolve(), renderOscWarp: () => Promise.resolve(), lfoShape: () => null });
 
 export class SerumHost {
-  // new SerumHost(host, o): host = the main.js host (state, fx, edit, editFx, bpm, storage, notify, dev …, as SerumUI's);
+  // new SerumHost(host, o): host = the main.js host (state, fx, edit, editFx, bpm, storage, notify, dev …: sxHost);
   // o = { doc, opts (HOST_OPTS overrides), now (ms; the canvases' rate class — tests) }. start() takes the undo base,
-  // subscribes the monitor and loads the DSP (SerumUI's constructor calls it once its shell is built; createHost / slotHost
-  // at once).
+  // subscribes the monitor and loads the DSP (createHost / slotHost at once).
   constructor(host, o) {
     const O = o || {};
     this.host = host || {};
@@ -1841,7 +1819,7 @@ export class SerumHost {
     const RO = this.d && this.d.defaultView && this.d.defaultView.ResizeObserver || globalThis.ResizeObserver;
     this.ro = RO ? new RO(() => { for (const P of this.allPages()) for (const cv of P.canvases) cv.sized = false; this.queue(); }) : null;
   }
-  // the host's view state, as SerumUI's fields (kept for the bundled panel's callers and tests)
+  // the host's view state as fields (the old whole panel's names: its callers and tests)
   get lfoTool() { return this.uiState.lfoTool; }
   set lfoTool(v) { this.uiState.lfoTool = v; }
   get lfoSnap() { return this.uiState.lfoSnap; }
@@ -1869,12 +1847,11 @@ export class SerumHost {
   opt(k) { const v = this.optsNow()[k]; return v === undefined ? this.opts[k] : v; }
 
   /* ---------------------------------------------------------------- view roots and views (IMPL-3 §2.3) */
-  // a view root: div.sx-root in container — the bundled panel's (A.bundled: id = uid, as before) or a part's
-  // (div.sx-root.sx-part[data-dev][data-col]: container sxp, its own width) — with the mod layer's capture listeners, the
-  // touch classes and the zoom-end re-measure of its canvases (the eleven jobs of the old this.el, XM §4.2)
+  // a view root: div.sx-root.sx-part[data-dev][data-col] in container (container sxp, its own width) — with the mod layer's
+  // capture listeners, the touch classes and the zoom-end re-measure of its canvases (the eleven jobs of the old this.el, XM §4.2)
   addRoot(container, A) {
-    const O = A || {}, el = mk(this.d, 'div', 'sx-root' + (O.bundled ? '' : ' sx-part'));
-    el.id = O.bundled ? this.uid : this.uid + '-r' + (this.roots.length + 1);
+    const O = A || {}, el = mk(this.d, 'div', 'sx-root sx-part');
+    el.id = this.uid + '-r' + (this.roots.length + 1);
     el.setAttribute('data-dev', O.dev || this.dev);
     if (O.col) el.setAttribute('data-col', O.col);
     if (fin(O.width) && O.width > 0 && el.style) el.style.width = Math.round(O.width * 64) / 64 + 'px'; // (to the layout unit: the bundled width exactly, review 2)
@@ -1883,7 +1860,7 @@ export class SerumHost {
     this.roots.push(el);
     if (!this.el) this.el = el;
     this.detectTouch(el);
-    if (!O.bundled) this.installModLayer(el);   // (the bundled panel installs it after its foot, as before)
+    this.installModLayer(el);
     // the canvas world's zoom ended (SPEC-canvas §4.4): the displays' stores follow k (paintCanvas), so all re-measure
     this.rootOff(el, wk.onRescale(el, () => { if (this.dead) return; for (const P of this.allPages()) for (const cv of P.canvases) cv.sized = false; this.queue(); }));
     return el;
@@ -2033,7 +2010,7 @@ export class SerumHost {
     try {
       if (op === 'get') return st && st.get ? st.get(k, v) : v;
       if (st && st.set) st.set(k, v);
-    } catch (err) { console.warn('serum-ui: storage', err); }
+    } catch (err) { console.warn('sx-host: storage', err); }
     return v;
   }
   getN(id) { return baseN(this.s(), this.fx(), id); }
@@ -2429,7 +2406,7 @@ export class SerumHost {
   allPages() { return [this.headPage].concat(this.views.map(V => V.page)); }
   shownPages() { return [this.headPage].concat(this.views.filter(V => V.shown()).map(V => V.page)); }
   // (review 2, look parity) V.args.phase = [[selector ('' = the view's panel), x, y]]: each panel moved (relative, < 1 px)
-  // so its body's world offset mod 1 layout px is x, y — the phase it has in the 1200 px bundled panel (sx-ui-mod PART_PH):
+  // so its body's world offset mod 1 layout px is x, y — the phase it had in the 1200 px whole panel (SX0: no view passes one now):
   // the canvas world rasters text at each element's own fractional origin. Measured when the view shows (a layout read);
   // the modules stand on the dots, so it holds wherever one is moved. Outside a canvas world: nothing
   alignPhase(V) {
@@ -2456,7 +2433,7 @@ export class SerumHost {
     this.queue();
     return true;
   }
-  // the bundled panel's FX page is the one view with an embedded rack (SerumUI: page 'fx' shown)
+  // no view embeds a rack (the whole panel's FX page left with serum-ui.js)
   rackShown() { return false; }
   // (ts: the frame's rAF timestamp when a frame paints — the rate class's time base, paintCanvas)
   paint(full, ts) {
@@ -2713,7 +2690,7 @@ export class SerumHost {
     this.runFrames(true);
     if (this.slowDue) { this.slowDue = false; this.updateVoices(); this.checkCapture(); }
   }
-  // the pages, memoised per view change (each view's shown(), SerumUI's page; a mount / unmount / full paint / destroy drops the
+  // the pages, memoised per view change (each view's shown(), the host's page; a mount / unmount / full paint / destroy drops the
   // memo — it never holds a gone view's page): no array per frame
   pagesNow() {
     const M = this.pgM || (this.pgM = { v: [], pg: undefined, all: null, shown: null }), vs = this.views;
@@ -2956,7 +2933,7 @@ export class SerumHost {
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, cv.w, cv.h);
       cv.draw(g, cv.w, cv.h, cv.dpr, cv.pal);
-    } catch (err) { warnOnce('draw' + cv.el.className, 'serum-ui: display draw failed', err); }
+    } catch (err) { warnOnce('draw' + cv.el.className, 'sx-host: display draw failed', err); }
   }
 
   /* ---------------------------------------------------------------- presets in the header (§9.10, §13.11) */
@@ -3043,13 +3020,6 @@ export class SerumHost {
         return true;
       } },
     ]);
-  }
-  revertPreset() {
-    const pr = this.host.presets, k = pr && pr.current ? pr.current() : null;
-    if (k === null || k === undefined || !pr.load) { this.notify('Nothing to revert to'); return; }
-    if (!this.confirmChange()) return;
-    this.loadPreset(k);
-    this.notify('Reverted to the saved preset');
   }
   // ARTIST / DESC (§13.2 header, §13.11): author, description (notes) and tags of the sound
   authorDialog() {
@@ -3209,7 +3179,7 @@ export class SerumHost {
     this.bp = this.popPage = mkPage(box, this.opts);
     let ed;
     try { ed = make(eb); } finally { this.bp = prevBp; }
-    // an editor (a class instance: CurveEditor, PZEditor, OscMapEditor …) rather than a plain pane object: full screen
+    // an editor (a class instance: CurveEditor, PZEditor …) rather than a plain pane object: full screen
     // below 1100 px (CSS .sx-pop-ed, §13.2 Overlays)
     const isEd = !!ed && typeof ed === 'object' && Object.getPrototypeOf(ed) !== Object.prototype;
     if (isEd) box.classList.add('sx-pop-ed');
@@ -3248,15 +3218,19 @@ export class SerumHost {
     ov.setAttribute('aria-label', label);
     const prev = d.activeElement;
     const O = { el: ov, closed: false };
+    // (Escape: focus often stays on the ⋯ / menu item that opened it, outside the overlay — the key is heard at the document while it is open)
+    const esc = e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); O.close(); } };
     O.close = () => {
       if (O.closed) return;
       O.closed = true;
+      d.removeEventListener('keydown', esc);
       ov.remove();
       if (this.overlay === O) this.overlay = null;
       if (onClose) onClose();
       if (prev && prev.focus && prev.isConnected !== false) prev.focus();
     };
-    ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); O.close(); } });
+    ov.addEventListener('keydown', esc);
+    d.addEventListener('keydown', esc);
     const L = this.layerEl(); // (on the canvas: a sheet in the top layer, whatever the zoom)
     L.appendChild(ov);
     this.overlay = O;
@@ -3361,7 +3335,7 @@ export class SerumHost {
       this.toggleExpand();
     }
   }
-  // Alt/Option-F: the bundled panel expands its FX rack / matrix (SerumUI); a parts host has neither
+  // Alt/Option-F expanded the whole panel's FX rack / matrix (serum-ui.js); a parts host has neither
   toggleExpand() {}
   // data-pdest (canvas 2b; sx-ui-osc's FILTER routing switches): a parameter that is no modulation target. The knob menu (MIDI Learn,
   // Lock, Reset, Enter Value — no Mod Source) and the lock tint find it; hitTest, the depth drag, halos and the canvas read data-dest only
@@ -3918,99 +3892,9 @@ export class SerumHost {
     this.edDirty = true;
   }
 
-  /* ---------------------------------------------------------------- main menu (§13.12) */
-  mainMenu(anchor) {
-    const fx = this.fx(), s = this.s(), r = anchor.getBoundingClientRect(), o = this.selOsc(), mpe = s.global.mpe || {};
-    const mpeEdit = (fn, label) => this.edit(st => { if (!isObj(st.global.mpe)) st.global.mpe = { on: 0, bend: 48, xyz: 0 }; fn(st.global.mpe); }, { label });
-    const xyz = k => ({ label: 'MPE: ' + MPE_XYZ_LABEL[k], checked: mpe.xyz === k, action: () => mpeEdit(m => { m.xyz = m.xyz === k ? 0 : k; }, 'MPE mapping') });
-    const fxLocked = fx ? (Array.isArray(fx.racks) ? fx.racks.length > 0 && fx.racks.every(R => R && R.lock) : !!fx.lock) : false;
-    const warpOk = this.oscd && typeof this.oscd.canRenderWarp === 'function' ? this.oscd.canRenderWarp(o) : true;
-    wk.contextMenu(r.left, r.bottom + 2, [
-      { label: 'About', action: () => this.about() },
-      { sep: true },
-      { label: 'Init Preset', action: () => this.initPreset() },
-      { label: 'Init LFOs + LFO Mods', action: () => { if (this.need('initLfos')) { this.edit(st => core.initLfos(st), { label: 'Init LFOs' }); this.edDirty = true; } } },
-      { label: 'Init Modulations', action: () => this.confirmDlg('Init Modulations', 'Remove every modulation row and LFO point link?', () => {
-        if (this.need('initMods')) { this.edit(st => core.initMods(st), { label: 'Init Modulations' }); this.edDirty = true; }
-      }) },
-      { label: 'Load Preset…', action: () => this.loadPresetFile() },
-      { label: 'Revert to Saved', action: () => this.revertPreset() },
-      { label: 'Save as Default Preset', action: () => this.saveDefault() },
-      { label: 'Import Preset Pack…', action: () => this.browser.importFile() },
-      { sep: true },
-      { label: 'Render OSC ' + OSC_L[o] + ' Warp', disabled: !warpOk, action: () => this.renderOscWarp(o) },
-      { label: 'Resample to', sub: [
-        { label: 'Selected Osc (OSC ' + OSC_L[o] + ')', action: () => this.resample(OSC_L[o]) },
-        { label: 'A and B (Stereo)', action: () => this.resample('AB') },
-      ] },
-      { sep: true },
-      { label: 'Load Tuning…', action: () => this.loadTuning() },
-      { label: 'MPE Enabled', checked: !!mpe.on, action: () => mpeEdit(m => { m.on = m.on ? 0 : 1; }, 'MPE') },
-      xyz(1), xyz(2), xyz(3),
-      { label: 'MPE Bend Range', sub: [12, 24, 48, 96].map(b => ({ label: b + ' semitones', checked: mpe.bend === b, action: () => mpeEdit(m => { m.bend = b; }, 'MPE bend range') }))
-        .concat([{ label: 'Other…', action: () => this.promptText('MPE Bend Range', 'Semitones (1–96)', String(mpe.bend || 48), t => {
-          const v = Math.round(parseFloat(String(t).replace(',', '.')));
-          if (!(v >= 1 && v <= 96)) return false;
-          mpeEdit(m => { m.bend = v; }, 'MPE bend range');
-          return true;
-        }) }]) },
-      { sep: true },
-      { label: 'Lock FX Rack', checked: fxLocked, action: () => this.editFx(f => {
-        if (Array.isArray(f.racks)) { const v = fxLocked ? 0 : 1; for (const R of f.racks) if (R) R.lock = v; } else f.lock = f.lock ? 0 : 1;
-      }, { label: 'Lock FX Rack' }) },
-      { label: 'Load Effect Chain…', sub: this.chainMenu() },
-      { label: 'Save Effect Chain…', action: () => this.saveChainDialog() },
-      { sep: true },
-      { label: 'Velo->Amp', action: () => this.veloAmp() },
-      { label: 'Vibrato quick-assign', action: () => this.vibrato() },
-    ], { anchor });
-  }
   replaceState(target, src) {
     for (const k of Object.keys(target)) delete target[k];
     Object.assign(target, src);
-  }
-  // Init Preset (§13.12, §11.1 initPreset): everything incl. every lock and FX bus lock reset; the page stays
-  initPreset() {
-    if (!this.confirmChange()) return;
-    let next = null, nfx = null;
-    if (typeof core.initPreset === 'function') {
-      const r = core.initPreset(this.s(), this.prefs);
-      next = r.s; nfx = r.fx;
-    } else if (this.need('applyPreset')) {
-      const init = core.defaultSerum();
-      init.global.os = this.prefs.defOs;
-      init.author = this.prefs.author;
-      next = core.applyPreset(this.s(), { name: 'Init', cat: 'Init', v: { s: init }, fx: core.defaultFx() });
-      nfx = core.defaultFx();
-    }
-    if (!next) return;
-    // the new state's ui is initPreset's (Default waveform view preference, default editors and selections); only the
-    // page stays (core.initPreset keeps it already; the fallback path copies it)
-    const page = this.s().ui && this.s().ui.page;
-    if (isObj(next.ui) && PAGES.includes(page)) next.ui.page = page;
-    this.edit(s => { this.replaceState(s, next); }, { label: 'Init Preset', seed: true });
-    if (this.fx() && nfx) this.editFx(f => { const fui = f.ui; this.replaceState(f, nfx); if (fui !== undefined) f.ui = fui; }, { label: 'Init Preset', seed: true });
-    this.dirty = false;
-    this.nameOverride = 'Init';
-    this.oscd.forget();
-    this.refresh();
-  }
-  loadPresetFile() {
-    const pr = this.host.presets;
-    if (!pr || !pr.importFile) { this.notify('Preset import is not available'); return Promise.resolve(); }
-    return pickFile(this.d, '.json,application/json').then(f => (f ? pr.importFile(f) : null)).then(k => {
-      if (k === null || k === undefined) return;
-      this.presetsChanged();
-      if (this.confirmChange()) this.loadPreset(k);
-    }, err => { console.warn(err); this.notify('Could not load that file'); });
-  }
-  // Save as Default Preset (synth.sx.default): new Serum tracks start from it (main.js)
-  saveDefault() {
-    const s = clone(this.s()), fx = this.fx() ? clone(this.fx()) : null;
-    if (!s) return;
-    delete s.ui;
-    this.store('set', DEFAULT_KEY, { name: 'Default', v: { s }, fx });
-    this.notify('Saved as the default preset for new tracks');
   }
   loadTuning() {
     const f = this.host.tuningFile;
@@ -4023,124 +3907,6 @@ export class SerumHost {
     }, err => { console.warn(err); this.notify('Could not load that tuning file'); });
   }
   clearTuning() { this.edit(s => { s.global.tun = { name: '', kind: 'none', scl: '', kbm: '', tab: null }; }, { label: 'Clear Tuning' }); }
-  veloAmp() {
-    if (!this.need('veloToAmp')) return;
-    let slot = -1;
-    this.edit(s => { slot = core.veloToAmp(s); }, { label: 'Velo->Amp' });
-    if (slot < 0) this.notify('Matrix full (' + N_MX + ' slots)');
-  }
-  vibrato() {
-    if (!this.need('vibratoAssign')) return;
-    let slot = -1;
-    this.edit(s => { slot = core.vibratoAssign(s); }, { label: 'Vibrato quick-assign' });
-    if (slot < 0) this.notify('No unused LFO or matrix full');
-    else { const r = this.s().matrix[slot]; this.notify(srcLabel(this.s(), r.src) + ' → Master Tune (mod wheel depth)'); this.edDirty = true; }
-  }
-  resample(target) {
-    if (typeof this.host.resample !== 'function') { this.notify('Resampling is not available'); return; }
-    this.notify('Resampling…');
-    // the host selects the resampled table on the oscillator(s): an edit of the sound (§8.8 dirty)
-    Promise.resolve(this.host.resample(target)).then(() => { if (!this.dead) { this.dirty = true; this.oscd.forget(); this.markUndo('Resample'); this.refresh(); } },
-      err => { console.error(err); this.notify('Resample failed'); });
-  }
-  about() {
-    const body = mk(this.d, 'div');
-    body.appendChild(mk(this.d, 'p', '', 'Wavetable synthesizer modelled on the Serum workflow: three oscillators (wavetable, multisample, sample, granular, spectral) with two warp slots and unison, sub and noise oscillators, two filters, a mixer with two FX buses, 4 envelopes, 10 LFOs, a 64-slot modulation matrix, an arpeggiator, a clip player and a modular effect rack.'));
-    body.appendChild(mk(this.d, 'p', '', 'All artwork, wavetables, samples, noises and presets are original. Not affiliated with Xfer Records.'));
-    body.appendChild(mk(this.d, 'p', 'sx-rate', BUILD));
-    this.dialog('About', body, [{ label: 'Close', primary: true }]);
-  }
-  /* effect chains (§9.6, §11.2): synth.fxchains = [{name, fx}] (fx = a v2 state without ui, racks unlocked; v1 entries
-   * written by older versions are read through fx-core migrateChains1) + JSON file export / import. FX state v2
-   * everywhere (RULINGS2 F1): the same rules as the rack's chain menu (fx-ui). A v1 chain (a v1 entry written by an older
-   * version, a Phase-1 factory chain: fx-core factoryChainFx) is loaded as it is and migrates in loadChain with the Serum
-   * state as refs: the modules the track's rows, locks and MIDI map address stay, as in Phase 1. Saving and importing keep
-   * the other entries as stored */
-  rawChains() {
-    const raw = this.store('get', CHAINS_KEY, []), L = Array.isArray(raw) ? raw : isObj(raw) ? arr(raw.chains) : [];
-    return L.filter(c => c && typeof c.name === 'string' && c.name && isObj(c.fx));
-  }
-  chains() {
-    const ok = this.rawChains();
-    if (typeof core.migrateChains1 !== 'function') return ok;
-    try { return arr(core.migrateChains1(ok).chains); } catch (err) { console.warn('effect chains unreadable', err); return []; }
-  }
-  chainMenu() {
-    // Factory ▸ = fx-core FACTORY_CHAINS (v2: the Phase-1 chains migrated + the Serum 2 ones; read-only, never stored; the
-    // Phase-1 ones load from their v1 states), then the user's library (entries as stored)
-    const fac = core.FACTORY_CHAINS ? arr(core.FACTORY_CHAINS.chains) : [];
-    const facFx = c => (typeof core.factoryChainFx === 'function' ? core.factoryChainFx(c) || c.fx : c.fx);
-    const head = fac.length ? [{ label: 'Factory', sub: fac.map(c => ({ label: c.name, action: () => this.loadChain(facFx(c), c.name) })) }, { sep: true }] : [];
-    const list = this.rawChains().map(c => ({ label: c.name, action: () => this.loadChain(c.fx, c.name) }));
-    if (!list.length) list.push({ label: '(no saved chains)', disabled: true });
-    return head.concat(list, [{ sep: true }, { label: 'Import from File…', action: () => this.importChains() },
-      { label: 'Export All to File…', action: () => download(this.d, 'effect-chains.json', JSON.stringify({ type: 'synth.fxchains', v: 2, chains: this.chains() }, null, 1)) }]);
-  }
-  // Stored chains are normalised v2 copies without ui, racks unlocked, sorted by name; loading replaces every rack (its
-  // instances, bypass, routing) keeping ui, each rack's lock flag and the values of locked FX parameters whose instance
-  // (same id and type) the chain brings back, and compiles with seed (§9.6); the Serum state's rows, locks and MIDI
-  // entries addressing an instance the chain does not bring back go (fx-core removeInstance, as the rack's loadChain).
-  // Import accepts a library file ({ chains: [{ name, fx }] }, merged by name) or a single chain ({ name, fx } as the
-  // rack's Export Effect Chain… writes it, or a bare fx state: loaded).
-  chainCopy(fx) {
-    if (typeof core.migrateChains1 === 'function') { const c = arr(core.migrateChains1([{ name: 'x', fx }]).chains)[0]; if (c) return c.fx; }
-    const c = core.normalizeFx ? core.normalizeFx(fx) : clone(fx); delete c.ui; delete c.lock; return c;
-  }
-  storeChains(list) { this.store('set', CHAINS_KEY, list.slice().sort((a, b) => a.name.localeCompare(b.name))); }
-  loadChain(fx, name) {
-    if (!core.normalizeFx || !this.fx()) return;
-    // a v1 chain migrates with the Serum state as refs (§2.6.3): instances its rows, locks and MIDI entries address stay
-    const n = core.normalizeFx(clone(fx), this.s()), cur = this.fx(), locked = arr(this.s().locks.p).filter(isFxPar), keep = [];
-    const fd = (id, f) => (typeof core.fxDest === 'function' ? core.fxDest(id, f) : null);
-    for (const id of locked) { const d = fd(id, cur); if (d && d.inst && isObj(d.inst.p)) keep.push([id, d.inst.type, d.inst.p[d.pid]]); }
-    const inc = new Map();
-    fxWalk(n, I => { inc.set(I.id, I.type); });
-    const gone = [];
-    fxWalk(cur, I => { if (inc.get(I.id) !== I.type) gone.push(I.id); });
-    if (gone.length && typeof core.removeInstance === 'function') {
-      const f0 = clone(cur);
-      this.edit(st => { for (const id of gone) core.removeInstance(f0, id, st); }, { label: 'Load Effect Chain' });
-    }
-    this.editFx(f => {
-      const ui = f.ui, locks = arr(f.racks).map(R => (isObj(R) && R.lock ? 1 : 0));
-      this.replaceState(f, n);
-      if (Array.isArray(f.racks)) f.racks.forEach((R, k) => { if (isObj(R)) R.lock = locks[k] || 0; });
-      for (const [id, type, v] of keep) { const d = fd(id, f); if (d && d.inst && d.inst.type === type && fin(v)) d.inst.p[d.pid] = v; }
-      if (ui !== undefined) f.ui = ui;
-      if (isObj(f.ui) && f.ui.sel && !inc.has(f.ui.sel)) f.ui.sel = '';
-    }, { label: 'Load Effect Chain', seed: true });
-    if (this.rack && this.rack.refresh) this.rack.refresh();
-    if (name) this.notify('Loaded effect chain “' + name + '”');
-  }
-  saveChainDialog() {
-    this.promptText('Save Effect Chain', 'Name', 'Chain ' + (this.chains().length + 1), t => {
-      const name = String(t).trim().slice(0, 48);
-      if (!name || !this.fx()) return false;
-      this.storeChains(this.rawChains().filter(c => c.name !== name).concat([{ name, fx: this.chainCopy(this.fx()) }]));
-      this.notify('Saved effect chain “' + name + '”');
-      return true;
-    });
-  }
-  importChains() {
-    return pickFile(this.d, '.json,application/json').then(f => fileText(f).then(t => (t ? this.importChainText(t, f && f.name) : 0)))
-      .catch(err => { console.warn(err); this.notify('Could not read that file'); });
-  }
-  importChainText(t, fileName) {
-    const j = JSON.parse(t);
-    if (j && Array.isArray(j.chains)) {
-      const add = j.chains.filter(c => c && typeof c.name === 'string' && c.name.trim() && isObj(c.fx) && (isObj(c.fx.p) || Array.isArray(c.fx.racks)));
-      if (!add.length) { this.notify('No effect chains in that file'); return 0; }
-      const m = new Map(this.rawChains().map(c => [c.name, c]));
-      for (const c of add) { const nm = c.name.trim().slice(0, 48); m.set(nm, { name: nm, fx: this.chainCopy(c.fx) }); }
-      this.storeChains(Array.from(m.values()));
-      this.notify('Imported ' + add.length + ' effect chain' + (add.length > 1 ? 's' : ''));
-      return add.length;
-    }
-    const fx = j && isObj(j.fx) ? j.fx : j;
-    if (!isObj(fx) || !(isObj(fx.p) || Array.isArray(fx.racks))) { this.notify('No effect chains in that file'); return 0; }
-    this.loadChain(fx, (j && typeof j.name === 'string' && j.name) || String(fileName || 'Effect chain').replace(/(\.fxchain)?\.json$/i, ''));
-    return 1;
-  }
   // panel shell: power toggle (module power = DEST + module menu), title (module menu on right-click / long-press /
   // Enter; drag onto another module's title: swap / Alt copy / Shift-Alt copy with mods), lock mark; greys out while off.
   // o.items() = extra module-menu items (sub-panels, §11.14); o.collapse = fold to the title row while the module is
@@ -4275,21 +4041,19 @@ export class SerumHost {
   }
 
   /* ---------------------------------------------------------------- OSC-side actions (sx-ui-osc, §11.14) */
-  // serum-ui's own entry points into the oscillator data: drops on the displays (doDrop), the main menu and the LFO
-  // shape menus. An LFO dropped on a non-wavetable oscillator also switches it to a wavetable one: sx-ui-osc does that in
+  // the host's own entry points into the oscillator data: drops on the displays (doDrop) and the LFO shape menus. An LFO dropped on a non-wavetable oscillator also switches it to a wavetable one: sx-ui-osc does that in
   // the same edit as the new table, once the table is saved (§13.13, inv B16: one undo step; a failed save leaves the
   // oscillator as it was).
   lfoToWavetable(l, o) {
     let r;
     try { r = this.oscd.lfoToWavetable(l, o); } catch (err) { r = Promise.reject(err); }
-    return Promise.resolve(r).catch(err => { console.warn('serum-ui: LFO to wavetable', err); if (!this.dead) this.notify('LFO → wavetable failed' + (err && err.message ? ': ' + err.message : '')); });
+    return Promise.resolve(r).catch(err => { console.warn('sx-host: LFO to wavetable', err); if (!this.dead) this.notify('LFO → wavetable failed' + (err && err.message ? ': ' + err.message : '')); });
   }
   lfoToNoise(l) {
     let r;
     try { r = this.oscd.lfoToNoise(l); } catch (err) { r = Promise.reject(err); }
-    return Promise.resolve(r).catch(err => { console.warn('serum-ui: LFO to noise', err); if (!this.dead) this.notify('LFO → noise failed' + (err && err.message ? ': ' + err.message : '')); });
+    return Promise.resolve(r).catch(err => { console.warn('sx-host: LFO to noise', err); if (!this.dead) this.notify('LFO → noise failed' + (err && err.message ? ': ' + err.message : '')); });
   }
-  renderOscWarp(o) { return this.oscd.renderOscWarp(o); }
   // Wavetable to LFO Shape (§9.3): the oscillator's frame at its base WT POS → ≤ 64 points into LFO l (default: the
   // bundled editor's)
   wtToLfo(o, lfo) {
@@ -4319,8 +4083,8 @@ export class SerumHost {
     this.editorOsc = o;
     if (typeof this.host.editorOpen === 'function') this.host.editorOpen(o);
   }
-  // The SerumUI host as the WT editor sees it: state edits (copy-on-write repoint, Send to Noise Oscillator) go
-  // through SerumUI.edit, so they mark the preset edited (§8.8 dirty) and repaint the panel; every other member
+  // The host as the WT editor sees it: state edits (copy-on-write repoint, Send to Noise Oscillator) go
+  // through SerumHost.edit, so they mark the preset edited (§8.8 dirty) and repaint the panel; every other member
   // is the host's own (methods bound to it).
   editorHost() {
     const H = this.host, ui = this;
@@ -4552,7 +4316,7 @@ export class SerumHost {
     this.views = [];
     this.pgM = null;
   }
-  // the shell's own pieces (SerumUI: the FX rack, mixer, keyboard, sequencer pages, oscillator panels)
+  // the old whole panel's own pieces (serum-ui.js: none since SX0)
   destroyShell() {}
 }
 
@@ -4629,7 +4393,7 @@ const call = (f, ...a) => { try { return typeof f === 'function' ? f(...a) : und
 //          host's ring, read at the heard frame by its tick) }.
 // View edits (zoom, LOCK fit, the LFO grid, the drawing tool) never reach the device. The returned host has .kind,
 // .sync() (re-overlay after an undo / redo / load) and .live(v) (the monitor: a level, or { v, ph, y, out, stage, t });
-// sx-ui-mod.js mountSlot(H, root) mounts the panel of its kind (LfoPanel 0 / EnvPanel 1 / ChaosRow 0 / MacrosPanel).
+// rig-ui's slot face (cv-mods-ui slotBody) mounts on it over the donor of its kind (LfoPanel 0 / EnvPanel 1 / ChaosRow 0 / MacrosPanel).
 export function slotHost(dev, o) {
   const O = o || {}, kind = typeof dev === 'string' ? dev : isObj(dev) ? dev.kind : '';
   if (!['lfo', 'env', 'chaos', 'macro'].includes(kind)) throw new Error('sx-host: no slot for kind ' + kind);
@@ -5240,13 +5004,13 @@ export class PresetBrowser {
   }
 }
 
-/* ================================================================ for the shell and the panels (serum-ui.js, sx-ui-mod.js) */
-// the widget / state helpers and the constants they share with the host (one definition: the bundled panel, the parts
-// and the slot hosts draw and edit alike)
+/* ================================================================ for the panels (sx-ui-mod.js, rig-ui.js) */
+// the widget / state helpers and the constants they share with the host (one definition: a rig's faces and the slot hosts
+// draw and edit alike)
 export {
-  mk, svgEl, btn, icon, logo, on, closest, longPress, numField, segField, hSlider, qsa, focusable, mkPage, subMenu, tidySeps, download, pickFile, fileText,
+  mk, svgEl, btn, icon, on, closest, longPress, numField, segField, hSlider, qsa, focusable, mkPage, subMenu, tidySeps, download, pickFile, fileText,
   clamp, clamp01, fin, fnOf, isObj, arr, clone, frac, sgn, own, twoF, nowMs, warnOnce, tagList,
   destOf, rowOfDest, gridOf, stepsOf, snapN, srcGroups, rowsOf, rowActive, emptyRow, lfoNum, envNum, macNum, s1On, s0Os, pruneLost,
   PAGE_LABEL, N_MX, N_LFO, N_ENV, N_MAC, N_OSC, OSC_L, OSC_P, OSC_MOD, ENV_ED, LFO_KNOBS, LFO_MODES, LFO_TYPES, LFO_TYPE_LABEL, LFO_DIRS,
-  LFO_DIR_LABEL, LFO_TOOL_IDS, LFO_TOOL_LABEL, STEAL_LABEL, MPE_XYZ_LABEL, QUALITY, BUILD, UNI_STACKS, UNI_MODES, MC_K,
+  LFO_DIR_LABEL, LFO_TOOL_IDS, LFO_TOOL_LABEL, STEAL_LABEL, QUALITY, BUILD, UNI_STACKS, UNI_MODES, MC_K,
 };

@@ -7,7 +7,8 @@ import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as G from '../cv-graph.js?v=9';
-import { MODELS, patchFor, isSerumModel } from '../models.js?v=9';
+import { MODELS, patchFor, isRigModel, isSxId } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as F2 from './fixtures/mods-2a.mjs';
 
@@ -19,9 +20,9 @@ function v1Tracks() {
   const out = [];
   for (const m of MODELS) {
     if (m.custom) { // ((WC) the Serum's 86 once: the rig (custom too) holds the same presets — its compile is G2's, tests/rig-sound)
-      if (isSerumModel(m)) for (const p of C.FACTORY_PRESETS) {
+      if (isRigModel(m)) for (const p of C.FACTORY_PRESETS) {
         const s = C.normalizeSerum(clone(p.v.s));
-        out.push({ id: 'trk_' + out.length, model: 'serum', vals: { s }, preset: p.name, fx: p.fx ? C.normalizeFx(clone(p.fx), s) : C.defaultFx2() });
+        out.push({ id: 'trk_' + out.length, model: RIG.ID, vals: { s }, preset: p.name, fx: p.fx ? C.normalizeFx(clone(p.fx), s) : C.defaultFx2() });
       }
       continue;
     }
@@ -38,7 +39,7 @@ function v1Tracks() {
 // Serum (its own FX inside) → out
 function v2Of(t, o = {}) {
   const i1 = { kind: 'synth', model: t.model, vals: t.vals, preset: t.preset, seq: t.seq || null, on: true, solo: false, zone: { lo: 0, hi: 127, xp: 0 } };
-  if (t.model === 'serum') return { id: t.id, prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in', g: 1 }], mods: [] };
+  if (isSxId(t.model)) return { id: t.id, prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in', g: 1 }], mods: [] };
   const r = t.fx.racks[0];
   return { id: t.id, prim: 'i1', dev: { i1, fx1: { kind: 'panel', rack: { mods: r.mods, byp: r.byp, lock: r.lock, ui: t.fx.ui }, name: 'FX Panel A' }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in', g: 1 }, { id: 'w2', a: 'fx1.out', b: 'out.in', g: 1 }], mods: [], ...o };
@@ -50,7 +51,7 @@ test('v1 tracks are canonical: their v1 view is the track (patchFor equal for ev
   for (const t of T) {
     const r = G.compileTrack(t);
     assert.equal(r.canonical, true);
-    assert.equal(r.shape, t.model === 'serum' ? 'serum' : 'classic');
+    assert.equal(r.shape, isSxId(t.model) ? 'serum' : 'classic');
     assert.deepEqual(patchFor(r.v1.model, r.v1.vals, r.v1.fx, OPTS), patchFor(t.model, t.vals, t.fx, OPTS), t.model + ' ' + t.preset);
   }
 });
@@ -72,7 +73,7 @@ test('the canonical v2 shapes (§5.5) present the same v1 view: today\'s patch, 
 });
 
 test('shapes that are not today\'s are not canonical (the graph protocol, stage 1e)', () => {
-  const T = v1Tracks(), juno = T.find(x => x.model === 'juno60'), moog = T.find(x => x.model === 'minimoog'), sx = T.find(x => x.model === 'serum');
+  const T = v1Tracks(), juno = T.find(x => x.model === 'juno60'), moog = T.find(x => x.model === 'minimoog'), sx = T.find(x => x.model === RIG.ID);
   const two = v2Of(juno);
   two.dev.i2 = Object.assign(clone(v2Of(moog).dev.i1), { on: true });
   two.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in', g: 1 });
@@ -111,9 +112,10 @@ test('validate: every refusal code', () => {
   const loop = w({ a: 'fx1.out', b: 'fx1.in' });
   assert.ok(codes(loop).includes('cycle'));
   assert.equal(G.order(loop), null);
-  const sx = v2Of(v1Tracks().find(x => x.model === 'serum')), into = Object.assign(clone(sx), { dev: Object.assign(clone(sx.dev), { i2: clone(t.dev.i1) }) });
+  const sx = v2Of(v1Tracks().find(x => x.model === RIG.ID)), into = Object.assign(clone(sx), { dev: Object.assign(clone(sx.dev), { i2: clone(t.dev.i1) }) });
   into.wires.push({ a: 'i2.out', b: 'i1.in' });
   assert.deepEqual(codes(into), ['own-fx']);
+  assert.deepEqual(G.validate(into).errors.map(e => e.msg), ['Its own FX take only this instrument · Make a shared panel']); // (SX0: one wording, no Serum)
   const outs = clone(t); outs.dev.out2 = { kind: 'out' };
   assert.deepEqual(codes(outs), ['out']);
   const many = clone(t);
@@ -156,7 +158,7 @@ test('1e: the fixture tracks compile to the graph form (not canonical): graph, p
     for (const id of Object.keys(r.patches)) {
       const d = t.dev[id], p = r.patches[id];
       assert.equal(p.vals === d.vals && p.model === d.model && p.preset === d.preset, true, k + id + ': the device\'s own objects');
-      assert.equal(p.fx === (d.model === 'serum' ? d.fx : undefined), true, k + id + ': fx a Serum\'s own');
+      assert.equal(p.fx === (isSxId(d.model) ? d.fx : undefined), true, k + id + ': fx a Serum-engine device\'s own'); // ((SX0) the fixture's Serum is a rig)
     }
     for (const id of Object.keys(r.chains)) assert.equal(r.chains[id] === t.dev[id].fx, true, k + id + ': the panel\'s state');
     assert.deepEqual(r.powered, k === 'b' ? ['i1'] : ['i1', 'i2']);
@@ -175,7 +177,7 @@ test('1e: the fixture messages are compileGraph + instPatch + chainPatch at the 
     assert.deepEqual(M.map(m => m.t + ':' + (m.i || m.c || '')), ['graph:', ...g.graph.insts.map(x => 'patch:' + x.id), ...g.graph.chains.map(x => 'chain:' + x.id)], k);
     assert.deepEqual(keyless(M[0]), F.GRAPH[k], k);
     assert.equal(M[0].key, g.graph.key);
-    for (const m of M.filter(x => x.t === 'patch')) assert.equal(t.dev[m.i].model === 'serum' ? 'fxr' in m.p && m.p.osCap === 8 : !('fxr' in m.p) && !('fxrT' in m.p), true, k + m.i);
+    for (const m of M.filter(x => x.t === 'patch')) assert.equal(isSxId(t.dev[m.i].model) ? 'fxr' in m.p && m.p.osCap === 8 : !('fxr' in m.p) && !('fxrT' in m.p), true, k + m.i); // ((SX0) the fixture's Serum is a rig)
   }
   // (a2) canonical: the Inst's patch + its chain's rack = today's patch of that track (the legacy {t:'patch', p})
   const t = T.a2, d = t.dev.i1, M = F.MSGS.a2, legacy = patchFor(d.model, d.vals, t.dev.fx1.fx, F.OPTS);
@@ -189,7 +191,7 @@ test('1e: compileGraph of every canonical factory sound = today\'s patch (instPa
       const g = G.compileGraph(x), legacy = patchFor(t.model, t.vals, t.fx, OPTS);
       assert.deepEqual([g.canonical, g.graph.insts.map(i => [i.id, i.on, i.salt]), g.graph.out], [true, [['i1', true, 0]], 'out'], t.preset);
       const P = g.patches.i1, ip = G.instPatch({ model: P.model, vals: P.vals, fx: P.fx }, OPTS);
-      if (t.model === 'serum') {
+      if (isSxId(t.model)) {
         assert.deepEqual([g.graph.chains, g.graph.edges], [[], [['i1', 'out', 1]]]);
         assert.deepEqual(ip, legacy, t.preset);
       } else {
@@ -248,7 +250,7 @@ test('1e: the graph key follows the structure (power, solo, zone, level, cables,
 
 /* host fixes (the stage-1e review round) */
 test('H3: a key zone or transpose on the sounding instrument is not today\'s shape (the graph carries it); the full zone is', () => {
-  const T = v1Tracks(), juno = v2Of(T.find(x => x.model === 'juno60')), sx = v2Of(T.find(x => x.model === 'serum'));
+  const T = v1Tracks(), juno = v2Of(T.find(x => x.model === 'juno60')), sx = v2Of(T.find(x => x.model === RIG.ID));
   assert.deepEqual([G.compileTrack(juno).canonical, G.compileTrack(sx).canonical], [true, true], '(zone 0…127, 0 written out)');
   for (const [t, z] of [[juno, { lo: 60, hi: 127, xp: 0 }], [juno, { lo: 0, hi: 127, xp: 12 }], [sx, { lo: 0, hi: 72, xp: -12 }]]) {
     t.dev.i1.zone = z;
@@ -283,7 +285,7 @@ test('2a fixture (tests/fixtures/mods-2a.mjs): merged matrices, placed / left, t
     // the same rows written into s.matrix (as the Serum's own tiles would) compile identically
     const o = clone(s);
     for (const k of Object.keys(E.rows)) o.matrix[k] = clone(E.rows[k]);
-    assert.deepEqual(p, patchFor('serum', { s: o }, d.fx, OPT), t.id);
+    assert.deepEqual(p, patchFor(RIG.ID, { s: o }, d.fx, OPT), t.id);
     assert.deepEqual(G.validate(t), { ok: true, errors: [] });
     assert.equal(G.compileTrack(t).canonical, true, 'modulator devices and rows keep the canonical shape');
     assert.deepEqual(G.compileGraph(t).graph.insts.map(x => x.id), ['i1'], 'modulators are not instruments');
@@ -342,14 +344,14 @@ test('2b the three-row track (fixture 0): the payload as written — an ext row 
   assert.deepEqual([pay.rows[0].vi, pay.rows[1].vi], [C.vi(G.SCRATCH[0]), C.vi(G.SCRATCH[1])], 'vi: each row its own scratch destination');
   assert.equal([...pay.cp.srcUsed].filter(x => x).length, 1, 'one source evaluated');
   assert.equal(pay.cp.mDst[0], C.vi(G.SCRATCH[0]));
-  assert.deepEqual(G.instPatch(t.dev.i1, PO, [], pay.ext, t).needs, patchFor('serum', t.dev.i1.vals, t.dev.i1.fx, PO).needs, 'the Serum\'s own needs as before');
+  assert.deepEqual(G.instPatch(t.dev.i1, PO, [], pay.ext, t).needs, patchFor(RIG.ID, t.dev.i1.vals, t.dev.i1.fx, PO).needs, 'the Serum\'s own needs as before');
   // the Serum: the ext row injected (src 'ext1'), compiled with the ext flag
   const d = t.dev.i1, inj = G.injectMods(d, G.modRowsFor(t, 'i1'), pay.ext, t);
   assert.deepEqual([inj.placed, inj.left, inj.dashed, inj.inj], [[{ id: 'r1', slot: 0, src: 'ext1' }], [], [], []]);
   assert.deepEqual(inj.s.matrix[0], Object.assign(C.normRow({ src: 'wheel', amt: 0.5, dst: 'f.cutoff' }), { src: 'ext1' }));
   assert.equal(inj.s.p, d.vals.s.p, 'no slot injected: p shared');
   const P = G.instPatch(d, PO, G.modRowsFor(t, 'i1'), pay.ext, t);
-  assert.deepEqual(P, patchFor('serum', { s: inj.s }, d.fx, Object.assign({}, PO, { ext: true })), 'instPatch: the merged state with opts.ext');
+  assert.deepEqual(P, patchFor(RIG.ID, { s: inj.s }, d.fx, Object.assign({}, PO, { ext: true })), 'instPatch: the merged state with opts.ext');
   assert.deepEqual(G.modBudget(t, 'i1', PRJ), { preset: 0, canvas: 1, left: [], why: {}, max: 64, slots: { lfo: [1, 10], env: [0, 4], chaos: [0, 2], macro: [0, 8], vals: [0, 16], ext: [1, 16] } });
   assert.deepEqual(G.modBudget(t, 'i2', PRJ), { preset: 0, canvas: 1, left: [], why: {}, max: 64, slots: { lfo: [1, 10], env: [0, 4], chaos: [0, 2], macro: [0, 8], vals: [0, 16], ext: [1, 16] } });
   assert.deepEqual(G.modBudget(t, 'fx1', PRJ).canvas, 1);
@@ -388,7 +390,7 @@ test('2b every source kind (fixture 1): ext / slot injection / value source / cl
   const P = G.instPatch(d, PO, G.modRowsFor(t, 'i1'), pay.ext, t);
   const used = [...P.serum.mSrc.slice(0, P.serum.mN)];
   assert.ok(used.includes(C.SRC_INDEX.lfo2) && P.serum.lfoMono[1] === 0, 'the Serum evaluates the injected slot per voice');
-  assert.notDeepEqual(P.serumT.parts.lfo1, patchFor('serum', d.vals, d.fx, OPTS).serumT.parts.lfo1, 'the CT part of the injected LFO');
+  assert.notDeepEqual(P.serumT.parts.lfo1, patchFor(RIG.ID, d.vals, d.fx, OPTS).serumT.parts.lfo1, 'the CT part of the injected LFO');
   assert.deepEqual(G.modBudget(t, 'i1', PRJ).slots, { lfo: [2, 10], env: [1, 4], chaos: [1, 2], macro: [1, 8], vals: [1, 16], ext: [2, 16] });
 });
 
@@ -449,7 +451,7 @@ test('2b linked Serum modulators: copied into a ModCore slot once per source; a 
   assert.ok(G.injectMods(d, G.modRowsFor(t, 'i1'), q.ext, t).placed.some(x => x.id === 'r11' && x.src === 'lfo1'));
   // a linked LFO on another Serum's knob: a poly one is injected into that Serum, a mono one travels through ext
   const u = F3.tracks()[0];
-  u.dev.i3 = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() };
+  u.dev.i3 = { kind: 'synth', model: RIG.ID, vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() };
   u.wires.push({ id: 'w4', a: 'i3.out', b: 'out.in' });
   u.mods = [{ id: 'r1', src: 'i1/lfo3.out', dst: 'i3:f.cutoff', amt: 0.3, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }];
   let p = cm(u), j = G.injectMods(u.dev.i3, G.modRowsFor(u, 'i3'), p.ext, u);
@@ -481,7 +483,7 @@ test('2b the content key: stable across Serum / uncabled knob turns, changes wit
 
 test('2b null / empty / identity: no modules and no rows → null; a 2a track (native rows only) → a payload with nothing to evaluate; the 2a fixture compiles as before', () => {
   const T = F2.tracks();
-  assert.equal(G.compileMods({ id: 'x', dev: { i1: { kind: 'synth', model: 'serum', vals: {} } }, mods: [] }, PRJ), null);
+  assert.equal(G.compileMods({ id: 'x', dev: { i1: { kind: 'synth', model: RIG.ID, vals: {} } }, mods: [] }, PRJ), null);
   assert.equal(G.compileMods(null, PRJ), null);
   for (const t of T) {
     const pay = cm(t);
@@ -632,7 +634,7 @@ test('pay.slots: lfo slots 0…9, ENV 2 3 4 1 → 10…13, chaos 14…15; only e
 // a Serum (default state) with a canvas LFO module l1 (PER NOTE) and a Serum track around it, rows added by hand
 function slotTrack(rows, mono = 0) {
   const s = C.normalizeSerum(C.defaultSerum());
-  const t = { id: 'trk_s', name: 'S', notes: [], cc: [], prim: 'i1', nid: 4, dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: C.defaultFx2() }, out: { kind: 'out' } },
+  const t = { id: 'trk_s', name: 'S', notes: [], cc: [], prim: 'i1', nid: 4, dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s }, preset: null, fx: C.defaultFx2() }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [] };
   t.dev.l1 = normModDev({ kind: 'lfo', lfo: { mono, mode: 'retrig' }, rate: 0.3 });
   t.dev.e1 = normModDev({ kind: 'env' });

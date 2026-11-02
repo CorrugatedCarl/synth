@@ -22,6 +22,7 @@ import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import * as gen from '../smpgen.js?v=9';
 import { patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { dspScope } from './dsp-scope.mjs';
 import * as A from '../assets.js?v=9';
 import * as wtstore from '../wtstore.js?v=9';
@@ -56,7 +57,7 @@ const S = dspScope({ sampleRate: SR, engine: true, fast: true, console: quiet })
 // a preset loaded as the app loads it, its patch (main.js buildPatch = patchFor + live fields) and its assets
 async function load(pr) {
   const s = core.applyPreset(core.defaultSerum(), pr), fx = core.applyPresetFx(core.defaultFx(), pr.fx, s);
-  const pt = patchFor('serum', { s }, fx, { sr: SR, bpm: BPM, seed: true }), ids = (pt.needs || []).filter(id => !isWt(id));
+  const pt = patchFor(RIG.ID, { s }, fx, { sr: SR, bpm: BPM, seed: true }), ids = (pt.needs || []).filter(id => !isWt(id));
   const smps = ids.length ? await AM.entries(ids, SR, { s, fx }) : [];
   return { s, fx, pt, ids, smps };
 }

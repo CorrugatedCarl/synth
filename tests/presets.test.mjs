@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { dspScope } from './dsp-scope.mjs';
 import * as A from '../assets.js?v=9';
 import * as wtstore from '../wtstore.js?v=9';
@@ -33,7 +34,7 @@ const AM = A.createAssetManager({ ctxOf: () => null, post: () => false, tracks: 
 const assetsOf = (pt, s, fx) => { const ids = (pt.needs || []).filter(id => !isWt(id)); return ids.length ? AM.entries(ids, SR, { s, fx }) : Promise.resolve([]); };
 // the patch main.js sends for a track (models.js patchFor: model map with the track's FX state + its rack, seeded as
 // after a preset load, + tempo)
-const serumPatch = (s, fx) => patchFor('serum', { s }, fx, { sr: SR, bpm: BPM, seed: true });
+const serumPatch = (s, fx) => patchFor(RIG.ID, { s }, fx, { sr: SR, bpm: BPM, seed: true });
 function plainPatch(id, fx) {
   const m = MODELS.find(x => x.id === id), v = {};
   for (const c of m.controls) v[c.id] = c.def;

@@ -39,6 +39,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as P from '../cv-panel.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { BAR_H } from '../cv-module.js?v=9';
 import { DOT } from '../cv-world.js?v=9';
 import { fresh, all, ptr, fire, key, place as placeEl, raf as rafQ } from './wk-dom.mjs';
@@ -635,7 +636,7 @@ test('render (every authored model): every live models.js id has one .hw-c (or a
 test('usable(): a valid layout, else null (the model keeps its Resizable panel); a token this build cannot draw makes it unusable', () => {
   for (const id of authored) assert.equal(P.usable(id, modelOf(id)), P.layoutOf(id), id);
   for (const id of missing) assert.equal(P.usable(id, modelOf(id)), null, id);
-  assert.equal(P.usable('serum', modelOf('serum')), null);
+  assert.equal(P.usable(RIG.ID, modelOf(RIG.ID)), null);
   assert.equal(P.usable('nope', null), null);
 });
 

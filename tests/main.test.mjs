@@ -11,6 +11,7 @@ import { TB_FX, DX_FX } from './fixtures/panels.mjs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as S from '../song.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
@@ -29,10 +30,10 @@ const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f 
 
 let sim = null;
 async function page() {
-  if (!sim) { sim = await bootMain({ hash: '#serum' }); await sim.power(); await sim.settle(30); sim.raf(); }
+  if (!sim) { sim = await bootMain({ hash: '#' + RIG.ID }); await sim.power(); await sim.settle(30); sim.raf(); }
   return sim;
 }
-const sxTrack = s => s.api.project().tracks.find(t => I(t).model === 'serum');
+const sxTrack = s => s.api.project().tracks.find(t => I(t).model === RIG.ID);
 // one edit of the panel (host.edit), the animation frame that posts it, and the messages it posted to the track's node
 async function editFrame(s, t, fn, label = 'Edit') {
   const node = s.nodeOf(t.id);
@@ -97,8 +98,8 @@ test('§4.1/§4.4/§12.6: CT and seqT travel by part — one drag frame of an LF
 
 test('§12.6/§13.10: prefsChanged recompiles every Serum track (MPE preferences reach CP); other tracks only for rack preferences', async () => {
   const s = await page(), api = s.api;
-  if (!api.project().tracks.some(t => I(t).model !== 'serum')) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
-  const tracks = api.project().tracks, sx = tracks.filter(t => I(t).model === 'serum'), other = tracks.filter(t => I(t).model !== 'serum');
+  if (!api.project().tracks.some(t => I(t).model !== RIG.ID)) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
+  const tracks = api.project().tracks, sx = tracks.filter(t => I(t).model === RIG.ID), other = tracks.filter(t => I(t).model !== RIG.ID);
   s.raf(); await s.settle(5);
   for (const t of tracks) s.nodeOf(t.id).posted.length = 0;
   api.store.set('synth.sx.prefs', Object.assign({}, api.store.get('synth.sx.prefs', {}), { mpeBendX: 1, mpeYBi: 1 }));
@@ -190,7 +191,7 @@ test('§13.2.5: render-last — the recorded input group renders exactly as a bo
   api.noteOff(60, 0, T0 + 500); api.noteOff(64, 0, T0 + 750);
   const g = api.lastIn.get(t.id);
   assert.deepEqual(g.notes.map(x => [x.n, x.on, x.off]), [[60, 0, 0.5], [64, 0.25, 0.75]]);
-  await assert.rejects(api.renderLast(api.project().tracks.find(x => I(x).model !== 'serum') || { model: 'minimoog' }, {}));
+  await assert.rejects(api.renderLast(api.project().tracks.find(x => I(x).model !== RIG.ID) || { model: 'minimoog' }, {}));
   const r = await api.renderLast(t, {});
   assert.match(r.name, /^.+ C4\.wav$/, 'named after the preset and the lowest note (C4 = 60)');
   const RL = { L: s.lastOffline.L, R: s.lastOffline.R, sr: s.lastOffline.ctx.sampleRate };
@@ -238,51 +239,27 @@ test('§14.3: the CPU safeguard — Serum oversampling cap, then quality steps Q
   assert.deepEqual(api.caps(), { sxCap: 8, qrStep: 0 });
 });
 
-test('§12.6: MIDI through midi.js — an MPE track gets channelled notes and CC10 as Expression X; others the Phase-1 messages', async () => {
-  const s = await page(), api = s.api, t = sxTrack(s), node = s.nodeOf(t.id);
-  api.selectTrack(t.id);
-  I(t).vals.s.global.mpe.on = 1;
-  node.posted.length = 0;
-  api.midi.message([0x91, 62, 100], 1);          // note-on, channel 2
-  api.midi.message([0xb1, 10, 127], 2);           // CC10 on member channel 2
-  api.midi.message([0xe1, 0, 96], 3);             // pitch bend on channel 2
-  api.midi.message([0x81, 62, 64], 4);            // note-off with release velocity
-  const m = node.posted.map(x => x.m);
-  assert.deepEqual(m.find(x => x.t === 'on'), { t: 'on', n: 62, v: 100 / 127, ch: 2 });
-  assert.deepEqual(m.find(x => x.t === 'mpe' && x.k === 'x'), { t: 'mpe', ch: 2, k: 'x', v: 1 });
-  assert.ok(m.some(x => x.t === 'mpe' && x.k === 'b'));
-  assert.deepEqual(m.find(x => x.t === 'off'), { t: 'off', n: 62, rv: 64 / 127, ch: 2 });
-  I(t).vals.s.global.mpe.on = 0;
-  node.posted.length = 0;
-  api.midi.message([0x91, 62, 100], 5);
-  assert.deepEqual(node.posted.map(x => x.m).find(x => x.t === 'on'), { t: 'on', n: 62, v: 100 / 127 }, 'MPE off: Phase-1 message');
-  api.midi.message([0x81, 62, 0], 6);
-});
-
-test('RULINGS2 fix 2: a held MIDI key keeps the channel of its note-on — switching MPE (or a preset with another MPE setting) while it is down still releases its voice', async () => {
-  // a fresh Serum track (the shared one carries earlier tests' edits)
-  const s = await page(), api = s.api, t = api.addTrack(MODELS.find(m => m.id === 'serum'));
+// (SX0, IMPL-SX0 §6.1 / §15 P1-5) "§12.6: an MPE track gets channelled notes and CC10 as Expression X" and "RULINGS2 fix 2: a held MIDI key
+// keeps the channel of its note-on while MPE switches" are removed: MPE input on canvas leaves with Serum complete (§11.3) — midi.js
+// (byte-identical, IMPL-B) routes MPE to main's 'serum' alone, which no canvas device holds; midi.test keeps midi.js's own MPE cases. What
+// §12.6 still means without it is re-pointed: a rig track gets the Phase-1 messages — with its state's MPE switch off, and (Q2, by design)
+// on too: a former Serum with MPE on plays as a normal keyboard
+test('§12.6 (SX0, Q2): MIDI through midi.js — a rig track gets the Phase-1 messages, its state\'s MPE switch off or on (no channel, no Expression X)', async () => {
+  const s = await page(), api = s.api, t = api.addTrack(MODELS.find(m => m.id === RIG.ID));
   s.raf(); await s.settle(10); s.raf();
   const node = s.nodeOf(t.id);
   api.selectTrack(t.id); s.raf(); await s.settle(5);
-  const gated = () => JSON.stringify(Array.from(node.proc.voices).filter(v => v.gate).map(v => [v.note, v.ch | 0]));
-  for (const [mpe0, mpe1] of [[1, 0], [0, 1]]) {
-    api.sxHost(t).edit(st => { st.global.mpe.on = mpe0; }, { label: 'mpe' }); s.raf(); await s.settle(5); s.run(4096);
+  for (const on of [0, 1]) {
+    I(t).vals.s.global.mpe.on = on;
     node.posted.length = 0;
-    api.midi.message([0x92, 62, 100], 1);                        // note-on on channel 3
-    s.run(4096);
-    const on = node.posted.map(x => x.m).find(x => x.t === 'on');
-    assert.equal(on.ch, mpe0 ? 3 : undefined, 'the note-on carries the channel only on an MPE track');
-    assert.equal(gated(), JSON.stringify([[62, mpe0 ? 3 : 0]]));
-    api.sxHost(t).edit(st => { st.global.mpe.on = mpe1; }, { label: 'mpe' }); s.raf(); await s.settle(5); s.run(4096);
-    node.posted.length = 0;
-    api.midi.message([0x82, 62, 64], 2);                         // its note-off, after the switch
-    const off = node.posted.map(x => x.m).find(x => x.t === 'off');
-    assert.equal(off.ch, on.ch, `MPE ${mpe0} → ${mpe1}: the note-off carries the note-on's channel`);
-    s.run(4096);
-    assert.equal(gated(), '[]', `MPE ${mpe0} → ${mpe1}: the voice is released`);
-    node.proc.msg({ t: 'panic' }); s.run(48000);
+    api.midi.message([0x91, 62, 100], 5);          // note-on, channel 2
+    api.midi.message([0xb1, 10, 127], 6);           // CC10 on channel 2
+    api.midi.message([0x81, 62, 0], 7);             // its note-off
+    const m = node.posted.map(x => x.m), off = m.find(x => x.t === 'off');
+    assert.deepEqual(m.find(x => x.t === 'on'), { t: 'on', n: 62, v: 100 / 127 }, 'MPE ' + on + ': Phase-1 message');
+    assert.deepEqual([m.some(x => x.t === 'mpe'), !!off, off && 'ch' in off], [false, true, false], 'MPE ' + on + ': no Expression X, the note-off without a channel');
   }
+  I(t).vals.s.global.mpe.on = 0;
   api.deleteTrack(t); s.raf(); await s.settle(5);
 });
 
@@ -415,7 +392,7 @@ test('§14.3 Q4: POLY ≤ 8 reaches CP.poly too (Active Voices scale, snapshot) 
 
 test('§12.6 storage: pagehide / beforeunload / hidden start the IndexedDB write in the handler\'s own task', async () => {
   const idb = fakeIDB(), ls = fakeStorage({});
-  const s2 = await bootMain({ ls, idb, hash: '#serum' });
+  const s2 = await bootMain({ ls, idb, hash: '#' + RIG.ID });
   const api = s2.api;
   assert.equal(api.store.mode, 'idb');
   api.save(); await api.store.flush();
@@ -467,7 +444,7 @@ test('§13.5 Delay spectrum overlay: the FX hosts post {t: "fxtap", id} to the t
 
 // (boots its own page: after the tests that share page(), as the storage tests do)
 test('page simulation: with a fixed sample rate (synth.settings.sr) sim.ctx() is the context main.js plays through, not the closed device-rate probe', async () => {
-  const s2 = await bootMain({ hash: '#serum', ls: fakeStorage({ 'synthc.settings': JSON.stringify({ sr: 48000 }) }) });
+  const s2 = await bootMain({ hash: '#' + RIG.ID, ls: fakeStorage({ 'synthc.settings': JSON.stringify({ sr: 48000 }) }) });
   await s2.power(); await s2.settle(30); s2.raf();
   assert.equal(s2.live.length, 2, 'the page context and the probe that learns the device rate');
   assert.equal(s2.live[1].state, 'closed');
@@ -798,7 +775,7 @@ test('R6: the instrument menu and the track tab name each track\'s voice mode; a
   assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Mono`);
   const menu = menuOf(s, t);
   for (const e of ['minimoog=Minimoog · Mono', 'tb303=TB-303 · Mono', 'prophet5=Prophet-5 · Poly 5', 'juno60=Juno-60 · Poly 6', 'jupiter8=Jupiter-8 · Poly 8',
-    'dx7=DX7 · Poly 16', 'solina=Solina · Poly', 'serum=Serum · Poly 8']) assert.ok(menu.includes(e), e + ' in ' + menu.join(' | '));
+    'dx7=DX7 · Poly 16', 'solina=Solina · Poly', RIG.ID + '=' + RIG.NAME + ' · Poly 8']) assert.ok(menu.includes(e), e + ' in ' + menu.join(' | '));
   // a legato / glide line (overlapping notes that start apart) asks nothing
   host.edit('Draw', () => t.notes.push(noteAt('l1', 0, 48, 600), noteAt('l2', 480, 50, 600), noteAt('l3', 960, 52, 600)));
   assert.equal(note().hidden, true, 'no notice for a legato line');
@@ -827,13 +804,13 @@ test('R6: the instrument menu and the track tab name each track\'s voice mode; a
   host.edit('Draw', () => { for (let k = 0; k < 8; k++) j.notes.push(noteAt('k' + k, 1920, 60 + 2 * k)); });
   assert.equal(note().textContent, `“${j.name}” has 6 voices — a chord of 8 notes drops some. Tap to switch it to the Jupiter-8 (8 voices; Undo restores it)`);
   // a mono Serum patch: the tap opens its instrument (the voicing lives in its panel) instead of replacing the sound
-  const x = api.addTrack(modelOf('serum'));
+  const x = api.addTrack(modelOf(RIG.ID));
   I(x).vals.s.voicing.mono = 1; // (as the panel's Voicing › Mono sets it)
   host.edit('Draw', () => x.notes.push(noteAt('x1', 0, 60), noteAt('x2', 0, 63)));
   assert.equal(note().textContent, `“${x.name}” is monophonic — its chords play one note. Tap to open its instrument`);
   note().onclick();
   assert.equal(api.project().selTrack, x.id, 'its track selected');
-  assert.equal(I(x).model, 'serum', 'the sound is kept');
+  assert.equal(I(x).model, RIG.ID, 'the sound is kept');
   assert.equal(s.$('#tab-inst').hidden, false, 'the CANVAS view (and the Sources tray to replace it)');
 });
 
@@ -857,7 +834,7 @@ test('R7: Piano Roll previews post aud (B5); the song is sent sorted mid-gesture
   assert.deepEqual(node.posted.filter(x => x.m.t === 'transport').map(x => [x.m.seek, x.m.fresh]), [[true, true], [true, undefined]]);
   s.$('#tPlay').click();
   // R7 cap display: a Serum track at POLY 16 through Q4 (≤ 8) and Q6 (≤ 4), then a Quality choice
-  const x = api.addTrack(modelOf('serum'));
+  const x = api.addTrack(modelOf(RIG.ID));
   I(x).vals.s.voicing.poly = 16;
   api.queuePatch(x); s.raf();
   assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 16`);
@@ -865,7 +842,7 @@ test('R7: Piano Roll previews post aud (B5); the song is sent sorted mid-gesture
   for (let k = 0; k < 8 && api.caps().qrStep < 4; k++) lower();
   assert.equal(api.caps().qrStep, 4);
   assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 8 (CPU cap)`, 'the track tab');
-  assert.ok(menuOf(s, x).includes('serum=Serum · Poly 8 (CPU cap)'), 'its instrument menu');
+  assert.ok(menuOf(s, x).includes(RIG.ID + '=' + RIG.NAME + ' · Poly 8 (CPU cap)'), 'its instrument menu');
   assert.match(s.$('#rate').textContent, / · quality step Q4, polyphony ≤ 8 \(CPU cap\)/);
   lower(); lower();
   assert.equal(api.caps().qrStep, 6);
@@ -1024,9 +1001,9 @@ test('R7 B5: a Piano Roll preview\'s note-off goes to the track its note-on went
 });
 
 test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable (unselected, unarmed) and is recorded only into the armed targets; at / bend stay per track; canvas rows reach the patch, halos, the badge', async () => {
-  const s = await bootMain({ hash: '#serum' });
+  const s = await bootMain({ hash: '#' + RIG.ID });
   await s.power(); await s.settle(5); s.raf();
-  const api = s.api, proj = api.project(), T = api.transport(), a = proj.tracks[0], b = api.addTrack(modelOf('serum'));
+  const api = s.api, proj = api.project(), T = api.transport(), a = proj.tracks[0], b = api.addTrack(modelOf(RIG.ID));
   api.selectTrack(a.id);
   a.arm = true;
   await s.settle(2);
@@ -1086,13 +1063,14 @@ test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable 
   assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel'), b.mods], [[0.1], [], []]);
 });
 
-test('milestone 3 lane D (WC: a rig, the parts view\'s instrument): a rig in parts view compiles as the Serum holding its state (W2; the view is lay only, N2); a canvas cable edit writes exactly the fields sx-edges names (one History step, its patch posted) and its undo writes them back; a track-level meters subscription names no part', async () => {
-  const s = await bootMain({ hash: '#serum' }), api = s.api, cv = globalThis.__synthTest.cv, t = sxTrack(s), d = t.dev.i1, SE = await import('../sx-edges.js?v=9'); // (its own boot: cv is the latest boot's hook)
+// ((SX0) the W2 leg — a rig holding S compiles as the Serum holding S — left with the bundled model: rig-sound W2 and sx0-model pin the rig
+// against ref-SX0's frozen Serum patches; this case boots the rig and keeps N2 (the parts flag is lay only) and the cable edit)
+test('milestone 3 lane D (WC: a rig, the parts view\'s instrument): a rig\'s patch is the same with the parts flag in its lay (the view is lay only, N2); a canvas cable edit writes exactly the fields sx-edges names (one History step, its patch posted) and its undo writes them back; a track-level meters subscription names no part', async () => {
+  const s = await bootMain({ hash: '#' + RIG.ID }), api = s.api, cv = globalThis.__synthTest.cv, t = api.project().tracks.find(x => I(x).model === RIG.ID), d = t.dev.i1, SE = await import('../sx-edges.js?v=9'); // (its own boot: cv is the latest boot's hook)
   await s.power(); s.raf();
   const p0 = JSON.stringify(api.buildPatch(t)), s0 = JSON.stringify(d.vals.s);
-  d.model = 'rig'; // ((WC, IMPL-WC §6) the parts view is the rig's: a Serum with the flag stays the whole panel) the same state under the rig's model
   t.lay = Object.assign({}, t.lay || {}, { i1: Object.assign({}, (t.lay || {}).i1 || { x: 0, y: 0 }, { ui: 'parts' }) });
-  assert.equal(JSON.stringify(api.buildPatch(t)), p0, 'a rig in parts view: the same patch as the Serum\'s (W2)');
+  assert.equal(JSON.stringify(api.buildPatch(t)), p0, 'the parts flag: the same patch (N2)');
   const RC = await import('../rig-core.js?v=9'), want = JSON.parse(s0), E = RC.plug(want, d.fx, 'oscB.out', 'filter2.in'); // ((WC, lane H) rig-core's plug: the rig's rules (≡ sx-edges setEdge here)
   assert.equal(E.f.length > 0, true);
   RC.apply(want, E.f); void SE;
@@ -1103,7 +1081,7 @@ test('milestone 3 lane D (WC: a rig, the parts view\'s instrument): a rig in par
   assert.deepEqual([cv.hist.u.length, cv.hist.undoLabel, JSON.stringify(d.vals.s) === JSON.stringify(want)], [n0 + 1, 'Plug Oscillator 2 · OUT → Filter 2 · IN', true], 'the fields rig-core names, and nothing else');
   assert.equal(node.posted.some(x => x.m.t === 'patch' || x.m.t === 'ct'), true, 'its patch posted');
   cv.undo(); s.raf();
-  const back = s.api.project().tracks.find(x => I(x).model === 'rig').dev.i1.vals.s; // (sxTrack finds the Serum: this track is the rig now)
+  const back = s.api.project().tracks.find(x => I(x).model === RIG.ID).dev.i1.vals.s;
   assert.equal(JSON.stringify(back), s0, 'undo: the fields written back');
   assert.deepEqual(api.partsOf(t, api.nodes.get(t.id), null, 'none'), [], 'role none: the \'mods\' id alone');
 });
@@ -1365,7 +1343,7 @@ test('P: the top bar\'s Panic (#tPanic) — in the transport row, aria-labelled,
 /* ================================================================ IMPL-FR (stage FR, Cut A: lane H-A) */
 const WK = await import('../wk.js?v=9'); // the kit instance main.js imports: its frame clock
 test('IMPL-FR §3 A1 / §10.1: the frame loop is two clock clients (the stall meter on every rAF, frameTick essential at the global cap); __synthTest.fps; the frame\'s heard frame shared (one getOutputTimestamp a frame, the hosts\' heardFrame / heardTick); the head meters memoised, falling 0.88 per 16.667 ms in time, written on change; the transport text written on change', async () => {
-  const s = await bootMain({ clock: 'std', outLat: 0.03, baseLat: 0.01, hash: '#serum' });
+  const s = await bootMain({ clock: 'std', outLat: 0.03, baseLat: 0.01, hash: '#' + RIG.ID });
   const FPS = globalThis.__synthTest.fps;
   await s.power(); await s.settle(5); s.advance(20); s.raf();
   const api = s.api, c = s.ctx(), proj = api.project(), tr = proj.tracks[0], H = api.sxHost(tr);
@@ -1417,7 +1395,7 @@ test('IMPL-FR §3 A1 / §10.1: the frame loop is two clock clients (the stall me
   } finally { WK.clock.config({ display: 60 }); doc.querySelector = q0; }
 });
 test('IMPL-FR review 2 (P2-2): the header\'s "DSP load …" (#cpu) is written only when its text changes, and the percentage holds within 1.5 points of the one shown — a load jittering ±1 % across a rounding edge never rewrites it (each write re-laid the page out: 4 a second idle)', async () => {
-  const s = await bootMain({ clock: 'std', hash: '#serum' });
+  const s = await bootMain({ clock: 'std', hash: '#' + RIG.ID });
   await s.power(); await s.settle(5); s.run(48000); s.raf();
   const tr = s.api.project().tracks[0], N = s.nodeOf(tr.id), M = s.ctx().nodes.find(n => n.name === 'synth-master'), r0 = N.got.filter(m => m.t === 'stats').at(-1);
   assert.ok(r0 && M, 'a track report to copy, MASTER');
@@ -1439,4 +1417,42 @@ test('IMPL-FR review 2 (P2-2): the header\'s "DSP load …" (#cpu) is written on
   assert.deepEqual([pct(), writes, / — lower oversampling$/.test(txt), el.classList.contains('warn')], ['80', 3, true, true], 'above 75 %: one write with the advice');
   feed(0.79); feed(0.81);
   assert.deepEqual([pct(), writes], ['80', 3]);
+});
+
+// (SX0, IMPL-SX0 §3, §15 P2-9, G3) the guard: an instrument id with no MODELS entry — main's 'serum' among them, now the bundled model left
+// canvas — is refused by setTrackModel, addTrack (an id, or an object of no model), the tray's tap and drop and the add hook: nothing changes,
+// no step (modelById read an unknown id as MODELS[1] while cv-model setModel stored it on the device); '#serum' boots the default model
+test('(SX0 G3) an unknown model id is refused everywhere a model comes in — setTrackModel, addTrack, the tray\'s tap and drop, the add hook: the project unchanged, no step; #serum boots the default', async () => {
+  const s = await bootMain({ hash: '#serum' }), api = s.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell;
+  const P = () => api.project(), T = () => P().tracks.find(x => x.id === P().selTrack), json = () => JSON.stringify(P());
+  assert.equal(I(T()).model, 'minimoog', 'a hash of no model: the default');
+  const j0 = json(), n0 = cv.hist.u.length;
+  assert.deepEqual([api.setTrackModel(T(), 'serum'), api.setTrackModel(T(), 'nope'), api.addTrack('serum'), api.addTrack({ id: 'serum', name: 'Serum' })], [null, null, null, null]);
+  sh.srcPick('serum', 'replace'); sh.srcPick('serum', 'track');
+  assert.deepEqual([sh.srcDrag.drop('serum', { over: 'canvas' }), sh.srcDrag.drop('serum', { over: 'tracks' }), cv.add('serum', null)], [false, false, null]);
+  assert.deepEqual([json() === j0, cv.hist.u.length, I(T()).model, P().tracks.length], [true, n0, 'minimoog', 1]);
+  // a known id still goes in (the guard is the id's, nothing else)
+  api.setTrackModel(T(), RIG.ID);
+  assert.deepEqual([I(T()).model, cv.hist.u.length], [RIG.ID, n0 + 1]);
+});
+
+// (SX0 D2, IMPL-SX0 §5, G4) the files a preset leaves in carry no Serum word: one preset '<name>.preset.json', a pack '<name>.preset-pack.json',
+// render-last's Shift (the current preset) '<name>.preset.json' — their contents' type ids ('synth.serum.preset' / '.pack') are identifiers and
+// stay, so an old file and a new one import alike (sxImport reads the type, never the name)
+test('(SX0 D2) preset export file names: .preset.json, .preset-pack.json, render-last Shift .preset.json — the type ids kept', async () => {
+  const s = await bootMain({ hash: '#' + RIG.ID }), api = s.api, P = () => api.project(), t = P().tracks.find(x => x.id === P().selTrack);
+  const got = [], body = globalThis.document.body, ap = body.append;
+  body.append = (...n) => { for (const x of n) if (x && typeof x.download === 'string' && x.download) got.push(x.download); return ap.apply(body, n); };
+  const blobs = [], real = URL.createObjectURL;
+  URL.createObjectURL = b => { blobs.push(b); return 'blob:sim/' + blobs.length; };
+  try {
+    assert.ok(api.sxSave(t, 'Exp One', 'User'));
+    const H = api.sxHost(t);
+    H.presets.exportFile('u:Exp One'); await s.settle(5);
+    H.presets.exportPack(['u:Exp One', H.presets.list().find(p => !p.user).key]); await s.settle(5);
+    await api.renderLast(t, { shift: true }); await s.settle(2);
+  } finally { body.append = ap; URL.createObjectURL = real; }
+  assert.deepEqual(got, ['exp-one.preset.json', 'preset-pack.preset-pack.json', 'exp-one.preset.json']);
+  const types = await Promise.all(blobs.slice(0, 3).map(b => b.text().then(x => JSON.parse(x).type)));
+  assert.deepEqual(types, ['synth.serum.preset', 'synth.serum.pack', 'synth.serum.preset']);
 });

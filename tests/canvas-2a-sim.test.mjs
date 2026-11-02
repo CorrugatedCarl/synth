@@ -14,10 +14,10 @@ import { fakeStorage } from './fakes.mjs';
 import * as CG from '../cv-graph.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as core from '../serum-core.js?v=9';
-import { dropRow } from '../serum-ui.js?v=9';
+import { dropRow } from '../sx-host.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { cpOf } from './fixtures/mods-2a.mjs';
-import { RIG as RIGW } from '../rig-core.js?v=9'; // ((WC) the display name: the Serum's ⋯ offers Make it a <NAME>)
+import { RIG as RIGW } from '../rig-core.js?v=9'; // ((WC) the display name; (SX0) the boot instrument and every fresh one are rigs (the bundled model left canvas)
 const RIGN = RIGW.NAME;
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
@@ -41,7 +41,7 @@ function scriptedWorld(root) {
   return W;
 }
 
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIGW.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, W = cv.world(), M = cv.mod;
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
@@ -52,7 +52,7 @@ const keys = () => [...V().modules.keys()].sort().join(',');
 const note = () => sim.$('#notice').textContent;
 const tiles = () => sh.shell.tiles;
 const MOD = id => MODELS.find(m => m.id === id);
-const fresh = (id = 'serum') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; };
+const fresh = (id = RIGW.ID) => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; };
 const patches = t => sim.nodeOf(t.id).posted.map(x => x.m).filter(m => m.t === 'patch');
 const lastCP = t => { const L = patches(t); return L.length ? cpOf(L[L.length - 1].p) : null; };
 const rows = (t = T()) => (t.mods || []).map(r => r.id + ':' + r.src + '>' + r.dst).join(',');
@@ -60,6 +60,9 @@ const modCables = () => V().cables.list().filter(c => c.kind === 'mod').map(c =>
 const badge = k => { const m = V().modules.get(k); return m ? (m.bar.children.find(c => /cv-badge/.test(c.className || '')) || {}).textContent || '' : null; };
 const withConfirm = (ans, fn) => { const was = globalThis.confirm, asked = []; globalThis.confirm = m => { asked.push(String(m)); return ans; }; try { fn(); } finally { globalThis.confirm = was; } return asked; };
 const ID = {};
+// ((SX0) the boot's instrument is a rig: its modules stand on the canvas — the starter's Oscillator 1 → Filter → the Amplifier (i1) with
+// Envelope 1, its own FX — where the Serum stood whole (a rig is always its modules, IMPL-WC §2.1): every keys() pin carries them, by design
+const RIGK = 'i1,i1/env1,i1/filter,i1/fx,i1/oscA,out';
 // (IMPL-FR §1.6) one frame drawn now: main.js's frameTick (the playing lanes on the modulator bodies) is a client of the frame
 // clock at the display's rate, and a round less than a period after the last is skipped — the clock's gate off for that round
 const WK = await import('../wk.js?v=9');
@@ -68,22 +71,23 @@ const frameNow = () => { WK.clock.config({ gate: false }); try { sim.raf(); } fi
 test('a Velocity tile dropped on the canvas adds the module where it lands (one History step, the notice undoes it); its tile greys out; a tap adds it left of the instrument', () => {
   const t = T(), n0 = hsteps();
   ID.a = t.id;
-  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], ['i1,i1/fx,out', 10, null]); // (2b: the ten kinds)
-  // (2026-10-19) the Modulators live in the Sources tray's Serum view (Hardware / Simple: the classic synths only)
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], [RIGK, 10, null]); // (2b: the ten kinds)
+  // (2026-10-19) the Modulators live in the Sources tray's Modulators view ((MOD1 §5) their own; (SX0) the Serum view that held them too is
+  // gone) — Hardware / Simple: the classic synths only
   assert.deepEqual([tiles().view(), sim.$('#srcModSec').hidden], ['hw', true]);
-  tiles().setView('serum');
+  tiles().setView('mods');
   assert.deepEqual([sim.$('#srcModSec').hidden, tiles().modTiles().filter(b => b.hidden).length], [false, 0]);
   assert.equal(M.drag.drop('velo', { over: 'canvas', x: 200, y: 400, at: { x: -600, y: 300 } }), true); sim.raf();
-  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], ['i1,i1/fx,out,ve', n0 + 1, 'Add Velocity', 'Added Velocity · tap to undo']);
+  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], [RIGK + ',ve', n0 + 1, 'Add Velocity', 'Added Velocity · tap to undo']);
   assert.deepEqual([t.dev.ve.kind, t.lay.ve.x, t.lay.ve.y], ['velo', -704, 192], 'centred on the drop point, on the dots');
   assert.equal(tiles().placed('velo'), 'already on this track');
   assert.equal(!!api.nodes.get(t.id).graphed, false, 'still a canonical track');
   assert.equal(V().modules.get('ve').kind, 'mod');
   assert.ok(M.bodies.get('ve'), 'its body: the velocity meter');
   sim.$('#notice').onclick(); sim.raf();
-  assert.deepEqual([keys(), hsteps(), 've' in T().dev, tiles().placed('velo')], ['i1,i1/fx,out', n0, false, null], 'the notice undid it');
+  assert.deepEqual([keys(), hsteps(), 've' in T().dev, tiles().placed('velo')], [RIGK, n0, false, null], 'the notice undid it');
   tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
-  assert.deepEqual([keys(), hsteps(), T().lay.ve.x, cv.hist.undoLabel], ['i1,i1/fx,out,ve', n0 + 1, -320, 'Add Velocity'], 'a tap: Tidy\'s column, left of the instrument');
+  assert.deepEqual([keys(), hsteps(), T().lay.ve.x, cv.hist.undoLabel], [RIGK + ',ve', n0 + 1, -320, 'Add Velocity'], 'a tap: Tidy\'s column, left of the instrument');
   tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
   assert.equal(hsteps(), n0 + 1, 'a placed tile adds nothing');
   // its readout: the last velocity of the track
@@ -94,16 +98,18 @@ test('a Velocity tile dropped on the canvas adds the module where it lands (one 
 test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"), it shows on another track\'s view and greys its tile there; Velocity stays per track', () => {
   const n0 = hsteps();
   tiles().modTile('wheel').dispatchEvent({ type: 'click' }); sim.raf();
-  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note(), P().perf.wheel ? 1 : 0], ['i1,i1/fx,out,ve,wheel', n0 + 1, 'Place Mod Wheel', 'Added Mod Wheel · tap to undo', 1]);
+  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note(), P().perf.wheel ? 1 : 0], [RIGK + ',ve,wheel', n0 + 1, 'Place Mod Wheel', 'Added Mod Wheel · tap to undo', 1]);
   assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -320]); // ((MOD1 §4.3) the wheel's face: 224 wide (MOD1 review: 3 columns) → modX −320
-  const b = fresh('serum');
+  const b = fresh(RIGW.ID);
   ID.b = b.id;
   assert.equal(T().id, b.id);
-  assert.deepEqual([keys(), tiles().placed('wheel'), tiles().placed('velo')], ['i1,i1/fx,out,wheel', 'already in this project', null], 'the wheel on the other track; Velocity free there');
+  assert.deepEqual([keys(), tiles().placed('wheel'), tiles().placed('velo')], [RIGK + ',wheel', 'already in this project', null], 'the wheel on the other track; Velocity free there');
   assert.equal(V().modules.get('wheel').kind, 'mod');
   assert.ok(M.bodies.get('wheel'), 'the wheel body');
   assert.deepEqual(cv.menu('wheel').filter(x => !x.sep).map(x => x.label), ['Delete', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
-  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Make it a ' + RIGN, 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((WC §3.5, lane H) + Make it a <NAME> (Q4 (a)) // ((WC, IMPL-WC §6) no Show parts / Bundle on a Serum: it is the whole panel)
+  // ((SX0) a rig's ⋯ (the Amplifier's, IMPL-WC §8.2): About, Replace with…, Init, Modulation list… — its panel's own items (Preferences…, Info…)
+  // join once its face mounts, which this sim never loads; no Show parts / Bundle / Make it a <NAME> (the Serum's, gone with it))
+  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the ' + RIGN + '…', 'Replace with…', 'Init', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
 });
 
 test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mods destOk; release → one step, a track.mods row, the cable selected; the posted patch\'s matrix equals the same row written by the Serum\'s own addMod', () => {
@@ -165,7 +171,9 @@ test('a preset load keeps every canvas cable (re-injected) and re-derives the pr
   const inj = CG.injectMods(T().dev.i1, T().mods);
   assert.deepEqual([inj.placed.map(x => x.id), inj.left], [['r1'], []], 'injected into the new preset');
   const pre = CMOD.presetRows(T().dev.i1).filter(r => r.src === 'wheel').map(r => 'p:i1:' + r.slot + ':wheel.out>i1:' + r.dst + ':preset');
-  assert.equal(modCables(), ['r1:wheel.out>i1:f.cutoff', ...pre].sort().join(','), 'the preset\'s wheel rows drawn as preset cables');
+  // ((SX0) a rig also draws its own sources' rows from its modules — the 'o:' cables (canvas-3-sim's own-sources case pins them); a Serum's
+  // stayed inside its panel: the canvas and preset cables are the wheel's as before)
+  assert.equal(modCables().split(',').filter(x => !x.startsWith('o:')).join(','), ['r1:wheel.out>i1:f.cutoff', ...pre].sort().join(','), 'the preset\'s wheel rows drawn as preset cables');
 });
 
 test('the live wheel (the canvas module, the perf tray, ctl) reaches the cabled, unselected, unarmed track; it is recorded only into the armed targets; playback shows the lane on the module', async () => {
@@ -278,7 +286,7 @@ test('the Mod list: every row by Serum with its budget n/64 (as the badge and th
   assert.equal(badge('i1'), 'mods ' + (b.preset + b.canvas) + '/64', 'the badge agrees');
   const lines = walk(sheet, c => /\bcv-ml-line\b/.test(c.className || '')).map(c => c.attrs['data-row'] || 'slot' + c.attrs['data-slot']);
   assert.equal(lines[0], 'r2', 'the canvas row first, then the preset rows');
-  assert.equal(lines.length, 1 + CMOD.presetRows(t.dev.i1).length);
+  assert.equal(lines.length, 1 + cv.parts.presetRows('i1').length); // ((SX0) a rig's every matrix row — its own sources' too, main.js modPresetRows: the parts rule; a Serum's were CMOD.presetRows, the canvas sources' alone)
   sim.key('Escape', true, { key: 'Escape' });
   assert.equal(M.layer().isOpen(), false);
 });
@@ -446,17 +454,17 @@ test('H4: replacing a Serum that has cables with a classic synth says the cables
   wheelOn();
   pick(fresh());
   M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
-  const r0 = rows(), TXT = '2 modulation cables to the Serum removed: the new model has no such knobs'; // (2b: rows whose param id survives would stay)
+  const r0 = rows(), TXT = '2 modulation cables to the ' + RIGN + ' removed: the new model has no such knobs'; // (2b: rows whose param id survives would stay; (SX0) the device's name: a rig's)
   assert.equal(r0.split(',').length, 2);
   cv.drop('minimoog', null); sim.raf();
   assert.deepEqual([I(T()).model, rows()], ['minimoog', '']);
   assert.ok(note().includes(TXT), note());
   cv.undo(); sim.raf();
-  assert.deepEqual([I(T()).model, rows()], ['serum', r0]);
+  assert.deepEqual([I(T()).model, rows()], [RIGW.ID, r0]);
   cv.setTrackModel(T(), 'juno60'); sim.raf();
   assert.deepEqual([I(T()).model, rows(), note()], ['juno60', '', TXT]);
   cv.undo(); sim.raf();
-  assert.deepEqual([I(T()).model, rows()], ['serum', r0]);
+  assert.deepEqual([I(T()).model, rows()], [RIGW.ID, r0]);
 });
 
 test('H8: a preset of 64 rows loaded over a canvas cable — the badge says "1 not compiled" as the Mod list and the compile do; the load says so', () => {
@@ -515,7 +523,7 @@ test('(2b) H9: a panel\'s knob (the effects a classic synth feeds) connects — 
 // UI fixes
 const U = globalThis.__synthTest.modUI;
 test('(U8, U9) a tapped modulator: Tidy\'s column at x −320, in its MOD_ORDER slot when nothing stands there (else below the column); off screen, the camera brings it in (focusItem, no edit)', () => {
-  const c = fresh('serum'), foc = [], f0 = W.focusItem;
+  const c = fresh(RIGW.ID), foc = [], f0 = W.focusItem;
   ID.c = c.id;
   W.focusItem = (id, o) => foc.push(id + ' ' + JSON.stringify(o));
   try {
@@ -537,7 +545,9 @@ test('(U8, U9) a tapped modulator: Tidy\'s column at x −320, in its MOD_ORDER 
 });
 const cvTidyX = () => { cv.tidy(); sim.raf(); return T().lay.ve.x; };
 
+// ((SX0) a rig draws its own rows as cords: H8's 64-row preset already said the 24+ hint this session — the flag reset here, the case as it was)
 test('(U10) the 24+ hint shows once a session, not again on each track switch', () => {
+  M.hintReset();
   const t = T(), was = t.mods;
   const dst = ['f.cutoff', 'f.res', 'a.level', 'a.pan', 'b.level', 'b.pan', 'a.semi', 'b.semi', 'a.fine', 'b.fine'];
   t.mods = Array.from({ length: 26 }, (_, i) => ({ id: 'h' + i, src: i % 2 ? 'wheel' : 've.out', dst: 'i1:' + dst[i % dst.length], amt: 0.1 }));

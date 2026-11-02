@@ -14,7 +14,6 @@ import assert from 'node:assert/strict';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import * as S from '../song.js?v=9';
-import { MODELS } from '../models.js?v=9';
 
 const alive = setInterval(() => {}, 50); // (the sim's timers are unref'd: a ref'd one keeps the process up through the top-level setup)
 const sim = await bootMain({ ls: fakeStorage({}), clock: 'std', outLat: 0.03 });
@@ -636,36 +635,9 @@ test('R-8 (follow-up) Ctrl+Z, Ctrl+Shift+Z, Ctrl+Z of a mid-pass edit, two mid-p
   }
 });
 
-// R-15 (follow-up): an MPE track — a live key on another channel holds a voice of its own (the engine keys it by channel and
-// pitch): a song note of that pitch deleted while both sound ends the song's voice; the key's voice ends with the key
-test('R-15 (follow-up) MPE: a song note deleted while a live MPE key (channel 2) holds its pitch ends the song\'s voice; nothing left sounding after the key is up', async () => {
-  await stopAll();
-  const t = api.addTrack(MODELS.find(m => m.id === 'serum')); sim.raf(); await sim.settle(10); sim.raf();
-  api.selectTrack(t.id); sim.raf(); await sim.settle(5);
-  api.sxHost(t).edit(st => { st.global.mpe.on = 1; }, { label: 'mpe' }); sim.raf(); await sim.settle(5); sim.run(4096);
-  const pr = sim.nodeOf(t.id).proc, vs = () => (pr.insts && pr.insts[0] && pr.insts[0].voices) || [];
-  const gated = () => JSON.stringify(Array.from(vs()).filter(v => v.gate).map(v => [v.note, v.ch | 0]).sort((a, b) => a[0] - b[0] || a[1] - b[1]));
-  const T1 = TR();
-  T1.notes = [{ id: 'L', t: 0, d: 6000, n: 62, v: 100 }]; T1.cc = [];
-  for (const x of P().tracks) x.arm = false;
-  P().bpm = 240; P().metronome.countIn = 0; P().metronome.on = false; P().loop.on = false;
-  api.roll().host.changed(); await debounce();
-  Tx().pos = 0; wraps = 0; lastT = -Infinity;
-  sim.$('#tPlay').click(); await sim.settle(5);
-  until(1, 500); api.noteOn(62, 0.8, 2, sim.ms); // (a MIDI key on channel 2: {t: 'on', n: 62, ch: 2})
-  until(1, 700);
-  assert.equal(gated(), '[[62,0],[62,2]]', 'the song\'s voice and the key\'s');
-  api.roll().host.edit('Delete', () => { TR().notes = []; }); await debounce();
-  const held = rmsIn(1, 800, 950);
-  assert.ok(held > 0.01, 'the key sounds on: ' + held);
-  assert.equal(gated(), '[[62,2]]', 'the song\'s voice ended, the key\'s kept');
-  until(1, 1000); api.noteOff(62, 2, sim.ms);
-  until(1, 1600);
-  assert.equal(gated(), '[]', 'the key up: nothing gated');
-  const late = rmsIn(1, 2000, 2600);
-  assert.ok(late < held * 0.02, 'silent: ' + late);
-  sim.$('#tPlay').click(); await settle();
-});
+// (SX0, IMPL-SX0 §6.1 / §15 P1-5) "R-15 (follow-up) MPE" is removed: MPE input on canvas leaves with Serum complete (§11.3) — midi.js routes
+// MPE to main's 'serum' alone, and a song voice and a key's voice of one pitch are two voices only when keyed by channel. The voice end on a
+// plain channel (a deleted song note a held key sounds on, until its key is up) stays pinned by R-15 above
 
 /* ---- the fix check's residuals (lane A, round 3) ---- */
 
@@ -673,7 +645,7 @@ test('R-15 (follow-up) MPE: a song note deleted while a live MPE key (channel 2)
 // the same (pitch, start): Ctrl+Z of pass 2 while it sounds restores the short one, and the sounding note ends at its end
 // (already passed: at once; still ahead: there, sounding until then) — the control without input quantize (other starts)
 test('R-15 (residual) input quantize: Ctrl+Z of a pass whose long note took over the same pitch and start ends the sounding note at the restored note\'s end — at once when passed, else there', async () => {
-  api.selectTrack(P().tracks[0].id); sim.raf(); await sim.settle(5); // (the track before the MPE test's Serum)
+  api.selectTrack(P().tracks[0].id); sim.raf(); await sim.settle(5); // (the first track)
   for (const [iq, at] of [[false, 1000], [true, 1000], [true, 300]]) {
     const k = (iq ? 'IQ' : 'control') + ' @' + at;
     await take({ iq });

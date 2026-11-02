@@ -7,12 +7,12 @@ import './v8-guard.mjs';
 // cv-mods MOD_COLS, ≤ 48 elements, a jack row with span.rig-jack[data-jack="out"]). (MOD1 §4.1) LFO, Envelope, Macros and Chaos:
 // rig-ui's slot faces over sx-host slot hosts (the body contract main.js mounts: update / sync / menuItems / host / view / value /
 // knobs, the old body's ⋯ items, data-nomod, the MONO lock, `shown`, every data-dest of the old panel on the face). G8: no Serum-part
-// UI in cv-mods-ui.js or rig-ui.js.
+// UI in cv-mods-ui.js or rig-ui.js; (SX0) no mountSlot / part view anywhere on the site, mountPart for the Arpeggiator / Clip only.
 // Never passes fake-DOM nodes to assert.* (strings and numbers only; the slot faces' tests through safeAssert).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-mods-ui.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fresh, all, ptr, key, place, layout, Ev } from './wk-dom.mjs';
 import * as U from '../cv-mods-ui.js?v=9';
 import { MOD_COLS } from '../cv-mods.js?v=9';
@@ -302,13 +302,20 @@ function srig(kind, st0, extra = {}) {
   d.body.append(B.el);
   return { d, B, st, calls };
 }
-// the old body's panel for parity: the same panel class mounted on a second slot host (sx-host's registered view of the kind)
+// the old body's panel for parity: the same panel class mounted on a second slot host — (SX0, lane K) sx-host's registered view of the
+// kind left with the parts machinery, so the donor is mounted as that view mounted it (its ⋯: the panel's own, the Macros' its shell's);
+// its data-dest ids are also frozen from ⟨B⟩ (tests/fixtures/sx0-dests.json, slots)
+const DESTS3 = JSON.parse(readFileSync(new URL('./fixtures/sx0-dests.json', import.meta.url), 'utf8'));
 async function oldPanel(kind, extra) {
-  const SX = await import('../sx-host.js?v=9'), song = await import('../song.js?v=9');
+  const SX = await import('../sx-host.js?v=9'), song = await import('../song.js?v=9'), M = await import('../sx-ui-mod.js?v=9');
   const d = SD.fresh(), box = d.createElement('div');
   d.body.appendChild(box);
   const H = SX.slotHost(kind, Object.assign({ doc: d, get: () => song.normModDev({ kind }), edit() {}, live() {}, cancel() {}, devKey: KEY[kind] }, extra));
-  const V = H.mount({ lfo: 'lfo', env: 'env', macro: 'macros', chaos: 'chaos' }[kind], box, { k: H.slot, bare: true, dev: H.dev });
+  const make = { lfo: (r, K, k) => new M.LfoPanel(r, K, k), env: (r, K, k) => new M.EnvPanel(r, K, k), macro: (r, K) => new M.MacrosPanel(r, K), chaos: (r, K, k) => new M.ChaosRow(r, K, k, {}) }[kind];
+  const V = H.mount((r, K, A) => {
+    const P = make(r, K, A.k), sh = P.shell || {};
+    return { el: P.el, panel: P, power: sh.power || null, module: sh.module || null, menuItems: () => (kind === 'macro' ? (sh.menuItems ? sh.menuItems() : []) : P.menuItems()), destroy: () => P.destroy() };
+  }, box, { kind: FACE_OF[kind], k: H.slot, bare: true, dev: H.dev });
   await SD.flush(d);
   return { H, V, box, d };
 }
@@ -341,6 +348,7 @@ test('(MOD1 §4.1) the LFO / Envelope / Macros / Chaos bodies are rig-ui faces o
     }
     const O = await oldPanel(kind), mine = new Set(B.el.querySelectorAll('[data-dest]').map(e => e.getAttribute('data-dest')));
     sweep.deepEqual(O.box.querySelectorAll('[data-dest]').map(e => e.getAttribute('data-dest')).filter(x => !mine.has(x)), [], kind + ': every data-dest of the old panel on the face');
+    sweep.deepEqual(DESTS3.slots[kind].filter(x => !mine.has(x)), [], kind + ': the frozen set (sx0-dests.json) on the face');
     O.H.destroy();
     sweep.equal(typeof B.sync, 'function');
     B.destroy();
@@ -469,12 +477,24 @@ test('(MOD1 §4.1) the Chaos face: its scope screen (S&H on it), BPM · RATE · 
   B.destroy();
 });
 
-test('(MOD1 G8) no Serum-part UI: cv-mods-ui.js and rig-ui.js name none of mountSlot / mountPart / PART_W / PART_PH / COL / phaseOf / partView; the faces and their menus say no "ENV" (the LFO\'s mode ENV is no module name), no "Serum", no "Xfer", "Macro" only as a knob\'s name', async () => {
+test('(MOD1 G8) no Serum-part UI: cv-mods-ui.js and rig-ui.js name none of mountSlot / mountPart / PART_W / PART_PH / COL / phaseOf / partView; (SX0) no site file\'s code names mountSlot / partView / PART_W / PART_PH / phaseOf, and mountPart is called for the Arpeggiator / Clip only; the faces and their menus say no "ENV" (the LFO\'s mode ENV is no module name), no "Serum", no "Xfer", "Macro" only as a knob\'s name', async () => {
   for (const f of ['cv-mods-ui.js', 'rig-ui.js']) {
     const src = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
     for (const w of ['mountSlot', 'mountPart', 'PART_W', 'PART_PH', 'phaseOf', 'partView']) sweep.equal(src.includes(w), false, f + ': ' + w);
     sweep.equal(/\bCOL\b/.test(src), false, f + ': COL');
   }
+  // (SX0, IMPL-SX0 §10 K) the site's code (comments stripped): the parts machinery nowhere; mountPart defined in sx-ui-mod.js, called on a
+  // line that names both 'arp' and 'clip' (main.js sxViews: Q1, the last two stage-3 views)
+  const site = readdirSync(new URL('..', import.meta.url)).filter(f => f.endsWith('.js') && f !== 'sw.js').concat(readdirSync(new URL('../panels', import.meta.url)).filter(f => f.endsWith('.js')).map(f => 'panels/' + f));
+  const calls = [];
+  for (const f of site) {
+    const code = readFileSync(new URL('../' + f, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"\\])\/\/.*$/gm, '$1');
+    for (const w of ['mountSlot', 'partView', 'PART_W', 'PART_PH', 'phaseOf']) sweep.equal(new RegExp('\\b' + w + '\\b').test(code), false, f + ': ' + w);
+    for (const line of code.split('\n')) if (/\bmountPart\(/.test(line) && !/function mountPart\(/.test(line)) calls.push([f, /'arp'/.test(line) && /'clip'/.test(line)]);
+  }
+  sweep.ok(site.length > 50 && site.includes('main.js') && site.includes('sx-ui-mod.js'), 'the site files read');
+  sweep.ok(calls.length >= 1, 'mountPart is called');
+  sweep.deepEqual(calls.filter(c => !c[1]), [], 'every mountPart call: the Arpeggiator / Clip');
   await U.ready();
   const bad = [];
   const scan = (kind, el, items) => {

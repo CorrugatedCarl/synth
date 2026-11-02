@@ -59,8 +59,7 @@ test('(reviewer 1 P2) linkSources on a <NAME>: its LFOs / Envelopes only where a
   t.dev.i1.rig.n = {};
   t.dev.i1.vals.s = Object.assign(R.rigStarter({}).s, { matrix: [] }); // (the starter: Envelope 1 on LEVEL, not the gate)
   assert.equal(L(), 'lfo1=LFO 1 env1=Envelope 1* env3=Envelope 3');
-  t.dev.i1.model = 'serum';
-  assert.equal(V.linkSources(t).length, 14, 'a Serum: every LFO and ENV slot');
+  // ((SX0) "a Serum: every LFO and ENV slot" is removed with the bundled model: no device but a rig runs the engine on canvas)
 });
 
 test('MOD1 §2.2 numsOf(track, kind): the numbers a track\'s own devices of a kind show, ascending; "macros" (a rig\'s kind) reads the macro devices; [] for a singleton, an unknown kind, no track', () => {

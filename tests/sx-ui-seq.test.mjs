@@ -2,9 +2,9 @@
 // (foldRows, rollHit, laneValueAt, lenText / lenParse, laneWrite, rateRemap, swingN / swingS) and the M2 pages mounted
 // on the stub binding kit (tests/serum-ui-stubs/kit.js) over the wk-dom fake DOM: ARP page (slot parameters with EDIT ALL,
 // virtual-destination knobs bound to the selected slot, slots, banks, MIDI OUT, trigger octave, pattern editor), CLIP
-// page (settings, slots, SMF export / Copy to Track, piano roll tool bar, lanes, recording, macros pane), keyboard strip
-// (transpose, key / scale, swing, piano / ARP / CLIP keys), OSC MAPPING editor and the PianoRoll (gestures, keys,
-// commands, clipboard, ruler flags, pattern kind).
+// page (settings, slots, SMF export / Copy to Track, piano roll tool bar, lanes, recording, macros pane) and the PianoRoll
+// (gestures, keys, commands, clipboard, ruler flags, pattern kind). (SX0, lane K) The keyboard strip (KeyboardPanel) and the OSC
+// MAPPING editor left with the bundled panel's VOICE fold-out (their one caller): their cases went with them (IMPL-SX0 §14).
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -60,12 +60,13 @@ const clock = t => { CLK = t; };
 
 /* ================================================================ module and pure helpers */
 
-test('imports in node without a DOM; the §11.14 exports and the extra pure helpers', () => {
-  for (const k of ['ArpPage', 'ClipPage', 'KeyboardPanel', 'OscMapEditor', 'PianoRoll', 'rollHit', 'laneValueAt', 'foldRows', 'lenText', 'lenParse',
+test('imports in node without a DOM; the §11.14 exports and the extra pure helpers; (SX0) no keyboard strip / OSC MAPPING editor', () => {
+  for (const k of ['ArpPage', 'ClipPage', 'PianoRoll', 'rollHit', 'laneValueAt', 'foldRows', 'lenText', 'lenParse',
     'laneWrite', 'rateRemap', 'swingN', 'swingS']) {
     assert.equal(typeof seq[k], 'function', k);
   }
-  for (const k of ['ArpPage', 'ClipPage', 'KeyboardPanel', 'OscMapEditor', 'PianoRoll']) assert.match(String(seq[k]), /^class /, k + ' is a class');
+  for (const k of ['ArpPage', 'ClipPage', 'PianoRoll']) assert.match(String(seq[k]), /^class /, k + ' is a class');
+  for (const k of ['KeyboardPanel', 'OscMapEditor']) assert.equal(k in seq, false, k + ' gone (SX0)');
 });
 
 test('foldRows: Off, used notes, scale + used; key off; ignores bad pitches; empty fold shows every row', () => {
@@ -208,11 +209,11 @@ test('rateRemap: the nearest entry of the new ladder (straight entries win ties)
 
 /* ================================================================ pages on the stub kit */
 
-test('ArpPage / ClipPage / KeyboardPanel mount on the kit without touching the state; sections; power buttons; destinations', () => {
+test('ArpPage / ClipPage mount on the kit without touching the state; sections; power buttons; destinations', () => {
   const { s, kit, T, root, doc } = mount();
   const before = JSON.stringify(s);
-  const arp = new seq.ArpPage(root, kit), clip = new seq.ClipPage(root, kit), kb = new seq.KeyboardPanel(root, kit);
-  assert.deepEqual(root.children, [arp.el, clip.el, kb.el]);
+  const arp = new seq.ArpPage(root, kit), clip = new seq.ClipPage(root, kit);
+  assert.deepEqual(root.children, [arp.el, clip.el]);
   T.paint();
   T.setSnap(snapSeq());
   T.paint();
@@ -221,7 +222,6 @@ test('ArpPage / ClipPage / KeyboardPanel mount on the kit without touching the s
   const secs = el => dom.all(el).map(n => n.getAttribute && n.getAttribute('data-sec')).filter(Boolean);
   assert.deepEqual(secs(arp.el), ['global', 'slots', 'pattern', 'transpose', 'playback', 'retrigger', 'velocity', 'midiout']);
   assert.deepEqual(secs(clip.el), ['global', 'slots', 'settings', 'roll', 'lanes', 'record', 'midiout', 'macros']);
-  assert.deepEqual(secs(kb.el), ['transpose', 'key', 'scale', 'swing', 'oscmap', 'keys', 'arpkeys', 'clipkeys']);
   const pa = dom.byAttr(arp.el, 'data-dest', 'arp.on'), pc = dom.byAttr(clip.el, 'data-dest', 'clip.on');
   assert.equal(pa.length, 1);
   assert.equal(pc.length, 1);
@@ -248,7 +248,7 @@ test('ArpPage / ClipPage / KeyboardPanel mount on the kit without touching the s
   assert.ok(clip.roll.command('fold', 1));
   assert.deepEqual(clip.roll.view().rows, [60]);
   // destroy: idempotent, removes the elements
-  for (const P of [arp, clip, kb]) { P.destroy(); P.destroy(); assert.equal(P.el.parentNode, null); }
+  for (const P of [arp, clip]) { P.destroy(); P.destroy(); assert.equal(P.el.parentNode, null); }
   assert.ok(clip.roll.dead);
   T.paint();
   T.setSnap(snapSeq({ 0: 2 }));
@@ -988,32 +988,20 @@ test('ClipPage: a recording belongs to its clip; ↶ takes back the bars EXTEND 
   } finally { clock(null); }
 });
 
-test('ClipPage: the keyboard strip is recorded (not the previews); host input lights the piano keys; velocity units; destroy finishes', () => {
+test('ClipPage: host input is recorded (not the previews); velocity units; the input subscribed while recording; destroy finishes', () => {
   let input = null;
   const { s, kit, T, root, log } = mount({ host: { onInput: fn => { input = fn; log.push(['onInput', !!fn]); }, metronome: on => log.push(['metro', on]) } });
   s.clip.clips[0].len = 16;
   clock(0);
   try {
-    const kb = new seq.KeyboardPanel(root, kit), clip = new seq.ClipPage(root, kit);
-    assert.deepEqual(log.filter(e => e[0] === 'onInput'), [['onInput', true]], 'one subscription for the strip and the recorder');
+    const clip = new seq.ClipPage(root, kit);
     T.paint();
-    // host input notes light up as held keys
-    input(true, 64, 1, 0);
-    const key64 = dom.byAttr(kb.keys.el, 'data-note', '64')[0];
-    assert.ok(key64.classList.contains('wk-held'));
-    input(false, 64, 0, 0);
-    assert.ok(!key64.classList.contains('wk-held'));
+    // ((SX0) the keyboard strip's half — its keys recorded, host input lit on them — left with KeyboardPanel)
+    assert.deepEqual(log.filter(e => e[0] === 'onInput'), [], 'no subscription before a recording');
     T.setSnap(snapSeq({ 4: 1, 5: 0 }));
     clip.record(true);
-    // a note of the strip (through host.audition) is recorded
-    dom.place(kb.keys.el, 0, 0, 300, 72);
-    const [lo, hi] = kb.keys.range(), whites = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).filter(n => ![1, 3, 6, 8, 10].includes(n % 12));
-    const x60 = (whites.indexOf(60) + 0.5) * 300 / whites.length;
-    clock(250);
-    dom.ptr(kb.keys.el, 'pointerdown', x60, 70);
-    clock(500);
-    dom.ptr(kb.keys.el, 'pointerup', x60, 70);
-    // a preview of the piano roll's key column is not
+    assert.deepEqual(log.filter(e => e[0] === 'onInput'), [['onInput', true]], 'the recorder\'s one subscription');
+    // a preview of the piano roll's key column is not recorded
     const R = clip.roll;
     dom.place(R.el, 0, 0, KEYW + 320, RULER + 240);
     const v = R.view();
@@ -1022,17 +1010,13 @@ test('ClipPage: the keyboard strip is recorded (not the previews); host input li
     dom.ptr(R.el, 'pointerup', 4, RULER + 5);
     // velocity 1 stays 1 (MIDI units, no 0–1 guessing)
     input(true, 50, 1, 750); input(false, 50, 0, 875);
-    const aOn = log.find(e => e[0] === 'on' && e[1] === 60), vel = Math.round(aOn[2] * 127);
-    assert.ok(vel > 1 && vel <= 127);
-    assert.deepEqual(clip.pending().map(n => [n[0], n[1], n[2], n[3]]), [[2, 2, 60, vel], [6, 1, 50, 1]]);
+    assert.deepEqual(clip.pending().map(n => [n[0], n[1], n[2], n[3]]), [[6, 1, 50, 1]]);
     assert.ok(log.some(e => e[0] === 'on' && e[1] === v.rows[v.rows.length - 1 - Math.floor(v.top / v.rowH)]), 'the key column previewed a note');
     // destroy (track switch) finishes the recording: the take is kept, the input and the metronome released
     log.length = 0;
     clip.destroy();
-    assert.deepEqual(s.clip.clips[0].notes.map(n => [n[0], n[2]]), [[2, 60], [6, 50]]);
-    assert.deepEqual(log, [['metro', false]], 'the strip keeps the input subscription');
-    kb.destroy();
-    assert.deepEqual(log.pop(), ['onInput', false]);
+    assert.deepEqual(s.clip.clips[0].notes.map(n => [n[0], n[2]]), [[6, 50]]);
+    assert.deepEqual(log.slice().sort(), [['metro', false], ['onInput', false]]);
     // without host.metronome the METRO toggle is disabled
     const m2 = mount({ host: { onInput: () => {} } });
     const c2 = new seq.ClipPage(m2.root, m2.kit);
@@ -1043,26 +1027,22 @@ test('ClipPage: the keyboard strip is recorded (not the previews); host input li
   } finally { clock(null); }
 });
 
-test('kit.live(shown): hidden ARP / CLIP / keyboard panels are not painted; a CLIP recording goes on while hidden', () => {
+test('kit.live(shown): hidden ARP / CLIP panels are not painted; a CLIP recording goes on while hidden', () => {
   const { s, kit, T, root } = mount({ host: { onInput: () => {} } });
   s.clip.clips[0].len = 16;
   s.clip.rec.mode = 1;
-  const arp = new seq.ArpPage(root, kit), clip = new seq.ClipPage(root, kit), kb = new seq.KeyboardPanel(root, kit);
+  const arp = new seq.ArpPage(root, kit), clip = new seq.ClipPage(root, kit);
   T.paint();
   // recording started on the CLIP page (waiting for its quantised launch), then another page is shown
   assert.ok(clip.record(true));
   assert.equal(clip.rec.wait, true);
   T.paint();
   const ov = clip.roll.ov.getContext('2d').calls, cv = clip.roll.cv.getContext('2d').calls, n0 = ov.length, c0 = cv.length;
-  const kbUpd = kb.clipKeys.update;
-  let kbN = 0;
-  kb.clipKeys.update = () => { kbN++; kbUpd(); };
   T.shown = false;
   T.setSnap(snapSeq({ 0: 3, 4: 1 << 2, 5: 6 }));
   assert.equal(arp.slots.slots[3].el.classList.contains('sx-play'), false, 'ARP slots not repainted while hidden');
   assert.equal(clip.slots.slots[2].el.classList.contains('sx-play'), false, 'CLIP slots not repainted while hidden');
   assert.equal(ov.length, n0, 'no playhead drawing while hidden');
-  assert.equal(kbN, 0, 'keyboard keys not repainted while hidden');
   // the quantised launch is anchored and EXTEND grows the clip while another page is shown, without painting
   T.setSnap(snapSeq({ 4: 1, 5: 15 }));
   assert.equal(clip.rec.wait, false);
@@ -1075,11 +1055,9 @@ test('kit.live(shown): hidden ARP / CLIP / keyboard panels are not painted; a CL
   assert.equal(arp.slots.slots[3].el.classList.contains('sx-play'), true);
   assert.equal(clip.slots.slots[2].el.classList.contains('sx-play'), true);
   assert.ok(ov.length > n0 && cv.length > c0);
-  assert.equal(kbN, 1);
   clip.finishRecord();
   arp.destroy();
   clip.destroy();
-  kb.destroy();
 });
 
 /* ================================================================ FR Cut B (IMPL-FR-B §4.3, §4.6, FR7) */
@@ -1366,145 +1344,8 @@ test('IMPL-FR §3 B6 (review 2 fixer, the harness\'s clip check in Chrome): a sh
   } finally { wk.clock._reset(); dom.raf.uninstall(); }
 });
 
-test('KeyboardPanel: collapse, TRANSPOSE (◀ ▶, keys, wheel ±12), KEY / SCALE, SWING with division, OSC MAPPING popover', () => {
-  const { s, kit, T, root, doc } = mount();
-  const kb = new seq.KeyboardPanel(root, kit);
-  T.paint();
-  assert.equal(kb.el.classList.contains('sx-collapsed'), false);
-  const fold = dom.all(kb.el).find(n => n.getAttribute && n.getAttribute('aria-label') === 'Collapse keyboard');
-  dom.fire(fold, 'click');
-  assert.equal(s.ui.kbdOpen, 0);
-  assert.deepEqual(T.log.pop(), ['edit', 'View', undefined, true]);
-  T.paint();
-  assert.equal(kb.el.classList.contains('sx-collapsed'), true);
-  assert.equal(fold.getAttribute('aria-expanded'), 'false');
-  // transpose
-  dom.fire(lbl(kb.sec.transpose, 'Transpose up')[0], 'click');
-  dom.fire(lbl(kb.sec.transpose, 'Transpose up')[0], 'click');
-  assert.equal(s.kbd.trans, 2);
-  dom.fire(lbl(kb.sec.transpose, 'Transpose down')[0], 'click');
-  assert.equal(s.kbd.trans, 1);
-  T.paint();
-  const nb = dom.one(kb.sec.transpose, 'wk-nb');
-  assert.equal(dom.one(nb, 'wk-nbt').textContent, '+1 st');
-  dom.key(nb, 'ArrowUp');
-  assert.equal(s.kbd.trans, 2);
-  dom.fire(dom.one(kb.sec.transpose, 'sx-trans'), 'wheel', { deltaY: -100, deltaMode: 1 });
-  assert.equal(s.kbd.trans, 14);
-  dom.fire(nb, 'wheel', { deltaY: -100, deltaMode: 1 });
-  assert.equal(s.kbd.trans, 24, 'clamped to +24');
-  dom.fire(nb, 'wheel', { deltaY: 100, deltaMode: 1 });
-  assert.equal(s.kbd.trans, 12);
-  // key / scale
-  pick(doc, dom.one(kb.sec.key, 'wk-menu'), 'D');
-  assert.equal(s.kbd.key, 2);
-  pick(doc, dom.one(kb.sec.scale, 'wk-menu'), 'Dorian');
-  assert.equal(s.kbd.scale, 4);
-  pick(doc, dom.one(kb.sec.key, 'wk-menu'), '--');
-  assert.equal(s.kbd.key, -1);
-  // swing: 300 steps (0.25 % in Live's convention); the division appears when not OFF
-  const sw = dom.one(kb.sec.swing, 'wk-nb'), div = dom.one(kb.sec.swing, 'wk-menu');
-  T.paint();
-  assert.equal(dom.one(sw, 'wk-nbt').textContent, 'OFF');
-  assert.equal(div.style.display, 'none');
-  dom.key(sw, 'ArrowUp');
-  assert.equal(s.kbd.swing, 0.00667);
-  T.paint();
-  assert.equal(dom.one(sw, 'wk-nbt').textContent, '50.3%');
-  assert.equal(div.style.display, '');
-  dom.key(sw, 'End');
-  assert.equal(s.kbd.swing, 1);
-  assert.equal(dom.one(sw, 'wk-nbt').textContent, '87.5%');
-  pick(doc, div, '1/32');
-  assert.equal(s.kbd.div, 2);
-  // OSC MAPPING popover (protocol: second press closes)
-  const map = dom.one(kb.el, 'sx-oscmapbtn');
-  dom.fire(map, 'click');
-  assert.equal(T.pops.length, 1);
-  const P = T.pops[0], ed = P.ed;
-  assert.ok(ed instanceof seq.OscMapEditor);
-  assert.equal(P.o, 'oscmap');
-  dom.fire(map, 'click');
-  assert.equal(ed.dead, true);
-  kb.destroy();
-});
-
-test('KeyboardPanel: piano keys audition with velocity from the touch height; ARP / CLIP keys launch slots; scale shading', () => {
-  const { s, kit, T, root, log } = mount();
-  s.kbd.key = 0;
-  s.kbd.scale = 0;
-  const kb = new seq.KeyboardPanel(root, kit);
-  T.paint();
-  const pk = kb.keys;
-  assert.equal(dom.byAttr(pk.el, 'data-note', '48').length, 1, 'two octaves from C3 at narrow widths');
-  assert.equal(dom.byAttr(pk.el, 'data-note', '72').length, 1);
-  assert.ok(dom.byAttr(pk.el, 'data-note', '61')[0].classList.contains('wk-out'));
-  assert.ok(dom.byAttr(pk.el, 'data-note', '60')[0].classList.contains('wk-root'));
-  dom.place(pk.el, 0, 0, 300, 100);
-  dom.ptr(pk.el, 'pointerdown', 10, 90, { pointerType: 'touch' });
-  dom.ptr(pk.el, 'pointerup', 10, 90, { pointerType: 'touch' });
-  assert.deepEqual(log.slice(-2), [['on', 48, Math.round(1 + 126 * 0.9) / 127], ['off', 48]]);
-  // a wider strip shows more octaves (wk's fit; in a browser its ResizeObserver calls it — no layout read per paint)
-  dom.place(pk.el, 0, 0, 1176, 80);
-  T.paint();
-  assert.deepEqual(pk.range(), [48, 72], 'a repaint does not re-fit');
-  pk.fit();
-  assert.deepEqual(pk.range(), [24, 108]);
-  assert.equal(dom.byAttr(pk.el, 'data-note', '24').length, 1);
-  assert.equal(dom.byAttr(pk.el, 'data-note', '108').length, 1);
-  // ARP keys: key j launches arp slot j (relaunch); CLIP keys toggle launch / stop from the playing mask
-  dom.place(kb.arpKeys.el, 0, 0, 140, 40);
-  dom.ptr(kb.arpKeys.el, 'pointerdown', 30, 35);
-  dom.ptr(kb.arpKeys.el, 'pointerup', 30, 35);
-  assert.deepEqual(log.pop(), ['seqCmd', 'arpLaunch', 2]);
-  dom.place(kb.clipKeys.el, 0, 0, 140, 40);
-  dom.ptr(kb.clipKeys.el, 'pointerdown', 20, 10);
-  dom.ptr(kb.clipKeys.el, 'pointerup', 20, 10);
-  assert.deepEqual(log.pop(), ['seqCmd', 'clipLaunch', 1]);
-  T.setSnap(snapSeq({ 0: 2, 4: 2 }));
-  assert.ok(dom.byAttr(kb.arpKeys.el, 'data-note', '2')[0].classList.contains('wk-lit'));
-  assert.ok(dom.byAttr(kb.clipKeys.el, 'data-note', '1')[0].classList.contains('wk-lit'));
-  dom.ptr(kb.clipKeys.el, 'pointerdown', 20, 10);
-  dom.ptr(kb.clipKeys.el, 'pointerup', 20, 10);
-  assert.deepEqual(log.pop(), ['seqCmd', 'clipStop', 1]);
-  kb.destroy();
-});
-
-test('OscMapEditor: KEY / VEL range bars per row, FOLD and WARP (no WARP for ARP), edits through the kit', () => {
-  const { s, kit, T } = mount();
-  const doc = kit.doc, box = doc.createElement('div');
-  doc.body.appendChild(box);
-  const ed = new seq.OscMapEditor(box, kit);
-  assert.deepEqual(dom.all(ed.el).map(n => n.getAttribute && n.getAttribute('data-row')).filter(Boolean), ['a', 'b', 'c', 'noise', 'sub', 'arp']);
-  assert.equal(dom.byAttr(ed.el, 'aria-selected', 'true')[0].textContent, 'KEY');
-  assert.equal(dom.byAttr(ed.rows.arp, 'data-flag', 'warp').length, 0);
-  assert.equal(dom.byAttr(ed.rows.c, 'data-flag', 'warp').length, 1);
-  assert.equal(dom.one(ed.rows.a, 'wk-rbv').textContent, 'C-1–G9');
-  assert.ok(ed.el.classList.contains('sx-keytab'), 'KEY bars over a keyboard');
-  const lo = dom.one(ed.rows.b, 'wk-rblo');
-  dom.key(lo, 'ArrowRight', { shiftKey: true });
-  assert.deepEqual(s.osc[1].map.k, [12, 127]);
-  assert.deepEqual(T.log.pop(), ['edit', 'OSC B key range', 'set', false]);
-  ed.refresh();
-  assert.equal(dom.one(ed.rows.b, 'wk-rbv').textContent, 'C0–G9');
-  dom.fire(dom.byAttr(ed.rows.noise, 'data-flag', 'fold')[0], 'click');
-  assert.equal(s.noise.map.fold, 1);
-  dom.fire(dom.byAttr(ed.rows.sub, 'data-flag', 'warp')[0], 'click');
-  assert.equal(s.sub.map.warp, 1);
-  dom.fire(dom.byAttr(ed.rows.arp, 'data-flag', 'fold')[0], 'click');
-  assert.equal(s.kbd.arpMap.fold, 1);
-  // VEL tab: 1–127 ranges
-  dom.fire(dom.byAttr(ed.el, 'data-tab', '1')[0], 'click');
-  assert.equal(ed.tab, 1);
-  assert.equal(dom.byAttr(ed.el, 'aria-selected', 'true')[0].textContent, 'VEL');
-  assert.equal(dom.one(ed.rows.arp, 'wk-rbv').textContent, '1–127');
-  assert.ok(!ed.el.classList.contains('sx-keytab'));
-  dom.key(dom.one(ed.rows.arp, 'wk-rbhi'), 'ArrowLeft');
-  assert.deepEqual(s.kbd.arpMap.v, [1, 126]);
-  ed.destroy();
-  ed.destroy();
-  assert.equal(ed.el.parentNode, null);
-});
+// ((SX0) KeyboardPanel's and OscMapEditor's cases — collapse, TRANSPOSE, KEY / SCALE, SWING, the piano / ARP / CLIP keys, the OSC
+// MAPPING editor — went with them: their one caller was the bundled VOICE's KEYS fold-out; s.kbd / the maps stay state, compiled as before)
 
 /* ================================================================ PianoRoll */
 

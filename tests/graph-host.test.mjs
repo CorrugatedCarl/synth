@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import { bootMain } from './main-sim.mjs';
 import * as CMOD from '../cv-model.js?v=9';
 import * as CG from '../cv-graph.js?v=9';
-import { MODELS } from '../models.js?v=9';
+import { MODELS, isSxId } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as F from './fixtures/graph-1e.mjs?v=9';
 
 const vals = id => Object.fromEntries(MODELS.find(m => m.id === id).controls.map(c => [c.id, c.def]));
@@ -125,7 +126,7 @@ test('a graph-shaped track\'s node is built from processorOptions = the protocol
     assert.deepEqual(po.seqs, {});
     // after the options only what the first post's re-seed changed goes again (a chain, a Serum's own FX), no tables
     const again = sent(t).filter(x => ['graph', 'patch', 'chain'].includes(x.t));
-    assert.deepEqual(again.filter(x => x.t === 'graph' || (x.t === 'patch' && t.dev[x.i].model !== 'serum')).map(tag), [], k);
+    assert.deepEqual(again.filter(x => x.t === 'graph' || (x.t === 'patch' && !isSxId(t.dev[x.i].model))).map(tag), [], k); // ((SX0) the fixture's Serum is a rig)
     assert.deepEqual(again.map(x => [(x.fxr || x.p.fxr).seed, 'fxrT' in x || 'fxrT' in (x.p || {})]), again.map(() => [0, false]), k);
   }
   const t = P().tracks.find(x => x.id === 'trk_c'), node = sim.nodeOf(t.id);
@@ -193,7 +194,7 @@ test('module CPU: legacy i0 / c0 → the primary and its FX module keys, graphed
   sim.nodeOf(a.id)._fromProc({ t: 'stats', load: 0.9, voices: 2, per: [{ id: 'i1', load: 0.2 }, { id: 'i2', load: 0.6 }, { id: 'fx1', load: 0.1 }] });
   sim.nodeOf(b.id)._fromProc({ t: 'stats', load: 0.01, voices: 0, per: [{ id: 'i1', load: 0.005 }, { id: 'i1/fx', load: 0.001 }, { id: 'i2', load: 0 }, { id: 'fx1', load: 0.002 }] });
   assert.deepEqual([Object.keys(N(leg).cpu), Object.keys(N(a).cpu), Object.keys(N(b).cpu)], [['i1', 'fx1'], ['i1', 'i2', 'fx1'], ['i1', 'i1/fx', 'i2', 'fx1']]);
-  const cpuKeyOfSerum = (() => { const s = { dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' } }, prim: 'i1', wires: [] }; return CMOD.fxDevOf(s).own ? 'i1/fx' : null; })();
+  const cpuKeyOfSerum = (() => { const s = { dev: { i1: { kind: 'synth', model: RIG.ID }, out: { kind: 'out' } }, prim: 'i1', wires: [] }; return CMOD.fxDevOf(s).own ? 'i1/fx' : null; })();
   assert.equal(cpuKeyOfSerum, 'i1/fx');
   // the safeguard: the busiest track is graphed → its heaviest classic Inst alone, {t: 'os', i, v}, session only
   const os0 = sim.api.settings().os, k = sim.nodeOf(a.id).posted.length;
@@ -252,11 +253,11 @@ test('render-last of one Serum instrument of a track (o.dev): rendered alone thr
   await page();
   const core = await import('../serum-core.js?v=9');
   const a = P().tracks.find(x => x.id === 'trk_a'), api = sim.api;
-  const sx = CMOD.addInst(a, 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } });
+  const sx = CMOD.addInst(a, RIG.ID, { vals: { s: core.normalizeSerum(core.defaultSerum()) } });
   api.sendPatch(a); api.selectTrack(a.id);
   const T0 = 2e6;
   api.noteOn(60, 100 / 127, 0, T0); api.noteOff(60, 0, T0 + 250);
-  await assert.rejects(api.renderLast(a, { dev: 'i1' }), /Serum/, 'a classic instrument');
+  await assert.rejects(api.renderLast(a, { dev: 'i1' }), new RegExp('needs a ' + RIG.NAME), 'a classic instrument'); // ((SX0, §5) the error names RIG.NAME
   const r = await api.renderLast(a, { dev: sx });
   assert.match(r.name, / C4\.wav$/);
   const po = sim.lastOffline.nodes[0].po, sr = sim.lastOffline.ctx.sampleRate;
@@ -326,7 +327,7 @@ test('H1: undo / redo keep the sound per device id — a re-patch, Make primary,
   let u = addJuno();
   core.newInstance(FXR(u), 'cho', { rack: 0 });
   const s0 = clone(P());
-  CMOD.setModel(u, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(u);
+  CMOD.setModel(u, 'i1', RIG.ID, { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(u);
   assert.deepEqual([devs(u), CMOD.fxDevOf(u).own], ['i1,out', true]);
   core.newInstance(FXR(u), 'eq', { rack: 0 });
   const s1 = clone(P());
@@ -350,7 +351,7 @@ test('H2: the legacy stream is for one-instrument tracks only — a second instr
   wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }, { id: 'w3', a: 'i2.out', b: 'fx1.in' }] }));
   p.tracks.push(rec('trk_h2b', { prim: 'i1', nid: 3, dev: { // the primary off, a Serum sounding
     i1: { kind: 'synth', model: 'juno60', vals: vals('juno60'), preset: null, on: false },
-    i2: { kind: 'synth', model: 'serum', vals: { s: core.normalizeSerum(core.defaultSerum()) }, preset: null, fx: core.defaultFx2() },
+    i2: { kind: 'synth', model: RIG.ID, vals: { s: core.normalizeSerum(core.defaultSerum()) }, preset: null, fx: core.defaultFx2() },
     out: { kind: 'out' } },
   wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'out.in' }] }));
   sim.api.applyRestore(p); sim.raf(); await sim.settle(5);
@@ -476,7 +477,7 @@ test('H4 ids: delete fx1, classic → Serum → classic, undo past the delete �
   core.newInstance(FXR(t), 'cho', { rack: 0 }); sim.api.sendPatch(t);
   const S0 = clone(P());
   CMOD.removePanel(t, 'fx1'); sim.api.sendPatch(t);
-  CMOD.setModel(t, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(t);
+  CMOD.setModel(t, 'i1', RIG.ID, { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(t);
   CMOD.setModel(t, 'i1', 'juno60', { vals: vals('juno60') }); sim.api.sendPatch(t);
   assert.deepEqual([devs(t), CMOD.destOf(t, 'i1'), t.dev.fx2.fx.racks[0].mods.length], ['fx2,i1,out', 'fx2', 0]);
   sim.api.applyRestore(S0, true);
@@ -526,7 +527,7 @@ test('2a review H9: render-last and a bounce compile a Serum track\'s canvas mod
   await page();
   const { cpOf } = await import('./fixtures/mods-2a.mjs');
   const api = sim.api, before = new Set(P().tracks.map(t => t.id));
-  api.addTrack(MODELS.find(m => m.id === 'serum')); sim.raf();
+  api.addTrack(MODELS.find(m => m.id === RIG.ID)); sim.raf();
   const t = P().tracks.find(x => !before.has(x.id));
   CMOD.placeWheel(P());
   assert.equal(CMOD.addMod(t, 'wheel', 'i1:f.cutoff', { project: P(), amt: 0.4 }).ok, true);

@@ -5,8 +5,9 @@ import './v8-guard.mjs';
 // press ONE History step (song History mark / fold, main.js histFold: the steps the paths recorded fold into the one holding the
 // state before the press — a no-op step on top serves —; the removed parts' ⏻ metas merged); a bar range pressed last keeps Delete;
 // the instrument, an FX panel, OUT and the master canvas's modules stay with a notice that says why; the key does nothing to the
-// canvas with focus in a text field, under ROLL, with a menu open, with a modifier or a repeat. The real Serum panels (canvas-3-sim's
-// harness); the world a scripted one with a selection of several (selectMany / selection, cv-world's API). One boot per file;
+// canvas with focus in a text field, under ROLL, with a menu open, with a modifier or a repeat. (SX0) The boot instrument is a rig — its
+// host sx-host's, its modules rig-ui's faces (canvas-WC-sim's loader); the world a scripted one with a selection of several (selectMany /
+// selection, cv-world's API). One boot per file;
 // strings, numbers and booleans only into assert (never a stub DOM node).
 // Run alone: node --max-old-space-size=2048 --test tests/canvas-del-sim.test.mjs
 import test from 'node:test';
@@ -17,6 +18,8 @@ import * as C from '../serum-core.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as S from '../song.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
+import * as RU from '../rig-ui.js?v=9';
 
 for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
@@ -43,7 +46,7 @@ function scriptedWorld(root) {
 }
 
 await (await import('../cv-mods-ui.js?v=9')).ready();
-const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#' + RIG.ID, synthTest: { cvWorld: root => scriptedWorld(root) } });
 { // (canvas-3-sim's stub fixes: boxes for the panels' tickers, detaching removes, the document as each element's owner)
   const D0 = globalThis.document, ce = D0.createElement, cn = D0.createElementNS;
   const detach = x => { const p = x && x.parentNode; if (p && Array.isArray(p.children)) { const i = p.children.indexOf(x); if (i >= 0) p.children.splice(i, 1); } };
@@ -63,7 +66,7 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, MS = globalThis.__synthTest.master;
 const M = cv.mod, PT = cv.parts;
 class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
-acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
+acc.uiLoad(Promise.resolve({ host: await import('../sx-host.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9'), rig: RU }));
 await sim.power(); sim.raf();
 cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
 
@@ -83,18 +86,13 @@ function press(key, o = {}) {
   return !!e.prevented;
 }
 const sel = (...ids) => W().selectMany(ids);
-// ((WC, IMPL-WC §6) the parts view is the rig's: a Serum has no Show parts any more. Lane H's conversion is not in yet, so the sim sets what it
-// will write — the model 'rig' (the same state: W2) and the lay flag — and lets the view re-render, as Show parts' step did)
-async function rigParts(dev = 'i1') {
-  const t = T();
-  t.dev[dev].model = 'rig';
-  t.lay = Object.assign({}, t.lay || {}, { [dev]: Object.assign({}, (t.lay || {})[dev] || { x: 0, y: 0 }, { ui: 'parts' }) });
-  cv.renderViews(); await settle(2);
-}
+// (SX0) the boot instrument is a rig (the bundled model left canvas): the sim's rigParts — a Serum's model swapped for the rig's — went with it
 
-test('the harness: the CANVAS view shows (ROLL hidden), a Serum on track 1, the world a selection of several', () => {
+// ((SX0) the boot's rig: its starter's modules — Oscillator 1 → Filter → the Amplifier (i1) with Envelope 1, its own FX — where the Serum
+// stood whole; the keys pin follows by design (a rig is always its modules, IMPL-WC §2.1))
+test('the harness: the CANVAS view shows (ROLL hidden), a rig on track 1, the world a selection of several', () => {
   cv.openTab('canvas');
-  assert.deepEqual([sim.$('#tab-inst').hidden, sim.$('#tab-roll').hidden, CMOD.instOf(T()).model, keys()], [false, true, 'serum', 'i1,i1/fx,out']);
+  assert.deepEqual([sim.$('#tab-inst').hidden, sim.$('#tab-roll').hidden, CMOD.instOf(T()).model, keys()], [false, true, RIG.ID, 'i1,i1/env1,i1/filter,i1/fx,i1/oscA,out']);
   sel('i1', 'out');
   assert.equal(W().selection.join(','), 'i1,out');
   W().selectMany([]);
@@ -147,7 +145,6 @@ test('the instrument / OUT alone: nothing deleted, no step — a notice says why
 });
 
 test('a selected rig part is removed (its ⋯ Remove: ⏻ off, one step); two parts and VOICE in one press: both removed in ONE step whose undo turns both back on (the merged ⏻ meta) and whose redo turns both off', async () => {
-  await rigParts();
   assert.equal(PT.add('i1', 'osc'), 'oscB'); await settle();
   assert.equal(PT.add('i1', 'osc'), 'oscC'); await settle();
   assert.deepEqual([base('b.on'), base('c.on'), has('i1/oscB'), has('i1/oscC')], [1, 1, true, true]);

@@ -19,6 +19,7 @@ import { bootMain, makeDom } from './main-sim.mjs';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
 import { openAppStore } from '../appstore.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { initApp } from '../pwa.js?v=9';
 
 const WK = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'; // (a WKWebView: no Version/… Safari/)
@@ -391,7 +392,7 @@ test('G2 render-last (a Serum track\'s last notes): its WAV by the download link
   const ce = console.error; // (the sim's stub DOM cannot style a Serum panel: its own error, not under test)
   console.error = (e, ...r) => { if (!(e && /getElementById/.test(String(e.message || e)))) ce(e, ...r); };
   try {
-    const sx = api.addTrack(MODELS.find(m => m.id === 'serum')); await sim.settle(20);
+    const sx = api.addTrack(MODELS.find(m => m.id === RIG.ID)); await sim.settle(20);
     api.selectTrack(sx.id); await sim.settle(10);
     const T0 = 2e6;
     api.noteOn(62, 0.8, 0, T0); api.noteOff(62, 0, T0 + 200);
@@ -410,7 +411,7 @@ test('(fix R1-F3) Serum › TUN FILE › Load .scl / .kbm / .tun…: on iOS / iP
   console.error = (e, ...r) => { if (!(e && /getElementById/.test(String(e.message || e)))) ce(e, ...r); };
   const D = sim.dom.document, mk = D.createElement, nav = globalThis.navigator, was = { userAgent: nav.userAgent, platform: nav.platform, maxTouchPoints: nav.maxTouchPoints };
   try {
-    const sx = api.addTrack(MODELS.find(m => m.id === 'serum')); await sim.settle(20);
+    const sx = api.addTrack(MODELS.find(m => m.id === RIG.ID)); await sim.settle(20);
     const H = api.sxHost(sx);
     // host.tuningFile() answered with `files` (or cancelled): [the input as it was clicked — accept / multiple / type, hidden, in the
     // document —, a promise of [the import's answer, the input removed]]

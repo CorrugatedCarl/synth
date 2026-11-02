@@ -202,7 +202,7 @@ test('cvReveal: selects the track, focuses the module (k 1 below READ_K); cvModu
   W.k = 0.8;
   cv.reveal(other.id, 'out');
   assert.equal(W.log.at(-1), 'focus out {"k":0.8,"edit":false}');
-  assert.deepEqual(cv.size('serum'), { w: 1200, h: 840 }, 'unseen: the default outline');
+  assert.deepEqual(cv.size(RIG.ID), { w: 1080, h: 560 }, 'unseen: the default outline'); // ((SX0) the Serum tile's 1200 × 840 (W_SERUM) went with it: the rig's tile, the default
   const s = cv.size(I(T()).model);
   assert.equal(s.w, V().modules.get('i1').w);
   assert.deepEqual(cv.size('minimoog'), { w: 1408, h: 736 }, 'a model with a hardware panel: its fixed size (the Hardware layout)');
@@ -210,10 +210,10 @@ test('cvReveal: selects the track, focuses the module (k 1 below READ_K); cvModu
 
 test('monitors ({t: mon, ids}) follow the module: on while the Serum module is on screen, off in ROLL, folded or off screen', async () => {
   await sim.power(); sim.raf(); await sim.settle(5);
-  const t = api.addTrack(undefined); // a classic track; switched to a Serum below
-  api.setTrackModel(t, 'serum'); sim.raf(); await sim.settle(5);
-  assert.equal(I(T()).model, 'serum');
-  assert.deepEqual([...V().modules.keys()].sort(), ['i1', 'i1/fx', 'out']);
+  const t = api.addTrack(undefined); // a classic track; switched to a Serum-engine instrument below ((SX0) a rig: the bundled model left canvas)
+  api.setTrackModel(t, RIG.ID); sim.raf(); await sim.settle(5);
+  assert.equal(I(T()).model, RIG.ID);
+  assert.deepEqual([...V().modules.keys()].sort(), ['i1', 'i1/env1', 'i1/filter', 'i1/fx', 'i1/oscA', 'out']); // ((SX0) a rig: its modules stand too
   // the SerumUI does not load in the simulation: a stand-in panel for this track
   const refresh = { sx: 0, fx: 0 };
   const sxR = cv.sxRec(T(), 'i1'), fxR = cv.fxRec(T(), 'i1/fx'); // (R6: the Serum's and its FX module's records, per device)
@@ -301,9 +301,10 @@ test('the instrument chip (a classic track\'s preset select) follows a preset lo
 });
 
 test('lay through serialize / deserialize, History and duplicateTrack', () => {
+  const x0 = V().modules.get('i1').x; // ((SX0) the track is a rig: its Amplifier stands right of its chain, not at 0 as the Serum did)
   drag(V().modules.get('i1'), 64, 32);
   const lay = JSON.parse(JSON.stringify(T().lay));
-  assert.ok(lay.i1 && lay.i1.x === 64);
+  assert.ok(lay.i1 && lay.i1.x === x0 + 64);
   const back = S.deserialize(S.serialize(P()));
   assert.deepEqual(back.tracks.find(x => x.id === T().id).lay, lay);
   const n = P().tracks.length;
@@ -324,25 +325,30 @@ test('About: the model text and the DX7 diagram in a sheet; they go back when it
   }
 });
 
+// ((SX0) the Serum-engine instrument in these cases is a rig: the bundled model left canvas)
 test('a classic → Serum → classic change keeps the FX module where the user last put it: track.lay holds one FX entry (cvLay, Tidy)', () => {
   api.addTrack(undefined); sim.raf();
   if (MODELS.find(m => m.id === I(T()).model).custom) { api.setTrackModel(T(), 'juno60'); sim.raf(); }
   const x1 = V().modules.get('fx1').x + 320;
   dragW(V().modules.get('fx1'), 320, 0);
   assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y], [x1, 0]);
-  api.setTrackModel(T(), 'serum'); sim.raf();
-  const sf = V().modules.get('i1/fx');
-  assert.deepEqual([sf.x, sf.y], [x1, 0], 'the Serum FX takes its place');
-  dragW(sf, -296, 200);
-  const x2 = Math.round((x1 - 296) / 32) * 32;
-  assert.deepEqual([T().lay['i1/fx'].x, T().lay['i1/fx'].y, 'fx1' in T().lay], [x2, 192, false], 'one FX entry');
+  const i0 = V().modules.get('i1').x;
+  api.setTrackModel(T(), RIG.ID); sim.raf();
+  // ((SX0) a rig lays its group out on arrival (Tidy's rule, sxLayParts — IMPL-WC §6): its own FX stands in the group, not on fx1's place as the
+  // Serum's whole-panel FX took it, and its Amplifier (the instrument's module) right of its chain — di further right, where the classic comes
+  // back. The user's drag ends where it ended relative to the instrument (x1 − 296, 200) — one FX entry, and back to a classic where the user
+  // last put it, as it was)
+  const sf = V().modules.get('i1/fx'), s0 = { x: sf.x, y: sf.y }, di = V().modules.get('i1').x - i0;
+  dragW(sf, x1 - 296 + di - s0.x, 200 - s0.y);
+  const x2 = Math.round((x1 - 296 + di) / 32) * 32, y2 = 192;
+  assert.deepEqual([T().lay['i1/fx'].x, T().lay['i1/fx'].y, 'fx1' in T().lay], [x2, y2, false], 'one FX entry');
   api.setTrackModel(T(), 'juno60'); sim.raf();
   const f = V().modules.get('fx1');
-  assert.deepEqual([f.x, f.y], [x2, 192], 'back to a classic: where the user last put it');
+  assert.deepEqual([f.x, f.y], [x2, y2], 'back to a classic: where the user last put it');
   cv.tidy();
   assert.deepEqual(['fx1' in T().lay, 'i1/fx' in T().lay], [true, false], 'Tidy keeps one FX entry too');
   cv.undo();
-  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [x2, 192], 'undo of the Tidy');
+  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [x2, y2], 'undo of the Tidy');
 });
 
 test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the simple one and i cant switch back"): each switch one History step from the module menu, the panel re-rendered in that layout at its fixed size, the check mark on it, values and the preset kept — several round trips, undo / redo both ways, a move, Tidy, reload and duplicate', () => {
@@ -457,7 +463,7 @@ test('track switch (1c): the frames and the camera at once, the bodies over the 
   const vp = sim.$('#viewport'), done = async () => { for (let i = 0; i < 60 && vp.hasAttribute('data-cv-mounting'); i++) { await sim.settle(40); sim.raf(); } };
   { // a slow first load: hidden for at most CV_MOUNT_MAX (500 ms), then shown (the bodies' own "Loading…")
     const t0 = performance.now();
-    api.addTrack(MODELS.find(m => m.id === 'serum')); sim.raf();
+    api.addTrack(MODELS.find(m => m.id === RIG.ID)); sim.raf();
     await done();
     const ms = performance.now() - t0;
     assert.ok(!vp.hasAttribute('data-cv-mounting') && ms < 1100, 'shown after the cap, not 1.5 s: ' + Math.round(ms) + ' ms');
@@ -471,10 +477,10 @@ test('track switch (1c): the frames and the camera at once, the bodies over the 
   const ptr = () => cv.panel() && cv.panel().track.track; // (milestone 3 R1: a panel's track is its instrument's view)
   assert.notEqual(ptr(), a, 'its panel not built yet (the next frame)');
   sim.raf();
-  if (I(a).model !== 'serum') assert.equal(ptr() === a, true, 'the first frame: the nearest body (the instrument) built');
+  if (!MODELS.find(m => m.id === I(a).model).custom) assert.equal(ptr() === a, true, 'the first frame: the nearest body (the instrument) built');
   await done();
   assert.equal(vp.hasAttribute('data-cv-mounting'), false, 'shown once every body is in');
-  if (I(a).model !== 'serum') assert.equal(ptr() === a, true, 'the panel is the new track\'s');
+  if (!MODELS.find(m => m.id === I(a).model).custom) assert.equal(ptr() === a, true, 'the panel is the new track\'s');
   // an edit while mounting completes the switch at once
   api.selectTrack(b.id);
   assert.equal(vp.hasAttribute('data-cv-mounting'), true);
@@ -490,13 +496,13 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
   assert.ok(all(), 'add');
   cv.duplicateTrack(t); sim.raf();
   assert.ok(all(), 'duplicate');
-  api.setTrackModel(T(), 'serum'); sim.raf();
+  api.setTrackModel(T(), RIG.ID); sim.raf(); // ((SX0) the Serum-engine instrument: a rig; the canonical shape keeps its name)
   assert.deepEqual([Object.keys(T().dev).sort(), G.compileTrack(T()).shape], [['i1', 'out'], 'serum']);
   cv.undo(); sim.raf();
   assert.ok(all(), 'undo');
   assert.deepEqual([I(T()).model, Object.keys(T().dev).sort(), G.compileTrack(T()).shape], ['dx7', ['fx1', 'i1', 'out'], 'classic']);
   cv.redo(); sim.raf();
-  assert.ok(all() && I(T()).model === 'serum', 'redo');
+  assert.ok(all() && I(T()).model === RIG.ID, 'redo');
   for (const x of P().tracks) assert.equal(G.compileTrack(x).canonical, true, x.name);
   const json = JSON.parse(JSON.stringify(P()));
   assert.ok(json.tracks.every(x => !('model' in x) && x.dev), 'the autosave / History form: v2 only');
@@ -504,9 +510,10 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
   const txt = await cv.classicFile();
   const v1 = JSON.parse(txt);
   assert.equal('schema' in v1, false);
-  assert.deepEqual(v1.tracks.map(x => [x.id, x.model, !!x.fx, 'dev' in x]), P().tracks.map(x => [x.id, I(x).model, true, false]));
+  const mainId = x => (I(x).model === RIG.ID ? 'serum' : I(x).model); // ((SX0, S2) a rig is saved as main's Serum (toV1): the regret path
+  assert.deepEqual(v1.tracks.map(x => [x.id, x.model, !!x.fx, 'dev' in x]), P().tracks.map(x => [x.id, mainId(x), true, false]));
   const back = S.deserialize(v1);
-  assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(x => I(x).model), 'main\'s song.js reads each track\'s instrument');
+  assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(mainId), 'main\'s song.js reads each track\'s instrument');
 });
 
 test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Simple layout inside that one step; Hardware brings it back (a tap on the current model\'s tile switches its layout both ways); Serum ignores it; the choice persists; the tray never closes itself', async () => {
@@ -514,9 +521,9 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   assert.deepEqual([tiles.layout(), tiles.view()], ['hw', 'hw'], 'Hardware by default');
   // (2026-10-19) the switch is a dropdown: #srcView opens #srcViewMenu, its Simple item picks (was: the segmented pair's
   // Simple button, aria-pressed; now the item's aria-checked and the button's label)
-  const vb = sim.$('#srcView'), vm = sim.$('#srcViewMenu'), simple = vm.children[1], serum = vm.children[2];
+  const vb = sim.$('#srcView'), vm = sim.$('#srcViewMenu'), simple = vm.children[1], rigV = vm.children[2]; // ((SX0) the rig view, third — the Serum view's place
   const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
-  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules'], 'false']); // ((MOD1, the user's Q5) the Modulators' own view after the rig's; (WC) the rig's view after Serum; (7a) Drums: the drum machines; (8) Controllers: the Pads module; (9) Moog modules: the 900 Series)
+  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules'], 'false']); // ((MOD1, the user's Q5) the Modulators' own view after the rig's; (WC) the rig's view after Serum; (7a) Drums: the drum machines; (8) Controllers: the Pads module; (9) Moog modules: the 900 Series)
   tap(vb);
   assert.deepEqual([tiles.viewOpen(), vb.getAttribute('aria-expanded')], [true, 'true']);
   tap(simple); // (a pick closes it)
@@ -535,16 +542,17 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   n = hsteps();
   assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
   assert.deepEqual([I(T()).model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
-  // (2026-10-19) the Serum view: the Serum tile and the Modulators only (remembered); the classics' layout stays Simple
-  tap(vb); tap(serum);
+  // (2026-10-19) the Serum view: the Serum tile and the Modulators only (remembered); the classics' layout stays Simple — ((SX0) the rig view
+  // now: its tile, its sections and the Modulators)
+  tap(vb); tap(rigV);
   const shownIds = () => tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
   assert.deepEqual([tiles.view(), tiles.layout(), api.store.get('synth.cv.trayLayout', null), shownIds(), sim.$('#srcModSec').hidden, tiles.modTiles().length],
-    ['serum', 'flow', 'serum', ['serum'], false, 10]); // (2b: the ten modulator tiles)
-  // Serum: no hardware panel — the view's layout does nothing to it; in track mode its tile adds a Serum track
+    [RIG.VIEW, 'flow', RIG.VIEW, [RIG.ID], false, 10]); // (2b: the ten modulator tiles)
+  // a rig: no hardware panel — the view's layout does nothing to it; in track mode its tile adds a rig track
   sh.cvOpenSources('track'); sim.raf();
-  assert.deepEqual([tiles.mode(), tiles.view()], ['track', 'serum'], '+ Track opens the view last used');
-  sh.srcPick('serum', 'track'); sim.raf();
-  assert.deepEqual([I(T()).model, !!(T().lay && T().lay.i1 && T().lay.i1.ui), tiles.mode()], ['serum', false, 'replace']);
+  assert.deepEqual([tiles.mode(), tiles.view()], ['track', RIG.VIEW], '+ Track opens the view last used');
+  sh.srcPick(RIG.ID, 'track'); sim.raf();
+  assert.deepEqual([I(T()).model, !!(T().lay && T().lay.i1 && T().lay.i1.ui), tiles.mode()], [RIG.ID, false, 'replace']);
   // Escape: the dropdown first, the tray stays open
   tap(vb);
   assert.deepEqual([sh.cvShellEscape(), tiles.viewOpen(), sh.shell.src.isOpen()], [true, false, true]);

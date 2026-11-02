@@ -717,13 +717,13 @@ test('FXRackUI: module menu — presets (v2 payloads, locks kept, v1 payloads re
   assert.equal(st.s.locks.p.includes('fx.cho.depth'), false);
   assert.deepEqual(st.s.midi, {});
   assert.ok(st.s.matrix.some(r => r.dst === 'fx.cho4.depth'));                        // other instances keep theirs
-  // Convert to Serum 2 Module (S1 phaser): same pids keep n, POLES 6 (Phase-1 sound), DEPTH 2 0
+  // Convert to the current module (S1 phaser): same pids keep n, POLES 6 (Phase-1 sound), DEPTH 2 0
   const Ph = () => st.fx.racks[0].mods.find(x => x.id === 'phs');
   Ph().p.depth = 0.66;
   rack.refresh();
   open('phs');
-  assert.ok(menuLabels(d).includes('Convert to Serum 2 Module'));
-  pick(d, 'Convert to Serum 2 Module');
+  assert.ok(menuLabels(d).includes('Convert to the current module'));
+  pick(d, 'Convert to the current module');
   assert.equal(Ph().v, 2);
   assert.equal(Ph().p.depth, 0.66);
   near(core.lawValue('fx.q.poles', Ph().p.poles, { v: 2, racks: [{ mods: [Object.assign(inst('q', 'phs'), { p: Ph().p })], byp: 0, lock: 0, route: 0 }, { mods: [] }, { mods: [] }] }), 6, 1e-9);
@@ -741,13 +741,16 @@ test('FXRackUI: module menu — presets (v2 payloads, locks kept, v1 payloads re
 test('FXRackUI: reverb S1 → S2 conversion maps Plate t → pre-delay, c → damp, w → width (confirmed)', () => {
   const R = inst('rev', 'rev', 1); R.sub.type = 0; R.p.t = 0.5; R.p.c = 0.4; R.p.w = 0.7; R.p.size = 0.6; R.p.on = 1;
   const { rack, st, d } = mkRack({ fx: fx2([R]) });
-  globalThis.confirm = () => true;
+  const asked = [];
+  globalThis.confirm = m => { asked.push(m); return true; };
   try {
     fire(one(panelOf(rack, 'rev'), 'fxr-pre'), 'click');
-    pick(d, 'Convert to Serum 2 Module');
+    pick(d, 'Convert to the current module');
   } finally { delete globalThis.confirm; }
   const I = st.fx.racks[0].mods[0];
   assert.deepEqual([I.v, I.p.type, I.p.size, I.p.damp, I.p.width, I.p.on], [2, 0, 0.6, 0.4, 0.7, 1]);
+  assert.deepEqual(asked, ['Convert this reverb to the current module? Its sound changes slightly (the parameter mapping is approximate).']); // (SX0: no Serum word)
+  assert.match(st.notes.at(-1), / converted to the current module$/);
   assert.deepEqual(I.sub, {});
   assert.equal(txt(rack, 'fx.rev.pre'), '100 ms');
   rack.destroy();
@@ -1242,7 +1245,7 @@ test('FXRackUI: a v1 host without v2Fx never receives a v2 state — an edit onl
   rack.setLock(1);                                                                   // a bus lock
   assert.equal(st.edits.length, n0);                                                 // refused before the host saw them
   assert.equal(st.notes.length, 5);
-  assert.ok(st.notes.every(t => /Serum 2 FX rack/.test(t)), JSON.stringify(st.notes));
+  assert.ok(st.notes.every(t => /current FX rack/.test(t)), JSON.stringify(st.notes));
   assert.equal(st.fx, obj);
   assert.equal(st.fx.v, 1);
   assert.equal(JSON.stringify(st.fx.p), p0);
@@ -1689,9 +1692,9 @@ test('FXRackUI: a missing / empty IR overview is not cached — asked again late
 test('FXRackUI: S1 badges explain themselves (no conversion promised for Hyper / Flanger); Convolve shows EMBED for user IRs', () => {
   const { rack, st } = mkRack({ fx: fx2([inst('hyper', 'hyper'), inst('dist', 'dist', 1), inst('conv', 'conv')]) });
   const badge = id => one(rack.rowEls.find(r => r.row.kind === 'inst' && r.row.id === id).el, 'fxr2-s1');
-  assert.match(badge('hyper').title, /no Serum 2 variant/);
-  assert.match(badge('dist').title, /Convert to Serum 2/);
-  assert.match(one(panelOf(rack, 'hyper'), 'fxr2-s1').title, /no Serum 2 variant/);
+  assert.match(badge('hyper').title, /no current variant/);
+  assert.match(badge('dist').title, /Convert to the current module/);
+  assert.match(one(panelOf(rack, 'hyper'), 'fxr2-s1').title, /no current variant/);
   const emb = one(panelOf(rack, 'conv'), 'fxr2-emb');
   assert.ok(emb.classList.contains('fxr2-hide'));                                     // factory IR
   rack.setIr('conv', 'ir:abc');

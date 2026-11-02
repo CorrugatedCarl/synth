@@ -25,6 +25,7 @@ const wt = await imp('wt.js');
 const smp = await imp('smp.js');
 const work = await imp('smpwork.js');
 const A = await imp('assets.js');
+const { RIG } = await imp('rig-core.js'); // ((SX0) the farm's Serum-engine loops: the rig)
 const CG = await imp('cv-graph.js'), CM = await imp('cv-migrate.js'), CMOD = await imp('cv-model.js'); // (main.js buildPatch: the canonical compile, stage 1c)
 const notImpl = fn => assert.throws(fn, e => e && e.code === 'ENOTIMPL');
 
@@ -61,7 +62,7 @@ test('§10.2–§10.4: FACTORY_SAMPLES and FACTORY_IRS — ids, categories, root
     assert.ok(['Vocal', 'Tonal', 'Loops', 'Textures', 'FX'].includes(s.cat) && s.seconds > 0 && s.root >= 0 && s.root <= 127);
     assert.equal(s.granFirst, ['Textures', 'Vocal', 'Loops'].includes(s.cat) ? 1 : 0);
     if (s.src === 'farm') {
-      if (s.model === 'serum') {
+      if (s.model === RIG.ID) { // ((SX0, IMPL-SX0 §6.2) the farm's Serum-engine loops play on the rig: the same presets, the same patch
         const v1 = core.FACTORY_PRESETS_V1.map(p => p.name);
         for (const p of s.presets) assert.ok(v1.includes(p), s.name + ': Phase-1 Serum preset ' + p);
         assert.ok(Math.abs(s.bars * 4 * 60 / s.bpm - s.seconds) < 1e-9, s.name + ' length = bars at the tempo');
@@ -418,7 +419,7 @@ test('§10.1: a Serum render takes its wavetables from the request and leaves no
   const { F, g } = farm();
   F.ready();
   const p = core.FACTORY_PRESETS_V1.find(x => x.name === 'Octave Runner') || core.FACTORY_PRESETS_V1[0];
-  const sx = models.MODELS.find(m => m.id === 'serum');
+  const sx = models.MODELS.find(m => m.id === RIG.ID); // ((SX0) the Serum-engine model that remains
   const vals = { s: core.normalizeSerum(JSON.parse(JSON.stringify(p.v.s))) };
   const patch = models.patchFor(sx, vals, core.normalizeFx(JSON.parse(JSON.stringify(p.fx || core.defaultFx())), vals.s), { sr: 48000, bpm: 128 });
   const entryOf = id => { if (id.startsWith('noise:')) return wt.makeNoise(id); const t = wt.factoryTable(id); return t ? wt.makeEntry(id, t) : null; };
@@ -583,9 +584,11 @@ test('§10.1: patchFor — main.js buildPatch adds only live-session fields; far
       assert.deepEqual(f.wtIds, []);
     }
   }
-  const sx = A.farmPatch('serum', 'Punch Kick', 120);
-  assert.ok(sx.patch.engine === 'serum' && sx.wtIds.length >= 1 && sx.wtIds.every(id => /^(factory|noise|sub):/.test(id)), 'Serum: the migrated preset with its tables');
-  const pk = models.MODELS.find(m => m.id === 'serum').presets.find(p => p.name === 'Punch Kick');
-  assert.deepEqual(sx.patch, models.patchFor('serum', JSON.parse(JSON.stringify(pk.v)), null, { sr: 48000, bpm: 120, drift: 0, hiss: 0 }), 'Serum: the default rack too (§10.1 FX defaultFx())');
+  const sx = A.farmPatch(gen.SX_FARM, 'Punch Kick', 120); // ((SX0) the farm's Serum-engine model: the rig — the same patch, tests/ref-SX0 farm:*)
+  assert.equal(gen.SX_FARM, RIG.ID, 'smpgen\'s farm id is rig-core\'s RIG.ID (not imported: smpgen stays a leaf)');
+  assert.ok(sx.patch.engine === 'serum' && sx.wtIds.length >= 1 && sx.wtIds.every(id => /^(factory|noise|sub):/.test(id)), 'Serum engine: the migrated preset with its tables');
+  const pk = models.MODELS.find(m => m.id === RIG.ID).presets.find(p => p.name === 'Punch Kick');
+  assert.deepEqual(sx.patch, models.patchFor(RIG.ID, JSON.parse(JSON.stringify(pk.v)), null, { sr: 48000, bpm: 120, drift: 0, hiss: 0 }), 'Serum engine: the default rack too (§10.1 FX defaultFx())');
+  assert.deepEqual(gen.FACTORY_SAMPLES.filter(s => s.src === 'farm' && models.isSxId(s.model)).map(s => [s.name, s.model]), [['Drum Loop 120', RIG.ID], ['Break 96', RIG.ID], ['Arp Loop 128', RIG.ID]]);
   assert.throws(() => A.farmPatch('dx7', 'Nope', 120), /unknown preset/);
 });

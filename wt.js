@@ -1238,7 +1238,7 @@ export function parseClm(text) {
 }
 export function clmText(o) {
   const size = Math.max(1, Math.round(+(o && o.size) || FRAME)), morph = clamp((o && o.morph) | 0, 0, 9), factory = clamp((o && o.factory) | 0, 0, 9);
-  return `<!>${size} ${morph}${factory}000000 wavetable (www.xferrecords.com)`;
+  return `<!>${size} ${morph}${factory}000000 wavetable (SYNTH)`;
 }
 
 export function parseTxtOverride(text) {

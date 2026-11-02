@@ -120,8 +120,9 @@ test('1f: the current instrument is always the primary — setCur changes nothin
 });
 
 test('1f: no ⏻ and no key-zone pill on the bars, the ⋯ menus without device items (Power, Key zone…, Solo, Primary, Duplicate, Delete, Delete panel), every cable and jack read-only', () => {
-  ID.sx = cv.add('serum', { x: 0, y: 2400 }); sim.raf();
-  assert.equal(keys().includes(ID.sx + '/fx'), true, 'a Serum with its own FX module');
+  // ((SX0) the Serum-engine instrument is a rig — the bundled model left canvas: its own FX module as the Serum's, and its modules)
+  ID.sx = cv.add(RIGW.ID, { x: 0, y: 2400 }); sim.raf();
+  assert.equal(keys().includes(ID.sx + '/fx'), true, 'a rig with its own FX module');
   for (const [k, m] of V().modules) {
     const pw = m.bar.children.filter(c => /\bcv-pow\b/.test(c.className || ''));
     assert.deepEqual([pw.length, pw.every(c => c.hidden === true), m.el.children.some(c => /\bcv-zone\b/.test(c.className || '')), m.zoneW], [1, true, false, 0], k + ': the ⏻ slot hidden, no pill');
@@ -130,12 +131,17 @@ test('1f: no ⏻ and no key-zone pill on the bars, the ⋯ menus without device 
   assert.deepEqual(labels('i1'), L);
   assert.deepEqual(labels('i2'), L.map(x => x.replace('Minimoog', 'Juno-60')));
   // (stage 2a, IMPL-2a §5: a Serum's ⋯ opens its Mod list — "Modulation list…", lane D's choice for the mod list's entry)
-  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Make it a ' + RIGN, 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((WC §3.5, lane H) + Make it a <NAME> (Q4 (a)) // ((WC, IMPL-WC §6) no Show parts / Bundle on a Serum's ⋯: it is the whole panel)
+  // ((SX0) a rig's ⋯ — the Amplifier's (IMPL-WC §8.2): About the <NAME>…, Replace with…, Init, Modulation list…; its panel's own items join once its
+  // face mounts, which this sim never loads. "About the Serum…" and Make it a <NAME> left with the bundled model)
+  assert.deepEqual(labels(ID.sx), ['About the ' + RIGN + '…', 'Replace with…', 'Init', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
   assert.deepEqual([labels('fx1'), labels(ID.sx + '/fx'), labels('out')], [['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold']]);
-  const C = V().cables.list();
+  // ((SX0) the rig's own connections — its internal cords, cv-cables `int` records of its device — and its modules' jack-row jacks are its edits
+  // (plug, pull, re-patch: IMPL-WC §4.4, canvas-WC-sim); every device wire and every other jack stays read-only)
+  const C = V().cables.list().filter(c => !(c.int && c.id.startsWith('x:' + ID.sx + ':')));
   assert.ok(C.length >= 4, C.length + ' cables');
   assert.deepEqual(C.map(c => !!c.readonly), C.map(() => true), 'every cable read-only');
-  const J = V().jacks();
+  const own = id => (id.startsWith(ID.sx + '.') || (id.startsWith(ID.sx + '/') && !id.startsWith(ID.sx + '/fx.'))) && id !== ID.sx + '.out';
+  const J = V().jacks().filter(j => !own(j.id) || j.id === ID.sx + '/oscA.warp'); // (its oscillator's WARP jack: read-only on a rig too)
   assert.deepEqual(J.map(j => j.el.hasAttribute('data-ro') && j.el.getAttribute('role') !== 'button'), J.map(() => true), 'every jack read-only: ' + J.map(j => j.id).join(' '));
   V().cables.select(C.find(c => c.id === T().wires[0].id).id);
   assert.equal(V().cables.selected(), null, 'never selected (no × Disconnect)');
@@ -214,7 +220,9 @@ test('per instrument: Hardware / Simple of a second instrument (its lay key, its
   assert.equal(cv.instUi(T(), 'i2'), 'hw');
   cv.tidy(); sim.raf();
   const L = T().lay, x = k => L[k].x;
-  assert.deepEqual([x('i1'), x('i2'), x(ID.sx), x('fx1') > x('i1'), x('out') > x('fx1'), L.i2.y > L.i1.y, cv.hist.undoLabel], [0, 0, 0, true, true, true, 'Tidy']);
+  // ((SX0) the third instrument is a rig: Tidy lays its chain left → right (sources → filters → the Amplifier, WC review 2 P2-5), so the
+  // instruments' column stands right of its Oscillator and Filter — at 1024, not 0 — one column still)
+  assert.deepEqual([x('i1'), x('i2'), x(ID.sx), x('fx1') > x('i1'), x('out') > x('fx1'), L.i2.y > L.i1.y, cv.hist.undoLabel], [1024, 1024, 1024, true, true, true, 'Tidy']);
   cv.undo(); sim.raf();
 });
 
@@ -223,7 +231,7 @@ test('⚙ Measure this device: without a Worker here it fails with the reason in
   assert.equal(sh0.btn.textContent, 'Measure this device');
   await cv.measure(sh0.btn, sh0.st);
   assert.deepEqual([sh0.btn.textContent, note().length > 0], ['Measure this device', true], note());
-  const tile = () => sh.shell.tiles.tiles().find(b => b.getAttribute('data-model') === 'serum').children.find(c => c.className === 'cv-tcost').textContent;
+  const tile = () => sh.shell.tiles.tiles().find(b => b.getAttribute('data-model') === RIGW.ID).children.find(c => c.className === 'cv-tcost').textContent;
   const before = tile();
   const fx0 = cv.fx.cost('conv');
   api.store.set('synth.cv.devFactor', 4); cv.costLabels();
@@ -251,10 +259,10 @@ const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf();
 const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
 
 test('(2026-10-22) single-instrument tracks: a Serum\'s "+" adds into its own FX; a classic always has its panel (the split gives one straight into OUT an empty one) — a hook-made shape without one has no FX module to add into, never a free panel', () => {
-  fresh('serum');
+  fresh(RIGW.ID);
   const n = hsteps();
   assert.equal(typeof cv.fx.addEffect('i1/fx', 'dly'), 'string'); sim.raf();
-  assert.deepEqual([keys(), JSON.stringify(T().dev.i1.fx.racks[0].mods.map(x => x.type)), hsteps()], ['i1,i1/fx,out', '["dly"]', n]);
+  assert.deepEqual([keys(), JSON.stringify(T().dev.i1.fx.racks[0].mods.map(x => x.type)), hsteps()], ['i1,i1/env1,i1/filter,i1/fx,i1/oscA,out', '["dly"]', n]); // ((SX0) a rig: its modules stand too
   const t = fresh('dx7');
   CMOD.removePanel(t, 'fx1'); api.sendPatch(t); cv.render(); sim.raf(); // (cv-model directly: no 1f UI does this)
   const m = hsteps();
@@ -266,7 +274,7 @@ test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep plac
   fresh('minimoog');
   cv.add('juno60', { x: 0, y: 2400 }); sim.raf();
   assert.deepEqual(T().wires.map(w => w.a + '>' + w.b).sort(), ['fx1.out>out.in', 'i1.out>fx1.in', 'i2.out>fx1.in'], 'the Juno-60 into the shared panel');
-  cv.setTrackModel(cv.view1e('i1'), 'serum'); sim.raf();
+  cv.setTrackModel(cv.view1e('i1'), RIGW.ID); sim.raf();
   assert.deepEqual([keys().includes('i1/fx'), keys().includes('fx1')], [true, true], keys());
   assert.notEqual(at('i1/fx'), at('fx1'), 'not on top of each other: ' + at('i1/fx') + ' / ' + at('fx1'));
   cv.tidy(); sim.raf();
@@ -394,16 +402,16 @@ test('U9: the soft caps on a touch device (page sim, through the add hook: no UI
     assert.equal(T().dev[four], undefined);
     api.notice('', 0);
     api.store.set('synth.cv.devFactor', 50);
-    const s1 = cv.add('serum', null); sim.raf();
-    assert.deepEqual([T().dev[s1].model, asked.length], ['serum', 0], 'the first heavy Serum: no question');
-    assert.equal(cv.add('serum', null), null, 'a second: asked, declined');
-    assert.match(asked.at(-1), /already has a heavy Serum/);
+    const s1 = cv.add(RIGW.ID, null); sim.raf();
+    assert.deepEqual([T().dev[s1].model, asked.length], [RIGW.ID, 0], 'the first heavy Serum: no question');
+    assert.equal(cv.add(RIGW.ID, null), null, 'a second: asked, declined');
+    assert.match(asked.at(-1), new RegExp('already has a heavy ' + RIGN)); // ((SX0) the rig's words: cv-cost names the device's model
   } finally { globalThis.confirm = was; cv.touch(null); api.store.set('synth.cv.devFactor', 0); }
 });
 
 test('U6: two Serums on one track keep their own live-input subscriptions (clip recording, key lights): a played note reaches both; one leaving keeps the other', () => {
-  const t = fresh('serum');
-  const s2 = cv.add('serum', null); sim.raf();
+  const t = fresh(RIGW.ID);
+  const s2 = cv.add(RIGW.ID, null); sim.raf();
   const got = [];
   api.sxHost(t, 'i1').onInput((on, n) => got.push('i1:' + on + ':' + n));
   api.sxHost(t, s2).onInput((on, n) => got.push(s2 + ':' + on + ':' + n));
@@ -417,8 +425,8 @@ test('U6: two Serums on one track keep their own live-input subscriptions (clip 
 });
 
 test('U7: Mod wheel → WT Pos scrubs the Serum whose WT editor is open (not the primary)', () => {
-  const t = fresh('serum');
-  const s2 = cv.add('serum', null); sim.raf();
+  const t = fresh(RIGW.ID);
+  const s2 = cv.add(RIGW.ID, null); sim.raf();
   const pr = api.prefs(), was = pr.wheelWt, wt = id => T().dev[id].vals.s.p['a.wt'];
   const w1 = wt('i1');
   pr.wheelWt = true;

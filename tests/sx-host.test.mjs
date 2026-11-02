@@ -1,11 +1,13 @@
 import './v8-guard.mjs';
-// sx-host.js + sx-ui-mod.js (SYNTH Canvas milestone 3 lane B, docs/canvas/IMPL-3.md §2.2–2.3, §1.4): the Serum host and
-// its views — mount alone and twice (one state, unique ids), the view registry and the paint gating of shown views (H4),
-// the label-drag host guard, bare panels (the canvas bar's chrome gone, every own head control kept, View.power), the slot
-// host (device ⇄ slot round trip for LFO / ENV / chaos / macro, data-nomod, the o.live / o.edit / o.cancel / o.set phases,
-// each kit option), the ENV curve values, H1 / H3 lazy builds, CLIP's twins, VOICE and its fold-outs, the part widths and
-// the element / canvas budget of one modulator, the part CSS. graph.js / fx-ui.js / wtedit.js / wt.js are the serum-ui stubs (no
-// canvases drawn), the sub-panel modules real. Never passes fake-DOM nodes to assert (safeAssert: nodes become tags).
+// sx-host.js + sx-ui-mod.js (SYNTH Canvas milestone 3 lane B, docs/canvas/IMPL-3.md §2.2–2.3, §1.4): the host and its
+// views — mount alone and twice (one state, unique ids), the view registry ('arp' / 'clip' since SX0) and the paint gating of
+// shown views (H4), the label-drag host guard, bare panels (the canvas bar's chrome gone, every own head control kept,
+// View.power), the slot host (device ⇄ slot round trip for LFO / ENV / chaos / macro, data-nomod, the o.live / o.edit /
+// o.cancel / o.set phases, each kit option), the ENV curve values, H1 / H3 lazy builds, CLIP's twins, the element / canvas
+// budget of one modulator, the part CSS. (SX0, lane K) The stage-3 part views left with the parts machinery: the cases mount
+// the DONOR panels — the classes a rig face (rig-ui) or a slot face builds on — through host.mount(builder) (donor / slotDonor
+// below). graph.js / fx-ui.js / wtedit.js / wt.js are the serum-ui stubs (no canvases drawn), the sub-panel modules real.
+// Never passes fake-DOM nodes to assert (safeAssert: nodes become tags).
 // Run alone: node --max-old-space-size=2048 --test tests/sx-host.test.mjs
 import test from 'node:test';
 import assertBase from 'node:assert/strict';
@@ -22,6 +24,7 @@ globalThis.FXDSP = null;
 // imported before any DOM exists: nothing touches document / window at top level
 const H = await import('../sx-host.js?v=9');
 const M = await import('../sx-ui-mod.js?v=9');
+const OSC = await import('../sx-ui-osc.js?v=9');
 const core = await import('../serum-core.js?v=9');
 const song = await import('../song.js?v=9');
 const gx = await import('../graph.js?v=9');
@@ -55,6 +58,34 @@ function parts(over) {
   const X = H.createHost(host, { doc });
   return { doc, host, box, X, s: () => host.st.s };
 }
+// (SX0, lane K) a part's donor panel on host X, bare, as a view of X (host.mount with a builder): the panel class a rig face builds
+// on (rig-ui buildFace: the shell's ⏻ / module handed to the View, the module menu or the panel's own ⋯); 'arp' / 'clip' are still
+// sx-ui-mod's views (mountPart, Q1)
+const DONOR = {
+  osc: (r, K, k) => new OSC.OscPanel(r, K, k), sub: (r, K) => new OSC.SubPanel(r, K), noise: (r, K) => new OSC.NoisePanel(r, K),
+  filter: (r, K, k) => new OSC.FilterPanel(r, K, k), env: (r, K, k) => new M.EnvPanel(r, K, k), lfo: (r, K, k) => new M.LfoPanel(r, K, k),
+  macros: (r, K) => new M.MacrosPanel(r, K), voicing: (r, K) => new M.VoicingPanel(r, K), chaos: (r, K, k) => new M.ChaosRow(r, K, k, {}),
+};
+const OWN_MENU = new Set(['env', 'lfo', 'chaos']);   // (their ⋯ is the panel's own menuItems(); the others' the shell's module menu)
+const donorOf = part => {
+  const p = String(part), o = /^osc([ABC])$/.exec(p), e = /^env([1-4])$/.exec(p), l = /^lfo(\d+)$/.exec(p);
+  return o ? ['osc', 'ABC'.indexOf(o[1])] : e ? ['env', +e[1] - 1] : l ? ['lfo', +l[1] - 1] : p === 'filter2' ? ['filter', 1] : [p, 0];
+};
+function donorView(X, kind, k, root, args) {
+  return X.mount((r, K) => {
+    const P = DONOR[kind](r, K, k), sh = P.shell || {};
+    return { el: P.el, panel: P, power: sh.power || null, module: sh.module || null,
+      menuItems: () => (OWN_MENU.has(kind) ? P.menuItems() : sh.menuItems ? sh.menuItems() : []), destroy: () => P.destroy() };
+  }, root, Object.assign({ k, bare: true, kind }, args));
+}
+function donor(X, part, root, args) {
+  if (part === 'arp' || part === 'clip') return M.mountPart(X, part, root, args);
+  const [kind, k] = donorOf(part);
+  return donorView(X, kind, k, root, args);
+}
+// a slot host's donor (what cv-mods-ui's body mounted before MOD1's slot faces): LfoPanel 0 / EnvPanel 1 / ChaosRow 0 / MacrosPanel
+const SLOT_KIND = { lfo: 'lfo', env: 'env', chaos: 'chaos', macro: 'macros' };
+const slotDonor = (X, root) => donorView(X, SLOT_KIND[X.kind], X.slot, root, { dev: X.dev });
 // a slot host for a canvas modulator of `kind` (the device in `dev.r`), its calls logged
 function slot(kind, rec, more) {
   const doc = D.fresh(), box = doc.createElement('div'), calls = [], dev = { r: song.normModDev(Object.assign({ kind }, rec)) };
@@ -62,7 +93,7 @@ function slot(kind, rec, more) {
   const o = Object.assign({ doc, get: () => dev.r, bpm: () => 120,
     live: f => calls.push(['live', f]), edit: f => { calls.push(['edit', f]); dev.r = song.normModDev(Object.assign({}, dev.r, JSON.parse(JSON.stringify(f)))); },
     cancel: () => calls.push(['cancel']), set: (k, v) => calls.push(['set', k, v]) }, more);
-  const X = H.slotHost(kind, o), V = M.mountSlot(X, box);
+  const X = H.slotHost(kind, o), V = slotDonor(X, box);
   return { doc, box, X, V, calls, dev, o };
 }
 const knobDrag = (el, dy, o) => {   // a wk knob's vertical drag: start → two moves → end (dy px up)
@@ -70,26 +101,28 @@ const knobDrag = (el, dy, o) => {   // a wk knob's vertical drag: start → two 
 };
 
 /* ================================================================ exports, view kinds */
-test('exports: SerumHost, createHost, slotHost, the view registry, the slot helpers; sx-ui-mod\'s panels, PART_W, partView / mountPart / mountSlot; every part kind registered', () => {
+test('exports: SerumHost, createHost, slotHost, the view registry, the slot helpers; sx-ui-mod\'s panels (the donors) and mountPart; (SX0) the registry holds the Arpeggiator and the Clip sequencer alone, mountPart nothing else; the parts machinery and the main menu gone', () => {
   for (const k of ['SerumHost', 'createHost', 'slotHost', 'defineView', 'viewKinds', 'overlaySlot', 'readSlot', 'storeDensity', 'makeKit', 'PresetBrowser']) assert.equal(typeof H[k], 'function', k);
   assert.deepEqual(H.SLOT, { lfo: 0, env: 1, chaos: 0, macro: 0 });
   assert.equal(H.HOST_OPTS.undo, true);
-  for (const k of ['MacrosPanel', 'EnvPanel', 'LfoPanel', 'CurvePanel', 'VoicingPanel', 'ChaosRow', 'VoiceHeader', 'OutputsPanel', 'QualityPanel', 'TuningPanel', 'MpePanel', 'VcPanel', 'VoicePanel', 'partView', 'mountPart', 'mountSlot']) assert.equal(typeof M[k], 'function', k);
-  assert.deepEqual(H.viewKinds().sort(), ['arp', 'chaos', 'clip', 'curve', 'env', 'filter', 'header', 'lfo', 'macros', 'mpe', 'noise', 'osc', 'outputs', 'quality', 'sub', 'tuning', 'vc', 'voice', 'voicing'].sort());
-  // the parts (serum-core MODULE_FIELDS names + macros, voice) → view kind and slot
-  const P = p => { const v = M.partView(p); return v ? v.kind + ':' + v.k : null; };
-  assert.deepEqual(['oscA', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env1', 'env4', 'lfo1', 'lfo10', 'macros', 'arp', 'clip', 'voice', 'velo', 'nope'].map(P),
-    ['osc:0', 'osc:2', 'sub:0', 'noise:0', 'filter:0', 'filter:1', 'env:0', 'env:3', 'lfo:0', 'lfo:9', 'macros:0', 'arp:0', 'clip:0', 'voice:0', 'curve:velo', null]);
-  // the widths of the 1200 px bundled panel (measured to the layout unit, review 2; cv-module rounds them up to the grid), VOICE = VOICING + 8 + ENV
-  assert.deepEqual([M.PART_W.osc, M.PART_W.sub, M.PART_W.filter, M.PART_W.macros, M.PART_W.env, M.PART_W.lfo, M.PART_W.voicing], [256.65625, 163.734375, 218.328125, 237.265625, 316.375, 395.453125, 210.90625]);
-  assert.equal(M.PART_W.voicing + 8 + M.PART_W.env, M.PART_W.voice);
+  for (const k of ['MacrosPanel', 'EnvPanel', 'LfoPanel', 'CurvePanel', 'VoicingPanel', 'ChaosRow', 'OutputsPanel', 'QualityPanel', 'TuningPanel', 'VcPanel', 'PrefsPanel', 'InfoPanel', 'panelDialog', 'mountPart']) assert.equal(typeof M[k], 'function', k);
+  for (const k of ['VoiceHeader', 'MpePanel', 'VoicePanel', 'partView', 'mountSlot', 'PART_W', 'PART_PH']) assert.equal(k in M, false, k + ' gone (SX0)');
+  for (const k of ['logo', 'MPE_XYZ_LABEL', 'DEFAULT_KEY']) assert.equal(k in H, false, k + ' gone with the main menu (SX0)');
+  for (const k of ['mainMenu', 'about', 'initPreset', 'loadPresetFile', 'revertPreset', 'saveDefault', 'resample', 'renderOscWarp', 'veloAmp', 'vibrato', 'chainMenu', 'saveChainDialog', 'loadChain', 'chains'])
+    assert.equal(k in H.SerumHost.prototype, false, 'SerumHost.' + k + ' gone with the main menu (SX0)');
+  assert.deepEqual(H.viewKinds().sort(), ['arp', 'clip']);
+  const { box, X } = parts({ tracks: () => [], seqCmd() {} });
+  for (const p of ['oscA', 'filter', 'voice', 'macros', 'nope']) assert.equal(M.mountPart(X, p, box), null, p + ': no view');
+  const A = M.mountPart(X, 'arp', box);
+  assert.deepEqual([A.kind, A.root.className, A.root.getAttribute('data-col'), A.root.style.width, X.views.length, box.contains(A.root)], ['arp', 'sx-root sx-part', 'P', '1184px', 1, true]);
+  X.destroy();
   assert.throws(() => H.slotHost('wheel', {}), /no slot/);
 });
 
 /* ================================================================ mount, views, paint gating (H4) */
 test('mount: a part root per view (div.sx-root.sx-part, data-dev, data-col, its width), the panel built on the view\'s own page; twice = two views of one state with unique ids; unmount removes it', async () => {
   const { doc, box, X, s } = parts();
-  const a = M.mountPart(X, 'lfo3', box), b = M.mountPart(X, 'lfo3', box);
+  const a = donor(X, 'lfo3', box, { col: 'C', width: 395.453125 }), b = donor(X, 'lfo3', box, { col: 'C', width: 395.453125 });   // (a face passes its own width: rig-ui)
   await flush(doc);
   assert.equal(X.views.length, 2);
   assert.ok(a.id !== b.id && a.root.id !== b.root.id);
@@ -118,7 +151,7 @@ test('mount: a part root per view (div.sx-root.sx-part, data-dev, data-col, its 
 test('H4: one paint loop over the SHOWN views only — a hidden view\'s binds are not updated, its live callbacks are told shown = false, its canvases not measured; showing it again repaints; anyShown', async () => {
   const { doc, box, X, s } = parts();
   let on = false;
-  const V = X.mount('voicing', box, { shown: () => on }), W = M.mountPart(X, 'noise', box);
+  const V = donor(X, 'voicing', box, { shown: () => on }), W = donor(X, 'noise', box);
   const lives = [];
   X.under(V.page, () => X.kit.live(sh => lives.push(sh)));
   await flush(doc);
@@ -144,7 +177,7 @@ test('the label-drag host guard: only this host\'s module labels are swap / copy
   const one = parts(), doc = one.doc, box2 = doc.createElement('div');
   doc.body.appendChild(box2);
   const host2 = mkHost(), Y = H.createHost(host2, { doc });
-  const a = M.mountPart(one.X, 'oscA', one.box), b = M.mountPart(one.X, 'oscB', one.box), c = M.mountPart(Y, 'oscA', box2);
+  const a = donor(one.X, 'oscA', one.box), b = donor(one.X, 'oscB', one.box), c = donor(Y, 'oscA', box2);
   const ta = doc.createElement('span'), tb = doc.createElement('span'), tc = doc.createElement('span');
   doc.body.append(ta, tb, tc);
   a.labelDrag(ta); b.labelDrag(tb); c.labelDrag(tc);
@@ -166,7 +199,7 @@ test('the label-drag host guard: only this host\'s module labels are swap / copy
 // bar title, then the mouse moved over it with no button down)
 test('no orphaned drag ghost: a press on a canvas bar title whose release goes to the bar (cv-module\'s grab) leaves nothing armed — a later hover over the title, no button down, makes no "Swap · OSC A" ghost; a label drag\'s ghost goes when its title goes mid-drag and on the window\'s blur; the Alt depth drag\'s goes when its view root goes (lostpointercapture at the document) and on the blur', async () => {
   const { doc, box, host, X, s } = parts();
-  const Va = M.mountPart(X, 'oscA', box), Vb = M.mountPart(X, 'oscB', box);
+  const Va = donor(X, 'oscA', box), Vb = donor(X, 'oscB', box);
   await flush(doc);
   const bar = doc.createElement('div'), ta = doc.createElement('span'), barB = doc.createElement('div'), tb = doc.createElement('span');
   bar.append(ta); barB.append(tb); doc.body.append(bar, barB);
@@ -212,7 +245,7 @@ test('no orphaned drag ghost: a press on a canvas bar title whose release goes t
 test('bare: the canvas bar\'s chrome goes (power → View.power, no name / lock mark / chevron / ENV tabs), every own head control stays in the head row; the bar ⏻ keeps its menu and halo', async () => {
   const { doc, box, X, s } = parts();
   const V = {};
-  for (const p of ['oscA', 'sub', 'noise', 'filter', 'env2', 'lfo1', 'macros']) V[p] = M.mountPart(X, p, box);
+  for (const p of ['oscA', 'sub', 'noise', 'filter', 'env2', 'lfo1', 'macros']) V[p] = donor(X, p, box);
   await flush(doc);
   for (const [p, v] of Object.entries(V)) {
     const r = v.root, panel = r.querySelector('.sx-panel');
@@ -252,17 +285,13 @@ test('bare: the canvas bar\'s chrome goes (power → View.power, no name / lock 
   assert.deepEqual(V.oscA.menuItems().slice(0, 5).map(i => i.label), ['Lock Module', 'Init Module', 'Copy', 'Copy (w/mods)', 'Swap with']);
   assert.ok(V.oscA.menuItems().some(i => i.label === 'Enable Pitch Tracking'));
   assert.deepEqual(V.env2.menuItems().filter(i => i.label).map(i => i.label), ['Legato Inverted', 'Grid', 'Voice Steal Retrigger', 'Lock Module', 'Bypass All Destinations', 'Remove All Destinations']);
-  // the oscillator part: the bundled look (sx-opan / data-o: its colour) and a press selects it (s.ui.osc)
-  const b = M.mountPart(X, 'oscB', box);
-  assert.deepEqual([b.root.querySelector('.sx-panel').getAttribute('data-o'), b.root.querySelector('.sx-panel').classList.contains('sx-opan')], ['1', true]);
-  fire(b.root.querySelector('.sx-panel'), 'pointerdown');
-  assert.equal(s().ui.osc, 1);
+  // ((SX0) the registered osc view's bundled look and press-to-select (sx-opan / data-o, s.ui.osc) went with the view registrations)
   X.destroy();
 });
 
 test('H1 / H3: an oscillator part builds its active type view only (others at their first switch); an LFO builds its PATH editor at the first Path type, then keeps it', async () => {
   const { doc, box, X, s } = parts();
-  const O = M.mountPart(X, 'oscA', box);
+  const O = donor(X, 'oscA', box);
   await flush(doc);
   assert.deepEqual(Object.keys(O.panel.panel.built), ['wt']);
   assert.equal(O.root.querySelectorAll('[data-otype]').length, 1);
@@ -273,7 +302,7 @@ test('H1 / H3: an oscillator part builds its active type view only (others at th
   // the gran view registered on the part's own page (its binds paint with it)
   assert.ok(O.page.binds.length > 0 && O.page.canvases.length >= 2);
   const made = () => gx.made.filter(e => e.constructor === gx.PathEditor).length;
-  const n0 = made(), L = M.mountPart(X, 'lfo2', box);
+  const n0 = made(), L = donor(X, 'lfo2', box);
   await flush(doc);
   assert.equal(made(), n0, 'no PATH editor yet');
   s().lfo[1].type = 'path';
@@ -306,7 +335,7 @@ test('slot host: device ⇄ slot round trip for LFO, ENV, chaos and macro (overl
 test('slot host LFO: Serum\'s LFO panel, bare, every destination data-nomod (no cable end, no drop, no Mod Source); a knob gesture = live per move (before any edit) then ONE edit; a rollback = cancel; a toggle = one edit; a view edit (grid) none', async () => {
   const { doc, box, X, V, calls, dev } = slot('lfo', { lfo: { mono: 1 } });
   await flush(doc);
-  assert.deepEqual([V.root.className, V.root.getAttribute('data-nomod'), V.root.style.width, X.opts.undo, X.opts.nomod], ['sx-root sx-part', '1', '395.453125px', false, true]);
+  assert.deepEqual([V.root.className, V.root.getAttribute('data-nomod'), X.opts.undo, X.opts.nomod], ['sx-root sx-part', '1', false, true]);   // ((SX0) its PART_W width went)
   const dests = V.root.querySelectorAll('[data-dest]');
   assert.ok(dests.length >= 5 && dests.every(n => n.getAttribute('data-nomod') === '1'));
   assert.equal(V.root.querySelector('.sx-tname'), null);
@@ -417,15 +446,11 @@ test('slot host macro: Serum\'s 4 × 2 MACROS; each name tile is its jack (data-
   closeMenus(doc);
 });
 
-test('slot host chaos: one chaos row (RATE, BPM, MONO, S&H) with its label as the bundled GLOBAL page draws it ("CHAOS 1"; review 2: the module\'s number); the toggles edit the chaos object whole, BPM the bpm field', async () => {
+test('slot host chaos: one chaos row (RATE, BPM, MONO, S&H) with its label as the bundled GLOBAL page draws it ("CHAOS 1"); the toggles edit the chaos object whole, BPM the bpm field', async () => {
   const { doc, V, calls } = slot('chaos', { chaos: { mono: 1, sh: 0 }, rate: 0.3 });
   await flush(doc);
   assert.equal((V.root.querySelector('.sx-txt') || {}).textContent, 'CHAOS 1');
-  const doc2 = D.fresh(), box2 = doc2.createElement('div'); doc2.body.appendChild(box2);
-  const X2 = H.slotHost('chaos', { doc: doc2, get: () => song.normModDev({ kind: 'chaos' }), devKey: 'h2', live() {}, edit() {}, cancel() {} }), V2 = M.mountSlot(X2, box2);
-  await flush(doc2);
-  assert.equal((V2.root.querySelector('.sx-txt') || {}).textContent, 'CHAOS 2', 'Chaos 2\'s row');
-  V2.destroy(); X2.destroy();
+  // ((SX0) review 2's "CHAOS <n>" by the module id was the registered chaos view's: a slot face titles its bar so — rig-ui.test, slot faces)
   assert.ok(byDest(V.root, 'c1.rate') && byDest(V.root, 'c1.bpm'));
   const tog = t => V.root.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === t);
   fire(tog('S&H'), 'click');
@@ -667,7 +692,7 @@ test('IMPL-FR §3 B3 (§13 P1-2): the heavy displays declare maxHz 60 and a keyN
   X.tNow = () => T;
   WK.clock._reset(); WK.clock.config({ display: 120 });
   try {
-    const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box), N = M.mountPart(X, 'noise', box);
+    const A = donor(X, 'oscA', box), F = donor(X, 'filter', box), N = donor(X, 'noise', box);
     await flush(doc);
     const cvOf = (V, re) => V.page.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
     const rate = cv => [cv.maxHz || 0, typeof cv.keyN === 'function'];
@@ -697,7 +722,7 @@ test('IMPL-FR §3 B3 (§13 P1-2): the heavy displays declare maxHz 60 and a keyN
   } finally { WK.clock._reset(); X.destroy(); }
 });
 
-/* ================================================================ budgets, VOICE, CLIP twins */
+/* ================================================================ budgets, CLIP twins */
 test('budgets (IMPL-3 §1.4): one Serum-faithful modulator ≤ 160 elements and ≤ 2 canvases', async () => {
   for (const kind of ['lfo', 'env', 'macro', 'chaos']) {
     const { doc, V, X } = slot(kind, {});
@@ -709,79 +734,8 @@ test('budgets (IMPL-3 §1.4): one Serum-faithful modulator ≤ 160 elements and 
   }
 });
 
-test('VOICE: the header (preset, undo / redo, menu, MASTER), VOICING beside ENV 1 (fixed, titled, no tabs), the outputs, the fold-outs built at their first opening (host view state)', async () => {
-  const { doc, box, X } = parts({ presets: { list: () => [{ key: 'f:0', name: 'Init', cat: 'Init' }], current: () => 'f:0', load() {} } });
-  const V = M.mountPart(X, 'voice', box);
-  await flush(doc);
-  const r = V.root;
-  assert.deepEqual([r.style.width, r.getAttribute('data-col')], ['535.28125px', 'C']);
-  assert.ok(r.querySelector('.sx-head').querySelector('.sx-pname') && r.querySelector('.sx-undo') && byDest(r, 'g.master') && r.querySelector('.sx-status'));
-  assert.ok(X.browser, 'the preset browser (a host service)');
-  const env = r.querySelectorAll('.sx-panel').find(p => p.getAttribute('aria-label') === 'ENV 1');
-  assert.ok(env && env.querySelector('.sx-tname').textContent === 'ENV 1' && !env.querySelector('.sx-etabs'));
-  assert.ok(byDest(r, 'e1.att') && !byDest(r, 'e1.start'));
-  assert.ok(r.querySelectorAll('.sx-panel').some(p => p.getAttribute('aria-label') === 'VOICING'));
-  assert.ok(byDest(r, 'g.bus1v') && byDest(r, 'g.direct'));
-  const folds = r.querySelectorAll('.sx-foldbtn');
-  assert.deepEqual(folds.map(b => b.textContent), ['▸ QUALITY', '▸ TUNING', '▸ MPE', '▸ VOICE CONTROL', '▸ VELO', '▸ NOTE', '▸ KEYS', '▸ CHAOS 1 / 2']);
-  const n0 = count(r);
-  assert.equal(byDest(r, 'vc.pan'), null);
-  fire(folds[3], 'click');
-  await flush(doc);
-  assert.ok(count(r) > n0 + 50 && byDest(r, 'vc.pan'));
-  assert.equal(folds[3].getAttribute('aria-expanded'), 'true');
-  assert.ok(X.uiState.folds.has('vc'));
-  fire(folds[3], 'click');
-  assert.equal(folds[3].parentNode.querySelector('.sx-foldbody').classList.contains('sx-hidden'), true);
-  // CHAOS 1 / 2 only in S1 mode
-  assert.equal(folds[7].parentNode.classList.contains('sx-hidden'), true);
-  // VOICE's ⋯ items: PREFERENCES / INFO as dialog sheets (a view of the host while open)
-  assert.deepEqual(V.menuItems().map(i => i.label), ['Preferences…', 'Info…']);
-  const nv = X.views.length;
-  V.menuItems()[0].action();
-  const dlg = doc.body.querySelectorAll('.sx-dlg').find(b => b.querySelector('.sx-panel'));
-  assert.ok(dlg && dlg.querySelector('.sx-panel').getAttribute('aria-label') === 'PREFERENCES');
-  assert.equal(X.views.length, nv + 1);
-  fire(dlg.querySelectorAll('button').find(b => b.textContent === 'Close'), 'click');
-  assert.equal(X.views.length, nv);
-  X.destroy();
-});
-
-test('VOICE (parts view) keeps its touch status line: a touched control\'s tip shows in it, and clears after the lift (the bundled panel has none — serum-ui.test)', async () => {
-  const { doc, box, X } = parts();
-  const V = M.mountPart(X, 'voice', box);
-  await flush(doc);
-  const line = V.root.querySelector('.sx-status');
-  assert.ok(line && X.statusEl === line, 'VOICE\'s line is the host\'s status line');
-  assert.equal(line.textContent, '');
-  const m = byDest(V.root, 'g.master');
-  ptr(m, 'pointerdown', 10, 10, { pointerType: 'touch' });
-  assert.match(line.textContent, /^Master/i);
-  ptr(m, 'pointerup', 10, 10, { pointerType: 'touch' });
-  assert.match(line.textContent, /^Master/i);   // stays a moment after the lift
-  X.destroy();
-});
-
-test('VOICE unmounted and remounted (no shell switch): the new VOICE gets its own status line and the touch tip writes to the attached one', async () => {
-  const { doc, box, X } = parts();
-  const a = M.mountPart(X, 'voice', box);
-  await flush(doc);
-  const l1 = a.root.querySelector('.sx-status');
-  assert.ok(l1 && X.statusEl === l1);
-  a.destroy();
-  assert.equal(X.statusEl, null, 'the host drops a status line that went with its VOICE');
-  const b = M.mountPart(X, 'voice', box);
-  await flush(doc);
-  const l2 = b.root.querySelector('.sx-status');
-  assert.ok(l2 && l2 !== l1 && X.statusEl === l2, 'its own line');
-  const m = byDest(b.root, 'g.master');
-  ptr(m, 'pointerdown', 10, 10, { pointerType: 'touch' });
-  assert.match(l2.textContent, /^Master/i);   // the attached line
-  assert.equal(l1.textContent, '');
-  ptr(m, 'pointerup', 10, 10, { pointerType: 'touch' });
-  X.destroy();
-});
-
+// ((SX0) VOICE — VoicePanel / VoiceHeader and the host's touch status line it carried — left with the parts machinery: the Amplifier
+// face holds VOICING, the outputs and the dialogs (rig-ui.test "the Amplifier"; Preferences… / Info… sx-helpers.test))
 test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable end, no drop on the canvas); ARP alone (no MACROS pane); the part power in the bar', async () => {
   const { doc, box, X } = parts({ tracks: () => [], seqCmd() {} });
   const C = M.mountPart(X, 'clip', box), A = M.mountPart(X, 'arp', box);
@@ -797,7 +751,7 @@ test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable en
 test('review 1 F1: a view\'s own disposers and satellites go with it — mounting and destroying bare parts (the ⏻ adopted, the bar titles\' label drags, MACROS\' tile drags) leaves the host\'s offs / sats where they were', async () => {
   const { doc, box, X } = parts();
   const set = () => ['oscA', 'filter', 'macros', 'lfo1'].map(p => {
-    const V = M.mountPart(X, p, box), t = doc.createElement('span');
+    const V = donor(X, p, box), t = doc.createElement('span');
     doc.body.appendChild(t);
     V.labelDrag(t);
     return V;
@@ -808,7 +762,7 @@ test('review 1 F1: a view\'s own disposers and satellites go with it — mountin
   for (let i = 0; i < 3; i++) { const L = set(); await flush(doc); for (const V of L) V.destroy(); }
   assert.deepEqual([X.views.length, X.offs.length, X.sats ? X.sats.size : 0], [0, o0, s0]);
   // while mounted, its satellites are the host's (owns: the bar ⏻ and the title)
-  const V = M.mountPart(X, 'oscA', box), t = doc.createElement('span');
+  const V = donor(X, 'oscA', box), t = doc.createElement('span');
   doc.body.appendChild(t);
   V.labelDrag(t);
   assert.deepEqual([X.owns(V.power), X.owns(t)], [true, true]);
@@ -820,7 +774,7 @@ test('review 1 F1: a view\'s own disposers and satellites go with it — mountin
 test('review 2 P1-2: a view mounted while hidden is painted fully the first time it shows (reshow — the canvas\' on-screen change — queues one full paint): MACROS\' names, the filter\'s type rows; a view a paint skipped is stale until shown again; nothing stale → no paint', async () => {
   const { doc, box, X, s } = parts();
   let on = false;
-  const Vm = M.mountPart(X, 'macros', box, { shown: () => on, opts: { tiles: 'jack' } }), Vf = M.mountPart(X, 'filter', box, { shown: () => on });
+  const Vm = donor(X, 'macros', box, { shown: () => on, opts: { tiles: 'jack' } }), Vf = donor(X, 'filter', box, { shown: () => on });
   await flush(doc);
   const names = () => Array.from(Vm.root.querySelectorAll('.sx-tile')).map(e => e.textContent).join('|');
   const want = Array.from({ length: 8 }, (_, i) => 'Macro ' + (i + 1)).join('|');
@@ -847,33 +801,7 @@ test('review 2 P1-2: a view mounted while hidden is painted fully the first time
   X.destroy();
 });
 
-test('review 2 P2 parity: PART_W are the 1200 px panel\'s widths to the layout unit (1/64 px) and a part root takes its width exactly; a part / slot panel moves (< 1 px, relative) so its body lands on the bundled panel\'s phase in world px (PART_PH) — text then rasters as in the whole panel', async () => {
-  assert.deepEqual([M.PART_W.osc, M.PART_W.sub, M.PART_W.noise, M.PART_W.filter, M.PART_W.macros, M.PART_W.env, M.PART_W.lfo, M.PART_W.voicing, M.PART_W.chaos],
-    [256.65625, 163.734375, 163.734375, 218.328125, 237.265625, 316.375, 395.453125, 210.90625, 389.34375]);
-  assert.equal(M.PART_W.voice, M.PART_W.voicing + 8 + M.PART_W.env);
-  assert.deepEqual([M.PART_PH.oscA, M.PART_PH.oscB, M.PART_PH.oscC, M.PART_PH.lfo], [[0.734375, 0], [0.390625, 0], [0.03125, 0], [0.640625, 0.765625]]);
-  const { doc, box, X } = parts();
-  const W = doc.createElement('div'); W.setAttribute('data-cv-world', ''); doc.body.appendChild(W); W.appendChild(box);
-  W._rect = { left: 100.3, top: 50.7, width: 4000, height: 4000 };
-  const V = M.mountPart(X, 'oscB', box);
-  assert.equal(V.root.style.width, '256.65625px', 'exact');
-  const body = [...V.panel.el.childNodes].find(c => c.classList && c.classList.contains('sx-pbody'));
-  body._rect = { left: 100.3 + 24.703125, top: 50.7 + 105, width: 256, height: 600 };
-  await flush(doc);
-  assert.deepEqual([V.panel.el.style.position, V.panel.el.style.left, V.panel.el.style.top || ''], ['relative', '0.6875px', ''], 'x .703125 → .390625 (OSC B\'s), y 0 kept');
-  // a slot host's LFO: its kind's phase
-  const S = slot('lfo', {});
-  S.doc.body.appendChild(S.box);
-  const W2 = S.doc.createElement('div'); W2.setAttribute('data-cv-world', ''); S.doc.body.appendChild(W2); W2.appendChild(S.box);
-  W2._rect = { left: 0, top: 0, width: 4000, height: 4000 };
-  const b2 = [...S.V.panel.el.childNodes].find(c => c.classList && c.classList.contains('sx-pbody'));
-  b2._rect = { left: -501.75, top: 59, width: 395, height: 380 };
-  for (const v of S.X.views) v.stale = true; // (shown again: its next full paint aligns it)
-  S.X.paint(true);
-  assert.deepEqual([S.V.panel.el.style.left, S.V.panel.el.style.top], ['0.390625px', '0.765625px'], 'x .25 → .640625, y 0 → .765625');
-  V.destroy(); X.destroy(); S.V.destroy(); S.X.destroy();
-});
-
+// ((SX0) review 2's PART_W / PART_PH parity left with them: no view passes a width table or a phase now)
 test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), whatever the local scale; CANVAS_MAX_PX 16e6', () => {
   // (lane B's pre-H5 fallback — dpr ≤ 2 over the local scale, 0.5…2 — stays in sx-host for a non-positive answer; with C merged
   //  wk.storeDensity always exists, so the delegation is what ships)
@@ -886,7 +814,7 @@ test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), wha
   assert.deepEqual([H.storeDensity(doc, el, 1), H.storeDensity(doc, el, 0.5), H.storeDensity(doc, el, 4), H.storeDensity(doc, el, 2)], [q, q, q, q]);
 });
 
-test('part CSS: a part root is container sxp without a frame, keeps its PART_W width in a flex body (flex: none); an empty bare title row hides; the O column\'s 30 px knobs restated for parts', () => {
+test('part CSS: a part root (a face\'s, the Arpeggiator / Clip view\'s) is container sxp without a frame, keeps its width in a flex body (flex: none); an empty bare title row hides; the O column\'s 30 px knobs restated for parts', () => {
   const src = readFileSync(new URL('../sx-host.js', import.meta.url), 'utf8'), a = src.indexOf('const CSS = `');
   const css = src.slice(a + 13, src.indexOf('`;', a)).replace(/\/\*[\s\S]*?\*\//g, '');
   const rule = sel => { const i = css.indexOf(sel + ' {'); return i < 0 ? null : css.slice(i + sel.length + 2, css.indexOf('}', i)); };
@@ -916,7 +844,7 @@ test('(WC-2 displays) a display canvas\' palette: resolved at its sizing once pe
   box.setAttribute('data-cv-skin', 'charcoal');
   WK.clock._reset(); WK.clock.config({ display: 120 });
   try {
-    const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box), N = M.mountPart(X, 'noise', box);
+    const A = donor(X, 'oscA', box), F = donor(X, 'filter', box), N = donor(X, 'noise', box);
     const cvs = [A, F, N].flatMap(V => V.page.canvases), got = new Map();
     for (const cv of cvs) { const d = cv.draw; cv.draw = (g, w, h, dpr, p) => { got.set(cv, p); return d(g, w, h, dpr, p); }; }
     await flush(doc);
@@ -1094,7 +1022,7 @@ test('IMPL-FR-B §4.3 (§13 P1-1): while the fast data is live a slow message sc
 test('IMPL-FR-B §4.2 (§13 P2-3): fastIx() — the modded controls with halo arcs (not every control scanMods lists) and the heavy displays\' liveIds, over the shown views, sorted, unique, ≤ 64; the same array while unchanged; a full paint that changes it tells host.fastIx()', async () => {
   let told = 0, on = true;
   const { doc, box, X } = fparts({ fastIx: () => { told++; } });
-  const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box, { shown: () => on });
+  const A = donor(X, 'oscA', box), F = donor(X, 'filter', box, { shown: () => on });
   X.edit(st => { st.matrix[0] = mrow({ src: 'lfo1', amt: 0.3, dst: 'a.level' }); }, { label: 'Row' });
   await flush(doc);
   const heavy = V => V.page.canvases.filter(cv => typeof cv.liveIds === 'function').flatMap(cv => cv.liveIds().map(id => core.vi(id)));
@@ -1116,7 +1044,7 @@ test('IMPL-FR-B §4.2 (§13 P2-3): fastIx() — the modded controls with halo ar
   X.paint(true);
   assert.ok(!X.fastIx().includes(core.vi('f.res')), 'a hidden view\'s displays drop out');
   // ≤ 64: the rest stay slow (64 rows on 64 shown controls, and the displays' ids)
-  const B = M.mountPart(X, 'oscB', box), Cc = M.mountPart(X, 'oscC', box);
+  const B = donor(X, 'oscB', box), Cc = donor(X, 'oscC', box);
   on = true;
   await flush(doc);
   const dests = [...new Set([A, B, Cc].flatMap(V => V.root.querySelectorAll('[data-dest]').map(n => n.getAttribute('data-dest'))))].filter(id => core.vi(id) >= 0);
@@ -1134,7 +1062,7 @@ test('IMPL-FR-B §4.3 (the user\'s QB, §13 P1-3): the filter display\'s curve r
     let T = 1e6;
     const { doc, box, X } = fparts({ curveHz: () => HZ.v });
     X.tNow = () => T;
-    const F = M.mountPart(X, 'filter', box);
+    const F = donor(X, 'filter', box);
     await flush(doc);
     const disp = F.page.canvases.find(cv => /^FILTER 1 display/.test(cv.el.getAttribute('aria-label') || ''));
     assert.deepEqual([disp.maxHz || 0, typeof disp.capHz, typeof disp.keyN], [0, 'function', 'function']);

@@ -13,11 +13,12 @@
 //              over the first mN entries) at { sr: 48000, bpm: 120 }
 //   cpOf(p)    those fields of a compiled patch (p.serum), as plain arrays, for a deepEqual with CP[i]
 import { defaultSerum, normalizeSerum, defaultFx2, newInstance } from '../../serum-core.js?v=9';
+import { RIG } from '../../rig-core.js?v=9';
 
 const ROW = { src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 };
 const row = o => Object.assign({}, ROW, o);
 const crow = o => Object.assign({ id: 'r1' }, ROW, { src: 'wheel', dst: 'i1:f.cutoff' }, o);
-const serum = (s, fx) => ({ kind: 'synth', model: 'serum', vals: { s }, preset: null, fx });
+const serum = (s, fx) => ({ kind: 'synth', model: RIG.ID, vals: { s }, preset: null, fx }); // ((SX0, IMPL-SX0 §6.2) the Serum-engine device that remains: the same patch)
 const track = (id, name, i1, extra, mods) => ({
   id, name, color: '#4fb3ff', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [],
   prim: 'i1', nid: 2, mid: mods.length + 1, dev: Object.assign({ i1, out: { kind: 'out' } }, extra), wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods,

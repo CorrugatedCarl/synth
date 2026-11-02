@@ -74,6 +74,7 @@
 // EQ 0.0009 · Utility 0.0003; a panel 0.0001 (§9.1 "extra empty rack"); bypassed / disabled instances cost nothing.
 import { MODELS, patchFor, isSxId } from './models.js?v=9'; // ((WC) isSxId: the Serum and the rig cost by the Serum's terms, serumLoad)
 import * as core from './serum-core.js?v=9';
+import { RIG } from './rig-core.js?v=9'; // ((SX0) the Serum-engine model that remains: the measure row's id, the fallback name
 import * as W from './wt.js?v=9';
 import { lawNorm } from './laws.js?v=9';
 import { playbackEntry, irEntry } from './smpwork.js?v=9';
@@ -90,7 +91,7 @@ export const CHORD = 8;
 
 const C = (row, family, poly, base, voice) => Object.freeze({ row, family, poly, base, voice });
 // the Serum engine's row and terms (COST.serum): the Serum's and (WC) the rig's — one object, the rig is a Serum underneath
-const SX = Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 });
+const SX = Object.freeze({ row: 'e', family: 'wavetable engine (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }); // ((SX0) no Serum word, IMPL-SX0 §5)
 export const COST = Object.freeze({
   os: 4, chord: CHORD, off: 0.0005, panel: 0.0001,
   synth: Object.freeze({
@@ -259,7 +260,7 @@ export function softCap(t, adding, { touch = false, factor = 1 } = {}) {
   }
   const heavy = d => isSxId(d.model) && d.on !== false && estimate(d, f) > HEAVY;
   if (heavy(a) && ins.some(heavy)) {
-    const nm = d => (MODELS.find(m => m.id === d.model) || { name: 'Serum' }).name, o = ins.find(heavy); // ((WC, G13) each instrument by its model's name: a rig's not 'Serum'
+    const nm = d => (MODELS.find(m => m.id === d.model) || { name: RIG.NAME }).name, o = ins.find(heavy); // ((WC, G13) each instrument by its model's name; (SX0) an unknown id: RIG.NAME
     r.confirm = `This ${nm(a)} patch is heavy (about ${label(estimate(a, f))} of this device’s audio time) and the track already has a heavy ${nm(o)}. ` +
       'Two may cause dropouts on this device. Add it anyway?';
   }
@@ -297,7 +298,7 @@ function rowE() {
   const s = core.defaultSerum();
   Object.assign(s.p, { 'a.rand': 0, 'b.rand': 0, 'c.rand': 0 });
   s.global.os = 2; s.osc[0].type = 'multi'; s.osc[0].multi = 'msmp:bench'; s.voicing.poly = 16;
-  const patch = patchFor('serum', { s: core.normalizeSerum(s) }, core.defaultFx2(), { sr: SR, bpm: 120 });
+  const patch = patchFor(RIG.ID, { s: core.normalizeSerum(s) }, core.defaultFx2(), { sr: SR, bpm: 120 }); // ((SX0) the rig: Serum's map, the same patch — tests/ref-SX0 cost:e
   return { id: 'e', kind: 'voice', os: 2, patch, tables: tables(patch), notes: chord(16, 36), assets };
 }
 function rowJ() {

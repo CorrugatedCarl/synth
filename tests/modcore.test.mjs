@@ -12,6 +12,7 @@ import { dspScope, noAlloc } from './dsp-scope.mjs';
 import * as H from './golden-harness.mjs';
 import * as C from '../serum-core.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { scenarios, measure } from './bench-scenarios.mjs';
 import * as CPU from './cpu-gate.mjs';
 
@@ -65,7 +66,7 @@ function junoPatch() {
 }
 // a Serum patch with its CP compiled by the test (ctx as patchFor's; ext: the injected copy's ext rows accepted)
 function serumPatch(s, { ext = false, fx = C.defaultFx2() } = {}) {
-  const p = patchFor('serum', { s }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } });
+  const p = patchFor(RIG.ID, { s }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } });
   const P = C.compileSerum(s, { bpm: 120, smooth: 1, fx, qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0, ext });
   return Object.assign(p, P);
 }

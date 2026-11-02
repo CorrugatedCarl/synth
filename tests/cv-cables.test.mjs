@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as C from '../cv-cables.js?v=9';
 import * as core from '../serum-core.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as wk from '../wk.js?v=9';
 import { fresh, all, ptr, fire, key, Ev, place, layout } from './wk-dom.mjs';
 import { readFileSync } from 'node:fs';
@@ -43,7 +44,7 @@ test('deriveCables: classic i1 → fx1 → out; Serum i1 → i1/fx (route label)
   assert.ok(cl.every(c => !c.label), 'a classic cable has no route label');
   const s = core.defaultSerum(), fx = core.defaultFx2();
   fx.racks[0].mods.push({ id: 'x1', type: 'rev', v: 2, on: 1, p: {} });
-  const sx = C.deriveCables({ model: 'serum', color: '#e2402f', vals: { s }, fx });
+  const sx = C.deriveCables({ model: RIG.ID, color: '#e2402f', vals: { s }, fx });
   assert.deepEqual(sx.map(c => [c.a, c.b]), [['i1.out', 'i1/fx.in'], ['i1/fx.out', 'out.in']]);
   assert.equal(sx[0].label, 'Main');
   assert.equal(sx[1].label, undefined);
@@ -128,7 +129,7 @@ test('createCables: a Serum cable carries its route label at the midpoint; set()
   const L = C.createCables(W, { doc });
   const s = core.defaultSerum(), fx = core.defaultFx2();
   fx.racks[0].mods.push({ id: 'm1', type: 'rev', v: 2, on: 1, p: {} });
-  L.set(C.deriveCables({ model: 'serum', vals: { s }, fx }));
+  L.set(C.deriveCables({ model: RIG.ID, vals: { s }, fx }));
   L.layout({ 'i1.out': { x: 0, y: 100 }, 'i1/fx.in': { x: 200, y: 100 }, 'i1/fx.out': { x: 600, y: 100 }, 'out.in': { x: 760, y: 100 } });
   const lab = all(L.under).find(n => n.localName === 'text');
   assert.equal(lab.textContent, 'Main');
@@ -150,7 +151,7 @@ function v2(o = {}) {
   fx.racks[0].mods.push({ id: 'r1', type: 'rev', v: 2, on: 1, p: {} });
   const t = {
     id: 'trk_1', color: '#3b82c4', prim: 'i1', nid: 5,
-    dev: { i1: { kind: 'synth', model: 'juno60', vals: {} }, i2: { kind: 'synth', model: 'serum', vals: { s }, fx }, i3: { kind: 'synth', model: 'minimoog', vals: {} },
+    dev: { i1: { kind: 'synth', model: 'juno60', vals: {} }, i2: { kind: 'synth', model: RIG.ID, vals: { s }, fx }, i3: { kind: 'synth', model: 'minimoog', vals: {} },
       fx1: { kind: 'panel', fx: {} }, fx2: { kind: 'panel' }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'i2.out', b: 'fx1.in' }, { id: 'w3', a: 'fx1.out', b: 'out.in' }, { id: 'w4', a: 'i3.out', b: 'out.in', g: 0.5 }],
   };
@@ -492,9 +493,9 @@ test('cablesOf (2a): one mod cable per valid track.mods row after the audio ones
   assert.deepEqual(C.cablesOf(t, { project: { perf: { wheel: { v: 1 } } } }).filter(c => c.preset), [], 'without presetRows: none');
   const seen = [];
   const F = C.cablesOf(t, { presetRows: (id, dev) => { seen.push(id + ':' + dev.model); return [{ slot: 1, src: 'velo', dst: 'a.oct', amt: 0.1 }, { slot: 2, src: 'nope', dst: 'a.oct' }]; } }).filter(c => c.preset);
-  assert.deepEqual([seen, F.map(c => c.id + ' ' + c.b)], [['i2:serum'], ['p:i2:1 i2:a.oct']], 'a host function per Serum');
+  assert.deepEqual([seen, F.map(c => c.id + ' ' + c.b)], [['i2:' + RIG.ID], ['p:i2:1 i2:a.oct']], 'a host function per Serum');
   assert.deepEqual(C.cablesOf(t, { dashed: r => r.id === 'r1' }).filter(c => c.dashed).map(c => c.id), ['r1'], 'the dashed flag (a per-note source on a last-note target)');
-  assert.deepEqual(C.cablesOf({ model: 'serum', mods: [{ id: 'r1', src: 'wheel', dst: 'i1:a.semi' }] }).map(c => c.kind), ['audio', 'audio'], 'a v1 track: no mod cables');
+  assert.deepEqual(C.cablesOf({ model: RIG.ID, mods: [{ id: 'r1', src: 'wheel', dst: 'i1:a.semi' }] }).map(c => c.kind), ['audio', 'audio'], 'a v1 track: no mod cables');
 });
 
 // layers with mod cables: ports for the jacks and the knob ends; k from a variable
@@ -1013,7 +1014,7 @@ function partsTrack() {
   s.matrix[2] = Object.assign(s.matrix[2], { src: 'macro2', dst: 'f.cutoff', amt: 0.25 });
   s.matrix[3] = Object.assign(s.matrix[3], { src: 'lfo2', dst: 'bus3', amt: 0.25 }); // (a point-modulation bus: no knob)
   return { id: 'trk_1', color: '#3b82c4', prim: 'i1', lay: { i1: { x: 0, y: 0, ui: 'parts' } },
-    dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, fx: core.defaultFx2(), color: '#ff00aa' }, out: { kind: 'out' } },
+    dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s }, fx: core.defaultFx2(), color: '#ff00aa' }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [{ id: 'r1', src: 'i1/lfo3.out', dst: 'i1:a.semi', amt: 0.2 }] };
 }
 

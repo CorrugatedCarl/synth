@@ -1,30 +1,34 @@
 import './v8-guard.mjs';
-// Milestone 3's fixture check (docs/canvas/IMPL-3.md §6 "Order", run by the lead after the A → E → C → B merges): one Serum
-// taken apart — a parts host (sx-host createHost) with its part views mounted as I1 / I2 give them (sx-edges partKeys) and
-// VOICE — against the REAL compile (models.js patchFor through the golden harness's trackPatch, the function main.js's
-// buildPatch uses; cv-graph compileMods / instPatch for the canvas modulators) and the golden harness's worklet (engine.js
-// Track, the current DSP scripts). Lane D (main.js's parts lifecycle) is not built yet: the host object here stands in
-// for main.js sxHost (state / edit / fx / editFx; an edit mutates the live state, the compile reads it), and a canvas
-// cable edit is applied as §2.5 says D applies it — sx-edges setEdge / cutEdge on the live state, its edit through the
-// host (SerumHost.edit → host.edit, main's sxEdit).
-//   1. Routing: each internal cable edit renders the bytes of the same fields set through the bundled panel's own
-//      controls (the MIX page's route menus, BALANCE knobs, bus routes and FX bypass; the FILTER panels' S A B C N
-//      switches) and through a direct state write: OSC B → FILTER 2, a fork (BALANCE, also re-balanced from the OSC A
-//      part's routing popover), cuts (a fork's branch, a source, a filter), NOISE → FILTER 2, SUB → DIRECT / FILTER 1,
-//      FILTER → FILTER (and the loop rule), FX in / out (VOICE → own FX read-only, a source to DIRECT, VOICE's outputs).
-//      States compared without s.ui (a page shown is a view edit), patches canonically (keys sorted, typed arrays by
-//      value), renders bit for bit (Float32 words), each against the unedited render too (the edit is audible).
+// Milestone 3's fixture check (docs/canvas/IMPL-3.md §6 "Order", run by the lead after the A → E → C → B merges): one Serum-engine
+// state taken apart — a host (sx-host createHost) with a face per part I1 / I2 give (sx-edges partKeys) and the Amplifier (VOICE),
+// mounted as main.js sxViews mounts a rig's (rig-ui faces; the Arpeggiator / Clip sequencer their sx-ui-mod view) — against the REAL
+// compile (models.js patchFor through the golden harness's trackPatch, the function main.js's buildPatch uses; cv-graph compileMods /
+// instPatch for the canvas modulators) and the golden harness's worklet (engine.js Track, the current DSP scripts). The host object
+// here stands in for main.js sxHost (state / edit / fx / editFx; an edit mutates the live state, the compile reads it), and a canvas
+// cable edit is applied as §2.5 says D applies it — sx-edges setEdge / cutEdge on the live state, its edit through the host
+// (SerumHost.edit → host.edit, main's sxEdit).
+//   1. Routing: each internal cable edit renders the bytes of the same fields set through the modules' own controls on their faces
+//      where a face has one (an oscillator's BALANCE in its drawer, the filters' input switches, the Amplifier's bus routes and FX
+//      bypass in its drawer; a route is a cord on a rig — no ROUTE control) and through a direct state write: OSC B → FILTER 2, a
+//      fork (BALANCE, also re-balanced), cuts (a fork's branch, a source, a filter), NOISE → FILTER 2, SUB → DIRECT / FILTER 1,
+//      FILTER → FILTER (and the loop rule), FX in / out (VOICE → own FX read-only, a source to DIRECT, the Amplifier's outputs).
+//      States compared without s.ui (a page shown is a view edit), patches canonically (keys sorted, typed arrays by value), renders
+//      bit for bit (Float32 words), each against the unedited render too (the edit is audible).
+//      (SX0, lane K) The legs on the bundled panel (its MIX page, its OSC page's switches) and on the stage-3 part views left with them;
+//      where a face holds the same control (the donors re-parented: rig-ui) the leg drives it; the MIX page's route menus and the
+//      parts' ROUTE popovers have none on a rig (the cord is the route: the canvas leg) — those legs went (IMPL-SX0 §14).
 //   2. Panels: a canvas LFO / Envelope / Macros / Chaos module edited through its body (cv-mods-ui slotBody: sx-host slotHost +
 //      (MOD1 §4.1, G1's parity half) rig-ui's slot face over the donors LfoPanel / EnvPanel / MacrosPanel / ChaosRow — every
 //      control found on the .rig-face) compiles (compileMods payload + the Serum's instPatch) and renders as the same fields
-//      written into the device record directly: the same gesture, the same record. Bundled → parts → bundled leaves vals.s,
-//      fx and the compiled patch byte-identical (N2).
+//      written into the device record directly: the same gesture, the same record. Faces mounted, painted, their drawers opened and
+//      unmounted, twice, leave vals.s, fx and the compiled patch byte-identical (N2; (SX0) its bundled rounds left with serum-ui.js).
 // Accessor-free: tracks are read through their devices (t.dev.i1), never through v1 fields. Fake-DOM nodes never reach
 // assert (D.safeAssert; only strings, numbers and plain data are compared).
 // Run alone: node --max-old-space-size=2048 --test tests/m3-fixture.test.mjs
 import test from 'node:test';
 import assertBase from 'node:assert/strict';
 import * as nodeModule from 'node:module';
+import { readFileSync } from 'node:fs';
 import * as H from './golden-harness.mjs';
 import { redirect } from './serum-ui.hooks.mjs';
 import * as core from '../serum-core.js?v=9';
@@ -44,12 +48,14 @@ if (typeof nodeModule.registerHooks === 'function') {
 for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const SX = await import('../sx-host.js?v=9');
 const SM = await import('../sx-ui-mod.js?v=9');
-const UI = await import('../serum-ui.js?v=9');
+const RU = await import('../rig-ui.js?v=9');
 const CMU = await import('../cv-mods-ui.js?v=9');
 await CMU.ready();
 const D = await import('./serum-ui-stubs/dom.js');
 const STUBS = await Promise.all(['../graph.js?v=9', '../fx-ui.js?v=9', '../wtedit.js?v=9'].map(u => import(u)));   // (the stubs: their `made` records)
 const assert = D.safeAssert(assertBase);
+// (SX0) the stage-3 part views' data-dest ids on this file's base state, frozen from ⟨B⟩ (tests/ref-SX0/dests.mjs, state 'm3')
+const DESTS3 = JSON.parse(readFileSync(new URL('./fixtures/sx0-dests.json', import.meta.url), 'utf8'));
 
 const SR = H.SR, SEC = 1.2;
 const EVENTS = H.script(SR, { song: false }).filter(([f]) => f < SEC * SR);
@@ -96,7 +102,7 @@ function render(id, patch, mods) {
     setup(p) { H.postTables(B, p, patch.needs); p.msg({ t: 'patch', p: patch }); if (mods) p.msg(mods); } });
 }
 
-/* ------------------------------------------------------------------ the Serum under test */
+/* ------------------------------------------------------------------ the Serum-engine state under test */
 // OSC A → FILTER 1 (Low 24, 700 Hz); OSC B an octave up at Main with a BUS 1 send; SUB and NOISE at Main; FILTER 2 a
 // High 24 at 2 kHz (S2 mode: f.type2 / f2.type); FILTER 2's A B N S switches off (so a cable into it has a switch to
 // turn on); Main FX a reverb, BUS 1 a delay
@@ -124,13 +130,15 @@ function hostOf(st, log) {
     storage: { get: (k, d) => (store.has(k) ? store.get(k) : d), set: (k, v) => store.set(k, clone(v)) },
     notify: t => log.push('notice: ' + t), tracks: () => [], seqCmd() {} };
 }
-// the canvas: the Serum in parts — a parts host, a view per part I1 / I2 give (sx-edges partKeys) and VOICE (its outputs)
-async function partsOf(st) {
+// the canvas: the state's modules as faces — a host, the face of each part I1 / I2 give (sx-edges partKeys; the Arpeggiator / Clip
+// their sx-ui-mod view, Q1) and the Amplifier (VOICE), as main.js sxViews mounts a rig's
+async function facesOf(st) {
   const doc = D.fresh(), box = doc.createElement('div'), log = [];
   doc.body.appendChild(box);
-  const X = SX.createHost(hostOf(st, log), { doc }), views = {};
-  for (const p of E.partKeys(st.s, {}, 'i1')) views[p] = SM.mountPart(X, p, box);
-  views.voice = SM.mountPart(X, 'voice', box);
+  const X = SX.createHost(hostOf(st, log), { doc }), rh = RU.rigHost({ doc }), views = {};
+  const mount = part => { const kind = part === 'voice' ? 'amp' : E.kindOf(part); return RU.FACE[kind] ? rh.face(kind, box, { host: X, part, dev: 'i1' }) : SM.mountPart(X, part, box, { dev: 'i1' }); };
+  for (const p of E.partKeys(st.s, {}, 'i1')) views[p] = mount(p);
+  views.voice = mount('voice');
   await D.flush(doc);
   return { doc, X, views, log };
 }
@@ -146,23 +154,6 @@ function cable(P, st, op, a, b) {
   assert.equal(canon(writeF(clone(st.s), r.f, 1)), canon(pre), label + ': the meta\'s before-values give the state before');
   assert.equal(canon(writeF(clone(pre), r.f, 2)), now, label + ': its after-values the state after');
   return r;
-}
-// the bundled panel (serum-ui SerumUI: a host + its shell) on the same kind of host object
-async function bundledOf(st) {
-  const doc = D.fresh(), root = doc.createElement('div'), log = [];
-  doc.body.appendChild(root);
-  const ui = new UI.SerumUI(root, hostOf(st, log));
-  await D.flush(doc);
-  return { doc, ui, log, root };
-}
-async function mixOf(st) {
-  const Bu = await bundledOf(st);
-  Bu.ui.showPage('mix');
-  await Bu.ui.mixReady;
-  await D.flush(Bu.doc);
-  assert.ok(Bu.ui.mixer, 'the MIX page is built');
-  Bu.strip = k => { const x = Bu.ui.mixer.strips.find(q => q.T.key === k); assert.ok(x, 'strip ' + k); return x.el; };
-  return Bu;
 }
 // a wk.menu pick: its button, then the option by label (the popup list on the document's body)
 function choose(doc, menuEl, label) {
@@ -181,18 +172,22 @@ function typeIn(knob, text) {
   D.fire(inp, 'keydown', { key: 'Enter' });
 }
 const byDest = (root, id) => root.querySelectorAll('[data-dest="' + id + '"]')[0] || null;
-// a FILTER panel's routing switch (S A B C N: data-pdest f.route<X> / f2.route<X>) on the bundled OSC page — a tap
-const filterSwitch = (Bu, id) => {
-  Bu.ui.showPage('osc');
-  const el = Bu.ui.pageBox.querySelectorAll('[data-pdest="' + id + '"]')[0];
-  assert.ok(el, 'switch ' + id);
+// the faces' own controls (the donors' widgets on the face and in its drawer): a source's BALANCE knob (live while it routes to
+// Filter), a filter's input switch (S A B C N: data-pdest f.route<X> / f2.route<X>) — a tap; each painted after
+const faceOf = (F, part) => { const V = F.views[part]; assert.ok(V && V.el, 'the face of ' + part); return V.el; };
+const FBAL = { oscA: 'a.fbal', oscB: 'b.fbal', oscC: 'c.fbal', sub: 's.fbal', noise: 'n.fbal' };
+const balance = (F, part, text) => { typeIn(byDest(faceOf(F, part), FBAL[part]), text); F.X.paint(true); };
+function filterSwitch(F, part, id) {
+  const el = faceOf(F, part).querySelectorAll('[data-pdest="' + id + '"]')[0];
+  assert.ok(el, part + ': switch ' + id);
   D.fire(el, 'click');
-};
-// destroy hosts and bundled panels; the stubs' records of the editors they built go with them (memory stays flat)
-const done = (...hosts) => { for (const h of hosts) if (h) { if (h.ui) h.ui.destroy(); if (h.X) h.X.destroy(); } for (const m of STUBS) if (m.__stub) m.made.length = 0; };
+  F.X.paint(true);
+}
+// destroy hosts; the stubs' records of the editors they built go with them (memory stays flat)
+const done = (...hosts) => { for (const h of hosts) if (h && h.X) h.X.destroy(); for (const m of STUBS) if (m.__stub) m.made.length = 0; };
 
 // one routing comparison: every path's state (without s.ui) and patch canonical and equal to the first's (the canvas); the
-// first and the panel path marked `render` rendered bit for bit equal, and unlike `from` (the unedited state; changes:
+// first and the path marked `render` rendered bit for bit equal, and unlike `from` (the unedited state; changes:
 // false for an edit nothing hears)
 function same(name, paths, { from = st0(), changes = true } = {}) {
   const [ref, ...rest] = paths, c0 = canon(noUi(ref.st.s)), f0 = canon(ref.st.fx), p0 = compile(ref.st), pc0 = canon(p0);
@@ -211,147 +206,134 @@ function same(name, paths, { from = st0(), changes = true } = {}) {
 const edgeIds = st => E.serumEdges(st.s, st.fx).filter(e => e.kind === 'audio').map(e => e.a + '>' + (e.b || 'stub') + (e.fork ? '(fork ' + e.share + ')' : '') + (e.dim ? '(off)' : '')).sort();
 
 /* ================================================================ 0. the rig */
-test('the rig: the parts host mounts the parts I1 / I2 give plus VOICE; the compile is deterministic; the base Serum is audible and its routing is what the cases start from', async () => {
-  const st = st0(), P = await partsOf(st);
+test('the rig: the host mounts the faces of the parts I1 / I2 give plus the Amplifier (VOICE), each ⊇ its stage-3 panel\'s frozen data-dest ids; the compile is deterministic; the base state is audible and its routing is what the cases start from', async () => {
+  const st = st0(), P = await facesOf(st);
   assert.deepEqual(Object.keys(P.views), ['oscA', 'oscB', 'sub', 'noise', 'filter', 'filter2', 'voice']);
-  assert.ok(P.views.filter2.root.querySelectorAll('[data-pdest="f2.routeB"]').length === 1, 'FILTER 2 shows its switches');
+  assert.ok(P.views.filter2.el.querySelectorAll('[data-pdest="f2.routeB"]').length === 1, 'FILTER 2 shows its switches');
+  for (const [part, V] of Object.entries(P.views)) {
+    const mine = new Set(V.dests()), ref = DESTS3.parts.m3[part].filter(x => !(part === 'voice' && /^e\d\./.test(x)));   // (ENV 1 is Envelope 1's module now)
+    assert.ok(ref.length > 0, part + ': the frozen set');
+    assert.deepEqual(ref.filter(x => !mine.has(x)), [], part + ': every stage-3 data-dest id on the face');
+  }
   assert.equal(canon(compile(st)), canon(compile(st0())), 'one state, one patch');
   assert.deepEqual(edgeIds(st), ['filter.out>voice.main', 'filter2.out>voice.main', 'noise.out>voice.main', 'oscA.out>filter.in', 'oscB.out>voice.main', 'oscC.out>voice.main(off)', 'sub.out>voice.main']);
   assert.ok(H.peak(render('m3fx:rig', compile(st))) > 0.01);
   done(P);
 });
 
-/* ================================================================ 1. routing: sx-edges = the MIX page = the state */
-test('OSC B → FILTER 2 (from Main): setEdge through the host = the MIX page (route Filter, BALANCE F2, FILTER 2\'s B switch) = the FILTER 2 switch alone = the parts\' FILTER 2 switch = the direct write; renders bit for bit', async () => {
-  const cv = st0(), P = await partsOf(cv);
+/* ================================================================ 1. routing: sx-edges = the faces' controls = the state */
+test('OSC B → FILTER 2 (from Main): setEdge through the host = FILTER 2\'s B switch on its face (it routes OSC B to Filter, the balance at FILTER 2) = the direct write; renders bit for bit', async () => {
+  const cv = st0(), P = await facesOf(cv);
   const r = cable(P, cv, 'set', 'oscB.out', 'filter2.in');
   assert.equal(r.why, '');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['osc.1.route:1→0', 'p.b.fbal:0→1', 'p.f2.routeB:0→1']);
   assert.deepEqual(edgeIds(cv).filter(e => e.startsWith('oscB')), ['oscB.out>filter2.in']);
-  const mx = st0(), M = await mixOf(mx);
-  choose(M.doc, M.strip('b').querySelector('.sxm-route'), 'Filter');
-  typeIn(byDest(M.strip('b'), 'b.fbal'), 'F2');
-  filterSwitch(M, 'f2.routeB');
-  const sw = st0(), W = await bundledOf(sw);
-  filterSwitch(W, 'f2.routeB');   // (off-route: toggleFilterRoute routes it to Filter with the balance at FILTER 2)
-  const ps = st0(), Q = await partsOf(ps);
-  D.fire(Q.views.filter2.root.querySelectorAll('[data-pdest="f2.routeB"]')[0], 'click');
+  const sw = st0(), W = await facesOf(sw);
+  filterSwitch(W, 'filter2', 'f2.routeB');   // (off-route: toggleFilterRoute routes it to Filter with the balance at FILTER 2)
   const dw = st0();
   dw.s.osc[1].route = 0; dw.s.p['b.fbal'] = 1; dw.s.p['f2.routeB'] = 1;
-  same('oscB-filter2', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'FILTER 2 switch', st: sw }, { name: 'parts FILTER 2 switch', st: ps }, { name: 'direct', st: dw }]);
-  done(P, M, W, Q);
+  same('oscB-filter2', [{ name: 'canvas', st: cv }, { name: 'FILTER 2 switch', st: sw, render: true }, { name: 'direct', st: dw }]);
+  done(P, W);
 });
 
-test('a fork: OSC A (at FILTER 1) cabled into FILTER 2 too = the MIX page\'s BALANCE typed 50 / 50 + FILTER 2\'s A switch = the direct write (fbal ½, both switches on; the edges fork ½ / ½); then BALANCE from the OSC A part\'s routing popover = the MIX page\'s BALANCE', async () => {
-  const cv = st0(), P = await partsOf(cv);
+test('a fork: OSC A (at FILTER 1) cabled into FILTER 2 too = OSC A\'s BALANCE typed 50 / 50 + FILTER 2\'s A switch on the faces = the direct write (fbal ½, both switches on; the edges fork ½ / ½); then BALANCE re-balanced on the canvas\'s face = on the other faces', async () => {
+  const cv = st0(), P = await facesOf(cv);
   const r = cable(P, cv, 'set', 'oscA.out', 'filter2.in');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['p.a.fbal:0→0.5', 'p.f2.routeA:0→1']);
   assert.deepEqual(edgeIds(cv).filter(e => e.startsWith('oscA')), ['oscA.out>filter.in(fork 0.5)', 'oscA.out>filter2.in(fork 0.5)']);
-  const mx = st0(), M = await mixOf(mx);
-  typeIn(byDest(M.strip('a'), 'a.fbal'), 'F1 50 / F2 50');
-  filterSwitch(M, 'f2.routeA');
+  const fc = st0(), F = await facesOf(fc);
+  balance(F, 'oscA', 'F1 50 / F2 50');
+  filterSwitch(F, 'filter2', 'f2.routeA');
   const dw = st0();
   dw.s.p['a.fbal'] = 0.5; dw.s.p['f2.routeA'] = 1;
-  same('fork', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }]);
-  // BALANCE at the fork: the source's routing popover (the OSC A part's route button) vs the MIX page's knob, F1 25 / F2 75
-  D.fire(P.views.oscA.root.querySelector('.sxo-rbtn'), 'click');
-  const bal = P.doc.body.querySelectorAll('[data-dest="a.fbal"]').find(k => k.closest('.sxo-pane'));
-  typeIn(bal, 'F1 25 / F2 75');
-  typeIn(byDest(M.strip('a'), 'a.fbal'), 'F1 25 / F2 75');
+  same('fork', [{ name: 'canvas', st: cv }, { name: 'faces', st: fc, render: true }, { name: 'direct', st: dw }]);
+  // BALANCE at the fork: the canvas's OSC A face and the other faces, F1 25 / F2 75
+  balance(P, 'oscA', 'F1 25 / F2 75');
+  balance(F, 'oscA', 'F1 25 / F2 75');
   dw.s.p['a.fbal'] = 0.75;
   assert.deepEqual(edgeIds(cv).filter(e => e.startsWith('oscA')), ['oscA.out>filter.in(fork 0.25)', 'oscA.out>filter2.in(fork 0.75)']);
   const from = clone(dw); from.s.p['a.fbal'] = 0.5;
-  same('fork-balance', [{ name: 'parts popover', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }], { from });
-  done(P, M);
+  same('fork-balance', [{ name: 'canvas face', st: cv }, { name: 'faces', st: fc, render: true }, { name: 'direct', st: dw }], { from });
+  done(P, F);
 });
 
-test('cuts: a fork\'s branch (cutEdge OSC A → FILTER 1: the balance all to FILTER 2) = the MIX BALANCE F2; a source (OSC B → MAIN: None) = the MIX route None; a filter (FILTER 2 → MAIN: None) = the MIX route None — each = the direct write, rendered', async () => {
+test('cuts: a fork\'s branch (cutEdge OSC A → FILTER 1: the balance all to FILTER 2) = OSC A\'s BALANCE F2 on its face; a source (OSC B → MAIN: None); a filter (FILTER 2 → MAIN: None) — each = the direct write, rendered', async () => {
   const forked = () => { const st = st0(); st.s.p['a.fbal'] = 0.5; st.s.p['f2.routeA'] = 1; return st; };
   // the fork's branch
-  const cv = forked(), P = await partsOf(cv);
+  const cv = forked(), P = await facesOf(cv);
   const r = cable(P, cv, 'cut', 'oscA.out', 'filter.in');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['p.a.fbal:0.5→1']);
   assert.deepEqual(edgeIds(cv).filter(e => e.startsWith('oscA')), ['oscA.out>filter2.in']);
-  const mx = forked(), M = await mixOf(mx);
-  typeIn(byDest(M.strip('a'), 'a.fbal'), 'F2');
+  const fc = forked(), F = await facesOf(fc);
+  balance(F, 'oscA', 'F2');
   const dw = forked(); dw.s.p['a.fbal'] = 1;
-  same('cut-fork', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }], { from: forked() });
-  done(P, M);
+  same('cut-fork', [{ name: 'canvas', st: cv }, { name: 'faces', st: fc, render: true }, { name: 'direct', st: dw }], { from: forked() });
+  done(P, F);
   // a source's cable; a filter's (FILTER 2 fed by OSC B, so its output is heard)
   const fed = () => { const st = st0(); st.s.osc[1].route = 0; st.s.p['b.fbal'] = 1; st.s.p['f2.routeB'] = 1; return st; };
-  for (const [a, b, strip, path, mk] of [['oscB.out', 'voice.main', 'b', ['osc', 1], st0], ['filter2.out', 'voice.main', 'f2', ['filter', 1], fed]]) {
-    const c = mk(), Pc = await partsOf(c), rc = cable(Pc, c, 'cut', a, b);
+  for (const [a, b, path, mk] of [['oscB.out', 'voice.main', ['osc', 1], st0], ['filter2.out', 'voice.main', ['filter', 1], fed]]) {
+    const c = mk(), Pc = await facesOf(c), rc = cable(Pc, c, 'cut', a, b);
     assert.deepEqual(rc.f.map(([p, x, y]) => p.join('.') + ':' + x + '→' + y), [path.join('.') + '.route:1→3']);
     assert.equal(edgeIds(c).some(e => e.startsWith(a + '>')), false, a + ' has no cable');
-    const m = mk(), Mm = await mixOf(m);
-    choose(Mm.doc, Mm.strip(strip).querySelector('.sxm-route'), 'None');
     const d = mk(); (path[0] === 'osc' ? d.s.osc[1] : d.s.filter[1]).route = 3;
-    same('cut-' + a, [{ name: 'canvas', st: c }, { name: 'MIX page', st: m, render: true }, { name: 'direct', st: d }], { from: mk() });
-    done(Pc, Mm);
+    same('cut-' + a, [{ name: 'canvas', st: c }, { name: 'direct', st: d }], { from: mk() });
+    done(Pc);
   }
 });
 
-test('NOISE → FILTER 2 (from Main: route Filter, BALANCE F2, FILTER 2\'s N switch) and SUB → DIRECT / SUB → FILTER 1 through sx-edges = the MIX page = the direct write, rendered', async () => {
-  const cv = st0(), P = await partsOf(cv);
+test('NOISE → FILTER 2 (from Main: route Filter, BALANCE F2, FILTER 2\'s N switch) = FILTER 2\'s N switch on its face; SUB → DIRECT / SUB → FILTER 1 through sx-edges — each = the direct write, rendered', async () => {
+  const cv = st0(), P = await facesOf(cv);
   const r = cable(P, cv, 'set', 'noise.out', 'filter2.in');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['noise.route:1→0', 'p.n.fbal:0→1', 'p.f2.routeN:0→1']);
-  const mx = st0(), M = await mixOf(mx);
-  choose(M.doc, M.strip('noise').querySelector('.sxm-route'), 'Filter');
-  typeIn(byDest(M.strip('noise'), 'n.fbal'), 'F2');
-  filterSwitch(M, 'f2.routeN');
+  const fc = st0(), F = await facesOf(fc);
+  filterSwitch(F, 'filter2', 'f2.routeN');   // (off-route: NOISE to Filter, the balance at FILTER 2)
   const dw = st0(); dw.s.noise.route = 0; dw.s.p['n.fbal'] = 1; dw.s.p['f2.routeN'] = 1;
-  same('noise-filter2', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }]);
-  done(P, M);
-  for (const [b, label, route] of [['voice.direct', 'Direct', 2], ['filter.in', 'Filter', 0]]) {
-    const c = st0(), Pc = await partsOf(c), rc = cable(Pc, c, 'set', 'sub.out', b);
-    assert.deepEqual(rc.f.map(([p, x, y]) => p.join('.') + ':' + x + '→' + y), ['sub.route:1→' + route], 'f.routeS is on and s.fbal at FILTER 1 already');
+  same('noise-filter2', [{ name: 'canvas', st: cv }, { name: 'FILTER 2 switch', st: fc, render: true }, { name: 'direct', st: dw }]);
+  done(P, F);
+  for (const [b, rt] of [['voice.direct', 2], ['filter.in', 0]]) {
+    const c = st0(), Pc = await facesOf(c), rc = cable(Pc, c, 'set', 'sub.out', b);
+    assert.deepEqual(rc.f.map(([p, x, y]) => p.join('.') + ':' + x + '→' + y), ['sub.route:1→' + rt], 'f.routeS is on and s.fbal at FILTER 1 already');
     assert.deepEqual(edgeIds(c).filter(e => e.startsWith('sub')), ['sub.out>' + b]);
-    const m = st0(), Mm = await mixOf(m);
-    choose(Mm.doc, Mm.strip('sub').querySelector('.sxm-route'), label);
-    const d = st0(); d.s.sub.route = route;
-    same('sub-' + b, [{ name: 'canvas', st: c }, { name: 'MIX page', st: m, render: true }, { name: 'direct', st: d }]);
-    done(Pc, Mm);
+    const d = st0(); d.s.sub.route = rt;
+    same('sub-' + b, [{ name: 'canvas', st: c }, { name: 'direct', st: d }]);
+    done(Pc);
   }
 });
 
-test('a stub (OSC A routed to Filter, FILTER 1\'s A switch off: "→ Filter (off)"): cabled into FILTER 1 = FILTER 1\'s A switch tap = the direct write; the stub cut (route None) = the MIX route None', async () => {
+test('a stub (OSC A routed to Filter, FILTER 1\'s A switch off: "→ Filter (off)"): cabled into FILTER 1 = FILTER 1\'s A switch tap on its face = the direct write; the stub cut (route None) = the direct write', async () => {
   const stub = () => { const st = st0(); st.s.p['f.routeA'] = 0; return st; };
   const s0 = stub(), sE = E.serumEdges(s0.s, s0.fx).filter(e => e.a === 'oscA.out');
   assert.deepEqual(sE.map(e => [e.b, !!e.stub, e.label]), [[null, true, E.STUB_LABEL]]);
-  const cv = stub(), P = await partsOf(cv), r = cable(P, cv, 'set', 'oscA.out', 'filter.in');
+  const cv = stub(), P = await facesOf(cv), r = cable(P, cv, 'set', 'oscA.out', 'filter.in');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['p.f.routeA:0→1']);
-  const sw = stub(), W = await bundledOf(sw);
-  filterSwitch(W, 'f.routeA');
+  const sw = stub(), W = await facesOf(sw);
+  filterSwitch(W, 'filter', 'f.routeA');
   const dw = stub(); dw.s.p['f.routeA'] = 1;
   same('stub-set', [{ name: 'canvas', st: cv }, { name: 'FILTER 1 switch', st: sw, render: true }, { name: 'direct', st: dw }], { from: stub() });
   done(P, W);
-  const cc = stub(), Pc = await partsOf(cc), rc = cable(Pc, cc, 'cut', 'oscA.out', null);
+  const cc = stub(), Pc = await facesOf(cc), rc = cable(Pc, cc, 'cut', 'oscA.out', null);
   assert.deepEqual(rc.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['osc.0.route:0→3']);
-  const mx = stub(), M = await mixOf(mx);
-  choose(M.doc, M.strip('a').querySelector('.sxm-route'), 'None');
   const d2 = stub(); d2.s.osc[0].route = 3;
-  same('stub-cut', [{ name: 'canvas', st: cc }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: d2 }], { changes: false }); // (a stub feeds nothing)
-  done(Pc, M);
+  same('stub-cut', [{ name: 'canvas', st: cc }, { name: 'direct', st: d2 }], { changes: false }); // (a stub feeds nothing)
+  done(Pc);
 });
 
-test('FILTER 1 → FILTER 2 = the MIX FILTER 1 route "Filter 2"; then FILTER 2 → FILTER 1 (the most recent wins: FILTER 1 back to Main) = the MIX FILTER 2 route "Filter 1" = the direct write', async () => {
-  const cv = st0(), P = await partsOf(cv), mx = st0(), M = await mixOf(mx), dw = st0();
+test('FILTER 1 → FILTER 2; then FILTER 2 → FILTER 1 (the most recent wins: FILTER 1 back to Main) = the direct write', async () => {
+  const cv = st0(), P = await facesOf(cv), dw = st0();
   const r = cable(P, cv, 'set', 'filter.out', 'filter2.in');
   assert.deepEqual(r.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['filter.0.route:1→0']);
-  choose(M.doc, M.strip('f1').querySelector('.sxm-route'), 'Filter 2');
   dw.s.filter[0].route = 0;
-  same('f1-f2', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }]);
+  same('f1-f2', [{ name: 'canvas', st: cv }, { name: 'direct', st: dw }]);
   const from = clone(dw);
   const r2 = cable(P, cv, 'set', 'filter2.out', 'filter.in');
   assert.deepEqual(r2.f.map(([p, a, b]) => p.join('.') + ':' + a + '→' + b), ['filter.1.route:1→0', 'filter.0.route:0→1']);
   assert.deepEqual(edgeIds(cv).filter(e => e.startsWith('filter')), ['filter.out>voice.main', 'filter2.out>filter.in']);
-  choose(M.doc, M.strip('f2').querySelector('.sxm-route'), 'Filter 1');
   dw.s.filter[1].route = 0; dw.s.filter[0].route = 1;
-  same('f2-f1', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'direct', st: dw }], { from });
-  done(P, M);
+  same('f2-f1', [{ name: 'canvas', st: cv }, { name: 'direct', st: dw }], { from });
+  done(P);
 });
 
-test('FX in / out: VOICE → own FX is read-only on the canvas (setEdge refuses, nothing written); OSC B → VOICE DIRECT (past the FX) = the MIX route Direct = the OSC B part\'s routing popover = the direct write; VOICE\'s outputs (BUS 1 → Direct, MAIN FX bypass) in parts = the MIX page\'s = the direct FX write; the FX cable\'s label follows', async () => {
+test('FX in / out: VOICE → own FX is read-only on the canvas (setEdge refuses, nothing written); OSC B → VOICE DIRECT (past the FX) = the direct write; the Amplifier\'s outputs (BUS 1 → Direct, MAIN FX bypass, in its drawer) = the direct FX write; the FX cable\'s label follows', async () => {
   const st = st0(), before = canon(st.s) + canon(st.fx);
   for (const [a, b, why] of [['voice.out', 'fx.in', E.WHY.fx], ['oscB.out', 'fx.in', E.WHY.voice], ['filter.out', 'fx.in', E.WHY.voice]]) {
     const r = E.setEdge(st.s, st.fx, a, b);
@@ -360,41 +342,34 @@ test('FX in / out: VOICE → own FX is read-only on the canvas (setEdge refuses,
   assert.equal(canon(st.s) + canon(st.fx), before, 'nothing written');
   assert.equal(E.serumEdges(st.s, st.fx).find(e => e.kind === 'fx').label, 'Main · Bus 1');
   // a source past the FX
-  const cv = st0(), P = await partsOf(cv);
+  const cv = st0(), P = await facesOf(cv);
   cable(P, cv, 'set', 'oscB.out', 'voice.direct');
-  const mx = st0(), M = await mixOf(mx);
-  choose(M.doc, M.strip('b').querySelector('.sxm-route'), 'Direct');
-  const pp = st0(), Q = await partsOf(pp);
-  D.fire(Q.views.oscB.root.querySelector('.sxo-rbtn'), 'click');
-  const seg = Q.doc.body.querySelectorAll('.sxo-pane').map(p => p.querySelectorAll('button').find(b => b.textContent === 'Direct')).find(Boolean);
-  assert.ok(seg, 'the routing popover\'s ROUTE Direct');
-  D.fire(seg, 'click');
   const dw = st0(); dw.s.osc[1].route = 2;
-  same('oscB-direct', [{ name: 'canvas', st: cv }, { name: 'MIX page', st: mx, render: true }, { name: 'OSC B popover', st: pp }, { name: 'direct', st: dw }]);
+  same('oscB-direct', [{ name: 'canvas', st: cv }, { name: 'direct', st: dw }]);
   assert.equal(E.serumEdges(cv.s, cv.fx).find(e => e.kind === 'fx').label, 'Main · Bus 1 · Direct');
-  done(P, M, Q);
-  // VOICE's outputs (the parts' OutputsPanel) vs the MIX page's output strips: BUS 1 → Direct, MAIN FX bypass on
-  const po = st0(), R = await partsOf(po), out = R.views.voice.root;
-  choose(R.doc, out.querySelector('[data-strip="bus1"]').querySelector('.sxm-route'), 'Direct');
-  D.fire(out.querySelector('[data-strip="main"]').querySelector('.sxm-byp'), 'click');
-  const m2 = st0(), M2 = await mixOf(m2);
-  choose(M2.doc, M2.strip('bus1').querySelector('.sxm-route'), 'Direct');
-  D.fire(M2.strip('main').querySelector('.sxm-byp'), 'click');
+  done(P);
+  // the Amplifier's outputs (its drawer: the OutputsPanel's bus routes and FX bypass boxes): BUS 1 → Direct, MAIN FX bypass on
+  const po = st0(), R = await facesOf(po), amp = faceOf(R, 'voice');
+  const routes = amp.querySelectorAll('.sxm-route'), byps = amp.querySelectorAll('.sxm-bypbox');
+  assert.deepEqual([routes.length, byps.length], [2, 3], 'BUS 1 / BUS 2 routes, BUS 1 / BUS 2 / MAIN bypass');
+  choose(R.doc, routes[0], 'Direct');
+  D.fire(byps[2].querySelector('.sxm-byp'), 'click');
+  R.X.paint(true);
   const d2 = st0(); d2.fx.racks[1].route = 1; d2.fx.racks[0].byp = 1;
-  same('outputs', [{ name: 'VOICE outputs (parts)', st: po }, { name: 'MIX page', st: m2, render: true }, { name: 'direct', st: d2 }]);
+  same('outputs', [{ name: 'the Amplifier\'s outputs', st: po, render: true }, { name: 'direct', st: d2 }]);
   assert.equal(E.serumEdges(po.s, po.fx).find(e => e.kind === 'fx').label, 'Main · Bus 1 · Direct');
-  done(R, M2);
+  done(R);
 });
 
-/* ================================================================ 2. panels: the canvas modulators, bundled ⇄ parts */
+/* ================================================================ 2. panels: the canvas modulators; the faces leave the state as it is */
 const PJ = { bpm: 120, perf: { wheel: null }, tracks: [] };
 const PO = { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } };
-// a Serum track (OSC A through FILTER 1 at 500 Hz) whose cutoff a canvas modulator of `kind` moves (one row, amt 0.6)
+// a Serum-engine track ((SX0) a rig: OSC A through FILTER 1 at 500 Hz) whose cutoff a canvas modulator of `kind` moves (one row, amt 0.6)
 function modTrack(kind, rec) {
   const s = core.normalizeSerum(core.defaultSerum());
   Object.assign(s.p, { 'f.on': 1, 'f.type2': 7 / 107, 'f.cutoff': n('f.cutoff', 500), 'f.res': 0.5 });
   const t = { id: 'trk_m3', name: 'M3', notes: [], cc: [], prim: 'i1', nid: 4, mods: [],
-    dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: core.defaultFx2() }, out: { kind: 'out' } },
+    dev: { i1: { kind: 'synth', model: 'rig', vals: { s }, preset: null, fx: core.defaultFx2() }, out: { kind: 'out' } }, // ((SX0 D1) the Serum-engine device is a rig: 'serum' left MODELS — the same compile)
     wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] };
   const id = CMOD.addModDev(t, kind);
   assert.ok(id, kind);
@@ -515,35 +490,29 @@ test('a canvas Chaos edited through its face (the ChaosRow donor\'s S&H on the s
   Bo.body.destroy();
 });
 
-// N2 for one state: bundled (every page shown) → parts (every part I1 / I2 give + VOICE, its fold-outs opened, painted),
-// twice, then bundled again: vals.s and fx byte-identical (JSON, s.ui included), the compiled patch the same
+// N2 for one state: the faces of every part I1 / I2 give and the Amplifier mounted, painted, each drawer opened and closed, unmounted —
+// twice: vals.s and fx byte-identical (JSON, s.ui included), the compiled patch the same ((SX0) the bundled rounds and the stage-3 views
+// left with serum-ui.js and the parts machinery: the faces are the views now)
 async function n2(st, name) {
   const j0 = JSON.stringify(st.s), f0 = JSON.stringify(st.fx), c0 = canon(compile(st)), parts = E.partKeys(st.s, {}, 'i1');
   for (let round = 0; round < 2; round++) {
-    const Bu = await bundledOf(st);
-    for (const p of UI.PAGES) { Bu.ui.showPage(p); if (p === 'mix') await Bu.ui.mixReady; await D.flush(Bu.doc); }
-    Bu.ui.showPage(st.s.ui.page);
-    Bu.ui.paint(true);
-    done(Bu);
-    assert.deepEqual(diff(JSON.parse(JSON.stringify(st.s)), JSON.parse(j0)), [], name + ': bundled, round ' + round);
-    const P = await partsOf(st);
+    const P = await facesOf(st);
     assert.deepEqual(Object.keys(P.views), parts.concat('voice'));
-    const folds = P.views.voice.root.querySelectorAll('.sx-foldbtn');   // (VOICE's fold-outs, built at their first opening)
-    assert.equal(folds.length, 8);
-    for (const f of folds) D.fire(f, 'click');
+    let drawers = 0;
+    for (const V of Object.values(P.views)) if (V.drawer && V.drawer.el) { V.drawer.open(); P.X.paint(true); V.drawer.close(); drawers++; }
+    assert.ok(drawers >= Object.keys(P.views).length - 3, name + ': the drawers opened (' + drawers + ')');
     P.X.paint(true);
     await D.flush(P.doc);
     done(P);
-    assert.deepEqual(diff(JSON.parse(JSON.stringify(st.s)), JSON.parse(j0)), [], name + ': parts, round ' + round);
+    assert.deepEqual(diff(JSON.parse(JSON.stringify(st.s)), JSON.parse(j0)), [], name + ': faces, round ' + round);
   }
-  done(await bundledOf(st));
   assert.equal(JSON.stringify(st.s), j0, name + ': vals.s byte-identical');
   assert.equal(JSON.stringify(st.fx), f0, name + ': fx byte-identical');
   assert.equal(canon(compile(st)), c0, name + ': the compiled patch');
   return parts;
 }
 
-test('N2: bundled → parts → bundled leaves vals.s, fx and the compiled patch byte-identical — the Serum under test with an LFO 3 and a macro row and the ARP on; the six factory presets with the most parts', async () => {
+test('N2: the faces mounted, painted, their drawers opened and unmounted leave vals.s, fx and the compiled patch byte-identical — the state under test with an LFO 3 and a macro row and the ARP on; the six factory presets with the most parts', async () => {
   const st = st0();
   st.s.matrix[0] = core.normRow({ src: 'lfo3', dst: 'b.level', amt: 0.4 });
   st.s.matrix[1] = core.normRow({ src: 'macro2', dst: 'f2.cutoff', amt: 0.3 });

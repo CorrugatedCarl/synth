@@ -12,6 +12,7 @@ import * as P1 from './ref-p1/serum-core.js';
 import { loadFixture } from './fixtures/load.mjs';
 import * as G from '../cv-graph.js?v=9';
 import { patchFor } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 
 const {
   DESTS, DEST_INDEX, NS, NF, ND, SOURCES, SRC_INDEX, SRC_MENU, NSRC, FILTERS, WARPS, UNI_STACKS, UNI_MODES, DIST_MODES,
@@ -4170,7 +4171,7 @@ test('RULINGS2 F1: FX state v2 everywhere — the entry points defaultFx / norma
 /* ------------------------------------------------------------ SYNTH Canvas 2a: canvas mod rows injected (IMPL-2a §2.1, §7) */
 // cv-graph injectMods puts a track's canvas cables (track.mods rows) into the Serum's free matrix slots at compile time; the
 // oracle is the same row written into s.matrix by addMod (the Serum's own WHEEL tile / a velocity drop)
-const sxDev = (s, fx) => ({ kind: 'synth', model: 'serum', vals: { s }, fx });
+const sxDev = (s, fx) => ({ kind: 'synth', model: RIG.ID, vals: { s }, fx });
 const POPTS = { sr: 48000, bpm: 120 };
 const CCTX = fx => ({ bpm: 120, smooth: 1, fx });
 const crow = o => Object.assign({ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff', amt: 0.5, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }, o);
@@ -4184,7 +4185,7 @@ test('2a injectMods: no rows → dev.vals.s itself (the same object), so every f
       assert.equal(inj.s, s, p.name);
       assert.deepEqual([inj.placed, inj.left], [[], []]);
     }
-    const ref = patchFor('serum', d.vals, fx, POPTS);
+    const ref = patchFor(RIG.ID, d.vals, fx, POPTS);
     assert.deepEqual(G.instPatch(d, POPTS, []), ref, p.name);
     assert.equal(G.instPatch(d, POPTS, []).serum.cpKey, ref.serum.cpKey);
   }
@@ -4219,8 +4220,8 @@ test('2a injectMods: a canvas wheel row in a free slot compiles exactly as the s
   assert.ok(used.includes(k1) && used.includes(k2), 'mSlot: their slots');
   assert.notDeepEqual(A.serumT.parts['crv' + k1], Z.serumT.parts['crv' + k1], "the custom curve is part 'crv<slot>'");
   assert.deepEqual(A.serumT.parts['crv' + k2], Z.serumT.parts['crv' + k2], 'no curve: the identity part');
-  const ref = patchFor('serum', { s: o }, fx, POPTS);
-  assert.deepEqual(patchFor('serum', { s: inj.s }, fx, POPTS), ref);
+  const ref = patchFor(RIG.ID, { s: o }, fx, POPTS);
+  assert.deepEqual(patchFor(RIG.ID, { s: inj.s }, fx, POPTS), ref);
   assert.deepEqual(G.instPatch(sxDev(s, fx), POPTS, rows), ref, 'instPatch passes { s: merged } to patchFor');
 });
 
@@ -4237,9 +4238,9 @@ test('2a injectMods: canvas rows on the Serum\'s own FX knobs reach fxModded2 (d
   addMod(o, fx, 'at', id, { amt: 0.5 });
   addMod(o, fx, 'bend', 'g.master', { amt: -0.25, bi: 1 });
   assert.deepEqual(m1, C.fxModded2(o, fx));
-  const P = G.instPatch(sxDev(s, fx), POPTS, rows), ref = patchFor('serum', { s: o }, fx, POPTS);
+  const P = G.instPatch(sxDev(s, fx), POPTS, rows), ref = patchFor(RIG.ID, { s: o }, fx, POPTS);
   assert.deepEqual(P, ref);
-  assert.notDeepEqual(P.fxr, patchFor('serum', { s }, fx, POPTS).fxr, 'the rack compiles the modulated parameters');
+  assert.notDeepEqual(P.fxr, patchFor(RIG.ID, { s }, fx, POPTS).fxr, 'the rack compiles the modulated parameters');
 });
 
 test('2a injectMods: 64 rows in use → every canvas row is left (not compiled); one free slot takes the first; invalid rows neither', () => {

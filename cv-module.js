@@ -13,7 +13,7 @@
 // nothing hidden at any zoom); off screen the root carries [data-cv-off] (CSS animations pause, host.shown → monitors).
 // No module is resizable (the user's rule, 2026-10-18): each has one fixed width that fits all of its content — a classic
 // instrument's Hardware layout its panel's size (host.size: {fixed: {w, h}}, cv-panel sizeOf: no measuring), its Simple
-// layout FLOW_W of its model and a Serum W_SERUM (host.size: {fixed: {w}}: the height measured), the FX panel W_FX, OUT
+// layout FLOW_W of its model ((SX0) a rig: its Amplifier's face, host.size: {fixed: {w}}: the height measured), the FX panel W_FX, OUT
 // W_OUT. A stored width (track.lay.<id>.w, from before the rule) is ignored and never written again.
 // Stage 1e (IMPL-1e §4.1): several devices per track. A module key is a device id ('i1', 'i2', 'fx1', 'i2/fx' — a Serum's
 // own FX —, 'out'). createModule gains power (⏻ on the bar, [data-off] dims the module), the key-zone pill (instruments:
@@ -70,7 +70,7 @@ export { MOD_COLOR, MOD_PREFIX, keyKind } from './cv-cables.js?v=9';
 export const BAR_H = 40;
 /** Module widths (world px; fixed — nothing is resizable): a Serum's (its ≥ 1100 container layout), the FX panel's, OUT's,
  * and W_CLASSIC for a classic model FLOW_W does not list. */
-export const W_CLASSIC = 1080, W_SERUM = 1200, W_FX = 760, W_OUT = 280;
+export const W_CLASSIC = 1080, W_FX = 760, W_OUT = 280; // ((SX0) the bundled panel's 1200 went with it
 /** A classic synth's Simple ('flow') layout width per model (world px, on the dots): measured so that every section,
  * control and the TB-303 step sequencer fit with room to spare (nothing clips or scrolls: the TB-303's steps need
  * ≥ 608, the DX7's operator rows ≥ 992), the sections packed into the fewest, fullest rows. */
@@ -205,7 +205,7 @@ export const BG_SEL = '.cv-body, .inst, .plate, .nameplate, .nameplate > div, .p
  * win the hit test over a jack's enlarged touch circle: style.css). */
 export const JACK_Y = 28, JACK_OUT = 14;
 /** Tidy's guess of a module's height before it was measured (world px): the instrument's per model in sizeFor. */
-const H_GUESS = { inst: 560, serum: 840, fx: 420, out: 260 };
+const H_GUESS = { inst: 560, fx: 420, out: 260 };
 /** (1e) Tidy's vertical gap between stacked modules (instruments, panels; world px, on the dots). */
 export const VGAP = 64;
 /** (WC, review 2 P2-5) the gap between a rig's modulators side by side in their band over the chain (world px, on the dots). */
@@ -280,9 +280,9 @@ export function fxKey(model) { return isSxId(model) ? ID.sxFx : ID.fx; }
 /** A module's width (world px) on a track of `model` (the instrument: its Simple layout's, or a Serum's; a Hardware
  * layout's comes from its panel: cv-panel sizeOf). */
 export function defaultW(key, model) {
-  return key === ID.inst ? (model === 'serum' ? W_SERUM : FLOW_W[model] || W_CLASSIC) : key === ID.out ? W_OUT : W_FX;
+  return key === ID.inst ? FLOW_W[model] || W_CLASSIC : key === ID.out ? W_OUT : W_FX;
 }
-/** (1e) A module's default width by kind: an instrument its model's (FLOW_W, W_SERUM), an FX module W_FX, OUT W_OUT. */
+/** (1e) A module's default width by kind: an instrument its model's (FLOW_W), an FX module W_FX, OUT W_OUT. */
 export function kindW(kind, model) { return kind === 'inst' ? defaultW(ID.inst, model) : kind === 'out' ? W_OUT : kind === 'mod' ? W_MOD : kind === 'pm' ? W_PM : W_FX; }
 /** (2a) The mod kind of a module key ('wheel' / 've' / 'at' / 'bd' → 'wheel' / 'velo' / 'at' / 'bend'; (2b) 'nt' → 'note',
  * 'l<n>' / 'e<n>' / 'm<n>' / 'c<n>' / 'h<n>' → 'lfo' / 'env' / 'macro' / 'cc' / 'chaos'; else null). mkOf: the same. */
@@ -347,7 +347,7 @@ export function tidy(track, sizes, devs, rack, opts) {
   const voices = new Set(L.filter(d => d.kind === 'part').map(d => (typeof d.dev === 'string' ? d.dev : (splitKey(d.key) || {}).dev))); // (3) Serums in parts view: VOICE
   const rig = d => d.wires === 'cords' || d.wires === 'lines'; // ((WC) a rig's module: the Amplifier where VOICE was)
   const wOf = d => { const s = S(d.key); return s && fin(s.w) && s.w > 0 ? s.w : d.kind === 'mod' ? modW(mkOf(d)) : d.kind === 'part' ? PART_W_DEF[partKind(pOf(d))] || W_MOD : d.kind === 'inst' && voices.has(d.key) ? (rig(d) ? PART_W_DEF.amp : PART_W_DEF.voice) : kindW(d.kind, d.model); };
-  const hOf = d => { const s = S(d.key); return s && fin(s.h) && s.h > 0 ? s.h : d.kind === 'inst' ? (voices.has(d.key) ? (rig(d) ? PART_H_DEF.amp : PART_H_DEF.voice) : d.model === 'serum' ? H_GUESS.serum : H_GUESS.inst) : d.kind === 'mod' ? MOD_H[mkOf(d)] || MOD_H.at : d.kind === 'part' ? PART_H_DEF[partKind(pOf(d))] || 256 : d.kind === 'pm' ? H_PM : H_GUESS[d.kind] || H_GUESS.fx; };
+  const hOf = d => { const s = S(d.key); return s && fin(s.h) && s.h > 0 ? s.h : d.kind === 'inst' ? (voices.has(d.key) ? (rig(d) ? PART_H_DEF.amp : PART_H_DEF.voice) : H_GUESS.inst) : d.kind === 'mod' ? MOD_H[mkOf(d)] || MOD_H.at : d.kind === 'part' ? PART_H_DEF[partKind(pOf(d))] || 256 : d.kind === 'pm' ? H_PM : H_GUESS[d.kind] || H_GUESS.fx; };
   // ((WC, §3.6) a rig's cords sag (the Studio rope's EXTRA 24): one more grid row of air under each of its stacked modules)
   const air = d => (d.kind === 'part' && d.wires === 'cords' ? DOT : 0);
   const ins = L.filter(d => d.kind === 'inst'), insK = new Set(ins.map(d => d.key));
@@ -531,7 +531,7 @@ export function camPut(rec, key, cam, max) {
 }
 /** The world size of a module about to be dropped for `modelId` (the tray's true-size outline). @returns {{w: number, h: number}} */
 export function sizeFor(modelId) {
-  return { w: defaultW(ID.inst, modelId), h: modelId === 'serum' ? H_GUESS.serum : H_GUESS.inst };
+  return { w: defaultW(ID.inst, modelId), h: H_GUESS.inst };
 }
 /** Room for a fixed-size instrument (IMPL-panels §7.3): the modules whose left edge is at or right of the instrument's
  * left edge and whose vertical span overlaps it (R) move right together — their relative layout kept — so the nearest
@@ -1273,7 +1273,7 @@ export function createTrackView(world, track, host) {
     if (!m || !ids || ids.length < 2 || !ids.includes(key)) return null;
     return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
   };
-  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : ((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SLOT_MODS.has(mkOf(key)) ? 160 : 40; };
+  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : 600) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SLOT_MODS.has(mkOf(key)) ? 160 : 40; };
   const colorOf = key => { const d = devOf(key), e = DEV ? DM.get(key) : null; return (d && typeof d.color === 'string' && d.color) || (e && typeof e.color === 'string' && e.color) || (kindOf(key) === 'mod' && MOD_COLOR[mkOf(key)]) || T.color; }; // ((8) an entry's own colour: the Pads module's)
   // (3) a part's title and chip: the host's, else 'OSC B' and 'S<n>' (the Serum's number: its group)
   const partMeta = (key, M0) => { const P = partOf(key), n = /(\d+)$/.exec(P.dev || ''); return { title: M0.title || partLabel(P.part), sub: M0.sub, chip: M0.chip !== undefined ? M0.chip : 'S' + (n ? n[1] : '1') }; };

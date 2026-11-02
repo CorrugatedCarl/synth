@@ -48,20 +48,31 @@
 //  14  stage M (IMPL-M §2.3): project.master — its FX rack and canvas: additive, the identity (a 14 opens read-only in a 13 build)
 //  15  stage SC (IMPL-SC §5.3): the 'duck' FX type and the compressor's v3 (its sidechain key) in any rack's FX state: additive, the identity
 //  16  stage WC (IMPL-WC §2.4): the rig (rig-core RIG.NAME) — a 'rig' instrument device (model 'rig', its `rig` record: cord colours, module ordinals; song.normDev
-//      → rig-core normRig) and a Serum shown as parts opens WHOLE: STEPS[15] drops the lay entry's ui 'parts' (its 'iN/*' entries stay for
-//      "Make it a <NAME>") and names the track in upgrade()'s `notes`. A schema-15 build would read 'rig' as a Minimoog (modelById's
-//      fallback), drop `rig` and autosave the loss: it opens a 16 read-only. toV1 saves a rig as a Serum (the same vals.s / fx: the same sound)
+//      → rig-core normRig) and a Serum shown as parts opens WHOLE: STEPS[15] drops the lay entry's ui 'parts' (its 'iN/*' entries stay: the
+//      places of its modules once the load pass makes it a <NAME>; (SX0) no note of its own). A schema-15 build would read 'rig' as a Minimoog
+//      (modelById's fallback), drop `rig` and autosave the loss: it opens a 16 read-only. toV1 saves a rig as a Serum (the same vals.s / fx: the same sound)
 //  17  stage MM (IMPL-MM §5): the master's modulators — project.master.mdev (the modulator modules: lfo / macro / cc / chaos by their id prefix,
 //      song.normMaster), .mods (their cables onto the master rack's knobs, normMods) and .mid: additive, the identity (STEPS[16] changes nothing
 //      stored). A schema-16 build's normMaster whitelists fx and lay only: it would drop all three and autosave the loss — it opens a 17 read-only.
 //      toV1 names them in `lost` (main has no master)
+// (SX0, IMPL-SX0 §2) No schema: Serum complete left the canvas — serumOut, a load pass inside 17 that upgrade() runs after the steps on every
+// file it does not open read-only, makes each Serum device a <NAME> (model 'rig' exists since 16 and nothing new is stored, so a schema-17 build
+// opens the result fully; a bump would only make it read-only there, IMPL-SX0 §15 P1-1). The identity on a project with no Serum
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
 // before it.
-//   upgrade(o)              a parsed project (autosave or file) → { p, from, readOnly, notes }: p is o brought to SCHEMA by STEPS
-//                           (o itself untouched), or o as it is when it is newer (readOnly); notes: what a step tells the user
-//                           (STEPS[15]'s parts-view Serums; [] from every other step — the loader shows them with the 1f idiom)
+//   upgrade(o)              a parsed project (autosave or file) → { p, from, readOnly, notes, said }: p is o brought to SCHEMA by STEPS
+//                           then serumOut (o itself untouched), or o as it is when it is newer (readOnly); notes: what the pass tells
+//                           the user (one per Serum device; [] when there is none — the loader shows them with the 1f idiom); said:
+//                           where each of those sits ({ i, track, dev, tail }: notes[i] is “<track name>”: tail)
+//   serumOut(p, notes, said) (SX0) every Serum device → a <NAME> (RIG.ID): the same state (rig-core adopt: only the AMP ENV switches, each
+//                           said), its FX, preset name, rows, part places ('iN/<part>': its modules' places — none: main.js sxPlaceNew
+//                           lays Tidy's group); its lay entry's ui gone; a default name renamed (setTrackModel's rule) → a new project
+//                           (changed tracks copied), or p itself when it holds no Serum; said (an array) gets { i: its note's index,
+//                           track: the track's id, dev: the device's id, tail } per note
+//   notesAfterSplit(up, sp) (review 1 P3-1) upgrade's notes after splitTracks: a Serum note names the track its <NAME> ended up on (a new
+//                           track “<track> · <NAME>”: serumOut runs first, the split's names need the <NAME>) → the notes (a new array)
 //   stamp(p, src)           a project p made by song.js (newProject / deserialize, which keep only the fields they know)
 //                           gets src's uid (when valid; else a new one) and schema = SCHEMA → p
 //   schemaOf(x)             (appstore.js) the schema of a project object or JSON text; 0 for none
@@ -73,7 +84,7 @@
 //                           without a file's mirror fields); toV2 = STEPS[2] on a whole project
 //   toV1(p)                 "Save as classic project" (§5.4): { p: a project main opens (no schema; canonical tracks
 //                           exactly, else one track per instrument), lost: [what main cannot hold] }
-//   splitTracks(p, {name})  (stage 1f: one instrument per track in the UI) a parsed project at SCHEMA → { p, notices }: each
+//   splitTracks(p, {name})  (stage 1f: one instrument per track in the UI) a parsed project at SCHEMA → { p, notices, moved }: each
 //                           track holding several instruments, extra panels or a shape that is not today's (power off,
 //                           a key zone, a cable level, a Serum into a panel, no cable to OUT, a classic straight into
 //                           OUT) becomes one v2 track per instrument, by toV1's per-instrument rule (instRoutes) in v2
@@ -89,7 +100,8 @@
 //                           device that does not survive (a panel, nothing) or from a missing modulator are dropped and
 //                           named. Modulator devices stay on the keeper. notices: one line per track that
 //                           held several instruments or lost something audible (what, per instrument). A canonical
-//                           one-instrument track (and a project of them: the same object) is returned as it is
+//                           one-instrument track (and a project of them: the same object) is returned as it is. moved: where each
+//                           instrument of a track that changed went ([{ track: the old id, dev: its id there, name: the track's name now }])
 //   primV1(t)               a v2 track's primary instrument as v1 fields { model, vals, preset, seq?, fx }
 //   mirror(o)               a saved FILE's tracks get primV1 at track level (§5.8: main opens it as each track's primary
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
@@ -107,11 +119,11 @@ import { defaultFx2 } from './serum-core.js?v=9';
 import { modLabelOf, modDevs } from './cv-mods.js?v=9';
 import * as cvModule from './cv-module.js?v=9'; // (STEPS[6]: the module sizes, read-only)
 import { usable as hwUsable, sizeOf as hwSizeOf } from './cv-panel.js?v=9';
-import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxId: a Serum-engine device — the Serum and the rig — keeps its FX inside; the lone 'serum' literals are the bundled Serum (partsWhole) and toV1's rig → Serum target)
+import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxId: a Serum-engine device — the Serum and the rig — keeps its FX inside; (SX0) SX_ID: main's Serum (partsWhole, serumOut, toV1's target)
 import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
 import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
-import { RIG } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it)
+import { RIG, adopt, WORDS as RIG_WORDS } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it; (SX0) adopt, mpeLater)
 
 export { schemaOf };
 export const SCHEMA = 17;
@@ -120,6 +132,9 @@ export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
 export const V2_KEYS = Object.freeze(['prim', 'nid', 'dev', 'wires']);
 export const READ_ONLY_NOTICE = 'Opened read-only: saved by a newer SYNTH Canvas · Reload';
+// main's Serum (synth.domlavin.com): the id an old project's Serum device carries and toV1's target; its default name ("Serum", "Serum <n>": main's
+// and ⟨SX0⟩'s setTrackModel / + Track) is the id capitalised — built, so no Serum word sits in this file's strings (IMPL-SX0 G4)
+const SX_ID = 'serum', SX_NAME = SX_ID[0].toUpperCase() + SX_ID.slice(1), SX_DEF = new RegExp('^' + SX_NAME + '( \\d+)?$');
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 export const isUid = s => typeof s === 'string' && /^p_[0-9a-z]{6,24}$/.test(s);
@@ -168,10 +183,10 @@ export const STEPS = Object.freeze([
   // highest it knows (a v3 compressor becomes a v2, its key rows and sub.src gone) and would autosave the loss: it opens a 15 read-only
   p => Object.assign({}, p, { schema: 15 }),
   // 15 → 16: stage WC, the rig (IMPL-WC §2.4): a 'rig' device (model 'rig', its `rig` record — song.normDev) is additive; a Serum shown as
-  // parts (lay[iN].ui 'parts') opens WHOLE — the flag goes, its 'iN/*' entries stay (harmless data the bundled view ignores; the positions
-  // "Make it a <NAME>" reuses), the track named in `notes` (partsWhole). Sound-neutral: lay only (IMPL-3 N2). A schema-15 build would read
-  // 'rig' as a Minimoog (modelById's fallback), drop `rig` and autosave the loss: it opens a 16 read-only
-  (p, notes) => Object.assign(partsWhole(p, notes), { schema: 16 }),
+  // parts (lay[iN].ui 'parts') opens WHOLE — the flag goes, its 'iN/*' entries stay (the places of its modules once serumOut makes it a
+  // <NAME>; (SX0) the pass's note covers it). Sound-neutral: lay only (IMPL-3 N2). A schema-15 build would read 'rig' as a Minimoog
+  // (modelById's fallback), drop `rig` and autosave the loss: it opens a 16 read-only
+  p => Object.assign(partsWhole(p), { schema: 16 }),
   // 16 → 17: stage MM (IMPL-MM §5): project.master.mdev / mods / mid — the master's modulator modules and their cables — are additive: the
   // identity; the bump keeps a schema-16 build from dropping them (its normMaster whitelists fx and lay only) and autosaving the loss
   p => Object.assign({}, p, { schema: 17 }),
@@ -183,33 +198,79 @@ export function upgrade(o) {
   if (from > SCHEMA) return { p: o, from, readOnly: true, notes };
   let p = o;
   for (let n = from; n < SCHEMA; n++) p = STEPS[n](p, notes);
-  if (p === o) p = Object.assign({}, o); // (already at SCHEMA: still a copy)
+  const said = [];
+  p = serumOut(p, notes, said); // ((SX0) at any schema, after the steps: a main file's Serums arrive through STEPS[2] first)
+  if (p === o) p = Object.assign({}, o); // (already at SCHEMA, no Serum: still a copy)
   if (!isUid(p.uid)) p.uid = newUid();
   p.schema = SCHEMA;
-  return { p, from, readOnly: false, notes };
+  return { p, from, readOnly: false, notes, said };
 }
-// (WC) STEPS[15]: every Serum device shown as parts opens whole — its lay entry's `ui` goes, the 'iN/*' entries stay; one note per such device
-// (the track, its name when the device has one), plus one when link rows leave from its parts ('iN/lfo3.out' → another device's knob: they
-// compile, cv-mods, but draw nothing while whole, cv-cables) → a new project (changed tracks copied with a new lay; the input untouched)
-function partsWhole(p, notes) {
+// (WC) STEPS[15]: every Serum device shown as parts opens whole — its lay entry's `ui` goes, the 'iN/*' entries stay ((SX0) its notes went: the
+// load pass after the steps makes the device a <NAME> and says so) → a new project (changed tracks copied with a new lay; the input untouched)
+function partsWhole(p) {
   if (!isObj(p) || !Array.isArray(p.tracks)) return Object.assign({}, p);
-  const N = Array.isArray(notes) ? notes : [];
   const tracks = p.tracks.map(t => {
     if (!isObj(t) || !isObj(t.dev) || !isObj(t.lay)) return t;
     let lay = null;
     for (const k of Object.keys(t.dev)) {
       const d = t.dev[k], e = t.lay[k];
-      if (!isObj(d) || d.kind !== 'synth' || d.model !== 'serum' || !isObj(e) || e.ui !== 'parts') continue;
+      if (!isObj(d) || d.kind !== 'synth' || d.model !== SX_ID || !isObj(e) || e.ui !== 'parts') continue;
       lay = lay || Object.assign({}, t.lay);
       lay[k] = Object.assign({}, e); delete lay[k].ui;
-      const who = typeof d.name === 'string' && d.name ? `its Serum “${d.name}”` : 'its Serum';
-      N.push(`“${t.name}”: ${who} was shown as parts — it opens whole now. ⋯ → Make it a ${RIG.NAME} keeps the parts as a ${RIG.NAME} (same sound)`);
-      const n = (Array.isArray(t.mods) ? t.mods : []).filter(r => isObj(r) && typeof r.src === 'string' && r.src.startsWith(k + '/')).length;
-      if (n) N.push(`“${t.name}”: ${n} modulation cable${n > 1 ? 's' : ''} from its parts ${n > 1 ? 'are' : 'is'} hidden while whole — Make it a ${RIG.NAME} shows ${n > 1 ? 'them' : 'it'}`);
     }
     return lay ? Object.assign({}, t, { lay }) : t;
   });
   return Object.assign({}, p, { tracks });
+}
+// (SX0, IMPL-SX0 §2) Serum complete is gone from the canvas: every Serum device ({kind 'synth', model 'serum'}, any track) opens as a <NAME> —
+// vals.s rig-core adopt's (only the AMP ENV switches change, each said: the same sound otherwise, W2), its FX, preset name, other fields and the
+// track's rows / cables kept; no `rig` record (song.normDev's normRig); its lay entry's `ui` goes, its part places ('iN/<part>') stay as its
+// modules' places (none — a Serum shown whole: main.js sxPlaceNew lays Tidy's group on the first render). A default name is the old model's
+// (setTrackModel's rule): the primary's track "Serum" / "Serum <n>" → "<NAME> <position>", a device's → "<NAME>[ <n>]"; any other is the user's.
+// One note per device ("its wavetable synth": no Serum word, G4), its adopt notes and mpeLater (midi.js routes MPE to main's id only, §11.3)
+// appended. Idempotent; p itself when it holds no Serum (upgrade's copy and the byte-for-byte pins); changed tracks copied, p untouched
+export function serumOut(p, notes, said) {
+  if (!isObj(p) || !Array.isArray(p.tracks)) return p;
+  const N = Array.isArray(notes) ? notes : [], W = Array.isArray(said) ? said : [];
+  let tracks = null;
+  p.tracks.forEach((t, i) => {
+    if (!isObj(t) || !isObj(t.dev)) return;
+    let u = null;
+    const done = [];
+    for (const k of Object.keys(t.dev)) {
+      const d = t.dev[k];
+      if (!isObj(d) || d.kind !== 'synth' || d.model !== SX_ID) continue;
+      if (!u) u = Object.assign({}, t, { dev: Object.assign({}, t.dev) });
+      const A = adopt(isObj(d.vals) ? d.vals.s : undefined), x = Object.assign({}, d, { model: RIG.ID, vals: { s: A.s } });
+      if (typeof d.name === 'string' && SX_DEF.test(d.name)) x.name = RIG.NAME + d.name.slice(SX_NAME.length);
+      u.dev[k] = x;
+      const e = isObj(t.lay) ? t.lay[k] : null;
+      if (isObj(e) && 'ui' in e) { if (u.lay === t.lay) u.lay = Object.assign({}, t.lay); u.lay[k] = Object.assign({}, e); delete u.lay[k].ui; }
+      if (k === t.prim && typeof t.name === 'string' && SX_DEF.test(t.name)) u.name = RIG.NAME + ' ' + (i + 1);
+      const g = isObj(A.s) && isObj(A.s.global) ? A.s.global.mpe : null;
+      done.push({ dev: k, name: x.name, notes: A.notes, mpe: isObj(g) && !!g.on });
+    }
+    if (!u) return;
+    for (const o of done) {
+      const who = typeof o.name === 'string' && o.name ? `its wavetable synth “${o.name}”` : 'its wavetable synth';
+      const tail = `${who} opens as a ${RIG.NAME}` + (o.notes.length ? ' · ' + o.notes.join(' · ') : ' — the same sound') + (o.mpe ? ' · ' + RIG_WORDS.mpeLater : '');
+      W.push({ i: N.length, track: u.id, dev: o.dev, tail });
+      N.push(`“${u.name}”: ${tail}`);
+    }
+    (tracks || (tracks = p.tracks.slice()))[i] = u;
+  });
+  return tracks ? Object.assign({}, p, { tracks }) : p;
+}
+// (review 1 P3-1) upgrade()'s notes once splitTracks ran on its project: serumOut names the track it knows, but a Serum next to another
+// instrument moves to a new track (“Duo · <NAME>”) — the note follows its device (sp.moved) → a new array; the rest as they were
+export function notesAfterSplit(up, sp) {
+  const N = isObj(up) && Array.isArray(up.notes) ? up.notes.slice() : [], at = new Map();
+  for (const m of isObj(sp) && Array.isArray(sp.moved) ? sp.moved : []) at.set(m.track + '/' + m.dev, m.name);
+  for (const w of isObj(up) && Array.isArray(up.said) ? up.said : []) {
+    const name = at.get(w.track + '/' + w.dev);
+    if (typeof name === 'string' && N[w.i] !== undefined) N[w.i] = `“${name}”: ${w.tail}`;
+  }
+  return N;
 }
 
 export function stamp(p, src) {
@@ -307,9 +368,9 @@ export function toV1(p0) {
     for (const k of Object.keys(t.dev)) {
       const d = t.dev[k];
       if (!isObj(d) || d.kind !== 'synth' || d.model !== RIG.ID) continue;
-      d.model = 'serum'; delete d.rig;
+      d.model = SX_ID; delete d.rig;
       if (isObj(t.lay)) for (const key of Object.keys(t.lay)) if (key.startsWith(k + '/') && key !== k + '/fx') delete t.lay[key];
-      lost.push(`“${t.name}”: ${RIG.NAME} is saved as a Serum (same sound; the live site has no ${RIG.NAME})`);
+      lost.push(`“${t.name}”: ${RIG.NAME} is saved as the classic site’s wavetable synth (same sound)`); // ((SX0) no Serum word, IMPL-SX0 §2)
     }
   }
   const out = [], ids = new Set(p.tracks.map(t => isObj(t) && t.id));
@@ -335,7 +396,7 @@ export function toV1(p0) {
       if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (d.name || d.model); delete tr.lay; }
       const nm = `“${tr.name}”: `;
       if (isPatchModel(d.model)) lost.push(patchLine(tr.name, d));
-      if (via && isSxId(d.model)) lost.push(`“${t.name}”: the panel ${via} after the Serum (its effects are not in the Serum’s track)`);
+      if (via && isSxId(d.model)) lost.push(`“${t.name}”: the panel ${via} after the ${RIG.NAME} (its effects are not in the ${RIG.NAME}’s track)`); // ((SX0) a rig saved as main's Serum)
       else if (via && srcs(via).filter(k => !isSxId(t.dev[k].model)).length > 1) lost.push(`“${t.name}”: the shared panel ${via} (copied for each instrument)`);
       // (each becomes a track of its own that sounds: say so of one that did not)
       if (d.on === false) lost.push(nm + 'was switched off');
@@ -416,8 +477,8 @@ const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => i
 const maxTrk = ids => { let n = 0; for (const id of ids) { const m = /^trk_(\d{1,9})$/.exec(id); if (m) n = Math.max(n, +m[1]); } return n; };
 const NAME_MAX = 100; // (song.js: a track name's length)
 export function splitTracks(p, o = {}) {
-  if (!isObj(p) || !Array.isArray(p.tracks)) return { p, notices: [] };
-  const name = typeof o.name === 'function' ? o.name : m => m, notices = [], out = [];
+  if (!isObj(p) || !Array.isArray(p.tracks)) return { p, notices: [], moved: [] };
+  const name = typeof o.name === 'function' ? o.name : m => m, notices = [], out = [], moved = [];
   const ids = new Set(p.tracks.map(t => isObj(t) && t.id)), unseen = id => !ids.has(id);
   let n = maxTrk(ids), changed = false;
   const freshId = () => { let id; do id = 'trk_' + ++n; while (!unseen(id)); ids.add(id); return id; };
@@ -479,6 +540,7 @@ export function splitTracks(p, o = {}) {
       const { R: rows, devs } = rowsTo(t, id, i === 0 ? id : 'i1'); // (2a: its mod rows go with it)
       if (rows.length) { kept += rows.length; tr.mods = rows; tr.mid = Math.max(t.mid | 0, 1); if (i) Object.assign(tr.dev, devs); }
       out.push(tr);
+      moved.push({ track: t0.id, dev: id, name: tr.name });
     });
     const lostRows = (Array.isArray(t.mods) ? t.mods.length : 0) - kept;
     if (lostRows > 0) why.push(`${lostRows} modulation cable${lostRows > 1 ? 's' : ''} to nothing that survives ${lostRows > 1 ? 'were' : 'was'} dropped`);
@@ -487,7 +549,7 @@ export function splitTracks(p, o = {}) {
     const head = many ? `Track “${t.name}” held ${R.length} instruments: now ${R.length} tracks` : `Track “${t.name}”`;
     if (many || why.length) notices.push(head + (why.length ? (many ? ' — ' : ': ') + why.join('; ') : ''));
   }
-  return changed ? { p: Object.assign({}, p, { tracks: out }), notices } : { p, notices };
+  return changed ? { p: Object.assign({}, p, { tracks: out }), notices, moved } : { p, notices, moved: [] };
 }
 export function mirror(o) {
   if (!isObj(o) || !Array.isArray(o.tracks)) return o;

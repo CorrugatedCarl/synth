@@ -54,8 +54,9 @@ async function loadSide(name) {
     if (typeof f.compileFx === 'function') fxm = f;
   }
   const files = (ref ? DSP_REF : DSP_V2).filter(f => existsSync(new URL(f, base)));
+  const rig = existsSync(new URL('rig-core.js', base)) ? (await imp('rig-core.js')).RIG : null; // ((SX0) the rig's id: side B's, golden-graph's; none in ref-p1)
   return {
-    name, core, wt, models, fxm,
+    name, core, wt, models, fxm, rig,
     dsp: files.map(f => [f, read(new URL(f, base))]),
     engine: read(new URL('engine.js', base)),
     entries: new Map(), // wavetable / noise entries built by this side's wt.js (cached by id)
@@ -113,9 +114,12 @@ const moddedOf = (X, s, fx) => (typeof X.core.fxModded2 === 'function' ? X.core.
 // hiss on, smoothing 1) + the track's FX rack + tempo. `seed` = the rack re-seed of a preset load / new track.
 // (B) builds it with models.js patchFor, the function main.js's buildPatch uses (§12.7: the FX state reaches
 // compileSerum, so matrix rows targeting FX parameters resolve against the rack's layout); (A) with the Phase-1 recipe.
+// (SX0, IMPL-SX0 §6.2) 'serum' compiles as the rig (RIG.ID: Serum's map and presets, the same patch) whenever side X's MODELS has the rig —
+// side B and golden-graph's sides, today's tree too —, so every Serum golden renders the rig against the frozen side A (which keeps 'serum')
 export function trackPatch(X, model, vals, fx, { sr = SR, bpm = BPM, seed = false } = {}) {
   if (typeof X.models.patchFor === 'function') {
-    return X.models.patchFor(model, vals, fx, { sr, bpm, drift: 0.5, hiss: 1, prefs: { smooth: 1, silenceTails: 1 }, seed });
+    const id = model === 'serum' && X.rig && X.models.MODELS.some(m => m.id === X.rig.ID) ? X.rig.ID : model;
+    return X.models.patchFor(id, vals, fx, { sr, bpm, drift: 0.5, hiss: 1, prefs: { smooth: 1, silenceTails: 1 }, seed });
   }
   const m = X.models.MODELS.find(x => x.id === model);
   if (!m) throw new Error(X.name + ': no model ' + model);

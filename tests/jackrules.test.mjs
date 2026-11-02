@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as E from '../sx-edges.js?v=9';
 import * as core from '../serum-core.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { channelStrips } from '../sx-ui-mix.js?v=9';
 import * as CV from '../cv-mods.js?v=9';
 import * as CB from '../cv-cables.js?v=9';
@@ -242,7 +243,7 @@ test('the S A B C N switches are cables only: never modulation destinations (cv-
   const ids = core.DESTS.map(d => d.id).filter(CV.plainSwitch).sort();
   assert.deepEqual(ids, [...E.SWITCHES].sort());
   assert.equal(ids.length, 10);
-  const dev = { kind: 'synth', model: 'serum', vals: { s: fresh() } };
+  const dev = { kind: 'synth', model: RIG.ID, vals: { s: fresh() } };
   for (const id of E.SWITCHES) {
     assert.equal(CV.destOk(dev, id).ok, false, id + ' refused as a modulation target');
     assert.equal(CV.destOk(dev, id, true).ok, true, 'an existing row still compiles');

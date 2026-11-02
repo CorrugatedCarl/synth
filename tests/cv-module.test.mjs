@@ -87,7 +87,7 @@ test('fxKey and the stage-1b ids', () => {
   for (const m of ['minimoog', 'tb303', 'dx7', '', undefined]) assert.equal(M.fxKey(m), 'fx1');
   assert.deepEqual({ ...M.ID }, { inst: 'i1', fx: 'fx1', sxFx: 'i1/fx', out: 'out' });
   assert.equal(M.BAR_H, 40);
-  assert.deepEqual([M.W_CLASSIC, M.W_SERUM, M.W_FX, M.W_OUT, M.GAP], [1080, 1200, 760, 280, 160]);
+  assert.deepEqual([M.W_CLASSIC, M.W_FX, M.W_OUT, M.GAP, 'W_SERUM' in M], [1080, 760, 280, 160, false]); // ((SX0) W_SERUM went with the bundled panel
   for (const gone of ['MIN_W', 'MAX_W', 'MIN_W_SERUM', 'widthRange']) assert.equal(gone in M, false, 'nothing is resizable: no ' + gone);
 });
 
@@ -103,12 +103,12 @@ test('FLOW_W: one fixed Simple-layout width per classic model, on the dots, wide
   }
   assert.ok(M.FLOW_W.tb303 >= 608 + 64 && M.FLOW_W.dx7 >= 992, 'room to spare past the measured minimums');
   assert.deepEqual([M.defaultW(M.ID.inst, 'serum'), M.defaultW(M.ID.inst, 'nosuch'), M.defaultW(M.ID.fx, 'tb303'), M.defaultW(M.ID.sxFx, 'serum'), M.defaultW(M.ID.out, 'tb303')],
-    [M.W_SERUM, M.W_CLASSIC, M.W_FX, M.W_FX, M.W_OUT]);
+    [M.W_CLASSIC, M.W_CLASSIC, M.W_FX, M.W_FX, M.W_OUT]); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
 });
 
 test('tidy: instrument → FX → OUT in one row from (0, 0), GAP apart, tops aligned, columns on the grid', () => {
   assert.deepEqual(M.tidy({ model: 'minimoog' }, {}), { i1: { x: 0, y: 0 }, fx1: { x: 1344, y: 0 }, out: { x: 2272, y: 0 } }, 'from the Minimoog\'s FLOW_W (1184)');
-  assert.deepEqual(M.tidy({ model: 'serum' }, null), { i1: { x: 0, y: 0 }, 'i1/fx': { x: 1376, y: 0 }, out: { x: 2304, y: 0 } });
+  assert.deepEqual(M.tidy({ model: 'serum' }, null), { i1: { x: 0, y: 0 }, 'i1/fx': { x: 1248, y: 0 }, out: { x: 2176, y: 0 } }); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
   const t = M.tidy({ model: 'juno60' }, { i1: { w: 1003, h: 500 }, fx1: { w: 700, h: 300 }, out: { w: 280, h: 230 } });
   assert.deepEqual(Object.entries(t).map(([k, v]) => [k, v.x, v.y]), [['i1', 0, 0], ['fx1', 1184, 0], ['out', 2048, 0]]);
   assert.ok(Object.values(t).every(v => v.x % 8 === 0), 'grid columns');
@@ -156,10 +156,10 @@ test('camGet / camPut: one LRU record under cv-migrate camKey keys, most recent 
   assert.ok(JSON.stringify(big).length < 20000, 'a small record');
 });
 
-test('sizeFor: the drop outline of a model (its fixed width: Serum wider)', () => {
-  assert.equal(M.sizeFor('serum').w, M.W_SERUM);
+// ((SX0) "Serum wider" — its 1200 × 840 outline — left with the bundled panel and its tile; an id of no model gets the default outline)
+test('sizeFor: the drop outline of a model (its fixed width)', () => {
   assert.equal(M.sizeFor('minimoog').w, M.FLOW_W.minimoog);
-  assert.ok(M.sizeFor('serum').h > M.sizeFor('juno60').h);
+  assert.deepEqual(M.sizeFor('serum'), M.sizeFor('nosuch'));
 });
 
 /* ---------------------------------------------------------------- one module on wk-dom */
@@ -466,7 +466,7 @@ test('createTrackView.sync: lay changes (undo) move modules without remounting; 
   assert.deepEqual([...V.modules.keys()], ['i1', 'out', 'i1/fx']);
   assert.deepEqual([V.modules.get('i1/fx').x, V.modules.get('i1/fx').y], [1400, 200], 'the Serum FX takes the panel\'s place');
   assert.deepEqual(bodies, ['unmount cv-body', 'mount cv-body'], 'the FX body moved to the new module');
-  assert.equal(V.modules.get('i1').w, M.W_SERUM, 'the Serum default width');
+  assert.equal(V.modules.get('i1').w, M.W_CLASSIC, 'the default width'); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
   assert.ok(V.ports().has('i1/fx.in'));
   assert.ok(W.log.includes('remove fx1') && W.log.includes('add i1/fx'));
   V.destroy();
@@ -584,7 +584,7 @@ test('createTrackView lay: the first write pins the modules Tidy still places �
   R4.sync(sx);
   const a = xs(R4.V);
   R4.sync(clone(sx));
-  assert.deepEqual([a, xs(R4.V)], ['i1:0,0+1200 out:2304,0+280 i1/fx:1376,0+760', 'i1:0,0+1200 out:2304,0+280 i1/fx:1376,0+760']);
+  assert.deepEqual([a, xs(R4.V)], ['i1:0,0+1080 out:2176,0+280 i1/fx:1248,0+760', 'i1:0,0+1080 out:2176,0+280 i1/fx:1248,0+760']); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
   assert.equal('lay' in R4.ref.t, false, 'still no lay');
   R4.V.destroy();
 });
@@ -610,7 +610,7 @@ test('createTrackView.sync: the instrument\'s fixed width follows a model change
   const R = view2(tr, doc), w = () => R.V.modules.get('i1').w;
   assert.equal(w(), M.FLOW_W.minimoog);
   R.sync(Object.assign(clone(tr), { model: 'serum', lay: { i1: { x: 0, y: 0, w: 800 } } }));
-  assert.deepEqual([w(), R.V.modules.get('i1').fixed], [M.W_SERUM, { w: M.W_SERUM, h: 0 }], 'a Serum: its ≥ 1100 layout\'s width, the height measured');
+  assert.deepEqual([w(), R.V.modules.get('i1').fixed], [M.W_CLASSIC, { w: M.W_CLASSIC, h: 0 }], 'a Serum-engine instrument shown whole: the default width (not the stored 800), the height measured'); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
   R.sync(Object.assign(clone(R.ref.t), { model: 'tb303', lay: { i1: { x: 0, y: 0, w: 480, ui: 'flow' } } }));
   assert.equal(w(), M.FLOW_W.tb303, 'the TB-303\'s Simple width (its steps fit), not the stored 480');
   assert.equal(all(doc.body).filter(n => n.getAttribute && /cv-grip/.test(n.getAttribute('class') || '')).length, 0, 'never a grip');
@@ -941,7 +941,7 @@ test('devicesOf (1e): instruments (the primary first, then by number), each Seru
 
 test('tidy (1e): instruments stacked left (primary on top), a Serum\'s own FX beside it, panels in the next column, OUT right — on the dots; one instrument → panel → OUT (or a Serum → its own FX → OUT) exactly as the stage-1b Tidy', () => {
   const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
-  assert.equal(xy(M.tidy(v2t(), {})), 'i1@0,0 i2@0,640 i2/fx@1376,640 i3@0,1568 fx1@2304,0 fx2@2304,512 out@3232,0');
+  assert.equal(xy(M.tidy(v2t(), {})), 'i1@0,0 i2@0,640 i2/fx@1344,640 i3@0,1280 fx1@2272,0 fx2@2272,512 out@3200,0'); // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560)
   // measured sizes count (the widest instrument sets the next column; a row is as tall as its tallest)
   const S = { i1: { w: 1408, h: 512 }, i2: { w: 1200, h: 900 }, 'i2/fx': { w: 760, h: 1000 }, fx1: { w: 760, h: 300 } };
   assert.equal(xy(M.tidy(v2t(), S)), 'i1@0,0 i2@0,576 i2/fx@1568,576 i3@0,1664 fx1@2496,0 fx2@2496,384 out@3424,0');
@@ -958,7 +958,7 @@ test('tidy (1e): instruments stacked left (primary on top), a Serum\'s own FX be
   const rects = { i2: { x: 0, y: 576, w: 1400, h: 600 }, 'i2/fx': { x: 1376, y: 600, w: 760, h: 420 }, fx1: { x: 2496, y: 0, w: 760, h: 300 }, i3: { x: 0, y: 1664, w: 1184, h: 500 } };
   assert.deepEqual(M.makeRoom(rects, 'i2'), { 'i2/fx': { x: 1568, y: 600 } }, 'only what overlaps its rows moves');
   assert.deepEqual(M.layOf({ lay: { 'i2/fx': { x: 9, y: 8, fold: 1 } } }, 'i2/fx', {}), { x: 9, y: 8, fold: 1 });
-  assert.deepEqual(M.layOf({ lay: {} }, 'fx2', M.tidy(v2t(), {})), { x: 2304, y: 512 });
+  assert.deepEqual(M.layOf({ lay: {} }, 'fx2', M.tidy(v2t(), {})), { x: 2272, y: 512 }); // ((SX0) the panels' column after the default-width i2)
 });
 
 // a device-driven host (IMPL-1e §4.5's shape): per-key bodies, titles, menus, sizes, power, zones, badges, cables
@@ -988,10 +988,11 @@ test('createTrackView (1e, device-driven): one module per device (keys = device 
   assert.deepEqual(W.log.filter(x => x.startsWith('add')), ['add i1', 'add i2', 'add i3', 'add i2/fx', 'add fx1', 'add fx2', 'add out']);
   assert.deepEqual(R.bodies, ['mount i1', 'mount i2', 'mount i3', 'mount i2/fx', 'mount fx1', 'mount fx2', 'mount out']);
   assert.equal(R.V.modules.get('i2/fx').body.getAttribute('data-body'), 'i2/fx', 'host.bodies.mount(key, bodyEl)');
-  assert.equal(at2(R.V), 'i1@0,0 i2@0,576 i3@0,1504 i2/fx@1568,576 fx1@2496,0 fx2@2496,512 out@3424,0', 'host.size(i1) (1408 × 512) counts');
-  assert.deepEqual([...R.V.modules.values()].map(m => m.w), [1408, M.W_SERUM, M.FLOW_W.minimoog, M.W_FX, M.W_FX, M.W_FX, M.W_OUT]);
+  // ((SX0) W_SERUM / H_GUESS.serum went with the bundled panel: a Serum-engine instrument shown whole takes the default instrument size, 1080 × 560); its cost an instrument's (600: the 3700 of the bundled panel went)
+  assert.equal(at2(R.V), 'i1@0,0 i2@0,576 i3@0,1216 i2/fx@1568,576 fx1@2496,0 fx2@2496,512 out@3424,0', 'host.size(i1) (1408 × 512) counts');
+  assert.deepEqual([...R.V.modules.values()].map(m => m.w), [1408, M.W_CLASSIC, M.FLOW_W.minimoog, M.W_FX, M.W_FX, M.W_FX, M.W_OUT]);
   assert.deepEqual([...R.V.modules.values()].map(m => m.kind), ['inst', 'inst', 'inst', 'fx', 'fx', 'fx', 'out']);
-  assert.deepEqual([...R.V.modules.values()].map(m => m.cost), [600, 3700, 600, 900, 900, 900, 40]);
+  assert.deepEqual([...R.V.modules.values()].map(m => m.cost), [600, 600, 600, 900, 900, 900, 40]);
   assert.deepEqual(R.V.devices().map(d => d.key), [...R.V.modules.keys()]);
   // titles / menus by key
   assert.equal(R.V.modules.get('fx2').title, 'FX2');
@@ -1050,7 +1051,7 @@ test('createTrackView.sync (1e, device-driven): diffs by key — a removed devic
   t3.dev.i1.model = 'serum';
   R.sync(t3);
   assert.deepEqual(R.bodies, ['mount i1/fx']);
-  assert.deepEqual([R.V.modules.get('i1').w, R.V.modules.get('i1').cost, R.V.modules.get('i1').jack('out').hasAttribute('data-ro')], [1408, 3700, true], 'host.size wins; a Serum\'s cost; inside it now');
+  assert.deepEqual([R.V.modules.get('i1').w, R.V.modules.get('i1').cost, R.V.modules.get('i1').jack('out').hasAttribute('data-ro')], [1408, 600, true], 'host.size wins; an instrument\'s cost ((SX0) the bundled panel\'s 3700 went); inside it now');
   assert.ok(R.V.modules.has('i1/fx'));
   // a moved module stays where it was put; Tidy for the rest is stable across syncs (no measured heights)
   R.V.modules.get('fx1').nudge(32, 0);
@@ -1188,8 +1189,8 @@ test('createTrackView (2a): knob end points — destPort from the [data-dest] ce
   globalThis.ResizeObserver = class { constructor(cb) { ROs.push(cb); } observe() {} disconnect() {} };
   try {
     const R = mview(), V = R.V, sx = V.modules.get('i2'), fx = V.modules.get('i2/fx'), X = sx.x, Y = sx.y;
-    // the Serum on screen at half size: 1200 world px → 600 client px from (100, 200); the knob 20 px wide around (250, 280)
-    place(sx.el, 100, 200, 600, 400); place(R.K['a.semi'], 240, 270, 20, 20);
+    // the Serum on screen at half size: 1080 world px ((SX0) the default width: W_SERUM's 1200 went) → 540 client px from (100, 200); the knob 20 px wide around (250, 280)
+    place(sx.el, 100, 200, 540, 400); place(R.K['a.semi'], 240, 270, 20, 20);
     place(fx.el, 800, 200, 380, 300); place(R.K['fx.r1.mix'], 840, 240, 10, 10);
     let reads = 0;
     const gb = R.K['a.semi'].getBoundingClientRect.bind(R.K['a.semi']);
@@ -1276,7 +1277,7 @@ test('(U1) a knob with hidden twins (a Serum keeps its other pages in the DOM: 0
   globalThis.ResizeObserver = class { observe() {} disconnect() {} };
   try {
     const R = mview(), V = R.V, sx = V.modules.get('i2'), X = sx.x, Y = sx.y, K = R.K['a.semi'];
-    place(sx.el, 100, 200, 600, 400); place(K, 240, 270, 20, 20);
+    place(sx.el, 100, 200, 540, 400); place(K, 240, 270, 20, 20); // ((SX0) half size of the default 1080, as above
     // a hidden page before the knob's own (the old index kept the first it met: the 0 × 0 twin) and one after it
     const twin = before => {
       const pg = R.doc.createElement('div'), tw = R.doc.createElement('div');

@@ -11,11 +11,12 @@ import * as MO from '../cv-model.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as S from '../song.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { dspScope } from './dsp-scope.mjs';
 import * as H from './golden-harness.mjs';
 
 const SR = 48000, Q = 128;
-const sx = () => ({ kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() });
+const sx = () => ({ kind: 'synth', model: RIG.ID, vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() });
 const juno = () => ({ kind: 'synth', model: 'juno60', vals: {}, preset: null });
 function mkTrack() {
   const fx = C.defaultFx2(); C.newInstance(fx, 'rev', { rack: 0 });
@@ -76,7 +77,7 @@ function rateTrack(mono, own) {
   const s = C.normalizeSerum(C.defaultSerum());
   ownLfo1(s);
   if (own === 'preset') s.matrix[0] = row('lfo1', 'a.level', LV.amt, { bi: LV.bi });
-  const t = { id: 'trk_r', name: 'R', notes: [], cc: [], prim: 'i1', nid: 4, dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: C.defaultFx2() }, out: { kind: 'out' } },
+  const t = { id: 'trk_r', name: 'R', notes: [], cc: [], prim: 'i1', nid: 4, dev: { i1: { kind: 'synth', model: RIG.ID, vals: { s }, preset: null, fx: C.defaultFx2() }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [] };
   t.dev.l1 = S.normModDev(Object.assign({ kind: 'lfo' }, modDef(mono)));
   const add = (src, dst, f) => { const r = MO.addMod(t, src, dst, { project: P }); assert.ok(r.ok, r.why); MO.setMod(t, r.row.id, f); };
@@ -94,7 +95,7 @@ function nativeOf(mono) {
   return s;
 }
 const PO = { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } };
-const nativePatch = s => Object.assign(patchFor('serum', { s }, C.defaultFx2(), PO), C.compileSerum(s, { bpm: 120, smooth: 1, fx: C.defaultFx2(), qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0, ext: false }));
+const nativePatch = s => Object.assign(patchFor(RIG.ID, { s }, C.defaultFx2(), PO), C.compileSerum(s, { bpm: 120, smooth: 1, fx: C.defaultFx2(), qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0, ext: false }));
 const renderSide = (id, patch, mods) => H.render(HS, { id, seconds: 3, events: H.script(SR, { song: false }), po: { os: 2, hostOS: 2 },
   setup(p) { H.postTables(Bv2, p, patch.needs); p.msg({ t: 'patch', p: patch }); if (mods) p.msg(mods); } });
 

@@ -5,7 +5,7 @@
 // cv-graph / graph-host tests assert them.
 //   (a)  Juno-60 + Minimoog → fx1 (chorus) → out
 //   (b)  Serum (its own FX: a reverb) + Prophet-5 → fx1 (delay) → out, the Serum soloed in the track (the Prophet silent:
-//        on false in the graph)
+//        on false in the graph) — (SX0, IMPL-SX0 §6.2) a rig (RIG.ID): the Serum-engine device that remains, the same patch
 //   (c)  two Juno-60 → separate panels (fx1: EQ, fx2: delay) → out, the second at level 0.5
 //   (a2) a single Juno-60 → fx1 (chorus) → out, canonical, through the graph form (compileGraph: a graphed node)
 // tracks() → { a, b, c, a2 } fresh copies (project track records after cv-model adopt minus the accessors);
@@ -13,15 +13,16 @@
 // order), {t: 'chain', c, fxr, fxrT} per panel (graph.chains order)]; MSGS = { a, b, c, a2 } at OPTS.
 // The graph messages (ids, salts, edges) by hand: GRAPH.
 import * as G from '../../cv-graph.js?v=9';
-import { MODELS } from '../../models.js?v=9';
+import { MODELS, isSxId } from '../../models.js?v=9';
 import * as C from '../../serum-core.js?v=9';
+import { RIG } from '../../rig-core.js?v=9';
 
 const clone = x => JSON.parse(JSON.stringify(x));
 const vals = id => Object.fromEntries(MODELS.find(m => m.id === id).controls.map(c => [c.id, c.def])); // (main.js defaults(m))
 const fxWith = type => { const fx = C.defaultFx2(); if (type) C.newInstance(fx, type, { rack: 0 }); return fx; };
 const syn = (model, o) => Object.assign({ kind: 'synth', model, vals: vals(model), preset: null }, o || {});
 const base = (id, name) => ({ id, name, color: '#e8a23a', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [] });
-const sxDev = () => { const s = C.normalizeSerum(C.defaultSerum()); return { kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: C.normalizeFx(fxWith('rev'), s) }; };
+const sxDev = () => { const s = C.normalizeSerum(C.defaultSerum()); return { kind: 'synth', model: RIG.ID, vals: { s }, preset: null, fx: C.normalizeFx(fxWith('rev'), s) }; };
 
 const A = Object.assign(base('trk_a', 'Juno + Moog'), { prim: 'i1', nid: 3,
   dev: { i1: syn('juno60'), fx1: { kind: 'panel', fx: fxWith('cho') }, out: { kind: 'out' }, i2: syn('minimoog') },
@@ -49,7 +50,7 @@ export function messages(t, o = OPTS) {
   const g = G.compileGraph(t), out = [Object.assign({ t: 'graph' }, g.graph)];
   for (const { id } of g.graph.insts) {
     const p = G.instPatch(t.dev[id], o);
-    if (t.dev[id].model === 'serum') p.osCap = o.osCap; // (live: the safeguard's Serum cap; capQ4 a no-op at step 0)
+    if (isSxId(t.dev[id].model)) p.osCap = o.osCap; // (live: the safeguard's Serum-engine cap — (SX0) the rig's too; capQ4 a no-op at step 0)
     out.push({ t: 'patch', i: id, p });
   }
   for (const { id } of g.graph.chains) out.push(Object.assign({ t: 'chain', c: id }, G.chainPatch(g.chains[id], o)));

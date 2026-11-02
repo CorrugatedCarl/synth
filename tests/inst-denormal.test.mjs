@@ -20,6 +20,7 @@ import * as C from '../fx-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { lawNorm } from '../laws.js?v=9';
 import { drumTrack, DRUM_PATTERNS, patchTrack, presetSet } from './bench-scenarios.mjs';
 
@@ -223,7 +224,7 @@ function graphClassic(model, fx, trackId) {
 }
 function serumTrack(fx, trackId) { // (silenceTails 0: the tails ring out as a live key-up leaves them)
   const p = new Track({ processorOptions: { os: 2, hostOS: 4, trackId } });
-  const patch = patchFor('serum', { s: core.normalizeSerum(core.defaultSerum()) }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 0 } });
+  const patch = patchFor(RIG.ID, { s: core.normalizeSerum(core.defaultSerum()) }, fx, { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 0 } });
   p.port.postMessage = () => {};
   p.msg({ t: 'patch', p: patch });
   for (const id of patch.needs || []) if (/^(factory|noise):/.test(id)) p.msg(Object.assign({ t: 'wt' }, id.startsWith('noise:') ? W.makeNoise(id) : W.makeEntry(id, W.factoryTable(id))));

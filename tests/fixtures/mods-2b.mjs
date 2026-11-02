@@ -19,10 +19,11 @@
 //   XFER       the transfer stub (lane A2's xferOf is stubbed here): the identity { a: 0, b: 1 } tagged with the call
 import { defaultSerum, normalizeSerum, defaultFx2, newInstance, normRow, vi } from '../../serum-core.js?v=9';
 import { normModDev } from '../../song.js?v=9';
+import { RIG } from '../../rig-core.js?v=9';
 
 const ROW = { amt: 0, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 };
 const row = (id, src, dst, o) => Object.assign({ id, src, dst }, ROW, o);
-const serum = () => ({ kind: 'synth', model: 'serum', vals: { s: normalizeSerum(defaultSerum()) }, preset: null, fx: defaultFx2() });
+const serum = () => ({ kind: 'synth', model: RIG.ID, vals: { s: normalizeSerum(defaultSerum()) }, preset: null, fx: defaultFx2() }); // ((SX0, IMPL-SX0 §6.2) a rig: the same patch
 const juno = () => ({ kind: 'synth', model: 'juno60', vals: {}, preset: null });
 const mod = (kind, o) => normModDev(Object.assign({ kind }, o));
 function track(id, name, extra, mods) {

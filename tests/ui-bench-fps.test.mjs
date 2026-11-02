@@ -105,7 +105,7 @@ test('(FR Cut B §5.6) the EXPECT changes: the filter display\'s curve is the cu
   const off = B.evalExpect(mk, { found: 0, rates: [] }, { eff: 120 });
   assert.deepEqual([off.pass, off.skipped], [true, true], 'fast off: the marker is not asked for (no overlay)');
   assert.equal(B.evalExpect(mk, { found: 0, rates: [] }, { eff: 120, fast: true }).pass, false, 'fast on: it must be there');
-  assert.equal(B.EXPECT.serum.find(e => e.name === 'LFO-driven knob dots').tol, 0.5);
+  // ((SX0) the serum scene's "LFO-driven knob dots" (tol 0.5) left with it; the knob dots of the tutorial and master scenes are below)
   assert.equal(B.EXPECT.master.find(e => e.name === 'OUT meters').tol, 0.4);
   assert.deepEqual(B.EXPECT.tutorial.find(e => e.name === 'Ducker GR bar').rate + '/' + B.EXPECT.tutorial.find(e => e.name === 'Ducker GR bar').tol, 'gr/0.4');
   assert.equal(B.EXPECT.master.find(e => e.name === 'rack GR bars + Ducker position').rate, 'gr');
@@ -316,18 +316,18 @@ test('metricsDelta: CDP Performance.getMetrics (seconds, cumulative) → ms / s 
 });
 
 test('matrix: sizes × scenes × throttles × caps (throttle outer, the display = the cap unless --display); parseArgs reads the CLI and rejects nonsense', () => {
-  const m = B.matrix({ sizes: ['d', 'l'], scenes: ['idle', 'serum'], caps: [60, 240], throttles: [1, 6], cross: false });
+  const m = B.matrix({ sizes: ['d', 'l'], scenes: ['idle', 'mods'], caps: [60, 240], throttles: [1, 6], cross: false }); // ((SX0) two scenes: the serum one went
   assert.equal(m.length, 2 * 2 * 2 * 2);
   assert.deepEqual(m.slice(0, 4).map(c => c.throttle + '/' + c.cap + '/' + c.display), ['1/60/60', '1/240/240', '6/60/60', '6/240/240']);
   assert.deepEqual(B.matrix({ caps: [60], throttles: [1], scenes: ['idle'], display: 240 }), [{ size: 'd', scene: 'idle', throttle: 1, cap: 60, display: 240 }], 'a forced display: no cross cells');
   const x = B.matrix({ caps: [60, 120], throttles: [1, 4], scenes: ['idle'] });
   assert.deepEqual(x.map(c => c.throttle + '/' + c.cap + '/' + c.display), ['1/60/60', '1/120/120', '1/120/240', '1/60/240', '4/60/60', '4/120/120'], 'the cross cells (a 240 Hz display under the caps 120 and 60) follow the 1 × group, never under throttle');
   assert.equal(B.matrix({ throttles: [4, 6], scenes: ['idle'] }).length, 6, 'no 1 × in the throttles: no cross cells');
-  assert.equal(B.matrix().length, 1 * 9 * (3 * 3 + 2), 'the defaults: the Mac window, 9 scenes (review 2: + clip; MOD1: + mods), 3 throttles × 3 caps + 2 cross cells');
+  assert.equal(B.matrix().length, 1 * 8 * (3 * 3 + 2), 'the defaults: the Mac window, 8 scenes (review 2: + clip; MOD1: + mods; SX0: − serum), 3 throttles × 3 caps + 2 cross cells');
   const o = B.parseArgs(['--scenes', 'idle,master', '--sizes', 'd,p', '--caps', '60,144', '--throttle', '1,6', '--display', '240', '--warm', '1000', '--measure', '2500', '--out', 'r.json', '--no-gate', '--no-cross', '--layout-gate', 'all', '--list', '--quiet']);
   assert.deepEqual([o.scenes, o.sizes, o.caps, o.throttles, o.display, o.warm, o.measure, o.out, o.gate, o.cross, o.layoutGate, o.list, o.quiet, o.errors], [['idle', 'master'], ['d', 'p'], [60, 144], [1, 6], 240, 1000, 2500, 'r.json', false, false, 'all', true, true, []]);
   const d = B.parseArgs([]);
-  assert.deepEqual([d.sizes, d.caps, d.throttles, d.scenes.length, d.gate, d.cross, d.layoutGate, d.warm >= 3000, d.measure >= 3000], [['d'], [60, 120, 240], [1, 4, 6], 9, true, true, 'idle', true, true]);
+  assert.deepEqual([d.sizes, d.caps, d.throttles, d.scenes.length, d.gate, d.cross, d.layoutGate, d.warm >= 3000, d.measure >= 3000], [['d'], [60, 120, 240], [1, 4, 6], 8, true, true, 'idle', true, true]); // ((SX0) 8 scenes
   assert.equal(B.parseArgs(['--scenes', 'nope']).errors.length, 1);
   assert.equal(B.parseArgs(['--sizes', 'x']).errors.length, 1);
   assert.equal(B.parseArgs(['--caps', '5']).errors.length, 1);
@@ -336,7 +336,7 @@ test('matrix: sizes × scenes × throttles × caps (throttle outer, the display 
 });
 
 test('the expected-live lists: every scene has one, entries are well formed (kind, selector, a known rate class, a name once), the sizes / caps / scenes are the contract\'s', () => {
-  assert.deepEqual(B.SCENE_IDS.slice(), ['idle', 'play8', 'roll8', 'tutorial', 'serum', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) + mods: a Juno's modulators — the serum scene goes with Serum complete (ROADMAP 28)
+  assert.deepEqual(B.SCENE_IDS.slice(), ['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) + mods: a Juno's modulators; (SX0) the serum scene went with Serum complete (ROADMAP 28)
   assert.deepEqual([B.CAPS.slice(), B.THROTTLES.slice(), Object.keys(B.SIZES)], [[60, 120, 240], [1, 4, 6], ['d', 'l', 'p']]);
   assert.deepEqual(['d', 'l', 'p'].map(k => [B.SIZES[k].w, B.SIZES[k].h, B.SIZES[k].dpr, B.SIZES[k].touch]), [[1440, 900, 2, false], [1366, 1024, 2, true], [1024, 1366, 2, true]]);
   for (const id of B.SCENE_IDS) {
@@ -356,8 +356,8 @@ test('the expected-live lists: every scene has one, entries are well formed (kin
   }
   assert.ok(B.EXPECT.master.some(e => e.sel === 'canvas.mo-sc' && e.rate === 'eff'), 'the master scope is expected at the clock\'s rate (Cut A: 30 → eff)');
   assert.ok(B.EXPECT.tutorial.some(e => /sx-disp/.test(e.sel) && e.rate === 'heavy'), 'the 3D wavetable display is a heavy display');
-  assert.ok(B.EXPECT.serum.some(e => e.rate === 'gr'), 'the GR loop: 30');
-  assert.ok(['tutorial', 'serum', 'master'].every(id => B.EXPECT[id].some(e => e.kind === 'attr' && e.attr === 'cx' && e.box === '[data-dest]')), 'the knob dots are judged by their knob\'s box (a dot is hidden between notes)');
+  assert.ok(B.EXPECT.tutorial.some(e => e.rate === 'gr'), 'the GR loop: 30'); // ((SX0) the tutorial's Ducker GR where the serum scene's compressor was
+  assert.ok(['tutorial', 'master'].every(id => B.EXPECT[id].some(e => e.kind === 'attr' && e.attr === 'cx' && e.box === '[data-dest]')), 'the knob dots are judged by their knob\'s box (a dot is hidden between notes)');
   assert.equal(B.EXPECT.busy.find(e => e.name === 'OUT scope').min, 0, 'busy: the portrait fit leaves the OUT module off screen: not asked for when it is');
   assert.deepEqual(B.EXPECT.idle.slice(), [], 'idle: the floor — nothing to animate');
 });
@@ -372,7 +372,7 @@ test('(MOD1 G6, lane H) the mods scene: a Juno with 4 LFOs, 2 Envelopes, 1 Macro
   for (const k of ['lfo', 'env', 'macro', 'cc', 'chaos', 'wheel']) assert.ok(new RegExp("'" + k + "'").test(body), k);
   assert.ok(/mod\.connect\(/.test(body) && /startPlay\(A\)/.test(body) && /clipToTrack/.test(body), 'cabled and playing');
   assert.ok(/scene === 'tutorial' \|\| scene === 'mods'/.test(src.slice(src.indexOf('the smooth probe at 120 and 240') - 200)), 'the smooth probe runs on the mods scene too');
-  assert.ok(B.EXPECT.serum.length > 0, 'the serum scene stays until ROADMAP 28 removes Serum complete');
+  assert.deepEqual(['serum' in B.EXPECT, B.SCENE_IDS.includes('serum'), /async serum\(A\)/.test(src)], [false, false, false], '(SX0) the serum scene went with Serum complete (ROADMAP 28): the mods scene is the modulators\' one');
 });
 
 test('summarize / benchRow / auditScene on a synthetic report', () => {

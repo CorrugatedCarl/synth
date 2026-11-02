@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as ML from '../cv-modlayer.js?v=9';
 import * as wk from '../wk.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import { fresh, all, byCls, one, byAttr, ptr, key, place } from './wk-dom.mjs';
 
 /* ---------------------------------------------------------------- a scripted host */
@@ -68,6 +69,7 @@ test('refusal texts (SPEC §2.13), pct / parsePct, the source maps, STYLE', () =
   assert.equal(ML.refusal('nomod'), 'This knob can\'t be modulated');
   assert.equal(ML.refusal('full', { dev: 'Serum 1' }), 'Serum 1\'s mod rows are full (64/64)');
   assert.equal(ML.refusal('full', { dev: 'Serum 2', used: 70, max: 64 }), 'Serum 2\'s mod rows are full (64/64)');
+  assert.equal(ML.refusal('full'), RIG.NAME + '\'s mod rows are full (64/64)'); // (SX0: a host that names no device: the Serum-engine instrument's own name)
   assert.equal(ML.refusal('stage', { src: 'Mod Wheel', dst: 'Cutoff' }), 'Mod Wheel → Cutoff: this knob can be modulated from stage 2b');
   assert.equal(ML.refusal('2b'), 'This knob can be modulated from stage 2b');
   assert.equal(ML.refusal(undefined, { stage: '5', src: 'Velocity', dst: 'Attack' }), 'Velocity → Attack: this knob can be modulated from stage 5');
@@ -268,6 +270,16 @@ test('inspector closes on Escape, a press outside, the camera (wk.closeTransient
 });
 
 /* ---------------------------------------------------------------- the Mod list */
+test('Mod list: an instrument\'s own preset row is tagged with the instrument\'s name, the model\'s name for an unnamed one (SX0: never "Serum")', () => {
+  const { doc, H, M } = setup();
+  H.pre.i2.push(Object.assign({ slot: 6, src: 'lfo1', dst: 'a.level', amt: 0.2, own: true }, ROW));
+  H.pre.i4 = [Object.assign({ slot: 1, src: 'lfo1', dst: 'a.level', amt: 0.2, own: true }, ROW)];
+  assert.equal(M.openList('Track 1', ['i2', 'i4']), true);
+  const tags = dev => byCls(one(doc.body, 'cv-sheet'), 'cv-ml-dev').filter(s => s.getAttribute('data-dev') === dev).flatMap(s => byCls(s, 'cv-ml-tag').filter(t => t.getAttribute('data-tag') === 'own').map(t => t.textContent));
+  assert.deepEqual([tags('i2'), tags('i4')], [['Serum 1'], [RIG.NAME]]);
+  M.close();
+});
+
 test('Mod list: a sheet grouped by device, budgets, tags (preset / bypassed / not compiled), tap → inspector, Disconnect all with a confirm', () => {
   const { doc, H, M, pop } = setup({ budget: dev => ({ preset: dev === 'i2' ? 61 : 0, canvas: dev === 'i2' ? 2 : 1, left: dev === 'i2' ? 1 : [], max: 64 }) });
   assert.equal(M.openList('Track 1', ['i2', { id: 'i3', label: 'Serum B' }]), true);

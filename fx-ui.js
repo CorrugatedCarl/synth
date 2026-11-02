@@ -238,7 +238,7 @@ const snapRow = (r, n) => { const g = stepsOfRow(r), x = clamp(fin(n) ? n : r.de
 const isSplit = type => { const t = typeOf(type); return !!(t && t.split); };
 const hasS2 = type => { const t = typeOf(type); return !!(t && Array.isArray(t.variants) && t.variants.indexOf(2) >= 0); };
 // the S1 badge's tooltip: the conversion is offered only for types with an S2 variant (Hyper / Flanger have none, §2.5)
-const s1Tip = type => (hasS2(type) ? 'Serum 1 variant (Convert to Serum 2 Module in its menu)' : 'Serum 1 module (it has no Serum 2 variant)');
+const s1Tip = type => (hasS2(type) ? 'Older (v1) variant (Convert to the current module in its menu)' : 'Older (v1) module (it has no current variant)');
 // splitter branch labels (§13.5)
 const BRANCH_LABELS = { split2: ['LOWS', 'HIGHS'], split3: ['LOWS', 'MIDS', 'HIGHS'], splitms: ['MID', 'SIDE'] };
 // add menu order (inv B14.1 list): the 14 effects alphabetically (IMPL-SC: the Ducker after Distortion), then the 3 splitters
@@ -993,7 +993,7 @@ export class FXRackUI {
       if (isObj(V.ui) && this.v1ui) Object.assign(V.ui, deep(this.v1ui));
       fn(V);
       if (!writeV1(V, deep(raw))) {
-        this.notify('This needs the Serum 2 FX rack, which this track does not support yet: nothing was changed');
+        this.notify('This needs the current FX rack, which this track does not support yet: nothing was changed');
         this.vcache = null;
         this.schedule();
         return false;
@@ -2774,7 +2774,7 @@ export class FXRackUI {
     }, 'Duplicate ' + t, 'set', { seed: true })) return null;
     if (!nid) { this.notify('No room for another module here'); return null; }
     if (withMods && !this.refs(before, 'Duplicate ' + t + ' (w/mods)', (f, s) => core.duplicateInstance(f, id, s, Object.assign({ mods: true }, o)))) {
-      this.notify('Modulations were not copied (no Serum state)');
+      this.notify('Modulations were not copied (no synth state)');
     }
     this.refresh();
     return nid;
@@ -2827,7 +2827,7 @@ export class FXRackUI {
     items.push({ label: 'Duplicate FX Module (w/mods)', disabled: typeof this.host.edit !== 'function' || !this.sState(), action: () => this.duplicate(id, true) });
     items.push({ label: 'Move to', sub: this.moveItems(id) });
     items.push({ label: 'Remove FX Module', action: () => this.removeInst(id) });
-    if (I.v === 1 && hasS2(I.type)) items.push({ label: 'Convert to Serum 2 Module', action: () => this.upgrade(id) });
+    if (I.v === 1 && hasS2(I.type)) items.push({ label: 'Convert to the current module', action: () => this.upgrade(id) });
     if (I.type === 'cmp' && I.v === 2) { // IMPL-SC §6.3: the key group without a source yet (v3, KEY INT); none on the master
       const S = this.scs(), m = !!S && S.self === null;
       items.push({ label: 'Add a sidechain key', disabled: m, title: m ? 'The master hears the whole mix' : undefined, action: () => this.upgrade(id) });
@@ -2837,13 +2837,13 @@ export class FXRackUI {
     return items;
   }
   // one variant up (fx-core upgradeInstance, §11.2: a new object, same id, written over the instance in place): S1 → S2
-  // ("Convert to Serum 2 Module", a seed), or a v2 Compressor → v3 (IMPL-SC §6.3 "Add a sidechain key": no source, KEY INT;
+  // ("Convert to the current module", a seed), or a v2 Compressor → v3 (IMPL-SC §6.3 "Add a sidechain key": no source, KEY INT;
   // the sound unchanged — no seed)
   upgrade(id) {
     const I = this.inst(id);
     if (!I) return;
     if (I.type === 'rev') {
-      const ok = typeof globalThis.confirm === 'function' ? globalThis.confirm('Convert this reverb to the Serum 2 module? Its sound changes slightly (the parameter mapping is approximate).') : true;
+      const ok = typeof globalThis.confirm === 'function' ? globalThis.confirm('Convert this reverb to the current module? Its sound changes slightly (the parameter mapping is approximate).') : true;
       if (!ok) return;
     }
     const key = I.type === 'cmp' && I.v === 2, to = I.v + 1, t = instTitle(this.fx(), id);
@@ -2854,8 +2854,8 @@ export class FXRackUI {
       for (const k of Object.keys(J)) delete J[k];
       Object.assign(J, U);
       done = true;
-    }), key ? 'Add a sidechain key to ' + t : 'Convert ' + t + ' to Serum 2', 'set', key ? null : { seed: true });
-    if (ok && done) this.notify(key ? t + ': sidechain key added — pick its source under FROM' : t + ' converted to the Serum 2 module');
+    }), key ? 'Add a sidechain key to ' + t : 'Convert ' + t + ' to the current module', 'set', key ? null : { seed: true });
+    if (ok && done) this.notify(key ? t + ': sidechain key added — pick its source under FROM' : t + ' converted to the current module');
     this.refresh();
   }
   // Init Module: the table defaults (`on` kept); a sidechain source stays (IMPL-SC §1.3: routing, as a preset keeps it)

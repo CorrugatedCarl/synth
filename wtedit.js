@@ -1,7 +1,7 @@
 // wtedit.js — the wavetable editor (SPEC-serum §8.9, §9.9; inv A10). Browser ES module; nothing touches the DOM at
 // module top level, so node can import it (pure helpers below are exported for the tests).
 //
-//   const ed = new WTEditor(root, { host, osc: 0 | 1, onClose });   // host = the SerumUI host (§8.8)
+//   const ed = new WTEditor(root, { host, osc: 0 | 1, onClose });   // host = the SerumHost (sx-host.js; §8.8)
 //   ed.open(); … ed.close();
 //
 // The editor renders into `root` (serum-ui supplies the full-panel role=dialog overlay). It owns a working copy of the

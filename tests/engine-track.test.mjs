@@ -26,6 +26,7 @@ import { dspScope, noAlloc } from './dsp-scope.mjs';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
+import { RIG } from '../rig-core.js?v=9';
 import * as CPU from './cpu-gate.mjs';
 import * as DC from '../drum-core.js?v=9';
 import { songV, DRUM_PATTERNS } from './bench-scenarios.mjs';
@@ -36,7 +37,7 @@ const SR = 48000;
 const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
 const tables = (p, patch) => { for (const id of patch.needs || []) if (/^(factory|noise):/.test(id)) p.msg(Object.assign({ t: 'wt' }, id.startsWith('noise:') ? W.makeNoise(id) : W.makeEntry(id, W.factoryTable(id)))); };
 const classic = (id, fx) => { const m = MODELS.find(x => x.id === id); return patchFor(m, Object.fromEntries(m.controls.map(c => [c.id, c.def])), fx || core.defaultFx2(), { sr: SR, bpm: 120 }); };
-const serum = (edit, fx) => { const s = core.defaultSerum(); if (edit) edit(s); return patchFor('serum', { s: core.normalizeSerum(s) }, fx || core.defaultFx2(), { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } }); };
+const serum = (edit, fx) => { const s = core.defaultSerum(); if (edit) edit(s); return patchFor(RIG.ID, { s: core.normalizeSerum(s) }, fx || core.defaultFx2(), { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } }); };
 // a reverb on the track's rack (the FX scenarios' recipe)
 // an EQ panel turned down (level 0.1 normalized: ≈ −27 dB)
 function quietEq() {
