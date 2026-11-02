@@ -204,6 +204,13 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    headless CfT; `?fps=1` on a device). G9 on the Mac's 120 Hz panel passed (macOS drops an idle page to 30; motion → 120 at once,
    the clock follows in ~1.5 s). **Next**: Cut B (the fast lane — knob rings without the ~35 ms glide delay; the iPad measured first).
    **For the user**: the FR first guesses (scratchpad morning list): options / 25 % rule / Medium-Low 60 / heavy displays 60–119.
+24. **(2026-11-02.)** **Display-rate visuals, Cut B deployed** (canvas 935d791; contract IMPL-FR-B, §14 every lane / review / fixer
+   note): the engine's fast lane (`fastOn` / `fast`, own peak accumulators, FR1b; a part at rest stops posting, re-posts on resume),
+   motion.js's 128-entry ring read at the heard frame (`outFrame`), the tempo fix for every track BPM-synced modulator (no switch);
+   rates 120 / 60 / 30 by preset; heavy displays ≤ 30 / s on Medium / Low, halved per frame-drop level (wk.js, floor 15) and four
+   `shed` clients at drop levels 2–3 (lead: adopted beyond the brief, reversible). **WebKit / iPad: `FAST_WEBKIT = 0`** (Cut A motion)
+   until G8i (`tests/ui-bench.html?fps=1&fast=60`, the protocol at the top level) and the iPad pass. Open: G9′ on the real 120 Hz
+   panel (the user watching); the classic-mod N4 `row mk` timing gate is flaky under load (fails on c960ce1 too; passes alone).
 
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
