@@ -39,11 +39,14 @@
   Stage WC (IMPL-WC §9, G7): ?wc=1 loads tests/ui-bench-wc.mjs instead — a Juno track, the Wavecraft starter and the full WC-1 rig made
   with the app's own hooks, measured with the app's own cord layer (pan / pinch 25–200 % / the Amplifier dragged / every cord swaying /
   a 60 s zoom sweep); &auto=1 for the CDP harness (window.__wc), &wires=lines the regret path; one JSON (kind "ui-WC-mac").
-  Stage FR (IMPL-FR §9 G7): ?fps=1 loads tests/ui-bench-fps.mjs instead — the frame-rate harness on a device: scenes idle / play8 / roll8 /
-  tutorial / serum / master / busy built with the app's own hooks, each played for a few seconds on the browser's own frames (the iPad's 60),
-  per scene the cost of a frame (every rAF callback + the message handlers), paints per animated display against its expected-live list,
-  the clock's own numbers; &scenes=a,b a subset, &caps=120 more caps, &auto=1 for a driver (window.__fpsBench). The Mac gate itself is
-  `node tests/ui-bench-fps.mjs` (Chrome for Testing, CDP: virtual display at 60 / 120 / 240, CPU throttle, layout / heap). Do not add run=1.
+  Stage FR (IMPL-FR §9 G7): ?fps=1 loads tests/ui-bench-fps.mjs instead — the launcher of the frame-rate harness on a device: Run opens the
+  app's own page, ../index.html?fpsdev=1 (FR Cut B review 2: the protocol runs at the top level, never in a frame — WebKit's AudioWorklet
+  in a srcdoc / iframe is not the app's), one scene a page load: scenes idle / play8 / roll8 / tutorial / serum / master / busy / clip built
+  with the app's own hooks, each played for a few seconds on the browser's own frames (the iPad's 60), per scene the cost of a frame (every
+  rAF callback + the message handlers), paints per animated display against its expected-live list, the clock's own numbers; the results in
+  the app page at the end; &scenes=a,b a subset, &caps=120 more caps, &load=1 &post=1 (G8i), &auto=1 for a driver (window.__fpsBench, in
+  the app page). The Mac gate itself is `node tests/ui-bench-fps.mjs` (Chrome for Testing, CDP: virtual display at 60 / 120 / 240, CPU
+  throttle, layout / heap). Do not add run=1.
 -->
 <style>
   :root { color-scheme: dark; }

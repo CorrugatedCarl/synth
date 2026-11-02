@@ -90,7 +90,9 @@ test('a Frame rate pick applies live (the world, the clock\'s ceiling min(settin
   assert.deepEqual(seen, [
     ['240', '240', 'high', 240, '"240"'], ['240', '240', 'medium', 60, '"240"'], ['display', 'display', 'medium', 60, '"display"'], ['display', 'display', 'high', 'inf', '"display"'],
     ['144', '144', 'low', 60, '"144"'], ['165', '165', 'high', 165, '"165"'], ['120', '120', 'high', 120, '"120"']]);
-  assert.equal(sim.posted.length, n0, 'no worklet message at any pick or preset switch');
+  // ((FR Cut B §9, moved by design) a preset switch re-rates the fast lane: {t: 'fastOn'} — and only that — to a node a live display asks
+  // (here MASTER: the Master row's meters); a Frame rate pick posts nothing (pinned below)
+  assert.deepEqual(sim.posted.slice(n0).filter(x => x.m.t !== 'fastOn').map(x => x.m.t), [], 'no worklet message but fastOn at any pick or preset switch');
   assert.deepEqual([JSON.stringify(P()) === p0, cv.hist.u.length], [true, h0], 'the project untouched, no History step');
   assert.deepEqual([JSON.stringify(api.settings()) === set0, sim.$('#os').value, /fps/.test(ls.getItem('synthc.settings') || '')], [true, os0, false], 'the settings untouched, the frame rate not among them');
   const w0 = ls.writes.length;
@@ -148,7 +150,7 @@ test('a pick applies live (the world, cv-face, the cords) and is stored per devi
     { sel: 'medium', world: 'medium', faces: 'medium', cords: 'light', stored: '"medium"' },
     { sel: 'high', world: 'high', faces: 'high', cords: 'full', stored: '"high"' },
     { sel: 'low', world: 'low', faces: 'low', cords: 'still', stored: '"low"' }]);
-  assert.equal(sim.posted.length, n0, 'no worklet message at any switch');
+  assert.deepEqual(sim.posted.slice(n0).filter(x => x.m.t !== 'fastOn').map(x => x.m.t), [], 'no worklet message at any switch but fastOn ((FR Cut B §9, moved by design) the fast lane\'s rate: fastOn alone)');
   assert.deepEqual([JSON.stringify(P()) === p0, cv.hist.u.length], [true, h0], 'the project untouched, no History step');
   assert.deepEqual([JSON.stringify(api.settings()) === set0, sim.$('#os').value, /perf/.test(ls.getItem('synthc.settings') || '')], [true, os0, false], 'D2: the settings (Oversampling) untouched, the preset not among them');
   const w0 = ls.writes.length;
@@ -156,6 +158,22 @@ test('a pick applies live (the world, cv-face, the cords) and is stored per devi
   assert.deepEqual([look().world, ls.writes.slice(w0).filter(k => k === KEY).length], ['low', 1], 'the same pick: stored again, nothing else');
   pick('nonsense'); await settle();
   assert.deepEqual(look(), { sel: 'high', world: 'high', faces: 'high', cords: 'full', stored: '"high"' }, 'anything else: High (cv-world perfOf)');
+  pick('low'); await settle();
+});
+
+test('(FR Cut B §5.2, §9) the move pinned: a preset switch posts one {t: \'fastOn\'} to each node a live display asks (MASTER: the Master row\'s meters) at the preset\'s data rate — High 120 · Medium 60 · Low 30 — and nothing else; the same pick again posts nothing; a Frame rate pick posts nothing at all', async () => {
+  pick('high'); fpick('120'); await settle(2);
+  const M = globalThis.__synthTest.master.rec().node, seen = [];
+  for (const p of ['medium', 'low', 'high', 'high']) {
+    const n0 = sim.posted.length;
+    pick(p); await settle(2);
+    const L = sim.posted.slice(n0);
+    seen.push([p, L.length, L.filter(x => x.node === M && x.m.t === 'fastOn').map(x => x.m.hz).join()]);
+  }
+  assert.deepEqual(seen, [['medium', 1, '60'], ['low', 1, '30'], ['high', 1, '120'], ['high', 0, '']], JSON.stringify(seen));
+  const n1 = sim.posted.length;
+  for (const f of ['240', 'display', '144', '120']) { fpick(f); await settle(2); }
+  assert.equal(sim.posted.length, n1, 'a Frame rate pick: no worklet message (the data rate is the preset\'s, not the display\'s)');
   pick('low'); await settle();
 });
 

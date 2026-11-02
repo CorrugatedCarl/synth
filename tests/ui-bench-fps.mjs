@@ -75,7 +75,8 @@ export function effOf(display, cap) {
 /** The expected-live lists (IMPL-FR §9 G7, P2-8): per scene, every canvas / SVG ring the scene must animate — each { name, kind: 'canvas' |
  * 'attr', sel (CSS, matched among the elements on screen), [box (CSS: an ancestor whose box says "on screen" and whose element may be hidden at the moment —
  * a knob's dot between notes)], [attr (kind 'attr': the attribute whose writes count)], rate (class: 'eff' | 'snap' | 'gr' |
- * 'heavy' | Hz), [min (elements needed on screen, default 1)], [any (it is enough that `min` of them paint)], [tol (default 0.8)], [max (Hz: the display's own ceiling — the CLIP roll moves a pixel column at most so often)] }.
+ * 'heavy' | 'curve' | Hz), [min (elements needed on screen, default 1)], [any (it is enough that `min` of them paint)], [tol (default 0.8)], [max (Hz: the display's own ceiling — the CLIP roll moves a pixel column at most so often)],
+ * [fast (FR Cut B: asked only while the fast lane is live — an element that exists only then)] }.
  * Calibrated on 8f35d70 (the clock only; Cut A not built): the rate classes are what the CONTRACT expects after Cut A — the baseline fails
  * the ones Cut A lifts (the master scope 30 → eff, the head meters / playheads 'eff' already hold because they own an rAF loop). `snap`
  * = the worklets' ≈ 29 Hz snapshot (the LFO / ENV playheads, the Serum displays: unchanged in Cut A), `heavy` = 60 once the data is faster
@@ -97,7 +98,8 @@ export const EXPECT = Object.freeze({
     { name: 'LFO playheads', kind: 'canvas', sel: '.gx-lfo canvas.gx-ov', rate: 'snap', min: 5 },
     { name: 'ENV playhead', kind: 'canvas', sel: '.gx-env canvas.gx-ov', rate: 'snap' },
     { name: 'wavetable display (3D)', kind: 'canvas', sel: '[data-cv-mod*="oscA"] canvas.sx-disp', rate: 'heavy' },
-    { name: 'filter display', kind: 'canvas', sel: '[data-cv-mod*="filter"] canvas.sx-disp', rate: 'snap', tol: 0.4 },
+    { name: 'filter display', kind: 'canvas', sel: '[data-cv-mod*="filter"] canvas.sx-disp', rate: 'curve', tol: 0.4 }, // ((Cut B, the user's QB) its curve: ≤ 60 / s on High, 30 on Medium / Low — judged from above too
+    { name: 'filter cutoff marker', kind: 'canvas', sel: '[data-cv-mod*="filter"] canvas.sxo-fmark', rate: 'snap', tol: 0.4, fast: true }, // ((Cut B §4.3) the marker overlay at the view's cutoff: every frame under fast — it exists only then (fast: not asked with the lane off)
     { name: 'wavetable position dot', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live', box: '[data-dest]', rate: 'snap', any: true },
     { name: 'Ducker GR bar', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', tol: 0.4 }, // keyed to the kick: it moves with each hit (≈ 18 Hz at 128 BPM), not every post
   ]),
@@ -106,11 +108,11 @@ export const EXPECT = Object.freeze({
     { name: 'LFO / ENV playheads', kind: 'canvas', sel: '.gx-lfo canvas.gx-ov, .gx-env canvas.gx-ov', rate: 'snap', min: 6 },
     { name: 'wavetable display', kind: 'canvas', sel: 'canvas.sx-disp', rate: 'heavy', any: true },
     { name: 'compressor GR', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', any: true },
-    { name: 'LFO-driven knob dots', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live, [data-dest="f.res"] .wk-live, [data-dest="a.level"] .wk-live', box: '[data-dest]', rate: 'snap', any: true, min: 2 },
+    { name: 'LFO-driven knob dots', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live, [data-dest="f.res"] .wk-live, [data-dest="a.level"] .wk-live', box: '[data-dest]', rate: 'snap', any: true, min: 2, tol: 0.5 }, // ((Cut B §5.6) change-gated writers: a dot whose rounded position held writes nothing
   ]),
   master: Object.freeze([
     { name: 'OUT scope', kind: 'canvas', sel: 'canvas.mo-sc', rate: 'eff' },
-    { name: 'OUT meters', kind: 'canvas', sel: 'canvas.mo-mt', rate: 'snap' },
+    { name: 'OUT meters', kind: 'canvas', sel: 'canvas.mo-mt', rate: 'snap', tol: 0.4 }, // ((Cut B §5.6) change-gated: a frame whose bars did not move paints nothing
     { name: 'LFO playheads', kind: 'canvas', sel: '.gx-lfo canvas.gx-ov', rate: 'snap', min: 2 },
     { name: 'compressor GR', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', any: true },
     { name: 'rack GR bars + Ducker position', kind: 'canvas', sel: '[data-cv-mod="mfx"] canvas.fxr-gr, [data-cv-mod="mfx"] canvas.gx-ov', rate: 'gr', tol: 0.4, min: 3 }, // the Ducker is keyed to the kick: it moves with each hit
@@ -140,27 +142,54 @@ export function q(a) {
  * stays beside it as `retry`). A real cost / liveness / heap failure is never re-rolled. */
 export const SOFT_GATES = Object.freeze(['frames', 'layout+style']);
 /** The expected paint rate (Hz) of a class at the clock's effective rate `eff`: 'eff' the clock's; 'snap' the worklet snapshot rate; 'gr' the
- * GR / Ducker loops' 30; 'heavy' min(60, the data's rate, eff); a number an absolute Hz. `o.snap` overrides the data rate (Cut B: the
- * fast lane's). Never above `eff`. Pure. */
+ * GR / Ducker loops' 30; 'heavy' min(60, the data's rate, eff); 'curve' (the filter display's curve) as 'snap'; a number an absolute Hz.
+ * `o.snap` overrides the data rate. (FR Cut B §5.6) `o.fast` (the fast lane live: every view is read at the heard frame, every frame):
+ * 'snap' and 'gr' → eff; 'heavy' → min(o.snap ?? eff, E / max(1, floor(E / 60))) (its rate class's own cadence, sx-host rateMs);
+ * 'curve' → min(eff, 60) on High (`o.perf`, default High), min(eff, 30) on Medium / Low (the user's QB). Never above `eff`. (Review 2, P1-1)
+ * `o.drop`, the frame clock's drop level: 'heavy' / 'curve' halved per level (≥ 15 a second), on Medium / Low 'heavy' ≤ 30 too; under fast
+ * from level 2 'snap' / 'gr' at half the cadence, at 30 a second from level 3 (the shed motion's floor). Pure. */
+export const CURVE_HZ = Object.freeze({ high: 60, medium: 30, low: 30 });
+/** (FR Cut B review 2, P1-1) the heavy displays' own cadence (sx-host heavyMs): k = floor(E / hz) frames (the class) or ceil(E / hz) (a
+ * ceiling: the filter curve, every heavy display on Medium / Low — HEAVY_LOW), doubled per drop level (wk.clock.drop()), never below
+ * HEAVY_MIN a second → E / k. Pure. */
+export const HEAVY_LOW = 30, HEAVY_MIN = 15, SHED_MIN = 30; // (SHED_MIN: wk.js's — the fast lane's motion clients at every other frame from drop level 2, ≥ 30 a second)
+export function heavyRate(E, hz, ceil, drop = 0) {
+  let k = Math.max(1, ceil ? Math.ceil(E / hz - 1e-9) : Math.floor(E / hz + 1e-9));
+  if (drop > 0) k = Math.max(k, Math.min(k * Math.pow(2, drop | 0), Math.floor(E / HEAVY_MIN + 1e-9)));
+  return E / k;
+}
 export function rateOf(cls, eff, o = {}) {
-  const snap = o.snap > 0 ? +o.snap : HZ.snap;
+  const snap = o.snap > 0 ? +o.snap : HZ.snap, E = o.eff > 0 ? +o.eff : eff, low = o.perf === 'medium' || o.perf === 'low', L = o.drop > 0 ? o.drop | 0 : 0; // (k from the clock's E — o.eff, evalExpect's ctx — never the frames delivered)
+  // (review 2, P1-1) heavy: the 60 class on High, the 30 ceiling on Medium / Low; curve: the preset's ceiling; both halved per drop level
+  const heavy = () => heavyRate(E, low ? HEAVY_LOW : HZ.heavyMax, low, L), curve = () => heavyRate(E, CURVE_HZ[o.perf] || CURVE_HZ.high, true, L);
   let hz;
+  if (o.fast) {
+    if (cls === 'snap' || cls === 'gr') hz = Math.min(eff, E / (L >= 2 ? Math.max(1, L >= 3 ? Math.floor(E / SHED_MIN + 1e-9) : Math.min(2, Math.floor(E / SHED_MIN + 1e-9))) : 1)); // ((review 2) the motion sheds: ½ at level 2, the floor at 3
+    else if (cls === 'heavy') hz = Math.min(o.snap > 0 ? +o.snap : eff, heavy());
+    else if (cls === 'curve') hz = curve();
+    else hz = cls === 'eff' || cls == null ? eff : +cls;
+    return r1(Math.min(hz, eff));
+  }
   if (cls === 'eff' || cls == null) hz = eff;
   else if (cls === 'snap') hz = snap;
+  else if (cls === 'curve') hz = Math.min(snap, curve());
   else if (cls === 'gr') hz = HZ.gr;
   // (review 2, P3-6d — for Cut B) the heavy class paints every k = floor(E / 60) ≥ 1 frames (sx-host rateMs, the lead's 60 minimum):
   // E / floor(E / 60) a second — 82.5 at E 165, 72 at 144, 60 at 120 / 240, E itself at 60–119. Once the data outruns it (the fast lane)
-  // the expectation is min(snap, E / floor(E / 60)), not min(60, snap): HZ.heavyMax is the 60-class's floor, not its rate
-  else if (cls === 'heavy') hz = Math.min(HZ.heavyMax, snap);
+  // the expectation is min(snap, E / floor(E / 60)), not min(60, snap): HZ.heavyMax is the 60-class's floor, not its rate. Fast off the
+  // data's 29 is below it (a drop level may take it lower)
+  else if (cls === 'heavy') hz = Math.min(snap, heavy());
   else hz = +cls;
   return r1(Math.min(hz, eff));
 }
 /** One expect entry judged: `got` = { found: n elements matched on screen, rates: [paints per second each] }. Passes when ≥ `min` elements
  * were found and every one (or, with `any`, at least `min` of them) painted ≥ tol × the expected rate — the class's rate at min(eff, the
  * frames delivered: ctx.delivered, / s): a display cannot paint on a frame that never came (review 2, P3-6a; a starved window is the
- * `frames` gate's to judge). From above (a clock-class display on a faster display) against eff itself. Pure. */
+ * `frames` gate's to judge). From above (a clock-class display on a faster display) against eff itself. (FR Cut B review 2, P1-1) The
+ * frame clock's drop levels over the window: from below at its highest (ctx.drop), from above at its lowest (ctx.dropLo). Pure. */
 export function evalExpect(entry, got, ctx) {
   const eff = ctx && ctx.eff > 0 ? ctx.eff : 60, del = ctx && ctx.delivered > 0 ? Math.min(eff, ctx.delivered) : eff;
+  if (entry.fast && !(ctx && ctx.fast)) return { name: entry.name, rate: entry.rate, expected: 0, limit: 0, found: got ? got.found | 0 : 0, min: 0, med: 0, max: 0, over: 0, pass: true, skipped: true, why: 'the fast lane off: not asked' }; // ((Cut B) an entry that exists only with the fast lane
   const exp = r1(Math.min(rateOf(entry.rate, del, ctx || {}), entry.max > 0 ? entry.max : Infinity)), tol = entry.tol > 0 ? entry.tol : BUDGET.rate; // (max: the display's own ceiling, Hz)
   const rates = ((got && got.rates) || []).map(Number), found = got ? got.found | 0 : 0, need = entry.min >= 0 ? entry.min : 1, lim = r1(exp * tol); // (min 0: "if it is on screen it must paint" — the OUT scope the camera may have left)
   const ok = rates.filter(x => x >= lim);
@@ -170,8 +199,9 @@ export function evalExpect(entry, got, ctx) {
   else if (entry.any ? ok.length < need : ok.length < rates.length) { pass = false; why = (entry.any ? ok.length + ' of ' + rates.length : rates.length - ok.length + ' of ' + rates.length + ' below') + ' at ≥ ' + lim + ' Hz (min ' + r1(lo) + ', med ' + r1(med) + ')'; }
   // the cap holds from above too: on a display faster than the cap (a 240 Hz screen at 120 / 60) a clock-class display paints at the effective rate, never the display's
   // (FR2: no private loop at the display's rate; Medium / Low save main-thread time by this)
-  const hi = r1(rateOf(entry.rate, eff, ctx || {}) * 1.25), over = entry.rate === 'eff' && ctx && ctx.display > 1.05 * eff ? rates.filter(x => x > hi).length : 0;
-  if (over) { pass = false; why = (why ? why + '; ' : '') + over + ' of ' + rates.length + ' above the cap: > ' + hi + ' Hz on a ' + ctx.display + ' Hz display (max ' + r1(Math.max(...rates)) + ')'; }
+  // (FR Cut B §5.6) under fast the filter curve too: it redraws at most 60 / 30 a second whatever the display (the user's QB)
+  const hi = r1(rateOf(entry.rate, eff, Object.assign({}, ctx || {}, { drop: ctx && ctx.dropLo > 0 ? ctx.dropLo : 0 })) * 1.25), over = (entry.rate === 'eff' && ctx && ctx.display > 1.05 * eff) || (entry.rate === 'curve' && ctx && ctx.fast) ? rates.filter(x => x > hi).length : 0;
+  if (over) { pass = false; why = (why ? why + '; ' : '') + over + ' of ' + rates.length + ' above the cap: > ' + hi + ' Hz' + (ctx.display ? ' on a ' + ctx.display + ' Hz display' : '') + ' (max ' + r1(Math.max(...rates)) + ')'; }
   return { name: entry.name, rate: entry.rate, expected: exp, limit: lim, found, min: r1(lo), med: r1(med), max: r1(rates.length ? Math.max(...rates) : 0), over, pass, why };
 }
 /** (review 2, P3-6b) A CLIP playhead sampled every frame, [[t ms, sixteenths (−1: not playing)], …]: `jumps` (a frame-to-frame step outside
@@ -188,6 +218,42 @@ export function clipJumps(rec) {
   }
   for (let k = 0; k + 1 < jumps.length; k++) if (jumps[k + 1].i - jumps[k].i <= 8) glitches.push([jumps[k], jumps[k + 1]]);
   return { jumps, glitches, moved: steps ? r1(moved / steps * 100) : 0 };
+}
+/** (FR Cut B §7 G7) the smooth probe's verdict: `xs` = the LFO 1 overlay's drawn x per painted frame (NaN: nothing drawn yet) → { n,
+ * moved (the share of frames whose x differs from the previous one), cv (the coefficient of variation of |Δx| over the steps in the
+ * probe's own direction — the median step's sign: a backward LFO's too —, the wraps the other way excluded), wraps, pass: moved ≥ 0.9 and
+ * cv ≤ 0.3 }. At c515abf a 29 Hz probe on a 240 Hz display moves on ≈ 29 / 240 of the frames: that is "240 visibly smoother than 120". Pure. */
+export function smoothOf(xs) {
+  const a = Array.from(xs || [], Number), n = a.length, d = [];
+  let moved = 0;
+  for (let i = 1; i < n; i++) { const p = a[i - 1], c = a[i]; if (!(p === p && c === c)) continue; if (c !== p) moved++; d.push(c - p); }
+  const nz = d.filter(x => x !== 0).sort((x, y) => x - y), dir = nz.length ? Math.sign(nz[nz.length >> 1]) : 1;
+  const fw = d.filter(x => !(Math.sign(x) === -dir)).map(Math.abs), wraps = d.length - fw.length;
+  const mean = fw.length ? fw.reduce((x, y) => x + y, 0) / fw.length : 0;
+  const sd = fw.length ? Math.sqrt(fw.reduce((x, y) => x + (y - mean) * (y - mean), 0) / fw.length) : 0;
+  const mv = n > 1 ? moved / (n - 1) : 0, cv = mean > 0 ? sd / mean : Infinity;
+  return { n, moved: r3(mv), cv: cv === Infinity ? cv : r3(cv), wraps, pass: n > 1 && mv >= 0.9 && cv <= 0.3 };
+}
+/** (FR Cut B §7 G8, §5.6 --load) the load protocol: `cycles` pairs, each [fast on `ms`, fast off `ms`] (the A/B) then the A/A [off, off] —
+ * interleaved, so a drift of the machine lands on both arms. Pure. */
+export function loadPlan(cycles = 10, ms = 5000) {
+  const out = [];
+  for (let k = 0; k < cycles; k++) out.push({ arm: 'ab', fast: true, ms, pair: k }, { arm: 'ab', fast: false, ms, pair: k }, { arm: 'aa', fast: false, ms, pair: k }, { arm: 'aa', fast: false, ms, pair: k });
+  return out;
+}
+const median = L => { const s = L.filter(x => typeof x === 'number' && isFinite(x)).sort((a, b) => a - b), n = s.length; return n ? (n % 2 ? s[n >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2) : NaN; };
+/** The load protocol's results ([{ arm, fast, pair, load }], each phase's mean DSP load of every node) → { delta (the paired median of
+ * on − off), spread (the paired median of |A/A₁ − A/A₂|: the noise), limit = max(0.005, 2 × spread), pass: delta ≤ limit, pairs }. Pure. */
+export function loadVerdict(res) {
+  const by = new Map();
+  for (const r of res || []) { if (!r || !(r.load >= 0)) continue; const P = by.get(r.pair) || by.set(r.pair, { on: [], off: [], aa: [] }).get(r.pair); (r.arm === 'aa' ? P.aa : r.fast ? P.on : P.off).push(+r.load); }
+  const d = [], a = [];
+  for (const P of by.values()) {
+    if (P.on.length && P.off.length) d.push(median(P.on) - median(P.off));
+    if (P.aa.length >= 2) a.push(Math.abs(P.aa[0] - P.aa[1]));
+  }
+  const delta = median(d), spread = a.length ? median(a) : 0, limit = Math.max(0.005, 2 * spread);
+  return { delta, spread, limit, pairs: d.length, pass: d.length > 0 && delta <= limit };
 }
 /** The cost budget in force for a cell, or null (ungated): the first entry matching the throttle and (cap or any cap). Pure. */
 export function costBudget(throttle, cap) {
@@ -239,9 +305,11 @@ export function matrix(o = {}) {
   }
   return out;
 }
+const PREVIEW_PORT = 8800 + 17; // (.claude/launch.json's preview server: never port 8817 for the harness)
 /** argv → options (unknown flags ignored; lists comma-separated; numbers checked). Pure. */
 export function parseArgs(argv) {
-  const o = { sizes: ['d'], scenes: SCENE_IDS.slice(), caps: CAPS.slice(), throttles: THROTTLES.slice(), display: 0, cross: true, warm: 3200, measure: 4000, out: null, benchRow: null, profile: null, list: false, quiet: false, gate: true, layoutGate: 'idle', compare: null, skin: null, behind: false, errors: [] };
+  const o = { sizes: ['d'], scenes: SCENE_IDS.slice(), caps: CAPS.slice(), throttles: THROTTLES.slice(), display: 0, cross: true, warm: 3200, measure: 4000, out: null, benchRow: null, profile: null, list: false, quiet: false, gate: true, layoutGate: 'idle', compare: null, skin: null, behind: false,
+    fast: true, load: false, serve: false, port: 0, perf: null, errors: [] }; // ((FR Cut B §5.6) --fast on|off: the fast lane through __synthTest.fr.force; --load: G8's protocol; --serve --port: a device's result; (review 2) --perf: the preset of every cell
   const list = (k, v, ok) => { const a = String(v || '').split(',').map(x => x.trim()).filter(Boolean); if (!a.length || !a.every(ok)) { o.errors.push('--' + k + ': ' + v); return null; } return a; };
   const num = (k, v, lo, hi) => { const n = +v; if (!(n >= lo && n <= hi)) { o.errors.push('--' + k + ': ' + v); return null; } return n; };
   for (let i = 0; i < argv.length; i++) {
@@ -264,6 +332,11 @@ export function parseArgs(argv) {
     else if (a === '--skin') { if (/^[a-z]+$/.test(v || '')) o.skin = v; else o.errors.push('--skin: ' + v); i++; } // ((WC-2) the scenes in a skin (the ⚙ line's own path)
     else if (a === '--behind') o.behind = true; // ((WC-2) "Cables behind modules" on (the toolbar toggle's own path)
     else if (a === '--compare') { if (v && argv[i + 2]) o.compare = [v, argv[i + 2]]; else o.errors.push('--compare needs two report files'); i += 2; }
+    else if (a === '--fast') { if (v === 'on' || v === 'off') o.fast = v === 'on'; else o.errors.push('--fast: ' + v); i++; }
+    else if (a === '--load') o.load = true;
+    else if (a === '--perf') { if (['high', 'medium', 'low'].includes(v)) o.perf = v; else o.errors.push('--perf: ' + v); i++; } // ((review 2, P1-1) the app's preset — ⚙'s own select — for every cell
+    else if (a === '--serve') o.serve = true;
+    else if (a === '--port') { const n = num('port', v, 1024, 65535); if (n != null && n === PREVIEW_PORT) o.errors.push('--port: the preview server\'s'); else if (n != null) o.port = n; i++; }
   }
   return o;
 }
@@ -274,7 +347,8 @@ export function summarize(rep) {
     const fc = c.frameCost || {}, cd = c.cdp || {};
     L.push([c.size, c.scene.padEnd(8), c.throttle + '×', String(c.cap).padStart(3), 'disp ' + String(c.display).padStart(3), 'eff ' + String(c.clock && c.clock.measured ? r1(c.clock.eff) : '–').padStart(5),
       'fps ' + String(c.frames ? r1(c.frames.delivered) : '?').padStart(6), 'cost med ' + fc.med + ' p95 ' + fc.p95 + ' max ' + fc.max + (c.contract ? ' (clock+handlers ' + c.contract.med + ' / ' + c.contract.p95 + ')' : ''), 'L+S ' + (cd.layoutMs != null ? r3(cd.layoutMs + cd.styleMs) : '–') + ' ms/s',
-      'heap ' + (c.heapBytesPerS != null ? Math.round(c.heapBytesPerS / 1024) + ' KB/s' : '–'), c.pass ? 'ok' : 'FAIL ' + c.gates.filter(x => x.gated && !x.pass).length].join('  '));
+      'heap ' + (c.heapBytesPerS != null ? Math.round(c.heapBytesPerS / 1024) + ' KB/s' : '–'), ...(c.clock && c.clock.drop && c.clock.drop.hi > 0 ? ['drop ' + c.clock.drop.lo + '–' + c.clock.drop.hi] : []), // ((review 2) the frame clock's drop levels, when any
+      c.pass ? 'ok' : 'FAIL ' + c.gates.filter(x => x.gated && !x.pass).length].join('  '));
   }
   const bad = [];
   for (const c of rep.cells || []) for (const x of c.gates || []) if (x.gated && !x.pass) bad.push('  ✗ ' + c.size + ' ' + c.scene + ' ' + c.throttle + '× cap ' + c.cap + ' · ' + x.id + ' · ' + x.value + (x.limit != null ? ' (limit ' + x.limit + ')' : '') + (x.note ? ' — ' + x.note : ''));
@@ -688,14 +762,58 @@ export async function prepare(win, cfg) {
   if (W && typeof W.setFps === 'function') { try { W.setFps(String(cfg.cap)); out.via = 'world.setFps'; } catch (e) { out.notes.push('world.setFps: ' + e.message); } }
   if (wk.clock.cap() !== cfg.cap) { wk.clock.setCap(cfg.cap); out.via += (out.via ? ' + ' : '') + 'clock.setCap'; }
   F.observe(['cx'].concat(Array.from(new Set((EXPECT[cfg.scene] || []).filter(e => e.kind === 'attr').map(e => e.attr)))));
+  // (FR Cut B §5.6) --fast on | off through the app's own override (__synthTest.fr.force: null = the preset's rate, 0 = off); a build
+  // before Cut B has no fast lane: its classes are judged as before (out.fast false)
+  const fr = A.T.fr;
+  if (cfg.perf) { // ((FR Cut B review 2, P1-1) --perf: the app's own path — ⚙'s preset select (stored, applied live, the fast lane re-synced)
+    const ps = A.shell.shell && A.shell.shell.perfSel;
+    if (ps && typeof ps.onchange === 'function') { ps.value = cfg.perf; ps.onchange({ type: 'change', target: ps }); } else out.notes.push('no preset select: the app\'s own preset');
+  }
+  if (wk.clock.dropReset) wk.clock.dropReset(); // ((review 2) each cell its own condition: no drop level carried over from the previous cell's throttle
+  out.fast = false; out.perf = (W && W.perf) || 'high';
+  if (fr && typeof fr.force === 'function') { try { fr.force(cfg.fast === false ? 0 : typeof cfg.fast === 'number' ? cfg.fast : null); out.fast = cfg.fast !== false && fr.hz() > 0; } catch (e) { out.notes.push('fr.force: ' + e.message); } } // ((review 2) a number: that rate forced — WebKit ships the lane off
   F.errs.length = 0;
   await sleep(cfg.warm);
   const s = wk.clock.stats();
   out.clock = { display: s.display, measured: s.measured, eff: s.eff, cap: s.cap, k: s.k };
   return out;
 }
+/** (FR Cut B §7 G7) the smooth probe: LFO 1's overlay (the first `.gx-lfo canvas.gx-ov` on screen — the tutorial's) has its context's
+ * 'arc' hooked (its playhead dot) and the x drawn is recorded once per delivered frame for `ms` → smoothOf of the series (+ the first 600). */
+export async function smoothProbe(win, ms = 2000) {
+  const A = appOf(win), F = A.F, c = Array.from(A.doc.querySelectorAll('.gx-lfo canvas.gx-ov')).find(el => onScreen(win, el));
+  if (!c) return { ok: false, why: 'no LFO overlay on screen', n: 0, moved: 0, cv: Infinity, wraps: 0, pass: false, xs: [] };
+  const g = c.getContext('2d'), orig = g.arc, xs = [];
+  let lastX = NaN, lastF = -1;
+  g.arc = function (x) { lastX = x; return orig.apply(this, arguments); };
+  const t0 = win.performance.now();
+  try {
+    await new Promise(res => {
+      const loop = () => { if (win.performance.now() - t0 >= ms) { res(); return; } if (F.frame !== lastF) { lastF = F.frame; xs.push(lastX); } win.requestAnimationFrame(loop); };
+      win.requestAnimationFrame(loop);
+    });
+  } finally { delete g.arc; if (g.arc !== orig) g.arc = orig; }
+  return Object.assign({ ok: true, frames: xs.length }, smoothOf(xs), { xs: xs.slice(0, 600).map(x => (x === x ? r1(x) : null)) });
+}
+/** (FR Cut B §7 G8, --load) the load protocol in the page: per phase of `plan` (loadPlan) the fast lane on or off (fr.force), 600 ms to
+ * settle, then the summed DSP load of every node (the tracks' and MASTER's stats.load, read every 250 ms) averaged → loadVerdict. */
+export async function loadRun(win, plan, on = null) { // (on: the on arm's rate — null the preset's; review 2: a number for WebKit, where that is 0)
+  const A = appOf(win), fr = A.T.fr, out = [];
+  if (!fr || typeof fr.force !== 'function') return { ok: false, why: 'no __synthTest.fr (a build before Cut B)', res: [], verdict: loadVerdict([]) };
+  const now = () => { let x = 0; for (const N of A.api.nodes.values()) if (N && N.load >= 0) x += N.load; const M = A.master && A.master.rec ? A.master.rec() : null; if (M && M.load >= 0) x += M.load; return x; };
+  try {
+    for (const ph of plan) {
+      fr.force(ph.fast ? on : 0);
+      await sleep(600);
+      const L = [], t0 = win.performance.now();
+      while (win.performance.now() - t0 < Math.max(250, ph.ms - 600)) { await sleep(250); L.push(now()); }
+      out.push({ arm: ph.arm, fast: ph.fast, pair: ph.pair, load: L.length ? L.reduce((a, b) => a + b, 0) / L.length : NaN });
+    }
+  } finally { fr.force(null); }
+  return { ok: true, res: out, verdict: loadVerdict(out) };
+}
 /** Starts recording. */
-export function begin(win) { win.__fps.begin(); return true; }
+export function begin(win) { win.__fps.begin(); if (CUR && CUR.wk && CUR.wk.clock.dropSpan) CUR.wk.clock.dropSpan(true); return true; } // ((review 2) the drop levels from here
 // on screen: its box (≥ min px a side: a canvas 1, a knob's dot — 2 px at a 40 % camera — 0.2) meets the viewport
 // (a head meter's bar is 0 px wide in silence: an attribute-kind element needs only one side)
 const onScreen = (win, el, min = 1, either = false) => { const r = el.getBoundingClientRect(); return (either ? r.width > min || r.height > min : r.width > min && r.height > min) && r.right >= 0 && r.left < win.innerWidth && r.bottom > 0 && r.top < win.innerHeight; };
@@ -722,7 +840,8 @@ export function finish(win) {
   const dots = Array.from(A.doc.querySelectorAll('.wk-live')).filter(el => onScreen(win, el.closest('[data-dest]') || el, 0.2, true)).map(el => F.at(el, 'cx') / secs).filter(x => x > 0);
   return { ms: d.ms, delivered: +(d.delivered / secs).toFixed(2), frames: d.frames, missed: d.missed, cost: q(cost), raf: q(d.raf), msg: q(d.msg), dt: q(d.dt), callbacks: q(d.cbs),
     handlers: { n: d.msgN, perS: +(d.msgN / secs).toFixed(1), msPerS: +(d.msgMs / secs).toFixed(3), byType: Object.fromEntries(Object.entries(d.byType).map(([k, v]) => [k, { n: v.n, ms: r3(v.ms), max: r3(v.max) }])) },
-    clock: { display: st.display, measured: st.measured, eff: st.eff, cap: st.cap, k: st.k, paints: st.paints, frames: st.frames, ms: { med: r3(st.ms.med), p95: r3(st.ms.p95), max: r3(st.ms.max) }, clients: names },
+    clock: { display: st.display, measured: st.measured, eff: st.eff, cap: st.cap, k: st.k, paints: st.paints, frames: st.frames, ms: { med: r3(st.ms.med), p95: r3(st.ms.p95), max: r3(st.ms.max) }, clients: names,
+      drop: wk.clock.dropSpan ? wk.clock.dropSpan() : { lvl: 0, lo: 0, hi: 0 } }, // ((FR Cut B review 2, P1-1) the drop levels over the window
     expectRaw, canvases: cvs, dots: { n: dots.length, painting: dots.filter(x => x > 1).length, med: q(dots).med }, errors: F.errs.slice(0, 10) };
 }
 
@@ -763,67 +882,156 @@ export async function clipCheck(win, ms = 6000, seekAt = 2500) {
   return Object.assign({ ok: true, heard: CP.heard(), frames: out.length, fps: r1(out.length / (ms / 1000)) }, clipJumps(out));
 }
 
-/* ================================================================================================ on a device: ui-bench.html?fps=1 */
-// No CDP, no virtual display (the page has no SharedArrayBuffer there): the app in an iframe on the browser's own frames — the iPad's 60, a
-// ProMotion screen's 120 —, every scene, caps 60 (and 120 when the display is that fast). The store's writes are switched off and the project
-// is a fresh one (the user's own is read-only here, as in ui-bench-m3 / -wc). One JSON → Copy results (tests/bench.json "ui-fps-ipad" by hand).
-export async function main() {
-  const Q = new URLSearchParams(location.search), AUTO = Q.get('auto') === '1', $ = s => document.querySelector(s);
-  const scenes = (Q.get('scenes') ? Q.get('scenes').split(',') : SCENE_IDS.slice()).filter(x => SCENE_IDS.includes(x));
-  document.title = 'SYNTH — frame rate (ui-bench ?fps=1)';
-  document.body.innerHTML = '<h1>Frame rate: cost and liveness per scene (IMPL-FR G7)</h1><p>Builds each scene with the app\'s own hooks in a frame below, plays it, and measures a few seconds of the browser\'s own frames: what every frame costs, whether every animated display keeps animating. Leave the page alone while it runs (≈ 20 s a scene).</p>'
-    + '<p><button id="run" type="button">Run</button> <button id="copy" type="button" disabled>Copy results</button> <span id="status"></span></p><iframe id="frame" title="SYNTH Canvas" style="width:100%;height:70vh;border:1px solid #333"></iframe><pre id="res"></pre><textarea id="out" readonly style="width:100%;height:200px"></textarea>';
-  const W = window.__fpsBench = { state: 'ready', result: null };
-  const say = t => { const e = $('#status'); if (e) e.textContent = t; if (AUTO) console.log('[fps] ' + t); };
-  const run = async () => {
-    W.state = 'running'; $('#run').disabled = true;
-    const rep = { kind: 'ui-fps-device', v: VERSION, when: new Date().toISOString(), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: [innerWidth, innerHeight], pace: 'the browser\'s own frames', cells: [], scenes: {}, aborted: [] };
-    try {
-      const FR = await import('./ui-bench-frame.mjs?t=' + Date.now());
-      const html = await (await fetch('../index.html', { cache: 'no-store' })).text();
-      for (const scene of scenes) {
-        try {
-          say(scene + ': starting the app');
-          const f = $('#frame'), doc = html.replace(/<head>/i, '<head><base href="' + new URL('../', location.href).href + '"><script>' + hooksScript({}) + '<\/script>');
-          await FR.mountFrame(f, doc, FR.frameQuery(location.search), location.href);
-          let win = null;
-          for (let i = 0; i < 600 && !win; i++) { await sleep(100); const w = f.contentWindow; if (w && w.__fps && w.__synthTest && w.__synthTest.cv && w.__synthTest.api && w.__synthTest.shell && w.document.querySelector('#world') && w.__synthTest.cv.world()) win = w; }
-          if (!win) throw new Error('the app did not start in the frame');
-          const T = win.__synthTest, st = T.api.store;
-          for (const m of ['set', 'setRaw', 'saveProject', 'saveNow']) if (st && typeof st[m] === 'function') st[m] = () => {}; // nothing the bench does is stored
-          win.confirm = () => true; win.alert = () => {};
-          try { win.document.querySelector('#fNew').click(); await sleep(600); } catch (e) { /* the project as it is */ }
-          say(scene + ': building');
-          const b = await buildScene(win, scene);
-          rep.scenes[scene] = { info: b.info, notes: b.notes };
-          const caps = [60];
-          await sleep(1500);
-          for (const cap of caps.concat(Q.get('caps') ? Q.get('caps').split(',').map(Number) : [])) {
-            say(scene + ': measuring at cap ' + cap);
-            const cfg = { scene, cap, display: 0, warm: 2500, throttle: 1 };
-            const pre = await prepare(win, cfg);
-            begin(win); await sleep(4000);
-            const raw = finish(win), D = raw.clock.measured ? raw.clock.display : 60, eff = effOf(D, cap);
-            const cell = { size: 'device', scene, cap, display: D, throttle: 1, via: pre.via, notes: pre.notes, frames: { delivered: raw.delivered, missed: 0, ms: Math.round(raw.ms), display: D }, frameCost: raw.cost, raf: raw.raf, msg: raw.msg, dt: raw.dt, callbacks: raw.callbacks,
-              handlers: raw.handlers, clock: Object.assign({ expectEff: eff }, raw.clock), cdp: null, heapBytesPerS: null, expect: raw.expectRaw.map((r, i) => evalExpect(EXPECT[scene][i], r, { eff, display: D, delivered: raw.delivered })), canvases: raw.canvases, dots: raw.dots, errors: raw.errors };
-            const v = evalCell(cell); cell.pass = v.pass; cell.gates = v.gates;
-            rep.cells.push(cell);
-            $('#res').textContent = summarize(rep).join('\n');
-          }
-        } catch (e) { rep.aborted.push(scene + ': ' + String(e && e.message || e).slice(0, 200)); }
-        const f = $('#frame'); f.removeAttribute('src'); f.srcdoc = '';
-        await sleep(500);
-      }
-      W.result = rep; W.state = 'done';
-      $('#out').value = JSON.stringify(rep, null, 1); $('#copy').disabled = false;
-      $('#res').textContent = summarize(rep).join('\n');
-      say('done — Copy results');
-    } catch (e) { W.state = 'error'; W.error = String(e && e.message || e); say('error: ' + W.error); }
-    $('#run').disabled = false;
+/* ================================================================================================ on a device: index.html?fpsdev=1 */
+// No CDP, no virtual display (the page has no SharedArrayBuffer there): the browser's own frames — the iPad's 60, a ProMotion screen's 120 —,
+// every scene, caps 60 (and &caps=120 more). (FR Cut B review 2, the lead's P2-3) The protocol runs in the app's OWN top-level page, never in a
+// srcdoc or an iframe (WebKit's AudioWorklet in a frame is not the app's: G8i could not run there): main.js, under ?fpsdev=1, installs the hooks
+// before the app starts (devBoot) and the protocol runs once it is up (devRun) — one scene a page load (a fresh app per scene, as the frame
+// was), the report carried in sessionStorage from load to load, the next scene by location.replace; where the audio context waits for a
+// gesture (WebKit) a Continue button asks for one (the iOS Simulator control tool taps it). The store's writes are off from the moment the
+// app's store is there (the user's project stays as it was), the project a fresh one (#fNew). One JSON → Copy results (tests/bench.json
+// "ui-fps-ipad" by hand). Query: &scenes=a,b, &caps=120, &load=1 (after the tutorial's and the master's cells the load protocol, loadRun,
+// &cycles=N, default 10), &post=1 (the report POSTed to /result: the harness's --serve), &fast=off | on | a rate forced (G8i: &fast=60 — WebKit
+// ships the lane off, its preset rate 0), &auto=1 (window.__fpsBench: state, result),
+// &i the scene's index (the protocol's own). tests/ui-bench.html?fps=1 is the launcher (main: Run → here)
+export const DEV_KEY = 'synth.fpsdev';
+const DEV_Q = Object.freeze(['scenes', 'caps', 'load', 'post', 'fast', 'cycles', 'auto']);
+/** &fast of a device run: 'off' → false, a rate (> 0) → that rate forced (G8i: &fast=60 — WebKit ships the lane off, so its preset rate is
+ * 0), anything else → true (the preset's rate). Pure. */
+export function devFast(v) { if (v === 'off') return false; const n = +v; return n > 0 ? n : true; }
+/** The app page of a device run's step `i`: `base` (the app's index.html URL), the launcher's query `search` (only DEV_Q kept), fpsdev=1, i. Pure. */
+export function devUrl(base, search, i) {
+  const u = new URL(base), q = new URLSearchParams(search || '');
+  u.search = '';
+  u.searchParams.set('fpsdev', '1');
+  for (const k of DEV_Q) if (q.has(k)) u.searchParams.set(k, q.get(k));
+  u.searchParams.set('i', String(Math.max(0, i | 0)));
+  return u.href;
+}
+/** Called by main.js under ?fpsdev=1, before its store opens: the hooks (no virtual display), the store's writes off once the app has
+ * one, then devRun once the app is up. */
+export function devBoot(win) {
+  installHooks(win, {});
+  const T = win.__synthTest;
+  (async () => {
+    let off = false;
+    for (let k = 0; k < 1200; k++) {
+      await sleep(50);
+      const st = T.api && T.api.store;
+      if (st && !off) { off = true; for (const m of ['set', 'setRaw', 'saveProject', 'saveNow']) if (typeof st[m] === 'function') st[m] = () => {}; } // (nothing the bench does is stored)
+      if (off && T.cv && T.shell && win.document.querySelector('#world') && T.cv.world()) { await sleep(300); return devRun(win); }
+    }
+    throw new Error('the app did not start');
+  })().catch(e => { const W = win.__fpsBench = win.__fpsBench || {}; W.state = 'error'; W.error = String(e && e.message || e); win.console.error('[fps] ' + W.error); });
+}
+// the protocol's overlay in the app page (fixed, bottom left: it changes no layout) → { say, button(label) → Promise (the tap), done(rep, text) }
+function devUI(win) {
+  const d = win.document, box = d.createElement('div');
+  box.id = 'fpsdev';
+  box.setAttribute('style', 'position:fixed;left:8px;bottom:8px;z-index:2147483647;max-width:min(560px,90vw);max-height:60vh;overflow:auto;background:#111c;color:#eee;font:12px/1.4 -apple-system,Helvetica,Arial,sans-serif;padding:8px 10px;border:1px solid #444;border-radius:8px');
+  const st = d.createElement('div'), res = d.createElement('pre');
+  res.setAttribute('style', 'margin:6px 0 0;white-space:pre-wrap;font:11px/1.3 monospace');
+  box.append(st, res);
+  d.body.appendChild(box);
+  const button = label => new Promise(r => {
+    const b = d.createElement('button');
+    b.type = 'button'; b.textContent = label;
+    b.setAttribute('style', 'font:inherit;font-size:16px;padding:10px 18px;margin:6px 0;border-radius:8px');
+    b.addEventListener('click', () => { b.remove(); r(); }, { once: true });
+    box.insertBefore(b, res);
+  });
+  return {
+    say: t => { st.textContent = t; },
+    button,
+    done(rep, text) {
+      res.textContent = text;
+      const out = d.createElement('textarea'), cp = d.createElement('button');
+      out.readOnly = true; out.value = JSON.stringify(rep, null, 1); out.setAttribute('style', 'width:100%;height:140px;font:11px monospace');
+      cp.type = 'button'; cp.textContent = 'Copy results';
+      cp.addEventListener('click', async () => { try { await win.navigator.clipboard.writeText(out.value); st.textContent = 'copied'; } catch (e) { out.select(); st.textContent = 'select the text and copy it'; } });
+      box.append(cp, out);
+    },
   };
-  $('#run').addEventListener('click', run);
-  $('#copy').addEventListener('click', async () => { const t = $('#out'); try { await navigator.clipboard.writeText(t.value); say('copied'); } catch (e) { t.select(); say('select the text and copy it'); } });
-  if (AUTO) run();
+}
+// the audio running (a tap where the browser wants a gesture: WebKit) → true once the context runs
+async function devAudio(win, ui, say, i, n) {
+  const T = win.__synthTest, running = () => { const c = T.api.ctx(); return !!(c && c.state === 'running'); };
+  try { await T.api.powerOn(); } catch (e) { /* asked again after the tap */ }
+  for (let k = 0; k < 30 && !running(); k++) await sleep(100);
+  if (running()) return true;
+  say('scene ' + (i + 1) + ' of ' + n + ': the audio waits for a tap');
+  await ui.button('Continue (scene ' + (i + 1) + ' of ' + n + ')');
+  try { const c = T.api.ctx(); if (c && c.resume) await c.resume(); await T.api.powerOn(); } catch (e) { /* as it is */ }
+  for (let k = 0; k < 40 && !running(); k++) await sleep(100);
+  return running();
+}
+// one scene of the device protocol into `rep`: a fresh project, the scene built, its cells (caps 60 + &caps), the fast lane's trace, the load protocol
+async function deviceScene(win, scene, rep, Q, say) {
+  const T = win.__synthTest, LOAD = Q.get('load') === '1', FAST = devFast(Q.get('fast'));
+  win.confirm = () => true; win.alert = () => {};
+  try { win.document.querySelector('#fNew').click(); await sleep(600); } catch (e) { /* the project as it is */ }
+  say(scene + ': building');
+  const b = await buildScene(win, scene);
+  rep.scenes[scene] = { info: b.info, notes: b.notes };
+  await sleep(1500);
+  for (const cap of [60].concat(Q.get('caps') ? Q.get('caps').split(',').map(Number) : [])) {
+    say(scene + ': measuring at cap ' + cap);
+    const cfg = { scene, cap, display: 0, warm: 2500, throttle: 1, fast: FAST };
+    const pre = await prepare(win, cfg);
+    begin(win); await sleep(4000);
+    const raw = finish(win), D = raw.clock.measured ? raw.clock.display : 60, eff = effOf(D, cap);
+    const cell = { size: 'device', scene, cap, display: D, throttle: 1, via: pre.via, notes: pre.notes, frames: { delivered: raw.delivered, missed: 0, ms: Math.round(raw.ms), display: D }, frameCost: raw.cost, raf: raw.raf, msg: raw.msg, dt: raw.dt, callbacks: raw.callbacks,
+      handlers: raw.handlers, clock: Object.assign({ expectEff: eff }, raw.clock), cdp: null, heapBytesPerS: null, expect: raw.expectRaw.map((r, k) => evalExpect(EXPECT[scene][k], r, { eff, display: D, delivered: raw.delivered, fast: pre.fast, perf: pre.perf, drop: raw.clock.drop.hi, dropLo: raw.clock.drop.lo })), canvases: raw.canvases, dots: raw.dots, errors: raw.errors, fast: pre.fast };
+    const v = evalCell(cell); cell.pass = v.pass; cell.gates = v.gates;
+    rep.cells.push(cell);
+  }
+  const fr = T.fr;
+  if (fr && typeof fr.trace === 'function') { // (G8i: the rate asked, the view moving on every painted frame)
+    const tr = await fr.trace(120), ph = tr.map(x => (x.probe ? x.probe.ph : NaN)), mv = ph.filter((x, k) => k && x === x && x !== ph[k - 1]).length;
+    rep.scenes[scene].fast = { hz: fr.hz(), frames: tr.length, moved: tr.length > 1 ? r3(mv / (tr.length - 1)) : 0, rings: fr.rings().length };
+  }
+  if (LOAD && (scene === 'tutorial' || scene === 'master')) {
+    say(scene + ': the load protocol');
+    (rep.load = rep.load || {})[scene] = await loadRun(win, loadPlan(+Q.get('cycles') > 0 ? +Q.get('cycles') : 10), typeof FAST === 'number' ? FAST : null);
+  }
+}
+/** The device protocol's step in the app's page (devBoot calls it once the app is up): scene `i` into the carried report, then the next
+ * page; after the last one, the results (and the POST). */
+export async function devRun(win) {
+  const Q = new URLSearchParams(win.location.search), AUTO = Q.get('auto') === '1', POST = Q.get('post') === '1';
+  const scenes = (Q.get('scenes') ? Q.get('scenes').split(',') : SCENE_IDS.slice()).filter(x => SCENE_IDS.includes(x)), i = Math.max(0, Q.get('i') | 0);
+  const W = win.__fpsBench = { state: 'running', result: null, scene: scenes[i] || null, i, n: scenes.length };
+  const ui = devUI(win), say = t => { ui.say(t); if (AUTO) win.console.log('[fps] ' + t); };
+  let rep = null;
+  try { rep = i > 0 ? JSON.parse(win.sessionStorage.getItem(DEV_KEY) || 'null') : null; } catch (e) { rep = null; }
+  if (!rep) rep = { kind: 'ui-fps-device', v: VERSION, when: new Date().toISOString(), ua: win.navigator.userAgent, dpr: win.devicePixelRatio, viewport: [win.innerWidth, win.innerHeight], pace: 'the browser\'s own frames', page: 'the app (top level)', cells: [], scenes: {}, aborted: [] };
+  if (i < scenes.length) {
+    const scene = scenes[i];
+    try {
+      say('scene ' + (i + 1) + ' of ' + scenes.length + ': ' + scene);
+      if (!(await devAudio(win, ui, say, i, scenes.length))) throw new Error('the audio context did not start');
+      await deviceScene(win, scene, rep, Q, say);
+    } catch (e) { rep.aborted.push(scene + ': ' + String(e && e.message || e).slice(0, 200)); }
+    try { win.sessionStorage.setItem(DEV_KEY, JSON.stringify(rep)); } catch (e) { say('sessionStorage: ' + e.message); W.state = 'error'; return; }
+    say(scene + ': done — the next scene');
+    win.location.replace(devUrl(win.location.href, win.location.search, i + 1));
+    return;
+  }
+  W.result = rep; W.state = 'done';
+  try { win.sessionStorage.removeItem(DEV_KEY); } catch (e) { /* kept */ }
+  ui.done(rep, summarize(rep).join('\n'));
+  if (POST) { try { const r = await win.fetch('/result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rep) }); say('posted: ' + r.status); } catch (e) { say('post failed: ' + e.message); } }
+  else say('done — Copy results');
+}
+/** tests/ui-bench.html?fps=1: the launcher — Run (or &auto=1 at once) opens the app's own page at the protocol's first step (devUrl). */
+export async function main() {
+  const Q = new URLSearchParams(location.search), $ = s => document.querySelector(s);
+  document.title = 'SYNTH — frame rate (ui-bench ?fps=1)';
+  document.body.innerHTML = '<h1>Frame rate: cost and liveness per scene (IMPL-FR G7)</h1><p>Opens the app itself (its own page, not a frame), builds each scene with its own hooks, plays it and measures a few seconds of the browser\'s own frames: what every frame costs, whether every animated display keeps animating. One page load a scene; leave it alone while it runs (≈ 20 s a scene) — where the browser wants a tap to start the audio, a Continue button asks for one. The results show in the app page at the end (Copy results).</p>'
+    + '<p><button id="run" type="button">Run</button> <span id="status"></span></p>';
+  const go = () => { try { sessionStorage.removeItem(DEV_KEY); } catch (e) { /* none */ } location.href = devUrl(new URL('../index.html', location.href).href, location.search, 0); };
+  $('#run').addEventListener('click', go);
+  if (Q.get('auto') === '1') go();
 }
 
 /* ================================================================================================ the driver (node) */
@@ -848,12 +1056,63 @@ async function cli() {
     console.log('scenes: ' + SCENE_IDS.join(', ') + '\ncells: ' + cells.length + ' (' + o.sizes.length + ' size × ' + o.scenes.length + ' scenes × ' + o.throttles.length + ' throttles × ' + o.caps.length + ' caps) ≈ ' + Math.round(cells.length * (o.warm + o.measure + 1500) / 60000) + ' min + builds');
     return;
   }
+  if (o.serve) { await serve(o); return; }
   const rep = await drive(o);
   const lines = summarize(rep);
   if (!o.quiet) console.log('\n' + lines.join('\n'));
   const failed = rep.cells.filter(c => !c.pass).length, checks = rep.checks.filter(c => !c.pass).length;
   console.log('\nui-bench-fps: ' + rep.cells.length + ' cells, ' + failed + ' with a failed gate, ' + checks + ' of ' + rep.checks.length + ' checks failed' + (rep.aborted.length ? ', ' + rep.aborted.length + ' scene(s) aborted: ' + rep.aborted.join('; ') : ''));
   process.exit(o.gate && (failed || checks || rep.aborted.length) ? 1 : 0);
+}
+/** The app's server (the driver's and --serve's): the repo's files, cross-origin isolated (COOP / COEP: SharedArrayBuffer for the virtual
+ * display's worker), no cache, never port 8817; POST /result (≤ 1 MB, JSON) → onResult(text) — a device page's report (?post=1). */
+async function appServer({ http, fs, path, ROOT, port, host, onResult }) {
+  const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
+  const MAX = 1048576;
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    if (req.method === 'POST' && u.pathname === '/result') {
+      let n = 0, over = false; const parts = [];
+      req.on('data', b => { n += b.length; if (n > MAX) { over = true; req.destroy(); } else parts.push(b); });
+      req.on('end', () => {
+        if (over) return;
+        const txt = Buffer.concat(parts).toString('utf8');
+        let ok = true;
+        try { JSON.parse(txt); } catch (e) { ok = false; }
+        res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/plain', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
+        res.end(ok ? 'ok' : 'not JSON');
+        if (ok && onResult) onResult(txt);
+      });
+      req.on('close', () => { if (over && !res.headersSent) { try { res.writeHead(413); res.end(); } catch (e) { /* gone */ } } });
+      return;
+    }
+    let p = decodeURIComponent(u.pathname);
+    if (p.endsWith('/')) p += 'index.html';
+    const f = path.join(ROOT, p), rel = path.relative(ROOT, f);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.split(path.sep).some(x => x.startsWith('.'))) { res.writeHead(403); return res.end(); }
+    fs.readFile(f, (e, data) => {
+      if (e) { res.writeHead(404); return res.end(); }
+      res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
+      res.end(data);
+    });
+  });
+  await new Promise(r => srv.listen(port || 0, host || '127.0.0.1', r));
+  return srv;
+}
+/** (FR Cut B §5.6, G8i) --serve [--port N] [--out f]: the app for a device or the iOS Simulator's Safari (no browser of its own) — open
+ * tests/ui-bench.html?fps=1&load=1&post=1&fast=60 there (review 2: the rate forced — WebKit ships the lane off), tap Run (and Continue where the
+ * audio waits for a tap); the app page POSTs its report to /result, written to --out; then it exits. */
+export async function serve(o) {
+  const [http, fs, path, os, url] = await Promise.all(['node:http', 'node:fs', 'node:path', 'node:os', 'node:url'].map(m => import(m)));
+  const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..'), out = o.out || path.join(os.tmpdir(), 'ui-fps-device-' + Date.now() + '.json');
+  let done = null;
+  const got = new Promise(r => { done = r; });
+  const srv = await appServer({ http, fs, path, ROOT, port: o.port || 0, host: 'localhost', onResult: txt => { fs.writeFileSync(out, txt); done(); } });
+  console.log('serving ' + ROOT + '\n  open http://localhost:' + srv.address().port + '/tests/ui-bench.html?fps=1&load=1&post=1&fast=60 on the device (Run), the report → ' + out);
+  await got;
+  console.log('report written: ' + out);
+  srv.close();
+  return out;
 }
 /** Runs the matrix in Chrome for Testing; → the report { kind: 'ui-fps', cells: [...], aborted: [...] , … }. */
 export async function drive(o) {
@@ -872,20 +1131,7 @@ export async function drive(o) {
     }
     throw new Error('no Chrome for Testing: set $CHROME');
   };
-  const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
-  // the app, as the repo has it (never port 8817), cross-origin isolated (SharedArrayBuffer for the virtual display's worker), no cache
-  const srv = http.createServer((req, res) => {
-    let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    if (p.endsWith('/')) p += 'index.html';
-    const f = path.join(ROOT, p), rel = path.relative(ROOT, f);
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.split(path.sep).some(x => x.startsWith('.'))) { res.writeHead(403); return res.end(); }
-    fs.readFile(f, (e, data) => {
-      if (e) { res.writeHead(404); return res.end(); }
-      res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
-      res.end(data);
-    });
-  });
-  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const srv = await appServer({ http, fs, path, ROOT, port: 0 });
   const port = srv.address().port, base = 'http://127.0.0.1:' + port;
   const prof = fs.mkdtempSync(path.join(o.profile || process.env.FPS_PROFILE || os.tmpdir(), 'fps-chrome-'));
   const flags = ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + prof, '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--force-color-profile=srgb',
@@ -897,7 +1143,7 @@ export async function drive(o) {
   const git = (...a) => { try { return cp.spawnSync('git', a, { cwd: ROOT, encoding: 'utf8' }).stdout.trim(); } catch (e) { return ''; } };
   const rep = { kind: 'ui-fps', v: VERSION, when: new Date().toISOString(), build: git('rev-parse', '--short', 'HEAD') + (git('status', '--porcelain', '--', '*.js', 'index.html', 'style.css') ? '+dirty' : ''),
     machine: os.cpus()[0].model + ', ' + os.arch() + ', node ' + process.version, chrome: '', ua: '', pace: 'virtual display (Worker Atomics.wait ticks), --disable-frame-rate-limit --disable-gpu-vsync',
-    config: { sizes: o.sizes, scenes: o.scenes, caps: o.caps, throttles: o.throttles, display: o.display || 'cap', warmMs: o.warm, measureMs: o.measure, layoutGate: o.layoutGate, skin: o.skin || 'charcoal', behind: !!o.behind }, scenes: {}, cells: [], checks: [], aborted: [] };
+    config: { sizes: o.sizes, scenes: o.scenes, caps: o.caps, throttles: o.throttles, display: o.display || 'cap', warmMs: o.warm, measureMs: o.measure, layoutGate: o.layoutGate, skin: o.skin || 'charcoal', behind: !!o.behind, fast: o.fast, load: o.load }, scenes: {}, cells: [], checks: [], aborted: [] };
   let ws = null;
   const cleanup = async () => { try { if (ws) ws.close(); } catch (e) { /* closed */ } ch.kill(); srv.close(); await new Promise(r => setTimeout(r, 700)); try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) { /* busy */ } };
   try {
@@ -959,7 +1205,7 @@ export async function drive(o) {
           for (const c of cells) {
             if (c.throttle !== lastTh) { await s('Emulation.setCPUThrottlingRate', { rate: c.throttle }); lastTh = c.throttle; }
             L.length = 0;
-            const cfg = { scene, cap: c.cap, display: c.display, warm: o.warm, throttle: c.throttle };
+            const cfg = { scene, cap: c.cap, display: c.display, warm: o.warm, throttle: c.throttle, fast: o.fast, perf: o.perf };
             const pre = await ev('__fpsPage.prepare(window, ' + JSON.stringify(cfg) + ')', o.warm + 120000);
             const metrics = async () => (await s('Performance.getMetrics')).metrics;
             const eff = effOf(c.display, c.cap), list = EXPECT[scene] || [];
@@ -978,7 +1224,7 @@ export async function drive(o) {
                 layoutGate: o.layoutGate === 'all' || (o.layoutGate === 'idle' && LAYOUT_SCENES.includes(scene)),
                 frames: { delivered: raw.delivered, missed: raw.missed, ms: Math.round(raw.ms), display: c.display, stallMs: raw.dt.max }, frameCost: raw.cost, raf: raw.raf, msg: raw.msg, dt: raw.dt, callbacks: raw.callbacks, handlers: raw.handlers,
                 clock: Object.assign({ expectEff: eff }, raw.clock), contract: { med: r3(raw.clock.ms.med + raw.msg.med), p95: r3(raw.clock.ms.p95 + raw.msg.p95) }, cdp: metricsDelta(m0, m1), heap: { before: h0, after: h1 }, heapBytesPerS: h0 != null && h1 != null ? (h1 - h0) / (raw.ms / 1000) : null,
-                expect: raw.expectRaw.map((r, i) => evalExpect(list[i], r, { eff, display: c.display, delivered: raw.delivered })), canvases: raw.canvases, dots: raw.dots, errors: raw.errors.concat(L.slice(0, 10)) };
+                expect: raw.expectRaw.map((r, i) => evalExpect(list[i], r, { eff, display: c.display, delivered: raw.delivered, fast: pre.fast, perf: pre.perf, drop: raw.clock.drop.hi, dropLo: raw.clock.drop.lo })), canvases: raw.canvases, dots: raw.dots, errors: raw.errors.concat(L.slice(0, 10)), fast: pre.fast };
               const v = evalCell(x);
               x.pass = v.pass; x.gates = v.gates;
               return x;
@@ -1000,6 +1246,24 @@ export async function drive(o) {
             say('   ' + c.throttle + '× cap ' + String(c.cap).padStart(3) + ' disp ' + String(c.display).padStart(3) + '  fps ' + String(raw.delivered).padStart(6) + (raw.missed ? ' (missed ' + raw.missed + ')' : '') + '  cost med ' + raw.cost.med + ' p95 ' + raw.cost.p95 + ' max ' + raw.cost.max +
               '  clock ' + (raw.clock.measured ? raw.clock.eff + '/' + raw.clock.display : '–') + ' ms ' + raw.clock.ms.med + '  L+S ' + r3(cell.cdp.layoutMs + cell.cdp.styleMs) + ' ms/s  heap ' + (cell.heapBytesPerS != null ? Math.round(cell.heapBytesPerS / 1024) + ' KB/s' : '–') +
               '  live ' + cell.expect.filter(x => x.pass).length + '/' + cell.expect.length + (cell.retry ? '  (re-measured: ' + cell.retry.soft.join(', ') + ')' : '') + '  ' + (v.pass ? 'ok' : 'FAIL ' + v.gates.filter(x => x.gated && !x.pass).map(x => x.id).join(', ')));
+          }
+          if (scene === 'tutorial') { // ((FR Cut B §7 G7) the smooth probe at 120 and 240, 1 ×: LFO 1's overlay x on ≥ 0.9 of the frames, cv(|Δx|) ≤ 0.3
+            await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
+            for (const cap of [120, 240]) {
+              const pre = await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap, display: cap, warm: 1500, throttle: 1, fast: o.fast, perf: o.perf }) + ')', 120000);
+              const r = await ev('__fpsPage.smoothProbe(window, 2000)', 60000);
+              // ((review 2) judged by the cell's own lane: the touch sizes read as iPadOS — WebKit, where the lane ships off — recorded there)
+              rep.checks.push({ id: 'smooth probe ' + cap, size: sk, scene, pass: !pre.fast || !!r.pass, value: r, note: (r.ok ? r.frames + ' frames, moved ' + r.moved + ', cv ' + r.cv + ', ' + r.wraps + ' wrap(s)' : r.why) + (pre.fast ? '' : ' (the lane off' + (o.fast ? ' here — WebKit' : '') + ': recorded, the before)') });
+              say('   smooth probe @' + cap + ': ' + (rep.checks.at(-1).pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
+            }
+          }
+          if (o.load && (scene === 'tutorial' || scene === 'master') && sk === o.sizes[0]) { // ((FR Cut B §7 G8) Δ load (on − off) ≤ max(0.005, 2 × the A/A spread)
+            await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
+            await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap: 120, display: 120, warm: 1500, throttle: 1, fast: true }) + ')', 120000);
+            const plan = loadPlan(), r = await ev('__fpsPage.loadRun(window, ' + JSON.stringify(plan) + ')', plan.reduce((a, x) => a + x.ms, 0) + 120000);
+            const v = r.verdict || {};
+            rep.checks.push({ id: 'load', size: sk, scene, pass: !!r.ok && !!v.pass, value: r, note: r.ok ? 'Δ load ' + r3(v.delta) + ' (A/A spread ' + r3(v.spread) + ', limit ' + r3(v.limit) + ', ' + v.pairs + ' pairs)' : r.why });
+            say('   load: ' + (rep.checks.at(-1).pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
           }
           const au = auditScene(SC);
           rep.checks.push({ id: 'clients audit', size: sk, scene, pass: au.pass, value: au, note: au.note });

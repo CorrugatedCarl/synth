@@ -256,6 +256,21 @@ test('an Oscillator re-lays on a type switch (Wavetable → Sample: the sample r
   V.destroy();
 });
 
+test('an Oscillator\'s first switch to a type never shown (any order) re-lays the face — the donor\'s typeView inserts beside nodes still its own (in a browser an insertBefore on a node the face took throws: the switch died, the face kept the old view)', async () => {
+  const El = D.El.prototype, ib = El.insertBefore;
+  El.insertBefore = function (n, ref) { if (ref && ref.parentNode !== this) throw new Error('NotFoundError: not a child'); return ib.call(this, n, ref); };   // (the browser's rule; the fake DOM is lax)
+  try {
+    const R = await both('osc', 'oscA'), V = R.V;
+    for (const [t, want] of [['gran', 'osc.kit'], ['sample', 'osc.sample'], ['spec', 'osc.kit'], ['multi', 'osc.kit'], ['wt', 'osc']]) {
+      R.host.st.s.osc[0].type = t;
+      R.X.paint(true);
+      assert.equal(V.face.variant, want, t);
+      assert.equal(V.el.getAttribute('data-rig-variant'), want, t);
+    }
+    V.destroy();
+  } finally { El.insertBefore = ib; }
+});
+
 test('the dim policy: a cell whose every member the kit hides shows its first one dimmed (never a hole); a visible one clears it', async () => {
   const R = await both('osc', 'oscA', s => { s.osc[0].type = 'sample'; });
   const el = R.V.el, cell = el.querySelector('[data-dest="a.xfade"]').parentNode;

@@ -24,7 +24,8 @@
  * direct, bus 1, bus 2 per CP.outMask); Filter 1 and Filter 2 (types 0–107: SFilter delegates 96–107 to SxFilt2
  * families allocated only in apply/prealloc), routed into each other or out, Clean Mode, PZ SVF corners, key track
  * per mode (§6.13); Voice Control offsets (pan, detune, cutoff; §6.2/§6.16); the lifetime rules incl. the 2 ms grain
- * fade (§6.19); snapshot v2 (§6.20); `allocate` with the Voice Steal Priority (§12.3). S1 mode (§6.21) keeps the
+ * fade (§6.19); snapshot v2 (§6.20) and FR Cut B's fast read beside it (`fastSnap` into the `FAST` layout: the engine's fast
+ * lane, its own channel peaks sx.pkF; `filterImpulse`'s optional {out} scratch); `allocate` with the Voice Steal Priority (§12.3). S1 mode (§6.21) keeps the
  * Phase-1 code path for its seven items; every Phase-2 term is skipped at its neutral value (§0.7).
  *
  * Layout of this file:
@@ -1521,16 +1522,20 @@
     }
 
     // left-channel response of a fresh SFilter to a 0.01-amplitude impulse, divided by 0.01 (UI displays)
-    // (x, y, pz: PZ SVF position and corners, §6.13.4, passed through to SxFilt2.impulse for the types ≥ 96)
-    function filterImpulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null) {
+    // (x, y, pz: PZ SVF position and corners, §6.13.4, passed through to SxFilt2.impulse for the types ≥ 96). scratch (FR Cut B
+    // §2.6, optional): { out } — the output array reused across calls (a new one stored there when its length differs); the
+    // filter itself stays fresh per call (SFilter.reset() does not reproduce a fresh filter for types 91 / 93)
+    function filterImpulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null, scratch = null) {
+      const n = len > 0 ? len | 0 : 0, sc = scratch !== null && typeof scratch === 'object' ? scratch : null;
       if (round(+type) >= NTYPES) {                            // Serum 2 types: SxFilt2 (unit impulse without it)
         const F2 = globalThis.SxFilt2, t = round(+type) < NT2 ? round(+type) : NT2 - 1;
-        if (F2 && typeof F2.impulse === 'function') return F2.impulse(t, fc, res, drive, vr, fs > 0 ? +fs : 48000, len > 0 ? len | 0 : 0, x, y, pz);
-        const u = new Float64Array(len > 0 ? len | 0 : 0);
+        if (F2 && typeof F2.impulse === 'function') return F2.impulse(t, fc, res, drive, vr, fs > 0 ? +fs : 48000, n, x, y, pz, sc);
+        const u = scratchOut(sc, n);
+        u.fill(0);
         if (u.length) u[0] = 1;
         return u;
       }
-      const f = new SFilter(fs), out = new Float64Array(len > 0 ? len | 0 : 0);
+      const f = new SFilter(fs), out = scratchOut(sc, n);
       f.setType(type);
       f.set(fc, fc, res, drive, vr);
       for (let i = 0; i < out.length; i++) {
@@ -1539,6 +1544,14 @@
         out[i] = f.yl / 0.01;
       }
       return out;
+    }
+    // a scratch's n-long output array (its own when it has that length, else a new one stored there); no scratch: a new one
+    function scratchOut(sc, n) {
+      const o = sc !== null ? sc.out : null;
+      if (o !== null && o !== undefined && o.length === n) return o;
+      const u = new Float64Array(n);
+      if (sc !== null) sc.out = u;
+      return u;
     }
 
     /* ------------------------------------------------------------ CT v2 store (§4.1): defaults, part merging */
@@ -1690,6 +1703,7 @@
         tap: new Float64Array(TAP_N), tapW: 0, tap2: new Float64Array(TAP_N), tapW2: 0,
         memPh: new Float64Array(N_OSC), subPh: 0, alt: 0, seed: (SEED ^ (proc.seedSalt | 0)) >>> 0, rng: (SEED ^ (proc.seedSalt | 0)) >>> 0,
         grains: 0, pk: new Float64Array(11),                  // processor grain count (SxGran, §6.9.2); mix-meter peaks
+        pkF: new Float64Array(7),                             // (FR Cut B §2.4: the fast lane's channel peaks, fastSnap's alone)
         snap: makeSnap(),
         // first-use warm-up on the real patch (warmStart): hidden voices, spans left, tables wait, saved bookkeeping
         hw: null, hwL: null, hwR: null, hwN: 0, hwT: 0, hwOn: 0, hwWait: 0, hwFs: 0,
@@ -1734,8 +1748,8 @@
       sx.remap = DEF_REMAP;
       sx.tap.fill(0); sx.tapW = 0; sx.tap2.fill(0); sx.tapW2 = 0;
       sx.memPh.fill(0); sx.subPh = 0; sx.alt = 0; sx.seed = (SEED ^ (proc.seedSalt | 0)) >>> 0; sx.rng = sx.seed;
-      sx.grains = 0; sx.pk.fill(0);
-      if (sx.msRR) sx.msRR.fill(0);                           // multisample round robins (SxSample's counters in sx, §6.8)
+      sx.grains = 0; sx.pk.fill(0); sx.pkF.fill(0);
+      if (sx.msRR) sx.msRR.fill(0);                          // multisample round robins (SxSample's counters in sx, §6.8)
       sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwWait = 0; sx.hwSt = 0;   // a reset ends the warm-ups
       sx.gw = null; sx.gwL = null; sx.gwR = null; sx.gwSt = 0; sx.gwN = 0; sx.gwCp = null; sx.gwSaved = 0; sx.gwRt = 0;
       const s = sx.snap;
@@ -2037,6 +2051,35 @@
       const sq = proc.sxSeq;
       if (sq && typeof sq.snapshot === 'function') sq.snapshot(s.seq);
       return s;
+    }
+    // FR Cut B §2.2 (the engine's fast lane): a Serum part's fast vector — this fixed layout (motion.js SXF is the same table;
+    // tests/fast-lane pins it), then the requested eff values from N
+    const FAST = Object.freeze({ mix: 0, wtPos: 11, smpPos: 14, noisePos: 26, notes: 27, lfoPh: 28, lfoOut: 38, lfoY: 48, env: 58, envStage: 62, envT: 66, N: 70 });
+    // the fast read into v (Float32Array(70 + n)): mix[0…7) the channel peaks since the previous fast read (sx.pkF, dBFS, −120
+    // silence; restarted here — keep: NaN, nothing restarted: the tests' truth), [7…11) left to the caller (the engine's taps),
+    // the positions and notes as snapshot reads them (the recent voice, the voice list), the LFO / ENV fields (SxMod.fastRead) and
+    // eff at ix[0…n) (SxMod.effAt). Side-effect-free but for pkF, allocation-free; snapshot and its object untouched
+    function fastSnap(proc, v, ix, n, keep) {
+      const sx = proc.sx;
+      if (!sx) return v;
+      const m = sx.mod, rv = m ? m.recent : null, pf = sx.pkF;
+      if (keep) for (let c = 0; c < 7; c++) v[c] = NaN;
+      else for (let c = 0; c < 7; c++) { const p = pf[c]; v[c] = p > 1e-6 ? 20 * Math.log10(p) : -120; pf[c] = 0; }
+      if (rv) {
+        for (let o = 0; o < N_OSC; o++) {
+          v[11 + o] = rv.wPos[o];
+          const x = rv.ox[o], b = 14 + 4 * o;
+          if (x !== null && x.sel === 1) { v[b] = +x.mPos || 0; v[b + 1] = +x.mS || 0; v[b + 2] = +x.mLS || 0; v[b + 3] = +x.mLE || 0; }
+          else { v[b] = 0; v[b + 1] = 0; v[b + 2] = 0; v[b + 3] = 0; }
+        }
+        v[26] = rv.nLen0 > 0 ? rv.nPos / rv.nLen0 : 0;
+      } else for (let j = 11; j < 27; j++) v[j] = 0;
+      let notes = 0;
+      const vs = proc.voices;
+      if (vs) for (let k = 0; k < vs.length; k++) { const w = vs[k]; if (w && w.gate) notes++; }
+      v[27] = notes;
+      if (m) { sx.M.fastRead(proc, sx, v, 28); sx.M.effAt(proc, sx, ix, n, v, 70); } else for (let j = 28; j < 70 + n; j++) v[j] = 0;
+      return v;
     }
 
     /* ------------------------------------------------------------ module scratch (one chunk, ≤ 32 samples) */
@@ -3584,10 +3627,10 @@
           if (su[S_FILT1 + 1] !== 0) src[S_FILT1 + 1] = (fo & 2) !== 0 ? 0.5 * (Y2L[l] + Y2R[l]) : 0;
         }
         if (sx.mon !== 0 && this.hid === 0) {                  // (hidden warm-up voices never reach the meters)
-          const pk = sx.pk;
-          for (let c = 0; c < 5; c++) if (act[c] !== 0) { const p = peak2(XLS[c], XRS[c], CH); if (p > pk[c]) pk[c] = p; }
-          if ((fo & 1) !== 0) { const p = L1 * peak2(Y1L, Y1R, CH); if (p > pk[5]) pk[5] = p; }
-          if ((fo & 2) !== 0) { const p = L2 * peak2(Y2L, Y2R, CH); if (p > pk[6]) pk[6] = p; }
+          const pk = sx.pk, pf = sx.pkF;                       // (FR Cut B: the same chunk peak into the fast lane's own as well)
+          for (let c = 0; c < 5; c++) if (act[c] !== 0) { const p = peak2(XLS[c], XRS[c], CH); if (p > pk[c]) pk[c] = p; if (p > pf[c]) pf[c] = p; }
+          if ((fo & 1) !== 0) { const p = L1 * peak2(Y1L, Y1R, CH); if (p > pk[5]) pk[5] = p; if (p > pf[5]) pf[5] = p; }
+          if ((fo & 2) !== 0) { const p = L2 * peak2(Y2L, Y2R, CH); if (p > pk[6]) pk[6] = p; if (p > pf[6]) pf[6] = p; }
         }
       }
       // cutoff n of filter k with the Voice Control offset (§6.13.2), key tracking (§6.13.6), pan split
@@ -4456,7 +4499,7 @@
       VIDX, SUB_IDS2,
       get epoch() { return epoch; },
       storeWT, storeWTFrame, dropWT,
-      attach, reset, idle, transport, begin, fxMods, snapshot, mergeCT, recentPitch, warmUp, warmStart, warmTick, warmEnd, warmKey,
+      attach, reset, idle, transport, begin, fxMods, snapshot, FAST, fastSnap, mergeCT, recentPitch, warmUp, warmStart, warmTick, warmEnd, warmKey,
       sync, extIn, extOff,
       allocate,
       SerumVoice, SFilter, bend, evalPts, renderWarp, filterImpulse,

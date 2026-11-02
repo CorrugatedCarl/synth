@@ -268,7 +268,7 @@ export class MixerPage {
       this.strips.push(Object.assign(S, { T }));
       row.appendChild(S.el);
     }
-    K.live(shown => this.meterFrame(shown));
+    (K.frame || K.live)(shown => this.meterFrame(shown));
     return row;
   }
   s() { return this.kit.s(); }
@@ -548,8 +548,9 @@ export class MixerPage {
   }
 
   /* ---------------------------------------------------------- meters (snapshot `mix`, §6.20) */
-  // kit.live: every repaint and snapshot frame; nothing is painted while the MIX page is hidden (shown = false, §13.1) —
-  // the meters catch up with the next frame on screen
+  // kit.frame (FR Cut B §4.3; a kit without it: kit.live): every painted frame of the host's tick while the fast lane is live (the
+  // view's mix at the heard frame), every repaint and snapshot frame otherwise; nothing is painted while the MIX page is hidden
+  // (shown = false, §13.1) — the meters catch up with the next frame on screen
   meterFrame(shown) {
     if (this.dead || shown === false) return;
     const sn = this.kit.snap(), mix = sn && sn.mix && typeof sn.mix.length === 'number' ? sn.mix : null;
@@ -585,7 +586,7 @@ export class OutputsPanel extends MixerPage {
       this.strips.push(Object.assign(S, { T }));
       row.appendChild(S.el);
     }
-    K.live(shown => this.meterFrame(shown));
+    (K.frame || K.live)(shown => this.meterFrame(shown));
     return row;
   }
 }

@@ -43,6 +43,9 @@
  *   reset(sx[, proc])               back to the attach state (§11.6 signature; without proc the current rates are kept)
  *   fxMods(proc, sx) → Float64Array(MAXFX)   offsets in FX-context order (§4.2, §5.5), reused
  *   [+] snap(proc, sx, s)           modulation part of the snapshot (§6.20): eff, LFO/env monitors, mOut (when s has it)
+ *   [+] fastRead(proc, sx, v, off) / effAt(proc, sx, ix, n, v, off)   FR Cut B §2.4, the engine's fast lane: snap's LFO / ENV
+ *                                   lines into v[off …] (ph 10, out 10, y 10, env 4, stage 4, t 4) / its eff at ix[0 … n) into
+ *                                   v[off + j] — an additive copy, allocation-free
  *   class ModV(voice): noteOn(n, vel01, legato, polyRef, ch, ex, other), noteOff(rv), kill(), [+] follow(fr), sources(gc),
  *     matrix(fr), advance(gc), envVal(e), lfoVal(l), [+] post(), [+] stop(), [+] setDt(dt, changed), [+] rnd2(),
  *     [+] envsIdle() (§6.19 rule b: every envelope has finished its release — stage 0, whatever End level it holds, inv
@@ -1486,6 +1489,34 @@
       }
     }
 
+    // [+] FR Cut B §2.4 (the engine's fast lane): snap's LFO / ENV lines, an additive copy (snap untouched; tests/sx-mod pins the
+    // equality) into v at off — lfoPh [0, 10), lfoOut [10, 20), lfoY [20, 30), env [30, 34), envStage [34, 38), envT [38, 42)
+    function fastRead(proc, sx, v, off) {
+      const m = sx.mod, rv = m.recent, mv = rv && rv.mod, o = off | 0;
+      for (let l = 0; l < N_LFO; l++) {
+        const k = m.lKind[l];
+        if (k === K_VOICE) v[o + l] = mv ? (m.lExt[l] === 0 ? mv.lPh[l] : mv.lRp[l]) : m.oPh[l];
+        else if (k === K_FREE && mv) v[o + l] = mv.lRp[l];
+        else v[o + l] = m.oRp[l];
+        v[o + 10 + l] = mv ? mv.lVal[l] : k === K_MONO ? m.oVal[l] : m.oSm[l];
+        v[o + 20 + l] = mv ? mv.lY[l] : k === K_MONO ? m.oValY[l] : k === K_OFF ? m.oSmY[l] : 0;
+      }
+      if (mv) for (let e = 0; e < N_ENV; e++) { v[o + 30 + e] = mv.eV[e]; v[o + 34 + e] = mv.eSt[e]; v[o + 38 + e] = mv.eT[e]; }
+      else for (let e = 0; e < N_ENV; e++) { v[o + 30 + e] = 0; v[o + 34 + e] = 0; v[o + 38 + e] = 0; }
+    }
+    // [+] FR Cut B §2.4: snap's eff at n requested indices ix[j] (0 ≤ ix[j] < NSV + MAXFX) into v[off + j] — the recent voice's
+    // eff (or the bases) below NSV, the FX-context value (FXP base + fxOff, clamped) above; an additive copy of snap's lines
+    function effAt(proc, sx, ix, n, v, off) {
+      const m = sx.mod, rv = m.recent, mv = rv && rv.mod, own = rv && rv.played && mv, p = proc.p, fxp = p && p.fxr;
+      const fb = fxp && fxp.base, nf = fb && fb.length < MAXFX ? fb.length : MAXFX, o = off | 0;
+      for (let j = 0; j < n; j++) {
+        const i = ix[j];
+        if (i < NSV) { v[o + j] = own ? mv.eff[i] : m.bT[i]; continue; }
+        const k = i - NSV, x = (fb && k < nf ? +fb[k] : 0) + m.fxOff[k];
+        v[o + j] = x > 0 ? (x < 1 ? x : 1) : 0;
+      }
+    }
+
     /* ------------------------------------------------------------ per-voice modulation (ModV) */
     class ModV {
       constructor(voice) {
@@ -2156,7 +2187,7 @@
 
     globalThis.SxMod = Object.freeze({
       VER, NSV, NSRC, NROW, MAXCH, MAXFX, DEF_CT,
-      attach, sync, syncCT, begin, idle, transport, reset, fxMods, snap, ModV,
+      attach, sync, syncCT, begin, idle, transport, reset, fxMods, snap, fastRead, effAt, ModV,
     });
   } catch (err) {
     globalThis.SxMod = null;                                   // a load failure never throws out of the script

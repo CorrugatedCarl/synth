@@ -213,9 +213,11 @@ function hashRecs(L, nf) {
   }
   return (h >>> 0).toString(36);
 }
-// snapshot sequencer block (§7.10) or null
-function seqOf(kit) {
-  const sn = kit && typeof kit.snap === 'function' ? kit.snap() : null, q = sn && sn.seq;
+// snapshot sequencer block (§7.10) or null — the heard-time view's (kit.snap(): play states, the ARP pattern playhead); raw: the slow
+// message's own (kit.msg(), FR Cut B FR7: the CLIP page's recorder and post-anchored playhead, a launch / stop decision)
+const msgOf = kit => (kit && typeof kit.msg === 'function' ? kit.msg() : kit && typeof kit.snap === 'function' ? kit.snap() : null);
+function seqOf(kit, raw) {
+  const sn = raw ? msgOf(kit) : kit && typeof kit.snap === 'function' ? kit.snap() : null, q = sn && sn.seq;
   return q && q.length >= 11 ? q : null;
 }
 function hostFn(kit, name) { const h = kit && kit.host; return h && typeof h[name] === 'function' ? h[name].bind(h) : null; }
@@ -860,7 +862,7 @@ export class ArpPage extends SeqPage {
     this.midiOut(this.sec.midiout, 'arp');
     this.fn(() => this.syncPattern());
     K.custom(() => this.update());
-    K.live(on => this.live(on));
+    (K.frame || K.live)(on => this.live(on));   // ((FR Cut B §4.3) the play states and the pattern playhead: every frame of the tick)
     return el;
   }
   // the title's module menu extras (after the shell's Lock Module / Init / Copy / Paste) and the ⋯ menu
@@ -912,7 +914,7 @@ export class ArpPage extends SeqPage {
       title: j => 'Arp slot ' + NOTE_NAMES[j] + ' — ' + core.slotName(this.A().slots[j]),
       sel: () => this.A().sel,
       select: j => { if (this.A().sel !== j) K.edit(s => { s.arp.sel = j; }, { label: 'Select Arp Slot' }); },
-      play: j => { const q = seqOf(K); this.cmd(q && q[0] === j ? 'arpStop' : 'arpLaunch', j); },
+      play: j => { const q = seqOf(K, true); this.cmd(q && q[0] === j ? 'arpStop' : 'arpLaunch', j); },
       playing: j => { const q = seqOf(K); return !!q && q[0] === j; },
       menu: (j, x, y) => wk.contextMenu(x, y, this.slotItems(j), { anchor: this.slots.slots[j].name }),
     });
@@ -1009,7 +1011,7 @@ export class ArpPage extends SeqPage {
     else if (!want && this.patEd) { this.patEd.destroy(); this.patEd = null; }
     if (this.patEd) this.patEd.refresh();
   }
-  // kit.live(fn) → fn(shown): a hidden page is not painted (§13.1); the ARP page has no functional live work
+  // kit.frame(fn) → fn(shown) (kit.live without it): a hidden page is not painted (§13.1); the ARP page has no functional live work
   live(shown) {
     if (this.dead || shown === false) return;
     if (this.slots) this.slots.live();
@@ -1571,7 +1573,7 @@ export class ClipPage extends SeqPage {
       { label: 'Delete User Bank', disabled: !user.length, sub: user.map(p => ({ label: p.name, action: () => this.libDelete(core.STORE_KEYS.clipBanks, 'synth.sx.clipbank', p.name) })) },
     ];
   }
-  playing(j) { const q = seqOf(this.kit); return !!q && ((q[4] | 0) >> j & 1) === 1; }
+  playing(j) { const q = seqOf(this.kit, true); return !!q && ((q[4] | 0) >> j & 1) === 1; }
   buildSlots() {
     const K = this.kit;
     this.slots = new SlotStrip(this, this.sec.slots, {
@@ -1837,7 +1839,7 @@ export class ClipPage extends SeqPage {
   loopPos(c, pos) { const span = Math.max(1, c.len - c.start); return c.start + ((((pos - c.start) % span) + span) % span); }
   // clip ci's DSP playhead in the current snapshot (§7.10): −1 not playing, NaN playing at an unknown position
   clipHead(ci) {
-    const q = seqOf(this.kit);
+    const q = seqOf(this.kit, true);
     if (!q || !(((q[4] | 0) >> ci) & 1)) return -1;
     if (this.C().sel === ci && fin(q[5]) && q[5] >= 0) return q[5];
     if ((q[6] | 0) === ci && fin(q[7]) && q[7] >= 0) return q[7];
@@ -1846,10 +1848,10 @@ export class ClipPage extends SeqPage {
   /* the roll's playhead from the heard song beat (IMPL-FR §3 B6; the module header) */
   // a new snapshot: one anchor while the song plays (a stopped post, another clip selected: the ring starts afresh)
   headSee() {
-    const K = this.kit, A = this.hA, sn = typeof K.snap === 'function' ? K.snap() : null, sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;
+    const K = this.kit, A = this.hA, sn = msgOf(K), sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;   // (FR7: the raw message)
     if (sn === A.obj && sq === A.seq) return;
     A.obj = sn; A.seq = sq;
-    const q = seqOf(K), sel = this.C().sel;
+    const q = seqOf(K, true), sel = this.C().sel;
     if (!q || !(q[9] >= 0.5) || !fin(q[8]) || sel !== A.sel) {
       A.n = 0; A.i = 0; A.sel = sel; A.st = NaN; A.hb = NaN; A.lost = 0; A.js = A.hl = A.ser + 1;
       if (!q || !(q[9] >= 0.5) || !fin(q[8])) return;
@@ -1876,7 +1878,7 @@ export class ClipPage extends SeqPage {
   // no heardTick) the posted value
   headNow() {
     this.headSee();   // (review 2 fixer: this frame's snapshot even before its live() — the clock client may run first in the frame)
-    const K = this.kit, q = seqOf(K), posted = q && fin(q[5]) ? q[5] : -1, A = this.hA;
+    const K = this.kit, q = seqOf(K, true), posted = q && fin(q[5]) ? q[5] : -1, A = this.hA;
     if (!A.n || !q || !(q[9] >= 0.5) || !this.heard()) { A.hb = NaN; return posted; }
     const c = this.clip(), mode = c ? c.mode | 0 : 8;
     if (mode === 8) { A.hb = NaN; return posted; }
@@ -1925,7 +1927,7 @@ export class ClipPage extends SeqPage {
   // the clock client that paints it every frame: while the page is shown and the newest post has the song playing the selected
   // clip (not Static) — none at rest, none hidden; it ends itself when the posts stop
   headSync() {
-    const q = seqOf(this.kit), c = this.clip(), C = wk.clock;
+    const q = seqOf(this.kit, true), c = this.clip(), C = wk.clock;
     const want = !this.dead && this.shown && !!this.roll && this.heard() && !!q && q[9] >= 0.5 && fin(q[5]) && q[5] >= 0 && !!c && (c.mode | 0) !== 8
       && !!C && typeof C.add === 'function';
     if (want && !this.headOff) {
@@ -1938,7 +1940,7 @@ export class ClipPage extends SeqPage {
   heard() { const h = this.kit.host; return !!h && typeof h.heardTick === 'function'; }
   // a new snapshot since the last call (the snapshot object / kit.snapSeq) → its receive time in this.snapAt
   seeSnap() {
-    const K = this.kit, sn = typeof K.snap === 'function' ? K.snap() : null, sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;
+    const K = this.kit, sn = msgOf(K), sq = typeof K.snapSeq === 'function' ? K.snapSeq() : 0;   // (FR7: the raw message)
     if (sn === this.snObj && sq === this.snSeq) return false;
     this.snObj = sn;
     this.snSeq = sq;
@@ -2284,7 +2286,7 @@ export class KeyboardPanel extends SeqPage {
       lit: () => { const q = seqOf(K); return q && q[0] >= 0 ? [q[0]] : []; } }));
     this.sec.arpkeys.appendChild(this.arpKeys.el);
     this.clipKeys = this.own(wk.pianoKeys({ lo: 0, hi: 11, vel: 100, label: 'CLIP slots', color: '#3ddc84',
-      on: n => { const q = seqOf(K); this.cmd(q && ((q[4] | 0) >> n & 1) ? 'clipStop' : 'clipLaunch', n); }, off: () => {},
+      on: n => { const q = seqOf(K, true); this.cmd(q && ((q[4] | 0) >> n & 1) ? 'clipStop' : 'clipLaunch', n); }, off: () => {},
       lit: () => { const q = seqOf(K), m = q ? q[4] | 0 : 0, out = []; for (let j = 0; j < 12; j++) if (m >> j & 1) out.push(j); return out; } }));
     this.sec.clipkeys.appendChild(this.clipKeys.el);
   }

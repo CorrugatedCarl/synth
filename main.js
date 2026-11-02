@@ -29,7 +29,7 @@ import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware ke
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
-import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
+import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale, reducedMotion as wkReduced } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
 import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
@@ -58,6 +58,7 @@ import * as MG from './moog-core.js?v=9';
 import * as cvPatch from './cv-patch.js?v=9';
 // stage M (IMPL-M §3, §5.1, §5.3; lane U): the master OUT (scope, loudness, true peak, correlation, A/B, Mono) and the Master row
 import * as MUI from './master-ui.js?v=9';
+import * as MOTION from './motion.js?v=9'; // ((FR Cut B, IMPL-FR-B §3) the heard-time anchor ring: the fast lane's consumers (§5.3)
 
 const VERSION = '9';
 const RIG = RC.RIG;
@@ -112,6 +113,13 @@ function readOnlyNotice() {
   const msg = CM.READ_ONLY_NOTICE;
   noticeActs.set(msg, () => { if (app && app.accept) app.accept(); else location.reload(); });
   notice(msg, 30000);
+}
+// (FR Cut B review 2, the lead's P2-3) ?fpsdev=1: the frame-rate harness's device protocol in this very page, the top level — its hooks
+// installed before the app starts (tests/ui-bench-fps.mjs devBoot: the store's writes then off, the scenes once the app is up); WebKit's
+// AudioWorklet in a srcdoc / iframe frame is not the app's. The launcher is tests/ui-bench.html?fps=1. Test pages only: nothing else reads it
+if (/[?&]fpsdev=1(?:&|$)/.test((globalThis.location && location.search) || '')) {
+  globalThis.__synthTest = globalThis.__synthTest || {};
+  try { (await import(new URL('tests/ui-bench-fps.mjs?t=' + Date.now(), location.href).href)).devBoot(window); } catch (err) { console.error('fpsdev: the harness did not load', err); }
 }
 const store = await openAppStore({ onError: storeError, schema: CM.SCHEMA });
 const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
@@ -449,19 +457,22 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
 // a 2a-only track) — the posting from queuePatch's path and into processorOptions is the integrator's (lane D)
 function buildMods(tr) { // ((8, §5.3) padVal: a mod pad's live value — not in the memo signature: a press never reposts)
   const pay = tr && tr.dev ? CG.compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0, padVal: padValOf }) : null;
-  const out = pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? (tr === MREC ? mPayOf(pay) : pay) : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
+  const out = pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? bpmPay(pay) : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
   if (tr) modsLast.set(tr.id, out);
   modsBuilt++;
   return out;
 }
-// (MM, IMPL-MM §4.2) the master's payload carries the project tempo (ModCore setRows reads m.bpm, default 120: the tracks' payloads
-// carry none — §11) in its key too (a tempo change reposts it); one copy per compiled payload and tempo (the memo's object is never
-// written; its vals array is shared, so refreshVals' values ride along)
-let mPay = null;
-function mPayOf(pay) {
+// every payload carries the project tempo — ModCore's m.bpm (setRows, default 120), which every tempo law of a canvas modulator reads:
+// BPM rates, the anchored in-span ramp, Hz LFOs with ANCHOR on, BPM ENVs, the chaos snap, rise / delay — stopped or playing, live and
+// bounced (FR Cut B phase 0, IMPL-FR-B §1.1, FR8: the tracks' too; (MM, IMPL-MM §4.2) the master's since day one) — and in its key
+// (a tempo change reposts it). One copy per compiled payload and tempo (the memo's object is never written; its vals array is shared,
+// so refreshVals' values ride along)
+const bpmMemo = new WeakMap(); // compiled payload → { bpm, out }
+function bpmPay(pay) {
   const bpm = project.bpm > 0 ? +project.bpm : 120;
-  if (!mPay || mPay.src !== pay || mPay.bpm !== bpm) mPay = { src: pay, bpm, out: Object.assign({}, pay, { bpm, key: pay.key + '@' + bpm }) };
-  return mPay.out;
+  let m = bpmMemo.get(pay);
+  if (!m || m.bpm !== bpm) bpmMemo.set(pay, m = { bpm, out: Object.assign({}, pay, { bpm, key: pay.key + '@' + bpm }) });
+  return m.out;
 }
 // (fixer C, C4) the payload last built per track, for the paths that run at the monitor rate or per pointer move (cpSnap,
 // modVal, the cables' dashed set, the meters): they read it, never compile — every edit path rebuilds it through
@@ -480,22 +491,43 @@ const modsFor = tr => { const p = buildMods(tr); return p.off ? null : p; };
 // a track that never had one gets no message at all). (fixer C, U2 / P4) while a classic knob drag holds the node
 // (N.modsHold: valChanged's 'move' phase) a repost goes at most every MODS_MIN_MS — the rest waits on a timer —, and the
 // gesture's end ('end') posts at once: a 15-move drag is a few reposts, not fifteen (the knob's own value still goes with
-// every frame's patch; the repost carries only its transfer)
-const MODS_MIN_MS = 66;
+// every frame's patch; the repost carries only its transfer). (FR Cut B phase 0, IMPL-FR-B §1.1) a tempo gesture likewise — a drum
+// TEMPO drag's moves, the tempo box's spinner held (tempoGest): a tempo-only repost (the key differs only after its last '@') goes
+// at most every MODS_MIN_MS from the last one, the gesture's end at once (tempoFlush); every other change posts at once. The timer
+// finds its record again by id (a restore replaces the track objects; applyRestore clears the pending timers)
+const MODS_MIN_MS = 66, TEMPO_GEST_MS = 500;
+let tempoMove = -Infinity, tempoHeld = false; // (the last drum TEMPO 'start' / 'move' step; the tempo box's pointer down)
+const tempoGest = () => tempoHeld || performance.now() - tempoMove < TEMPO_GEST_MS;
+const tempoBase = k => (typeof k === 'string' ? k.replace(/@[^@]*$/, '') : '');
 function postMods(tr, N) {
   const pay = buildMods(tr);
   if (N.modsKey === pay.key) return false;
   const now = performance.now();
-  if (N.modsHold && !pay.off && now - (N.modsAt || 0) < MODS_MIN_MS) {
-    if (!N.modsT) N.modsT = setTimeout(() => { N.modsT = 0; if (ownerNode(tr) === N && (tr === MREC || project.tracks.includes(tr))) postMods(tr, N); }, Math.max(1, MODS_MIN_MS - (now - (N.modsAt || 0)))); // ((MM, P1-2) the master's node is mnode, its record MREC
+  const tempo = !pay.off && typeof N.modsKey === 'string' && N.modsKey !== 'off' && tempoGest() && tempoBase(N.modsKey) === tempoBase(pay.key);
+  const tAt = N.modsTempoAt === undefined ? -Infinity : N.modsTempoAt;
+  const wait = N.modsHold && !pay.off && now - (N.modsAt || 0) < MODS_MIN_MS ? MODS_MIN_MS - (now - (N.modsAt || 0)) : tempo && now - tAt < MODS_MIN_MS ? MODS_MIN_MS - (now - tAt) : 0;
+  if (wait > 0) {
+    if (!N.modsT) { const id = tr.id; N.modsT = setTimeout(() => { N.modsT = 0; const r = tr === MREC ? MREC : project.tracks.find(x => x.id === id); if (r && ownerNode(r) === N) postMods(r, N); }, Math.max(1, wait)); } // ((MM, P1-2) the master's node is mnode, its record MREC
     return false;
   }
   if (N.modsT) { clearTimeout(N.modsT); N.modsT = 0; }
   const was = N.modsKey;
   N.modsKey = pay.key; N.modsAt = now;
+  if (tempo) N.modsTempoAt = now;
   if (pay.off && (was === undefined || was === 'off')) return false;
   N.node.port.postMessage(pay);
   return true;
+}
+// (FR Cut B phase 0) a tempo gesture ended: every repost a timer holds goes now (a held knob's re-arms in postMods); the master's
+// through mModsSend (its chain may hold it)
+function tempoFlush() {
+  for (const [id, N] of nodes) if (N && N.modsT) { clearTimeout(N.modsT); N.modsT = 0; const r = project.tracks.find(x => x.id === id); if (r) postMods(r, N); }
+  if (mnode && mnode.modsT) { clearTimeout(mnode.modsT); mnode.modsT = 0; mModsSend(); }
+}
+// a restore replaces every record (applyRestore): the pending reposts go — its sendPatch posts what the restored records hold
+function modsTimersClear() {
+  for (const N of nodes.values()) if (N && N.modsT) { clearTimeout(N.modsT); N.modsT = 0; }
+  if (mnode && mnode.modsT) { clearTimeout(mnode.modsT); mnode.modsT = 0; }
 }
 // Stage 2a (IMPL-2a §2.1, D11): a Serum's vals with its track's canvas mod rows injected into free matrix slots ({ s:
 // merged }: compileSerum and fxModded2 both see them; vals.s untouched) — no rows: vals itself (the same bytes as before).
@@ -800,7 +832,7 @@ function sendGraph(tr, N, c) {
       for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
       for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
       for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
-      monitors.on.delete(tr.id); monitors.sync(); // (the parts its subscriptions show may have moved — asked again: a sync while this post waited went to the old structure; the first graph: device ids from now on)
+      monitors.on.delete(tr.id); monitors.fastStale(tr.id); monitors.sync(); // (the parts its subscriptions show may have moved — asked again: a sync while this post waited went to the old structure; the first graph: device ids from now on; (FR Cut B P1-2) its fast lane too)
     }
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
@@ -1059,6 +1091,7 @@ async function powerOn() {
       metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(safeN);
       ctx = c; pendCtx = null; failMsg = ''; hotT = 0;
       const ready = hold ? whenReady(3000) : null;
+      fastReset(); // ((FR Cut B §5.3) a new F axis: every ring and the fastOn map afresh, before the new nodes are asked
       masterSync(); // (its rack, its subscriptions, the A/B as the session has them — before the tracks: §1.1)
       syncNodes();
       if (ready) { readyF && readyF(); await ready; if (ctx !== c) throw new Error('cancelled'); }
@@ -1087,6 +1120,7 @@ function powerOff() {
   previewStop(); previewEnd(); // (the kept preview node belongs to this context)
   ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null; safeN = null;
   nodes.clear(); masterGone(); meterRun(null);
+  fastReset(); // ((FR Cut B §5.3) the rings and the fastOn map go with the nodes
   if (cvView) for (const m of cvView.modules.values()) if (m.setCpu) m.setCpu(null); // (no engine: no module CPU)
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); for (const P of classicPanels.values()) if (!P.dead && P.model.id === 'tb303') P.seqRunUI(false); // (every 303 shown: RUN off)
@@ -1143,7 +1177,9 @@ function makeNode(tr) {
   N.drIds = drumNeeds(tr).join();
   const id = tr.id;
   node.port.onmessage = e => {
-    const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
+    const d = e.data;
+    if (d && d.t === 'fast') { monitors.deliverFast(id, d); return; } // ((FR Cut B §5.1) the fast lane's posts: up to 120 a second per part — first, no track lookup
+    const t = project.tracks.find(x => x.id === id) || tr;
     if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; if (d.snd === 1) sndT = performance.now(); statsText(); if (Array.isArray(d.per)) cvCpu(id, N, d.per); }
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
     else if (d.t === 'step') { // (a graphed node names the 303: d.i; legacy: the primary)
@@ -1174,6 +1210,8 @@ function makeNode(tr) {
   else if (patch.needs || dn.length) tables.ensure(dn.length ? [...new Set([...(patch.needs || []), ...dn])] : patch.needs, Object.assign({ trackId: tr.id, node, s: isSxRec(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax }, lv));
   const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
+  monitors.fastOn.delete(id); // ((FR Cut B §13 P1-2) a new node starts with the fast lane off: asked after its mon, as `on` is
+  monitors.fastSync(id, mw, m => node.port.postMessage(m), N);
   return N;
 }
 // the modules' CPU on their top bars (SPEC-canvas §10 1d): the engine's load per Inst / Chain of the track shown, smoothed
@@ -1437,7 +1475,8 @@ function makeMaster(c) {
 }
 function masterMsg(M, d) {
   if (M !== mnode || !d) return;
-  if (d.t === 'ready') { M.ready = true; if (readyF) readyF(); }
+  if (d.t === 'fast') monitors.deliverFast(MASTER, d); // ((FR Cut B §5.1) meters / mfx / mods by dev
+  else if (d.t === 'ready') { M.ready = true; if (readyF) readyF(); }
   else if (d.t === 'stats') { M.load = +d.load || 0; M.lat = d.lat | 0; statsText(); masterCpu(d.per); }
   else if (d.t === 'mmon') monitors.deliver(MASTER, d);
   else if (d.t === 'smon') { if (d.fxph) M.fxph = d.fxph; monitors.deliver(MASTER, d); } // ((MM) {mc, mcx}: the modulator bodies' — monitors.deliver routes it to 'mods'
@@ -1510,7 +1549,7 @@ function masterSend() {
 function masterSync() {
   if (!mnode) return;
   masterSend();
-  monitors.on.delete(MASTER); monitors.sync();
+  monitors.on.delete(MASTER); monitors.fastOn.delete(MASTER); monitors.sync(); // ((FR Cut B P1-2) a new MASTER starts with the fast lane off)
   if (mstate.ab) { mstate.g = null; mstate.lim = false; abShow(); mnode.node.port.postMessage({ t: 'bypass', on: true, g: true }); } // (the new MASTER measures the match afresh: pending until it answers)
 }
 // (§2.2) the master rack's edits (its FX module, the asset manager's relink): mutate, compile, post, persist — never a History
@@ -1946,6 +1985,7 @@ function applyRestore(p, keepSound = false) {
   recCutMark(p); // ((R review R-1) the notes of keys still down, found again in the restored tracks: kept out of the songs sent below)
   const prevSel = project.selTrack;
   project = p;
+  modsTimersClear(); // ((FR Cut B phase 0) a held repost's record is gone: the sendPatch below posts the restored one)
   bind();
   syncNodes();
   masterSend(); // ((M) the master chain when it changed — an undo kept it: nothing posted)
@@ -2048,8 +2088,8 @@ const chase = new WeakMap();
 function floorAt(F, a) { const c = chase.get(a), q = passAt(F, a); return !c ? -Infinity : q > c[0] ? a.ls : q < c[0] ? Infinity : c[1]; }
 function heardFloor(F) { const as = T.as; for (let i = as.length - 1; i >= 0; i--) if (F >= as[i].frame) return floorAt(F, as[i]); return as.length ? floorAt(F, as[0]) : -Infinity; }
 // frame of the audio that is (was) leaving the speakers at a performance.now() time (audioclock.js: WebKit's render-stamped
-// timestamp less its output path; + the Latency setting)
-function outFrame(perfTs) { const now = performance.now(); return AC.outFrame(CLK, ctx, perfTs == null ? now : perfTs, now); }
+// timestamp less its output path; + the Latency setting). now: the caller's own clock read (heardFrame's: one read a recompute)
+function outFrame(perfTs, now = performance.now()) { return AC.outFrame(CLK, ctx, perfTs == null ? now : perfTs, now); }
 // s the heard audio trails the rendered (Serum's clip recorder, host.latency; the header readout): below 0 when the
 // Latency setting asks for more than the clock's own delay (the playhead and recording apply it as it is)
 function outLatency() { return ctx ? clamp(ctx.currentTime - outFrame() / ctx.sampleRate, -0.1, 1) : 0; }
@@ -3057,38 +3097,125 @@ function partsOf(t, N, dev, role) {
   return out;
 }
 const roleOf = o => (o.role ? o.role : Array.isArray(o.parts) && o.parts.length ? (o.parts.includes('i0') ? (o.parts.includes('c0') ? 'both' : 'inst') : 'fx') : 'both');
+//   (FR Cut B §5.1) o.fast: a display of the fast lane — while it is live its parts are asked of the node ({t: 'fastOn', hz, ids, ix,
+//   ixv}, §2.1: the union of the live fast subscriptions' parts (+ 'mods' for a mods one) ∩ the watched ids, hz = fastHz() while any,
+//   ix per Serum part the union of their o.ix() — a request of ≤ FAST_IX eff indices, ixv its version); fastOn: id → { key (hz |
+//   parts | ix), ixk, ixv, hist: the last two [ixv, ix] } — absent = off (a new node's state), hz 0 posted once when it goes; each
+//   {t: 'fast'} post to o.onFast(d, ix of its d.k) (deliverFast: routed as deliver routes). fastOn follows `on` (§13 P1-2): a new node
+//   is asked after its mon, a graph change asks again (fastStale), a new MASTER and a power cycle start empty (fastReset)
+const FAST_IX = 64, FAST_TOP = core.NSV + 8 + 48 * 24; // (≤ 64 per Serum part; an index below NSV + MAXFX, sx-base's 8 + 48·24 — the engine keeps
+// the same valid prefix of what it is sent (sorted, unique, in range), so v's places are the ix posted here)
 const monitors = {
-  subs: new Set(), on: new Map(),
+  subs: new Set(), on: new Map(), fastOn: new Map(), ixvN: 0,
   sub(trackId, dev, o) {
-    const S = { trackId, dev, role: roleOf(o), live: o.live, deliver: o.deliver, cur: [], mods: !!o.mods }; // (mods: the 'mods' monitor id — the ModCore's live meters, IMPL-2b)
+    const S = { trackId, dev, role: roleOf(o), live: o.live, deliver: o.deliver, cur: [], mods: !!o.mods, // (mods: the 'mods' monitor id — the ModCore's live meters, IMPL-2b)
+      fast: !!o.fast, onFast: typeof o.onFast === 'function' ? o.onFast : null, ix: typeof o.ix === 'function' ? o.ix : null, on: false }; // ((FR Cut B) on: live() at the last wanted)
     this.subs.add(S);
     this.sync();
     return () => { if (this.subs.delete(S)) this.sync(); };
   },
   wanted(id, N0) { // → the parts to monitor, sorted ([] = none)
     const w = new Set();
-    if (document.hidden) return [];
+    if (document.hidden) { for (const S of this.subs) if (S.trackId === id) S.on = false; return []; }
     if (id === MASTER) { // ((M, §2.2) MASTER's ids are its subscriptions' devs: 'meters' (the row, the OUT), 'mfx' (the rack module)
-      for (const S of this.subs) if (S.trackId === MASTER) { S.cur = [S.dev]; try { if (S.live()) w.add(S.dev); } catch (err) { console.warn(err); } }
+      for (const S of this.subs) if (S.trackId === MASTER) { S.cur = [S.dev]; S.on = false; try { if (S.live()) { S.on = true; w.add(S.dev); } } catch (err) { console.warn(err); } }
       return [...w].sort();
     }
     const N = N0 || nodes.get(id), t = project.tracks.find(x => x.id === id);
     for (const S of this.subs) if (S.trackId === id) {
-      S.cur = partsOf(t, N, S.dev, S.role);
-      try { if (S.live()) { for (const q of S.cur) w.add(q); if (S.mods) w.add('mods'); } } catch (err) { console.warn(err); }
+      S.cur = partsOf(t, N, S.dev, S.role); S.on = false;
+      try { if (S.live()) { S.on = true; for (const q of S.cur) w.add(q); if (S.mods) w.add('mods'); } } catch (err) { console.warn(err); }
     }
     return [...w].sort();
   },
   sync() {
     const ids = new Set(this.on.keys());
+    for (const id of this.fastOn.keys()) ids.add(id);
     for (const S of this.subs) ids.add(S.trackId);
     for (const id of ids) {
       const w = this.wanted(id), k = w.join();
-      if ((this.on.get(id) || '') === k) continue;
-      if (k) this.on.set(id, k); else this.on.delete(id);
-      postTo({ id }, { t: 'mon', ids: w });
+      if ((this.on.get(id) || '') !== k) {
+        if (k) this.on.set(id, k); else this.on.delete(id);
+        postTo({ id }, { t: 'mon', ids: w });
+      }
+      this.fastSync(id, w); // ((FR Cut B §5.1) after the mon post)
     }
     if (peerStale.size && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
+  },
+  // (FR Cut B §5.1) the fast lane asked of node id for the watched ids w: posted when its key changed (post: makeNode's own port,
+  // before the node is in `nodes`); no node: nothing asked (a new node is asked by makeNode)
+  fastSync(id, w, post, N0) {
+    const E = this.fastOn.get(id);
+    if (!post && !(id === MASTER ? mnode : nodes.get(id))) { if (E) this.fastOn.delete(id); return; }
+    const x = this.fastWant(id, w, N0), send = m => (post ? post(m) : postTo({ id }, m));
+    if (!x.hz) {
+      if (E) { this.fastOn.delete(id); send({ t: 'fastOn', hz: 0, ids: [], ix: null, ixv: E.ixv }); fastDrop(id); }
+      return;
+    }
+    if (E && E.key === x.key) return;
+    const F = E || { key: '', ixk: null, ixv: 0, hist: [] };
+    if (F.ixk !== x.ixk) { F.ixv = ++this.ixvN; F.ixk = x.ixk; F.hist.push([F.ixv, x.ix]); if (F.hist.length > 2) F.hist.shift(); }
+    F.key = x.key;
+    this.fastOn.set(id, F);
+    send({ t: 'fastOn', hz: x.hz, ids: x.parts, ix: x.ix, ixv: F.ixv });
+  },
+  // a graph change: the node is the same but its parts may have moved — asked again at the next sync, hz 0 included
+  fastStale(id) { const E = this.fastOn.get(id); if (E) E.key = ''; },
+  fastWant(id, w, N0) {
+    let parts = null, ixs = null;
+    const N = id === MASTER ? null : N0 || nodes.get(id), legacy = id !== MASTER && !(N && N.graphed);
+    for (const S of this.subs) {
+      if (S.trackId !== id || !S.fast || !S.on) continue;
+      for (const q of S.cur) if (w.includes(q)) (parts || (parts = new Set())).add(q);
+      if (S.mods && w.includes('mods')) (parts || (parts = new Set())).add('mods');
+      if (!S.ix) continue;
+      let a = null;
+      try { a = S.ix(); } catch (err) { console.warn(err); }
+      if (!a || !a.length) continue;
+      for (const q of this.ixParts(id, S, legacy)) { if (!ixs) ixs = new Map(); if (!ixs.has(q)) ixs.set(q, []); ixs.get(q).push(a); }
+    }
+    const P = parts ? [...parts].sort() : [], hz = P.length ? fastHz() : 0;
+    let ix = null, ixk = '';
+    if (ixs) for (const q of [...ixs.keys()].sort()) {
+      if (!P.includes(q)) continue;
+      const u = new Set();
+      for (const a of ixs.get(q)) for (let i = 0; i < a.length; i++) { const v = a[i]; if (v === (v | 0) && v >= 0 && v < FAST_TOP) u.add(v); }
+      const L = [...u].sort((p, r) => p - r).slice(0, FAST_IX); // (beyond FAST_IX the rest stay slow, §4.2)
+      if (!L.length) continue;
+      (ix || (ix = {}))[q] = Int16Array.from(L); ixk += q + ':' + L.join('.') + ';';
+    }
+    return { hz, parts: P, ix, ixk, key: hz + '|' + P.join() + '|' + ixk };
+  },
+  // the Serum part an ix subscription asks for: a legacy node's i0 (its panel's i0 + c0, its own FX's c0), a graphed node's Serum devices
+  ixParts(id, S, legacy) {
+    if (legacy) return S.cur.includes('i0') || S.cur.includes('c0') ? ['i0'] : [];
+    const t = project.tracks.find(x => x.id === id), out = [];
+    for (const q of S.cur) if (t && t.dev && isSxRec(t.dev[q])) out.push(q);
+    return out;
+  },
+  // the ix that produced a post's values (its d.k: the ixv of the fastOn it answered; the last two kept, no race with a post in flight)
+  ixOf(id, part, k) {
+    const E = this.fastOn.get(id);
+    if (!E) return null;
+    for (let j = 0; j < E.hist.length; j++) if (E.hist[j][0] === k) { const x = E.hist[j][1]; return x && x[part] ? x[part] : null; }
+    return null;
+  },
+  // a {t: 'fast'} post → the fast subscriptions showing its part (deliver's routing; MASTER by dev; a legacy node's i0 also to its own
+  // FX module — its GR and knob values ride the Serum's post)
+  deliverFast(id, d) {
+    if (id === MASTER) {
+      const k = typeof d.c === 'string' ? d.c : d.mc ? 'mods' : d.m ? 'meters' : null;
+      if (k !== null) for (const S of this.subs) if (S.trackId === MASTER && S.dev === k && S.onFast) { try { S.onFast(d, null); } catch (err) { console.warn(err); } }
+      return;
+    }
+    const part = typeof d.i === 'string' ? d.i : typeof d.c === 'string' ? d.c : d.mc ? 'mods' : null;
+    if (part === null) return;
+    const ix = typeof d.k === 'number' ? this.ixOf(id, part, d.k) : null;
+    for (const S of this.subs) {
+      if (S.trackId !== id || !S.onFast) continue;
+      const to = part === 'mods' ? S.mods : S.cur.includes(part) || (d.i === part && (S.cur.includes(part + '/fx') || (part === 'i0' && S.ix !== null && S.cur.includes('c0'))));
+      if (to) { try { S.onFast(d, ix); } catch (err) { console.warn(err); } }
+    }
   },
   deliver(id, d) {
     if (id === MASTER) { const k = d.t === 'mmon' ? 'meters' : d.mc ? 'mods' : 'mfx'; for (const S of [...this.subs]) if (S.trackId === MASTER && S.dev === k && S.deliver) S.deliver(d); return; } // ((M) mmon → the meters, smon → the rack; (MM, §7.4) an smon carrying mc → the modulator bodies' 'mods'
@@ -3104,6 +3231,234 @@ const monitors = {
     return partsOf(t, N, f, 'fx').some(q => on.includes(q));
   },
 };
+/* ---- (FR Cut B §5.2–§5.3, lane H-B) the fast lane's rate and its consumers. The rate: the preset's (FAST_Q: High 120 · Medium 60 ·
+   Low 30), WebKit's 0 (§6: the lane off in Safari / on the iPad until measured — review 2), reduced motion's ≤ 30 — never the display's (no re-sync flapping with an idle display, IMPL-FR §14 G9);
+   fr.force(hz) overrides it (the harness's on / off). The consumers: per consumer a motion.js ring keyed by the post's frame F, read
+   at the frame heard now (heardFrame: the frame's own outFrame, P2-10) — the FX racks (rec.grR / moR / effR: their GR, a panel's
+   ModCore offsets, a Serum's own FX knob values), the classic panels (cpFastSt), the master's meters (mRing, PEAK drained once); the
+   Serum hosts and the slot hosts keep their own (lane M-B: ui.setFast, B.update({…, F})). While a ring is live (a post younger than
+   STALE_S) its consumer's slow deliver only keeps the fallback (P2-4): no paint, no blanking; stale, the slow path paints again. */
+let frForce = null;
+function fastRate(perf, webkit, rm) {
+  const hz = Math.min(cvWorld.FAST_Q[perf] || cvWorld.FAST_MAX, webkit ? cvWorld.FAST_WEBKIT : cvWorld.FAST_MAX);
+  return rm ? Math.min(hz, 30) : hz;
+}
+const fastPerf = () => { const W = cvW(); return W && cvWorld.PERFS.includes(W.perf) ? W.perf : perfPref(); };
+function fastHz() { return frForce !== null ? frForce : fastRate(fastPerf(), CLK.webkit, wkReduced()); }
+let fastQ = false; // (a host's requested indices changed: one sync on a microtask, however many asked)
+function fastResync() { if (fastQ) return; fastQ = true; queueMicrotask(() => { fastQ = false; monitors.sync(); }); }
+const fastSr = () => (ctx ? ctx.sampleRate : 48000);
+const fastOk = st => st >= MOTION.ST.EXACT; // (EXACT / BRACKET / EXTRA / HELD wrote the values; NONE / BEFORE left the caller's)
+// (review 1, R1-C) a ring that answers at Fh: live, and Fh not before its oldest anchor — an output delay past the ring's span (or a
+// post from another F axis, a context the page restarted) reads BEFORE there, and its consumer keeps its slow values (R.live alone
+// is true while the anchors lead). The consumers' P2-4 gates (the slow deliver skipped) ask this, never R.live
+const fastAns = (R, Fh, sr) => !!R && R.size > 0 && Fh >= R.oldest() && R.live(Fh, sr);
+// a modulator body fed fast (mcFast, sxInjFast): its slot host's ring answers at the frame's heard frame (the slow path skips it only then)
+const bodyHost = B => { try { return typeof B.host === 'function' ? B.host() : null; } catch (err) { return null; } };
+const bodyAns = B => { const H = bodyHost(B); return !!H && fastAns(H.sl, heardFrame(), fastSr()); };
+// (review 1, P3) a body's slot-host rings afresh (its node's lane off, a power cycle): the slow values back, painted
+const bodyReset = B => { const H = bodyHost(B); if (H && typeof H.fastReset === 'function') { try { H.fastReset(); } catch (err) { console.warn(err); } } };
+let fastHot = false; // (one of this page's rings has data: fastTick runs)
+// a push into one of this page's rings: a post past the newest by more than EXTRA_S (a part that left the fast ids and came back) starts
+// afresh rather than bracketing across the gap (motion's gap rule, review 1 R1-B: the hosts' rings share it); a post before it (a new
+// F axis) flushes too
+function fastPush(R, F, src) {
+  R.push(F, src, 0, fastSr());
+  fastHot = true;
+}
+const trackOf = id => { const L = project.tracks; for (let i = 0; i < L.length; i++) if (L[i].id === id) return L[i]; return null; }; // (no closure: the per-frame paths)
+const ownerOf = id => (id === MASTER ? MREC : trackOf(id));
+/* ---- the FX racks (track racks: fxPanels' records; the master's: mfxRec) */
+const fastRecs = new Set(); // (the records holding a ring)
+let fxGen = 0; // (a rack's layout may have moved — fxHalos, every refresh: its GR kinds are checked again at the next post)
+function fxFastDrop(rec) { rec.grR = rec.moR = rec.effR = null; rec.grOn = rec.moOn = rec.effOn = rec.effMiss = false; rec.vF = NaN; rec.effIx = null; fastRecs.delete(rec); }
+// the kinds of a rack's GR block of length w (motion.js grKinds over its layout: LIN, a Ducker's position POS)
+function fxGrKinds(fx, w) {
+  let L = null;
+  try { L = core.fxLayout(fx); } catch (err) { L = null; }
+  const units = [];
+  if (L && L.inst) for (let i = 0; i < L.inst.length && 4 * i < w; i++) units.push({ idx: i, type: L.inst[i].type });
+  const k = MOTION.grKinds(units);
+  if (k.length === w) return k;
+  const out = new Uint8Array(w); out.set(k.subarray(0, Math.min(w, k.length))); return out;
+}
+const sameKinds = (a, b) => { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
+function fxGrRing(rec, w) { // (rebuilt only when its length or its kinds moved: a refresh keeps the anchors)
+  const k = fxGrKinds(rec.fx, w);
+  rec.grG = fxGen;
+  if (rec.grR && rec.grR.w === w && sameKinds(rec.grK, k)) return;
+  const lo = new Float64Array(w).fill(-Infinity), hi = new Float64Array(w).fill(Infinity);
+  for (let i = 0; i < w; i++) if (k[i] === MOTION.K.POS) { lo[i] = 0; hi[i] = 1; }
+  rec.grK = k; rec.grR = MOTION.ring(w, k, { lo, hi }); rec.grV = new Float64Array(w);
+}
+// a rack's fast post: a panel's {c, gr, mo}, a Serum's {i, v, gr} for its own FX (its knobs' values at their places in the union ix)
+function fxFast(rec, d, ix) {
+  const F = d.F;
+  if (!rec.ui || typeof F !== 'number' || !(F === F)) return;
+  const gr = d.gr, mo = d.mo, v = d.v;
+  if (gr && gr.length) {
+    if (!rec.grR || rec.grR.w !== gr.length || rec.grG !== fxGen) fxGrRing(rec, gr.length);
+    fastPush(rec.grR, F, gr); fastRecs.add(rec);
+  }
+  if (mo && mo.length) {
+    if (!rec.moR || rec.moR.w !== mo.length) { rec.moR = MOTION.ring(mo.length, null); rec.moV = new Float64Array(mo.length); }
+    fastPush(rec.moR, F, mo); fastRecs.add(rec);
+  }
+  const own = rec.ownIdx;
+  if (v && ix && own && own.length) {
+    if (rec.effIx !== ix || rec.effOf !== own) { // (the places of the rack's indices in the union: once per ix)
+      rec.effIx = ix; rec.effOf = own;
+      const pos = new Int16Array(own.length);
+      for (let j = 0; j < own.length; j++) { let p = -1; for (let q = 0; q < ix.length; q++) if (ix[q] === own[j]) { p = q; break; } pos[j] = p; }
+      rec.effPos = pos; rec.effBuf = new Float64Array(own.length); rec.effV = new Float64Array(own.length);
+      rec.effMiss = pos.some(p => p < 0); // ((review 1, R1-A) one of its knobs cut from the union (FAST_IX): the rack's dots stay slow
+      rec.effR = MOTION.ring(own.length, null, { lo: new Float64Array(own.length), hi: new Float64Array(own.length).fill(1) });
+    }
+    const B = rec.effBuf, P = rec.effPos, n = MOTION.SXF.N;
+    for (let j = 0; j < P.length; j++) B[j] = P[j] >= 0 && n + P[j] < v.length ? v[n + P[j]] : NaN;
+    fastPush(rec.effR, F, B); fastRecs.add(rec);
+  }
+}
+// the rack's view at the heard frame, read once per frame (whoever asks first: the GR loop's host.gr(), the frame's dots)
+function recView(rec) {
+  const Fh = heardFrame();
+  if (rec.vF === Fh) return;
+  rec.vF = Fh;
+  const sr = fastSr();
+  rec.grOn = !!rec.grR && rec.grR.live(Fh, sr) && fastOk(rec.grR.at(Fh, rec.grV, sr));
+  rec.moOn = !!rec.moR && rec.moR.live(Fh, sr) && fastOk(rec.moR.at(Fh, rec.moV, sr));
+  rec.effOn = !rec.effMiss && !!rec.effR && rec.effR.live(Fh, sr) && fastOk(rec.effR.at(Fh, rec.effV, sr)); // ((R1-A) fxLiveFn's effOn branch: never with a knob cut
+}
+const fxGrLive = rec => !!rec.grR && rec.grR.live(heardFrame(), fastSr());
+const fxDotsLive = rec => { const Fh = heardFrame(), sr = fastSr(); return fastAns(rec.moR, Fh, sr) || (!rec.effMiss && fastAns(rec.effR, Fh, sr)); }; // ((R1-C) BEFORE: the slow path paints
+// the rack's liveOf (fx-ui setLive), one function per record: a Serum's own FX knob from its heard value, a panel's base + its heard offset
+function fxLiveFn(rec) {
+  return rec.liveFn || (rec.liveFn = (id, base) => {
+    if (rec.effOn) { const j = rec.ownPlace ? rec.ownPlace.get(id) : undefined, x = j !== undefined ? rec.effV[j] : NaN; return x === x ? x : null; }
+    if (rec.moOn) { const ix = rec.moIx, i = ix ? ix[id] : undefined; return i !== undefined && i < rec.moV.length ? clamp(base + rec.moV[i], 0, 1) : null; }
+    return null;
+  });
+}
+// (§13 P2-4) a Serum's own FX rack's requested indices: its modded knobs' FX-context eff indices (NSV + 8 + flat), sorted, the same
+// array while they stay (ownPlace: knob id → its place)
+function fxOwnIx(rec, t) {
+  const u = rec.ui, ids = u && typeof u.moddedIds === 'function' ? u.moddedIds() : [], fx = t ? fxOfDev(t, rec.dev) : null, m = new Map();
+  if (fx) for (const id of ids) { let q = null; try { q = core.fxDest(id, fx); } catch (err) { q = null; } if (q && Number.isFinite(q.flat)) m.set(id, core.NSV + 8 + q.flat); }
+  const L = [...new Set(m.values())].sort((a, b) => a - b), key = L.join();
+  if (rec.ownKey !== key) {
+    rec.ownKey = key; rec.ownIdx = L.length ? Int16Array.from(L) : null;
+    rec.ownPlace = new Map([...m].map(([id, i]) => [id, L.indexOf(i)]));
+  }
+  return rec.ownIdx;
+}
+/* ---- the classic panels: per panel (cpMonitor's state) a ring of its Inst's e (engine units, one per payload row) */
+const cpFastSt = new Map(); // '<track id>/<dev>' → { k, tid, dev, R, V }
+function cpFast(st, d) {
+  const e = d.e;
+  if (!e || !e.length || typeof d.F !== 'number' || !(d.F === d.F)) return;
+  if (!st.R || st.R.w !== e.length) { st.R = MOTION.ring(e.length, null); st.V = new Float64Array(e.length); }
+  fastPush(st.R, d.F, e);
+}
+const cpFastLive = st => fastAns(st.R, heardFrame(), fastSr()); // ((R1-C) BEFORE: the slow eff paints the dot
+/* ---- the master's meters: tp L / R, pk L / R (dB, PEAK: the maxima of the posts, drained once), corr, momentary, short-term */
+const mRing = MOTION.ring(7, MOTION.MASTER_K, { lo: MOTION.MASTER_LO, hi: MOTION.MASTER_HI }), mV = new Float64Array(7);
+let mHeard = false, mF = NaN;
+function mFast(d) { const m = d.m; if (m && m.length >= 7 && typeof d.F === 'number' && d.F === d.F) fastPush(mRing, d.F, m); }
+function mHeardSet(on) { mHeard = on; if (mout) mout.setHeard(on); if (mrow) mrow.setHeard(on); }
+// once per heard frame (frameTick before the OUT draws, fastTick: the frame's Fh): the peaks heard since the last read to the OUT and
+// the row; while the ring is live the summaries fold no bar peak (setHeard); stale, the ring is emptied and the summaries take over again
+function mHeardRead(Fh = frameHeard()) {
+  if (Fh === mF) return;
+  mF = Fh;
+  const sr = fastSr(), live = mRing.size > 0 && mRing.live(Fh, sr), ans = live && Fh >= mRing.oldest(); // ((R1-C) BEFORE: the summaries fold the bars
+  if (ans !== mHeard) mHeardSet(ans);
+  if (!live) { if (mRing.size) mRing.flush(); return; }
+  if (fastOk(mRing.at(Fh, mV, sr)) && mRing.drained) {
+    if (mout) mout.heard(mV[0], mV[1]);
+    if (mrow) mrow.heard(mV[2], mV[3], Math.max(mV[0], mV[1]));
+  }
+}
+/* ---- a node's fast lane off (hz 0), a power cycle: the consumers' rings afresh */
+function fastDrop(id) {
+  for (const rec of [...fastRecs]) if (id === MASTER ? rec === mfxRec : rec.trackId === id) fxFastDrop(rec);
+  for (const st of cpFastSt.values()) if (st.tid === id) st.R = null;
+  if (id === MASTER) { mRing.flush(); mF = NaN; if (mHeard) mHeardSet(false); }
+  for (const r of serumPanels.values()) if (r.ui && r.trackId === id && typeof r.ui.fastReset === 'function') { try { r.ui.fastReset(); } catch (err) { console.warn(err); } }
+  if (shownId() === id) for (const B of modBodies.values()) bodyReset(B);
+}
+function fastReset() {
+  monitors.fastOn.clear();
+  for (const rec of [...fastRecs]) fxFastDrop(rec);
+  for (const st of cpFastSt.values()) st.R = null;
+  mRing.flush(); mF = NaN;
+  if (mHeard) mHeardSet(false);
+  for (const r of serumPanels.values()) if (r.ui && typeof r.ui.fastReset === 'function') { try { r.ui.fastReset(); } catch (err) { console.warn(err); } }
+  for (const B of modBodies.values()) bodyReset(B);
+  fastHot = false;
+}
+/* ---- fastTick: a frame-clock client after frameTick (not essential: 10 fps under reduced motion) while a ring has data — the racks'
+   dots, the classic dots, the master's peaks; the GR bars are drawn by fx-ui's own loop from host.gr() (the same view: recView) */
+const fastTrace = { n: 0, out: null, done: null };
+function fastAny() { return fastHot || fastTrace.n > 0; }
+function fastTick(t) {
+  const Fh = frameHeard(), sr = fastSr();
+  let any = false;
+  for (const rec of fastRecs) {
+    if (!rec.ui) continue;
+    recView(rec);
+    if ((rec.grR && rec.grR.live(Fh, sr)) || (rec.moR && rec.moR.live(Fh, sr)) || (rec.effR && rec.effR.live(Fh, sr))) any = true; // (live: its anchors may still lead the heard frame)
+    if (!rec.moOn && !rec.effOn) continue;
+    if (rec.moOn) { const tid = rec === mfxRec ? MASTER : rec.trackId, o = ownerOf(tid), pay = o ? modsPay(o) : null; if (rec.moPay !== pay) { rec.moPay = pay; rec.moIx = pay && !pay.off ? fxMoIndex(o, rec === mfxRec ? 'mfx' : rec.key) : null; } }
+    try { rec.ui.setLive(fxLiveFn(rec)); } catch (err) { console.warn(err); }
+  }
+  for (const st of cpFastSt.values()) {
+    const R = st.R;
+    if (!R || !R.size || !R.live(Fh, sr)) continue;
+    any = true;
+    if (fastOk(R.at(Fh, st.V, sr))) cpSnap(st.tid, st.dev, st.V, st);
+  }
+  if (mRing.size) { mHeardRead(Fh); if (mHeard) any = true; }
+  if (fastTrace.n > 0) fastTraceFrame(t, Fh, sr);
+  if (!any) fastHot = false;
+}
+// (§5.3 hooks) trace(n): the next n painted frames' { t, Fh, newest, status, probe } — the probe: the first live Serum host's view of
+// LFO 1's phase and, when its host draws one, its overlay's x (ui.probeX); newest / status of its fixed ring (ui.fr), read without at()
+function fastRingSt(R, Fh, sr) {
+  if (!R || !R.size || !(Fh === Fh)) return MOTION.ST.NONE;
+  if (Fh < R.oldest()) return MOTION.ST.BEFORE;
+  const n = R.newest();
+  if (Fh <= n) return Fh === n ? MOTION.ST.EXACT : MOTION.ST.BRACKET;
+  return Fh - n > MOTION.EXTRA_S * sr ? MOTION.ST.HELD : MOTION.ST.EXTRA;
+}
+function fastTraceFrame(t, Fh, sr) {
+  let H = null;
+  for (const r of serumPanels.values()) if (r.ui && !r.ui.dead && typeof r.ui.fastLive === 'function' && r.ui.fastLive()) { H = r.ui; break; }
+  let ph = NaN, x = null;
+  if (H) {
+    const v = typeof H.viewNow === 'function' ? H.viewNow() : H.snap;
+    ph = v && v.lfoPh ? +v.lfoPh[0] : NaN;
+    if (typeof H.probeX === 'function') { try { x = H.probeX(); } catch (err) { x = null; } }
+  }
+  const R = H && H.fr ? H.fr : null;
+  fastTrace.out.push({ t, Fh, newest: R ? R.newest() : NaN, status: fastRingSt(R, Fh, sr), probe: H ? { ph, x } : null });
+  if (--fastTrace.n === 0) { const f = fastTrace.done, o = fastTrace.out; fastTrace.done = fastTrace.out = null; f(o); }
+}
+function fastRings() {
+  const Fh = heardFrame(), sr = fastSr(), out = [], info = (kind, id, R) => ({ kind, id, size: R.size, newest: R.newest(), live: R.live(Fh, sr) });
+  for (const rec of fastRecs) for (const [k, R] of [['fx-gr', rec.grR], ['fx-mo', rec.moR], ['fx-eff', rec.effR]]) if (R) out.push(info(k, rec === mfxRec ? MASTER + '/mfx' : rec.trackId + '/' + rec.key, R));
+  for (const st of cpFastSt.values()) if (st.R) out.push(info('classic', st.k, st.R));
+  if (mRing.size) out.push(info('master', MASTER + '/meters', mRing));
+  for (const r of serumPanels.values()) if (r.ui && r.ui.fr && typeof r.ui.fr.live === 'function') out.push(info('serum', r.trackId + '/' + r.dev, r.ui.fr));
+  return out;
+}
+if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
+  globalThis.__synthTest.fr = {
+    force: hz => { frForce = hz == null ? null : Number.isFinite(+hz) ? Math.max(0, Math.min(cvWorld.FAST_MAX, Math.round(+hz))) : 0; monitors.sync(); return fastHz(); },
+    hz: () => fastHz(), rate: fastRate, rings: fastRings, fastOn: () => monitors.fastOn, heard: () => heardFrame(), outFrame: ts => (ctx ? outFrame(ts) : NaN),
+    trace: n => new Promise(res => { fastTrace.n = Math.max(1, n | 0); fastTrace.out = []; fastTrace.done = res; }),
+    injEnv: t => sxInjEnv(t), recs: () => [...fastRecs], cp: cpFastSt, master: () => ({ ring: mRing, heard: mHeard }), off: () => powerOff(), // (a power cycle: off, then api.powerOn)
+  };
+}
 // the Serum panel's subscription (SerumUI host.monitor: on while it is built and the page shows): per (track, device)
 const sxMons = new Map(); // trackId/dev → off
 function sxMonitor(t, on, dev = curOf(t)) { // (R6: dev default the current instrument)
@@ -3113,6 +3468,17 @@ function sxMonitor(t, on, dev = curOf(t)) { // (R6: dev default the current inst
   sxMons.set(key, monitors.sub(id, dev, { role: 'both', // (its snapshot, and its FX page's meters; stage 1e: that device's panel)
     live: () => { const r = sxRecOf(id, dev); return !!r && r.trackId === id && ((r.mode === 'parts' && r.ui && typeof r.ui.anyShown === 'function' ? r.ui.anyShown() : cvLive(dev)) || sxInjLive(id, dev)); }, // ((3, H4) parts: while any of its views is shown; review 2: or a canvas ENV injected into it)
     deliver: d => { const r = sxRecOf(id, dev); if (r && r.ui && r.trackId === id) { r.ui.setSnapshot(d); zoneWarm(id, dev, d.s); } sxInjSnap(id, dev, d && d.s); }, // (R2: every Serum's zones; review 2: a canvas ENV injected into it)
+    // ((FR Cut B §5.3) the Serum's fast post — its Inst's ({i, k, v, q?, gr?}; a legacy node's c0 is its FX module's) — to the host's
+    // rings (lane M-B's setFast, with the ix of its k) and to the canvas ENVs injected into its slots (P2-5); ix: the host's requested
+    // eff indices (its fastIx: the controls with halo arcs and the heavy displays' ids)
+    fast: true,
+    onFast: (d, ix) => {
+      if (!d.v) return;
+      const r = sxRecOf(id, dev);
+      if (r && r.ui && r.trackId === id && typeof r.ui.setFast === 'function') { try { r.ui.setFast(d, ix); } catch (err) { console.warn(err); } }
+      sxInjFast(id, dev, d);
+    },
+    ix: () => { const r = sxRecOf(id, dev); if (!r || !r.ui || r.trackId !== id || typeof r.ui.fastIx !== 'function') return null; try { return r.ui.fastIx(); } catch (err) { console.warn(err); return null; } },
   }));
 }
 // "Switch to Single Sample" (host.smp.saveFrom → zoneOf): the zone sample the panel's recent voice plays, from the
@@ -3881,6 +4247,9 @@ function sxHost(t0, dv) {
     metronome: on => { project.metronome.on = !!on; transportUI(); persist(); },
     latency: () => outLatency(), // the playhead's output delay (audioclock.js + the Latency setting): clip records line up with it
     heardFrame: () => heardFrame(), heardTick: () => heardTickNow(), fps: () => wkClock.eff(), // ((IMPL-FR §10.1) the frame's shared heard frame / song tick; the paint rate)
+    fastIx: () => fastResync(), // ((FR Cut B §4.2) the host's requested eff indices changed (a full paint): the fast lane asked again on a microtask
+    curveHz: () => (fastPerf() === 'high' ? 60 : 30), // ((FR Cut B §4.3, the user's QB) the filter display's curve: ≤ 60 a second on High, 30 on Medium / Low
+    heavyHz: () => (fastPerf() === 'high' ? 0 : 30), // ((review 2, P1-1 a) every heavy display (wavetable, spectral, the filter curve) ≤ 30 a second on Medium / Low; High: the 60 class
     qualityChosen: () => liftCaps(),
     storage: hostStore,
     notify: txt => notice(txt, 3500),
@@ -3907,7 +4276,8 @@ function fxHost(t0, rec = fxRecOf(t0.id, fxKeyOf(t0)) || fxPanelRec()) { // (R6:
     state: () => { const iv = own(); return iv ? iv.vals.s : null; },
     edit: (fn, o) => { const iv = own(); if (iv) { sxEdit(iv, fn, o); peerRefresh(id, 1, sx()); } },
     bpm: () => project.bpm,
-    gr: () => (rec.trackId === id ? rec.gr : null),
+    gr: () => { if (rec.trackId !== id) return null; recView(rec); return rec.grOn ? rec.grV : rec.gr; }, // ((FR Cut B §5.3) the GR at the heard frame while its ring is live, else the slow monitor's
+    fast: () => rec.trackId === id && fxGrLive(rec), // ((FR Cut B §5.4) fx-ui's GR loop lifts its 30 cap while true
     // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
     tap: () => (rec.trackId === id ? rec.ftap || null : null),
     setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, rec.dev), // (a panel: c; a Serum's own: i)
@@ -4007,6 +4377,7 @@ function fxDrop(rec) {
   rec.gen++;
   const u = rec.ui;
   rec.ui = null; rec.trackId = null; rec.dev = null; rec.fx = null; rec.gr = null; rec.ftap = null;
+  fxFastDrop(rec); // ((FR Cut B §5.3) its rings with it
   if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
   if (rec.mon) { const off = rec.mon; rec.mon = null; off(); }
   monitors.sync();
@@ -4036,7 +4407,12 @@ function renderFxTab(t = trk(), key = fxKeyOf(t)) {
       rec.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: sx ? 3 : 1, v2Fx: true, cost: fxCost }); // (cost: the "+" menu's estimates)
       if (rec.ui && rec.ui.el && dev) rec.ui.el.setAttribute('data-dev', dev); // (its fx.<inst>.<pid> dests: that device's)
       if (key) fxHalos(t, key); // ((U5, halos fix) a Serum's own FX / a shared panel: the canvas rows' halos from the start)
-      rec.mon = monitors.sub(t.id, dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; if (key) fxLive(t.id, key, rec, d); } });
+      // ((FR Cut B §5.3, P2-4) fast: its GR / ModCore offsets / (a Serum's own FX) knob values in rings read at the heard frame; while
+      // the dots' ring is live a slow deliver keeps the fallback (gr, ftap) and paints nothing. ix (a Serum's own FX): its modded knobs'
+      // FX-context eff indices, riding the Serum's post
+      fxFastDrop(rec); rec.liveFn = null; rec.ownKey = undefined; rec.ownIdx = null;
+      rec.mon = monitors.sub(t.id, dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; if (key && !fxDotsLive(rec)) fxLive(t.id, key, rec, d); },
+        fast: true, onFast: (d, ix) => fxFast(rec, d, ix), ix: own ? () => (rec.trackId === t.id && rec.ui ? fxOwnIx(rec, trackOf(t.id)) : null) : undefined });
     } catch (err) {
       console.error(err);
       rec.ui = null; rec.trackId = null;
@@ -4292,11 +4668,13 @@ function drumSetBpm(v, ph) {
   if (!(v > 0)) return;
   const g = drBpmG;
   if (ph === 'end') drBpmG = false;
-  if (v === project.bpm) { if (ph === 'end') updateUndoUI(); return; }
+  tempoMove = ph === 'start' || ph === 'move' ? performance.now() : -Infinity; // ((FR-B §1.1) the drag's steps: a tempo gesture)
+  if (v === project.bpm) { if (ph === 'end') { updateUndoUI(); tempoFlush(); } return; }
   if (!(g && (ph === 'move' || ph === 'end'))) hist.record(project, 'Tempo');
   if (ph === 'move') drBpmG = true;
   setProjectBpm(v);
   updateUndoUI();
+  if (ph === 'end') tempoFlush(); // (its payloads go with the next frame's patches, at once; a pending older one goes now)
 }
 // TAP (the header, joined to BPM; ≤ 900 px in ⋯, #tTapM — the user, 2026-10-26: "a tap button for tapping in the tempo"): from
 // the 2nd tap the tempo is 60 / the mean of the last ≤ TAP_N intervals, a whole BPM (20–300), set through setProjectBpm (the
@@ -4973,6 +5351,12 @@ function initTransport() {
   $('#tRecMode').onchange = e => { project.rec.mode = e.target.value; persist(); };
   const numIn = (id, fn) => { const el = $('#' + id); el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') el.blur(); }); el.onchange = () => fn(el); };
   numIn('tBpm', el => setProjectBpm(+el.value || 120)); // ((7a) the same path as a synced drum machine's TEMPO)
+  { // ((FR Cut B phase 0, IMPL-FR-B §1.1) the spinner held — a press on the box until the pointer lets go: a tempo gesture)
+    const up = () => { if (tempoHeld) { tempoHeld = false; tempoFlush(); } };
+    $('#tBpm').addEventListener('pointerdown', () => { tempoHeld = true; });
+    $('#tBpm').addEventListener('blur', up); // (a release the page never saw)
+    window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+  }
   initTap($('#tTap')); initTap($('#tTapM')); // (TAP joined to it, ⋯'s ≤ 900 px: tap tempo)
   numIn('tSigN', el => { project.sig = [clamp(Math.round(+el.value) || 4, 1, 16), project.sig[1]]; el.value = project.sig[0]; reanchor(false); arr.render(); roll.render(); persist(); });
   $('#tSigD').onchange = e => { project.sig = [project.sig[0], +e.target.value]; reanchor(false); arr.render(); roll.render(); persist(); };
@@ -5897,16 +6281,23 @@ function drawScope() {
 // frameEvery on every rAF, ungated (the stall meter: its jitter window is the rAF interval; the frame's count), and frameTick
 // (essential: reduced motion does not slow it) at the clock's global cap — the playhead and transport text while playing,
 // the head meters, the OUT scope, the master OUT. Both are added at boot (frameEvery first: the module's last line)
-let frameN = 0, hfN = -1, hfF = NaN, hfAt = -Infinity;
-function frameEvery() { frameN++; if (ctx && !meterT) clockSample(ctx); } // (the stall meter; its 5 ms timer while the engine starts)
+let frameN = 0, frameTs = NaN, hfN = -1, hfF = NaN, hfAt = -Infinity;
+function frameEvery(t) { frameN++; frameTs = typeof t === 'number' ? t : NaN; if (ctx && !meterT) clockSample(ctx); } // (the stall meter; its 5 ms timer while the engine starts; (FR Cut B P2-10) the frame's rAF time)
 // the heard frame of this animation frame (§13 P3-7): ONE outFrame — one getOutputTimestamp — a frame, shared by every reader
 // in it (the playhead, the modulator lanes, the hosts' heardFrame / heardTick, §10.1); between frames the last one's, for at
-// most 20 ms (an event between two frames reads a value ≤ one frame old; a page without frames reads afresh)
+// most 20 ms (an event between two frames reads a value ≤ one frame old; a page without frames reads afresh). (FR Cut B §13
+// P2-10) frame-stamped: within a frame it is outFrame(the frame's rAF time) — the view computed for the frame's display time,
+// whichever client reads first and however late in the frame
 function heardFrame() {
   const now = performance.now();
-  if (hfN !== frameN || now - hfAt > 20) { hfN = frameN; hfAt = now; hfF = ctx ? outFrame() : NaN; }
+  if (hfN !== frameN) { hfN = frameN; hfAt = now; hfF = ctx ? outFrame(frameTs === frameTs ? Math.min(frameTs, now) : undefined, now) : NaN; }
+  else if (now - hfAt > 20) { hfAt = now; hfF = ctx ? outFrame(undefined, now) : NaN; }
   return hfF;
 }
+// (FR Cut B, integration) a frame-clock client's heard frame (frameTick's master read, fastTick): the frame's stamp however late in the
+// frame it runs (P2-10: the view for the frame's display time; heardFrame's 20 ms rule is for readers between frames) — no clock read
+// once the frame has one, so the fast clients add one read a frame, not one each (canvas-1e-sim U17's budget of the frame's reads)
+function frameHeard() { return hfN === frameN ? hfF : heardFrame(); }
 // the heard song tick on the frame's heard frame (curTick, shared)
 function heardTickNow() { return T.playing && T.a && ctx ? AC.heardTick(heardFrame(), T.as) : T.pos; }
 function frameTick(t, dt) {
@@ -5921,6 +6312,7 @@ function frameTick(t, dt) {
   }
   headMeters(dt);
   drawScope();
+  if (mRing.size) mHeardRead(); // ((FR Cut B §5.3) the master's heard peaks first: the OUT draws them in this frame
   if (mout) { mout.setLive(mOutLive()); mout.draw(t); } // ((M) the master OUT, only while live; (FR §6) at the frame clock's rate
 }
 // the track heads' meters: the peak of each track's analyser falling 0.88 per 60 Hz frame — in time, 0.88^(dt / 16.667) (FR3:
@@ -6415,6 +6807,7 @@ function perfPick(v) { // the person's own pick: stored, then live
   if (W && typeof W.setPerf === 'function') W.setPerf(p);
   fpsCapBare();
   perfUI();
+  monitors.sync(); // ((FR Cut B §5.2) the fast lane's rate is the preset's: {t: 'fastOn'} to the nodes asked (a Frame rate pick posts nothing)
 }
 // (IMPL-FR §2.1, §2.2) the frame-rate setting — visual only, as the preset: a device pref (synth.cv.fps: '120' (the default) | '144' | '165' |
 // '240' | 'display'; absent or anything else 120), never in a project or its History, no worklet message; cv-world's ?fps= over it for the
@@ -7116,7 +7509,8 @@ function mMount(key, b) {
       onTarget: t => moutSet('target', t), onMode: m => moutSet('mode', m), safe: settings.safe, onSafe: on => safeSet(on) });
     mout.setMono(mstate.mono); mout.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim);
     if (moutOff) moutOff();
-    moutOff = monitors.sub(MASTER, 'meters', { live: () => mOutLive(), deliver: d => { if (mout) mout.update(d); } });
+    mout.setHeard(mHeard); // ((FR Cut B §5.5) the peaks at heard time while the master's fast meters are live
+    moutOff = monitors.sub(MASTER, 'meters', { live: () => mOutLive(), deliver: d => { if (mout) mout.update(d); }, fast: true, onFast: mFast });
     return;
   }
   if (!mfxEl) { mfxEl = h('section', 'fxtab'); mfxEl.setAttribute('aria-label', 'Master effects rack'); }
@@ -7144,7 +7538,8 @@ function mfxHost() {
     fx: () => masterFx(),
     editFx: (fn, o) => masterEdit(fn, o),
     v2Fx: true, racks: () => 1, irs: smpHost, bpm: () => project.bpm,
-    gr: () => mfxRec.gr, tap: () => mfxRec.ftap || null,
+    gr: () => { recView(mfxRec); return mfxRec.grOn ? mfxRec.grV : mfxRec.gr; }, tap: () => mfxRec.ftap || null, // ((FR Cut B §5.3) the GR at the heard frame while live
+    fast: () => fxGrLive(mfxRec), // ((FR Cut B §5.4) fx-ui's GR loop: the 30 cap lifted while true
     setTap: inst => postTo({ id: MASTER }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
     storage: hostStore, notify: txt => notice(txt, 3500),
     scSources: () => scSources(null), // ((SC §6.1) self null: its Ducker keys from any track; its compressor has no key input
@@ -7167,7 +7562,8 @@ function renderMasterFx() {
       rec.ui = new M.fxui.FXRackUI(box, mfxHost(), { embedded: false, dsp: globalThis.FXDSP || null, racks: 1, v2Fx: true, cost: fxCost }); // (the "+" menu's estimates)
       if (rec.ui && rec.ui.el) rec.ui.el.setAttribute('data-dev', 'mfx'); // ((MM, §7.2, P3-11) the rack root — the track path's line: its knobs' fx.<inst>.<pid> dests are 'mfx''s
       fxHalos(MREC, 'mfx'); // ((MM) the master's rows on its knobs from the start
-      rec.mon = monitors.sub(MASTER, 'mfx', { live: () => !!rec.ui && cvMaster && cvLive('mfx'), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; fxLive(MASTER, 'mfx', rec, d); } }); // ((MM) mo: the live dots
+      fxFastDrop(rec); rec.liveFn = null; rec.key = 'mfx';
+      rec.mon = monitors.sub(MASTER, 'mfx', { live: () => !!rec.ui && cvMaster && cvLive('mfx'), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; if (!fxDotsLive(rec)) fxLive(MASTER, 'mfx', rec, d); }, fast: true, onFast: d => fxFast(rec, d, null) }); // ((MM) mo: the live dots; (FR Cut B §5.3, P2-4) fast as a track rack's
     } catch (err) {
       console.error(err);
       rec.ui = null;
@@ -7179,7 +7575,7 @@ function renderMasterFx() {
 }
 function mfxDrop() {
   const rec = mfxRec, u = rec.ui;
-  rec.gen++; rec.ui = null; rec.fx = null; rec.gr = null; rec.ftap = null;
+  rec.gen++; rec.ui = null; rec.fx = null; rec.gr = null; rec.ftap = null; fxFastDrop(rec);
   if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
   if (rec.mon) { const off = rec.mon; rec.mon = null; off(); }
   monitors.sync();
@@ -7266,7 +7662,8 @@ function initMasterRow() {
   if (!el || mrow) return;
   mrow = MUI.createMasterRow(el, { doc: document, open: () => masterOpen(), onBypass: on => abSet(on), onMono: on => monoSet(on), safe: settings.safe });
   mrow.setBypass(mstate.ab, mstate.ab ? mstate.g : undefined, mstate.lim); mrow.setMono(mstate.mono); mrow.setActive(cvMaster);
-  monitors.sub(MASTER, 'meters', { live: () => !!mrow && mrow.state().live, deliver: d => { if (mrow) mrow.update(d); } });
+  mrow.setHeard(mHeard); // ((FR Cut B §5.5) the peaks at heard time while the master's fast meters are live
+  monitors.sub(MASTER, 'meters', { live: () => !!mrow && mrow.state().live, deliver: d => { if (mrow) mrow.update(d); }, fast: true, onFast: mFast });
 }
 // the camera: saved 500 ms after a move ends (one LRU record), restored on a track switch / load, else the default: the
 // primary instrument's top-left 24 px inside the visible band, at k = 1 when its whole width fits there (its FX module
@@ -9611,7 +10008,7 @@ function moogCost(type) { const c = COSTM.COST.patch ? COSTM.COST.patch[type] : 
 const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
 const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
 function modMount(key, b) {
-  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind) }; // ((MM, §7.1) the shown canvas's record: a track's or MREC
+  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind), heardFrame: () => heardFrame(), sampleRate: () => fastSr() }; // ((MM, §7.1) the shown canvas's record: a track's or MREC; (FR Cut B §4.4) the slot hosts read their rings at the frame's heard frame, at the context's rate
   modUnmount(key);
   if (kind === 'pads') { // ((8, §1.1, §7) a Pads module's body: a view of the host — its grid on the cv-keys bed, its footer, Edit mode, the inspector)
     const B = cvPads.padsBody({ host: PADS, id: key, doc: document, track: () => trk().id }); // (its buttons: cv-pads tapOn — pressOrTap's rule, plus the keyboard's click)
@@ -9686,6 +10083,7 @@ const modViewOf = (tid, key) => { const k = tid + '/' + key; let v = modViews.ge
 // body is mounted (the primary instrument's part: its message carries mc), live while one of them is on screen; either
 // field absent (until A and B merge): nothing moves
 const MC_KINDS = new Set(['lfo', 'env', 'chaos']);
+const MC_FAST = new Set(['lfo', 'env']); // ((review 1, P3) the fast path's: a chaos body's view never reads a ring — it stays on mcSnap
 const mcMons = new Map(); // track id → off
 const mcAny = () => { for (const B of modBodies.values()) if (MC_KINDS.has(B.kind)) return true; return false; };
 // (milestone 3, §2.9) track-level: the 'mods' monitor id alone (role 'none': no part — lane E's engine posts {t: 'smon', mc,
@@ -9697,7 +10095,8 @@ function mcMonitor(tid) {
   if (!ownerById(tid)) return;
   const live = () => { if (shownId() !== tid || !mcAny()) return false; for (const [k, B] of modBodies) if (MC_KINDS.has(B.kind) && (!cvView || cvView.live(k))) return true; return false; };
   const deliver = d => { if (d.mc) mcSnap(tid, d.mc, d.mcx); };
-  mcMons.set(tid, tid === MASTER ? monitors.sub(MASTER, 'mods', { live, deliver }) : monitors.sub(tid, null, { role: 'none', mods: true, live, deliver }));
+  const onFast = d => mcFast(tid, d); // ((FR Cut B §5.3) the 'mods' fast part: {mc, x} at F → the slot hosts' rings
+  mcMons.set(tid, tid === MASTER ? monitors.sub(MASTER, 'mods', { live, deliver, fast: true, onFast }) : monitors.sub(tid, null, { role: 'none', mods: true, live, deliver, fast: true, onFast }));
 }
 function mcMonSync() { for (const [tid, off] of mcMons) if (tid !== shownId() || !mcAny()) { off(); mcMons.delete(tid); } }
 // (milestone 3, §2.9) with lane E's mcx { ph: Float32Array(20), env: Float32Array(8) }: an LFO's phase and Path Y (mc[l] its
@@ -9711,10 +10110,28 @@ function mcSnap(tid, mc, mcx) {
   for (const [k, B] of modBodies) {
     const e = MC_KINDS.has(B.kind) ? S[k] : null;
     if (!e || !(e.i >= 0) || e.i >= mc.length || (cvView && !cvView.live(k))) continue;
+    if (bodyAns(B)) continue; // ((FR Cut B P2-4) a body fed fast: its slot host's ring is the truth while it answers (R1-C)
     let v = mc[e.i];
     if (ph && B.kind === 'lfo' && e.i < 10 && ph.length >= 20) v = { v, ph: ph[e.i], y: ph[10 + e.i], out: v };
     else if (ev && B.kind === 'env' && e.i >= 10 && e.i < 14 && ev.length >= 8) v = { v, stage: ev[e.i - 10], t: ev[e.i - 6] };
     try { B.update(v); } catch (err) { console.warn(err); }
+  }
+}
+// (FR Cut B §5.3) the 'mods' fast post {F, mc, x} (x = [livePh 20 | liveEnv 8]: an LFO's phase / Path Y, an ENV's stage / time) → each
+// shown body as mcSnap maps it, with F: the slot host pushes it into its ring and paints at the heard frame (lane M-B); one value object
+// per body, reused (the host copies it)
+function mcFast(tid, d) {
+  if (shownId() !== tid || !modBodies.size) return;
+  const t = ownerOf(tid), pay = t ? modsPay(t) : null, S = pay && !pay.off && pay.slots, mc = d.mc, x = d.x, F = d.F;
+  if (!S || !mc || typeof F !== 'number' || !(F === F)) return;
+  for (const [k, B] of modBodies) {
+    const e = MC_FAST.has(B.kind) ? S[k] : null;
+    if (!e || !(e.i >= 0) || e.i >= mc.length || (cvView && !cvView.live(k))) continue;
+    const u = B.fastV || (B.fastV = {}), v = mc[e.i];
+    u.v = v; u.F = F;
+    if (B.kind === 'lfo' && x && e.i < 10 && x.length >= 20) { u.ph = x[e.i]; u.y = x[10 + e.i]; u.out = v; }
+    else if (B.kind === 'env' && x && e.i >= 10 && e.i < 14 && x.length >= 28) { u.stage = x[20 + e.i - 10]; u.t = x[24 + e.i - 10]; }
+    try { B.update(u); } catch (err) { console.warn(err); }
   }
 }
 // (review 2 P2) a canvas ENV cabled to a Serum knob is injected into a free ENV slot of that Serum (cv-graph injectMods: no
@@ -9744,7 +10161,22 @@ function sxInjSnap(tid, dev, s) {
   for (const q of sxInjEnv(t)) {
     const B = q.dev === dev ? modBodies.get(q.key) : null;
     if (!B || B.kind !== 'env' || (cvView && !cvView.live(q.key))) continue;
+    if (bodyAns(B)) continue; // ((FR Cut B P2-4 / P2-5) fed from the Serum's fast post, while its ring answers (R1-C)
     try { B.update({ v: s.env ? s.env[q.k] : 0, stage: s.envStage[q.k], t: s.envT ? s.envT[q.k] : 0 }); } catch (err) { console.warn(err); }
+  }
+}
+// (FR Cut B §13 P2-5) the injected canvas ENVs of Serum dev from its fast post: its slot k's value / stage / time (motion.js SXF) at F
+function sxInjFast(tid, dev, d) {
+  if (shownId() !== tid || !modBodies.size) return;
+  const v = d.v, F = d.F, X = MOTION.SXF;
+  if (!v || v.length < X.N || typeof F !== 'number' || !(F === F)) return;
+  const L = sxInjEnv(ownerOf(tid));
+  for (let j = 0; j < L.length; j++) {
+    const q = L[j], B = q.dev === dev ? modBodies.get(q.key) : null;
+    if (!B || B.kind !== 'env' || (cvView && !cvView.live(q.key))) continue;
+    const u = B.fastV || (B.fastV = {});
+    u.v = v[X.env + q.k]; u.stage = v[X.envStage + q.k]; u.t = v[X.envT + q.k]; u.F = F;
+    try { B.update(u); } catch (err) { console.warn(err); }
   }
 }
 // a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity, (2b) a note): the modules of that kind redraw
@@ -10296,6 +10728,8 @@ function fxHalos(t, only) {
     const rowsOf = rec && rec.ui && (M || rec.trackId === t.id) && typeof rec.ui.paintMods === 'function' ? fxRowsOf(t, key) : null;
     if (rowsOf) { try { rec.ui.paintMods(rowsOf); } catch (err) { console.warn(err); } }
   }
+  fxGen++; // ((FR Cut B §5.3) a refresh: the racks' GR kinds checked again at their next post; a Serum's own FX module's modded knobs may have
+  if (monitors.fastOn.size) fastResync(); // moved — its requested indices: the fast lane asked again (a microtask; nothing posted while they are the same)
 }
 // the knob id → its FX-context index in a panel's ModCore offsets (mo): the payload's fx rows of that chain (cached per payload)
 const fxMoIdx = new Map(); // '<track id>/<panel>' → { key, ix: { destId: fx index } }
@@ -10342,7 +10776,7 @@ function cpRows(t, dev) {
   }
   return by;
 }
-const cpMons = new Map(), cpLive = new Map(), cpXf = new Map(), cpVer = new Map(); // '<track id>/<dev>' → off | { ctlId: knob units } | '…/<ctl>/<tgt>' → { sig, xf } | the instrument's values' version (valChanged)
+const cpMons = new Map(), cpLive = new Map(), cpVer = new Map(); // '<track id>/<dev>' → off | { ctlId: knob units } | the instrument's values' version (valChanged; the transfers' plans: cpPlans)
 // the mounted classic panels of t (one: `only`): their halos from the rows, a monitor subscription while cabled (dropped
 // when the rows go, or with the panel: cvDropBody)
 function cpHalos(t, only) {
@@ -10354,38 +10788,51 @@ function cpHalos(t, only) {
     else if (!any && cpMons.has(k)) cpMonOff(k);
   }
 }
-function cpMonOff(k) { const off = cpMons.get(k); if (off) off(); cpMons.delete(k); cpLive.delete(k); }
+function cpMonOff(k) { const off = cpMons.get(k); if (off) off(); cpMons.delete(k); cpLive.delete(k); cpFastSt.delete(k); cpPlans.delete(k); }
 function cpMonitor(tid, dev) {
-  const k = tid + '/' + dev;
+  const k = tid + '/' + dev, st = { k, tid, dev, R: null, V: null }; // ((FR Cut B §5.3) its fast state: a ring of the Inst's e
+  cpFastSt.set(k, st);
   cpMons.set(k, monitors.sub(tid, dev, { role: 'inst',
     live: () => { const P = classicPanels.get(k); return !!P && !P.dead && shownId() === tid && cvLive(dev); }, // (on-screen modules only)
-    deliver: d => { if (d.s && d.s.eff) cpSnap(tid, dev, d.s.eff); } }));
+    deliver: d => { if (d.s && d.s.eff && !cpFastLive(st)) cpSnap(tid, dev, d.s.eff, st); }, // ((FR Cut B P2-4) while the ring is live the frame's dot is the heard one
+    fast: true, onFast: d => cpFast(st, d) }));
 }
 // the Inst's eff snapshot (engine units, one per payload row of that Inst in payload order — lane A2's modEff) → knob
 // units through the inverse transfer (cv-mods xferInv of the row's target; the sweep cached per instrument values —
 // (C4) keyed by the values' version and the payload, never a JSON per tick; the payload the last build's, no compile here).
 // (U3) an eff outside the transfer's range (a span-setter row whose field the engine reports in other units) gives no
-// live value: the dot hides rather than pinning at an end
-function cpSnap(tid, dev, eff) {
-  const t = ownerById(tid), k = tid + '/' + dev, P = classicPanels.get(k);
-  if (!t || !P || P.dead || !t.dev || !t.dev[dev]) return;
-  const pay = modsPay(t);
-  if (pay.off) return;
-  const d = t.dev[dev], m = modelById(d.model), out = {}, sig = pay.key + '/' + (cpVer.get(k) || 0) + '/' + d.model;
+// live value: the dot hides rather than pinning at an end. (FR Cut B §5.3, §13 P3) every frame while the fast ring is live (st:
+// cpMonitor's state): the rows' transfers resolved once per (payload, values version, model) — cpPlan, no string built per call —
+// into one persistent live object per plan (its keys deleted when a value goes)
+const cpPlans = new Map(); // '<track id>/<dev>' → { pay, ver, model, list: [{ j, pid, xf, kn, lo, hi }], out }
+function cpPlan(t, k, dev, pay) {
+  const d = t.dev[dev], ver = cpVer.get(k) || 0, P0 = cpPlans.get(k);
+  if (P0 && P0.pay === pay && P0.ver === ver && P0.model === d.model) return P0;
+  const m = modelById(d.model), list = [];
   let j = 0;
   for (const r of pay.rows) {
     if (!r.dst || r.dst.inst !== dev || (r.dst.kind !== 'cls' && r.dst.kind !== 'set')) continue;
     const row = (t.mods || []).find(x => x.id === r.id), D = row && modSplit(row.dst), c = D && (m.controls || []).find(x => x.id === D.pid);
-    if (c && j < eff.length) {
-      const ck = k + '/' + D.pid + '/' + (r.tgt | 0);
-      let X = cpXf.get(ck);
-      if (!X || X.sig !== sig) { const T = modTargetsOf(m, D.pid)[r.tgt | 0]; X = { sig, xf: T ? modXferOf(m, d.vals, D.pid, T) : null }; cpXf.set(ck, X); }
-      if (X.xf && xferHas(X.xf, eff[j])) {
-        const x = modXferInv(X.xf, eff[j]), lo = c.t === 'k' ? c.min : 0, hi = c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1;
-        out[D.pid] = c.t === 'k' ? lo + (hi - lo) * x : Math.round(lo + (hi - lo) * x);
-      }
+    if (c) {
+      const T = modTargetsOf(m, D.pid)[r.tgt | 0];
+      list.push({ j, pid: D.pid, xf: T ? modXferOf(m, d.vals, D.pid, T) : null, kn: c.t === 'k', lo: c.t === 'k' ? c.min : 0, hi: c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1 });
     }
     j++;
+  }
+  const P = { pay, ver, model: d.model, list, out: {} };
+  cpPlans.set(k, P);
+  return P;
+}
+function cpSnap(tid, dev, eff, st) {
+  const t = ownerOf(tid), k = st ? st.k : tid + '/' + dev, P = classicPanels.get(k);
+  if (!t || !P || P.dead || !t.dev || !t.dev[dev]) return;
+  const pay = modsPay(t);
+  if (pay.off) return;
+  const plan = cpPlan(t, k, dev, pay), L = plan.list, out = plan.out;
+  for (let i = 0; i < L.length; i++) if (L[i].pid in out) delete out[L[i].pid]; // (two rows on one control: the last in range wins, as before)
+  for (let i = 0; i < L.length; i++) {
+    const e = L[i], v = e.j < eff.length ? eff[e.j] : NaN;
+    if (e.xf && xferHas(e.xf, v)) { const x = modXferInv(e.xf, v); out[e.pid] = e.kn ? e.lo + (e.hi - e.lo) * x : Math.round(e.lo + (e.hi - e.lo) * x); }
   }
   cpLive.set(k, out);
   try { P.setLive(out); } catch (err) { console.warn(err); }
@@ -10638,6 +11085,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     perf: PERF, // (1i: tests/canvas-1i-sim)
     // (7a: tests/canvas-7a-sim) the drum machines' host and the page's drum section
     drum: DRUM, drumSend, drumToRoll, drumLoad, drumOf, drumPayload, drumNeeds, drMons, srcUi, layFlow, setProjectBpm, panic, importMidiFile, projectFile,
+    drumSetBpm, tempoGest, // ((FR Cut B phase 0: tests/tempo-mods) the drum TEMPO path, a tempo gesture in progress
     // (8: tests/canvas-8-sim) the Pads host and a module's mounted body
     pads: PADS, padsBody: id => { const B = modBodies.get(id); return B && B.kind === 'pads' ? B : null; }, padLit, loadProject: (j, o) => loadProject(j, o), applyRestore,
     // (9: tests/canvas-9-sim) the 900 Series' host, its cord layer (the world's), the page's patch section
@@ -10807,6 +11255,8 @@ function boot() {
   recoveredNotice(pre);
   if (readOnly) goReadOnly(readOnly); // a newer project met while starting: Save disabled, the notice (SPEC-canvas §5.8)
   wkClock.add({ name: 'frameTick', essential: true, fn: frameTick }); // ((IMPL-FR §3 A1) the frame loop: a client of the frame clock at its cap)
+  wkClock.add({ name: 'fastTick', live: fastAny, fn: fastTick, shed: true }); // ((FR Cut B §5.3) the fast lane's consumers per frame, after frameTick; not essential: 10 fps under reduced motion; (review 2, P1-1) shed: every other frame under the clock's drop level ≥ 2
+  try { const mq = matchMedia('(prefers-reduced-motion: reduce)'); if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', () => monitors.sync()); } catch { /* no media queries */ } // ((FR Cut B §5.2) the fast lane's rate: ≤ 30 under reduced motion
   // (IMPL-A §3.2 item 4) the app: the page is up — the Sound in background setting, then ready (native's queued calls, an
   // open from Files or a resume, wait for it; the restart flag goes back to false)
   if (SHELL) { shellBootMs = performance.now(); shellPost({ t: 'bg', on: bgOn() }); shellPost({ t: 'ready' }); }

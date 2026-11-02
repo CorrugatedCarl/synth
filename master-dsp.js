@@ -39,7 +39,9 @@
  *   Meters(fs, { lite })   push(L, R, n, o = 0) (R may be L); summary(out?) → { m, s, i, lra, tp: [l, r], tpMax,
  *                          pk: [l, r], pkMax, corr } (LUFS / LU / dBTP / dBFS numbers, −Infinity for silence, corr NaN
  *                          for "—"; tp / pk since the previous summary, which restarts them); short() → the short-term
- *                          LUFS now; peak3() → the sample peak (linear) of the short-term window and the sub-block in
+ *                          LUFS now; peek(out, keep?) → [tp L, tp R, pk L, pk R (dB since the previous peek), corr, M, S]
+ *                          (FR Cut B: the fast lane's own peaks; keep: no restart; out null: only the restart);
+ *                          peak3() → the sample peak (linear) of the short-term window and the sub-block in
  *                          progress (lite too); integrate(on) — whether I and LRA accumulate (default on; MASTER: only
  *                          while the transport plays, review 2 F4); restart() — the integrated value, LRA and the
  *                          holds (a transport start from a stop, the OUT's reset tap: the sub-block phase restarts
@@ -174,6 +176,7 @@
         if (!this.lite) { this.hc.fill(0); this.he.fill(0); this.lc.fill(0); this.le.fill(0); }
         this.iN = 0; this.iE = 0; this.lN = 0; this.lE = 0;
         this.tL = 0; this.tR = 0; this.pL = 0; this.pR = 0; this.tH = 0; this.pH = 0;
+        this.tFL = 0; this.tFR = 0; this.pFL = 0; this.pFR = 0;   // (FR Cut B: the fast lane's peaks since its last peek)
       }
       push(L, R, n, o) {
         const o0 = o | 0, e = o0 + (n | 0), sub = this.sub;
@@ -195,8 +198,10 @@
             if (++sn === sub) { this.se = se; this.pq = pq; this.subEnd(); se = 0; sn = 0; pq = 0; }
           }
         } else {
+          // (FR Cut B §2.4: the peaks of this block from 0, folded after the loop into summary's and the fast lane's — max is
+          // exact, so summary's running max is today's bit for bit, at no per-sample cost)
           const BL = this.BL, BR = this.BR, T = this.T, np = this.np, ca = this.ca;
-          let w = this.tw, tL = this.tL, tR = this.tR, pL = this.pL, pR = this.pR, cLR = this.cLR, cLL = this.cLL, cRR = this.cRR;
+          let w = this.tw, tL = 0, tR = 0, pL = 0, pR = 0, cLR = this.cLR, cLL = this.cLL, cRR = this.cRR;
           for (let j = o0; j < e; j++) {
             const x = +L[j], y = +R[j];
             // K-weighting (DF2T shelf → high-pass), the sub-block energy
@@ -230,7 +235,9 @@
             if (++sn === sub) { this.se = se; this.pq = pq; this.subEnd(); se = 0; sn = 0; pq = 0; }
           }
           if (cLL < 1e-30) cLL = 0; if (cRR < 1e-30) cRR = 0; if (cLR < 1e-30 && cLR > -1e-30) cLR = 0;
-          this.tw = w; this.tL = tL; this.tR = tR; this.pL = pL; this.pR = pR; this.cLR = cLR; this.cLL = cLL; this.cRR = cRR;
+          this.tw = w; this.cLR = cLR; this.cLL = cLL; this.cRR = cRR;
+          if (tL > this.tL) this.tL = tL; if (tR > this.tR) this.tR = tR; if (pL > this.pL) this.pL = pL; if (pR > this.pR) this.pR = pR;
+          if (tL > this.tFL) this.tFL = tL; if (tR > this.tFR) this.tFR = tR; if (pL > this.pFL) this.pFL = pL; if (pR > this.pFR) this.pFR = pR;
         }
         const F = 1e-30;
         if (sl1 < F && sl1 > -F) sl1 = 0; if (sl2 < F && sl2 > -F) sl2 = 0; if (hl1 < F && hl1 > -F) hl1 = 0; if (hl2 < F && hl2 > -F) hl2 = 0;
@@ -297,6 +304,18 @@
         o.corr = this.cLL < 1e-20 || this.cRR < 1e-20 ? NaN : Math.max(-1, Math.min(1, this.cLR / sqrt(this.cLL * this.cRR)));
         this.tL = 0; this.tR = 0; this.pL = 0; this.pR = 0;
         return o;
+      }
+      // FR Cut B §2.4 (the fast lane, MASTER's 'meters' part): [tp L, tp R, pk L, pk R (dB, the maxima since the previous peek),
+      // corr, momentary, short-term (LUFS)] into out (−Infinity silence, NaN corr "—", as summary); restarts only the fast peaks
+      // (keep: none — a read for the tests' truth); out null: only the restart. summary's peaks, holds and readings untouched
+      peek(out, keep) {
+        if (out) {
+          out[0] = dbOf(this.tFL); out[1] = dbOf(this.tFR); out[2] = dbOf(this.pFL); out[3] = dbOf(this.pFR);
+          out[4] = this.cLL < 1e-20 || this.cRR < 1e-20 ? NaN : Math.max(-1, Math.min(1, this.cLR / sqrt(this.cLL * this.cRR)));
+          out[5] = lufs(this.zm); out[6] = lufs(this.zs);
+        }
+        if (!keep) { this.tFL = 0; this.tFR = 0; this.pFL = 0; this.pFR = 0; }
+        return out;
       }
     }
 

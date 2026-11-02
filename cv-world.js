@@ -145,6 +145,10 @@ export { perfOf };
  * setting; Medium and Low draw at 60 — where the display allows: the clock's 60 floor — cords too) */
 export const FPS_OPTS = Object.freeze(['120', '144', '165', '240', 'display']), FPS_PREF = 'synth.cv.fps';
 export const FPS_Q = Object.freeze({ high: Infinity, medium: 60, low: 60 });
+/** (FR Cut B §5.2, IMPL-FR-B) the fast lane's data rate per preset (Hz: the engine's output posts the motion displays read at the heard
+ * frame — the dots and rings still draw every frame on every preset), the engine's clamp, and WebKit's cap (Safari, the iPad: §6) — 0,
+ * the lane off there (Cut A's behaviour; review 2, the lead's P2-3: G8i could not run) until the device harness measures it */
+export const FAST_Q = Object.freeze({ high: 120, medium: 60, low: 30 }), FAST_MAX = 120, FAST_WEBKIT = 0;
 export function fpsOf(v) {
   if (v === 'display') return Infinity;
   const n = typeof v === 'number' || (typeof v === 'string' && /^\d{1,4}$/.test(v)) ? +v : NaN;

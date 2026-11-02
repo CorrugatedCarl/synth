@@ -1082,6 +1082,44 @@ test('kit.live(shown): hidden ARP / CLIP / keyboard panels are not painted; a CL
   kb.destroy();
 });
 
+/* ================================================================ FR Cut B (IMPL-FR-B §4.3, §4.6, FR7) */
+test('IMPL-FR-B FR7 / §4.6: the CLIP page reads the raw slow message (kit.msg()) — its play state, the recorder\'s clock and the post-anchored playhead never take the heard-time view (kit.snap()); the ARP page\'s play states and pattern playhead are a kit.frame client reading the view', () => {
+  const { s, kit, T, root } = mount({ host: { onInput: () => {} } });
+  s.clip.clips[0].len = 16;
+  const f0 = T.frames.length, l0 = T.lives.length;
+  const clip = new seq.ClipPage(root, kit);
+  assert.equal(T.lives.length, l0 + 1, 'CLIP: a kit.live client (the recorder runs while hidden)');
+  assert.equal(T.frames.length, f0, 'CLIP: no kit.frame client');
+  // the view says the clip plays, the raw message says it does not: CLIP follows the message
+  T.snap = snapSeq({ 4: 1, 5: 3 });
+  T.msg = snapSeq({});
+  assert.equal(clip.clipHead(0), -1, 'the raw message: not playing');
+  T.msg = snapSeq({ 4: 1, 5: 6 });
+  assert.equal(clip.clipHead(0), 6, 'the raw message\'s position');
+  // a new snapshot is seen by the message object (and kit.snapSeq), not by the view object
+  assert.equal(clip.seeSnap(), true);
+  assert.equal(clip.seeSnap(), false);
+  T.msg = snapSeq({ 4: 1, 5: 7 });
+  assert.equal(clip.seeSnap(), true, 'a new message object');
+  T.snap = snapSeq({ 4: 1, 5: 8 });
+  assert.equal(clip.seeSnap(), false, 'a new view object alone is no new message');
+  clip.destroy();
+  T.msg = undefined;
+  // ARP: its live work on kit.frame (fn(shown, fast)); the pattern editor's playhead from the view's seq
+  const { s: s2, kit: k2, T: T2, root: r2 } = mount();
+  const fa = T2.frames.length, la = T2.lives.length;
+  const arp = new seq.ArpPage(r2, k2);
+  assert.deepEqual([T2.frames.length - fa, T2.lives.length - la], [1, 0], 'ARP: a kit.frame client, no kit.live');
+  s2.arp.slots[0].shape = 1;
+  T2.paint();
+  assert.ok(arp.openPattern() !== false && arp.patEd, 'the pattern editor open');
+  const q = snapSeq({ 0: 0, 1: 5 });
+  T2.snap = q;
+  T2.msg = snapSeq({ 0: 0, 1: 2 });
+  assert.equal(arp.patEd.roll.o.playhead(), 5, 'the pattern playhead: the view\'s');
+  arp.destroy();
+});
+
 /* ================================================================ IMPL-FR Cut A §3 B6: the CLIP playhead at the display's rate */
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e, a + ' != ' + b);
 test('IMPL-FR §3 B6: clipHeadAt — a posted clip playhead carried to a heard song beat: 4·rate sixteenths per UNSWUNG beat (swingInv, as the sequencer), Normal / Reverse wrapped into the region, the other modes clamped to it, Static held', () => {

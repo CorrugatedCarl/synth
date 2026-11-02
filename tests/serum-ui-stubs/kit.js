@@ -5,9 +5,11 @@
 // kit does; panel(…, o) keeps o.items on the returned shell (P.items) and o.collapse as P.collapse; edits apply at once
 // and are logged; nothing is sent anywhere. (Milestone 3 members: page / under / editor / bpm / uiState / srcUsed /
 // selectSrc / srcMenu / moduleMenu / lockModule / tile / opts (makeKit({ opts })) / sx (null: no host behind it).)
+// (FR Cut B, IMPL-FR-B §4.1 / §4.3) msg() = the raw slow message's s (T.msg when a test sets one, else T.snap: no heard-time view
+// here), frame(fn) = fn(shown, fast) on every paint and snapshot (T.fast: the fast lane live, default false), registered in T.frames.
 //
 //   const kit = makeKit({ doc, s, fx, host, snap, wt, prefs });
-//   const T = stubOf(kit);   // { log, binds, canvases, lives, pops, prompts, held, paint(), setSnap(snap), destroy(), queued,
+//   const T = stubOf(kit);   // { log, binds, canvases, lives, frames, pops, prompts, held, paint(), setSnap(snap), destroy(), queued,
 //                            //   shown (default true: the page is on screen; kit.live callbacks get it, as serum-ui's) }
 //   log entries: ['edit' | 'editFx', label, phase, ui] · ['setN', id, n, phase] · ['notify', text] · ['openWtEditor', o]
 import * as core from '../../serum-core.js?v=9';
@@ -44,8 +46,8 @@ export function stubOf(kit) { return STUBS.get(kit) || null; }
 
 export function makeKit(o) {
   const O = o || {}, doc = O.doc || globalThis.document;
-  const T = { log: [], binds: [], canvases: [], lives: [], pops: [], prompts: [], held: new Set(), paints: 0, snaps: 0, queued: 0, dead: false,
-    snap: O.snap || null, pop: null };
+  const T = { log: [], binds: [], canvases: [], lives: [], frames: [], pops: [], prompts: [], held: new Set(), paints: 0, snaps: 0, queued: 0, dead: false,
+    snap: O.snap || null, msg: undefined, fast: false, pop: null };
   const s = () => O.s, fx = () => O.fx || null;
   const getN = id => { const v = virtGet(s(), id); return v !== undefined ? v : core.destBase(s(), fx(), id); };
   const setN = (id, n, ph) => {
@@ -86,6 +88,7 @@ export function makeKit(o) {
     host: O.host || {},
     s, fx,
     snap: () => T.snap,
+    msg: () => (T.msg !== undefined ? T.msg : T.snap),
     knob: (id, oo) => {
       const P = opt(oo), d = destOf(id);
       const k = { dest: id, label: P.label || '', get: () => getN(id), set: (n, ph) => setN(id, n, ph), def: () => d.def, fmt: fmt(id),
@@ -142,6 +145,7 @@ export function makeKit(o) {
       return P;
     },
     live: fn => { T.lives.push(fn); return fn; },
+    frame: fn => { T.frames.push(fn); return fn; },
     getN, setN,
     dragging: id => T.held.has(id),
     queue: () => { T.queued++; },
@@ -170,6 +174,7 @@ export function makeKit(o) {
     T.paints++;
     for (const w of T.binds) w.update();
     for (const f of T.lives) f(T.shown !== false);   // kit.live(fn): fn(shown) — set T.shown = false to paint a hidden page
+    for (const f of T.frames) f(T.shown !== false, !!T.fast);
     for (const cv of T.canvases) {
       const k = cv.key();
       if (k === cv.last) continue;
@@ -178,7 +183,7 @@ export function makeKit(o) {
       if (g) cv.draw(g, 300, 120, 1);
     }
   };
-  T.setSnap = sn => { T.snap = sn || null; T.snaps++; for (const f of T.lives) f(T.shown !== false); };
+  T.setSnap = sn => { T.snap = sn || null; T.snaps++; for (const f of T.lives) f(T.shown !== false); for (const f of T.frames) f(T.shown !== false, !!T.fast); };
   T.destroy = () => { T.dead = true; if (T.pop) T.pop.close(); };
   STUBS.set(kit, T);
   return kit;

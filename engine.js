@@ -1774,7 +1774,7 @@ class Inst {
     this.ct = null; this.pat.fill(0); this.patSeen = false; this.mon = false;
     this.nfG = 1; this.nfT = 1; this.sxW = 0; this.sxWK = ''; this.sxWarm = null;
     this.lastNote = 60; this.mpe.fill(0); this.vOwn.fill(0); this.audK.fill(0);
-    this.sqOff(); this.sxSeq = null; this.vcN = 0; this.rr.fill(0); this.mixPk.fill(0); this.monoCh = 0; this.monoEx = null;
+    this.sqOff(); this.sxSeq = null; this.vcN = 0; this.rr.fill(0); this.mixPk.fill(0); this.mixPkF.fill(0); this.monoCh = 0; this.monoEx = null;
     this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0;
     this.setOS(os);
     this.dacHold = this.dacT = this.dacPend = 0; this.osPend = 0; this.osR = 1; this.osHold = 0; this.quietF = 0;
@@ -1834,7 +1834,7 @@ class Inst {
     // (the sequencer already held the key for the song / the keys), 3 straight to the allocator (owner 1), 4 = 1 and the
     // song / the keys struck the key since (it is down until both let go)
     this.vOwn = new Uint8Array(SXV); this.audK = new Uint8Array(128);
-    this.mixPk = new Float64Array(4);
+    this.mixPk = new Float64Array(4); this.mixPkF = new Float64Array(4); // (mixPkF: FR Cut B, the fast lane's own — postFast restarts it)
     // CP.outMask of the current patch (sxMask: the pairs rendered, incl. bus pairs still draining after their last send was
     // switched off; sxReal: the patch's own mask; sxRel / sxRelN: the draining bus bits and their frames left); bus pairs
     // rendered in the last span (bits 4, 8)
@@ -3449,13 +3449,14 @@ class Inst {
     // snapshot meters (§6.20 mix[7…10]: Bus 1, Bus 2, Main, Direct). "The rack adds bus/main/direct": a rack with the
     // FXRack.mixPeaks(pk) hook reports them where it produces them (buses after their racks and faders, Main without the
     // Direct pair, Direct after its fader); without it (fx-dsp before the hook, or no rack) the engine's taps stand in:
-    // the bus inputs and the direct pair before the rack, the whole output after it
+    // the bus inputs and the direct pair before the rack, the whole output after it. FR Cut B §2.4: each block's maximum once,
+    // folded into the slow peaks (mixPk) and the fast lane's (mixPkF) — max is exact: the slow values are today's
     const mixHook = this.mon && this.rack !== null && typeof this.rack.mixPeaks === 'function';
     if (this.mon && !mixHook) {
-      const pk = this.mixPk;
-      if (b1) pk[0] = this.peak2(b1Lb, b1Rb, n, pk[0]);
-      if (b2) pk[1] = this.peak2(b2Lb, b2Rb, n, pk[1]);
-      if (dir) pk[3] = this.peak2(dLb, dRb, n, pk[3]);
+      const pk = this.mixPk, pf = this.mixPkF;
+      if (b1) { const p = this.peak2(b1Lb, b1Rb, n, 0); if (p > pk[0]) pk[0] = p; if (p > pf[0]) pf[0] = p; }
+      if (b2) { const p = this.peak2(b2Lb, b2Rb, n, 0); if (p > pk[1]) pk[1] = p; if (p > pf[1]) pf[1] = p; }
+      if (dir) { const p = this.peak2(dLb, dRb, n, 0); if (p > pk[3]) pk[3] = p; if (p > pf[3]) pf[3] = p; }
     }
     if (this.rack) {
       const tf = Date.now(); // (its share of the load: the FX module's CPU, §6.8 stats.per)
@@ -3470,8 +3471,8 @@ class Inst {
       for (let i = 0; i < n; i++) { const g = g0 + dg * (i + 1); Lb[i] *= g; Rb[i] *= g; }
       this.nfG = this.nfT;
     }
-    if (mixHook) this.rack.mixPeaks(this.mixPk);
-    else if (this.mon) this.mixPk[2] = this.peak2(Lb, Rb, n, this.mixPk[2]); // the main output (after the rack)
+    if (mixHook) { const pk = this.mixPk, pf = this.mixPkF; this.rack.mixPeaks(pk); for (let k = 0; k < 4; k++) if (pk[k] > pf[k]) pf[k] = pk[k]; }
+    else if (this.mon) { const p = this.peak2(Lb, Rb, n, 0); if (p > this.mixPk[2]) this.mixPk[2] = p; if (p > this.mixPkF[2]) this.mixPkF[2] = p; } // the main output (after the rack)
     // a released bus pair (setSerum): rendered until the voices have written nothing into it for 256 frames (their sends
     // glide to exactly 0 and then skip the pair; no send can rise again without a new patch) and its decimators have
     // drained, at most 1 s
@@ -3544,6 +3545,88 @@ function facade(T) {
   }
 }
 
+// FR Cut B §2 (docs/canvas/IMPL-FR-B.md): the fast lane. {t: 'fastOn', hz, ids, ix, ixv} from a display that asks: hz 0 off, else
+// 1 … FAST_MAX posts a second (clamped; non-finite: 0); ids the parts (a subset of the watched ids — one not watched posts nothing
+// until it is); ix {instId: Int16Array} a Serum part's requested eff indices (sorted, unique, ≤ FAST_IX, 0 ≤ i < NSV + MAXFX: the
+// rest dropped); ixv echoed as k. Posts {t: 'fast', F = this.frames, …}: outputs only, from reads of their own (side-effect-free
+// but for the fast peaks, never the slow lane's), one persistent message object per part (four for a Serum: with / without q,
+// gr), their arrays re-fetched every post (a layout or rows change may replace them) — no allocation per post. hz > 30: its own
+// accumulator gate (fastAcc, the first post at the end of the next quantum); 0 < hz ≤ 30: one post right after each slow one
+const FAST_MAX = 120, FAST_IX = 64;
+function fastHzOf(h) { const x = +h; return x - x === 0 && x > 0 ? (x < 1 ? 1 : x > FAST_MAX ? FAST_MAX : x) : 0; }
+// a part's requested eff indices: the valid prefix of `want` (sorted, unique, in range), ≤ FAST_IX
+function fastIxOf(want) {
+  const SM = globalThis.SxMod, top = SM ? SM.NSV + SM.MAXFX : 0, L = want && typeof want.length === 'number' ? want : null, k = [];
+  if (L !== null) for (let j = 0; j < L.length && k.length < FAST_IX; j++) { const i = L[j]; if (i === (i | 0) && i >= 0 && i < top && (k.length === 0 || i > k[k.length - 1])) k.push(i); }
+  return Int16Array.from(k);
+}
+// the persistent messages by part id (message time: allocation allowed). Track: an Inst / chain id carries every shape its part
+// may post — s[(q ? 1 : 0) | (gr ? 2 : 0)] a Serum's (v = Float32Array(70 + n), q Float64Array(16), shared), e a classic Inst's,
+// c a chain's (a Serum's own FX 'iN/fx' never posts: no fast part of its own) —; 'mods' {mc, x: Float32Array(28)}. MASTER:
+// 'meters' {m: Float32Array(7)}, 'mfx' c, 'mods'
+function fastParts(ids, ix, k, master) {
+  const M = Object.create(null), L = Array.isArray(ids) ? ids : [], SD = globalThis.SerumDSP, N = SD && SD.FAST ? SD.FAST.N : 70;
+  for (let j = 0; j < L.length; j++) {
+    const id = L[j];
+    if (typeof id !== 'string' || id === '' || M[id] !== undefined) continue;
+    if (id === 'mods') { M[id] = { m: { t: 'fast', F: 0, mc: null, x: new Float32Array(28) }, h: fastH() }; continue; }
+    if (master) {
+      if (id === 'meters') M[id] = { m: { t: 'fast', F: 0, m: new Float32Array(7) }, h: fastH() };
+      else if (id === 'mfx') M[id] = { c: { t: 'fast', F: 0, c: id, gr: null, mo: null }, h: fastH() };
+      continue;
+    }
+    const x = fastIxOf(ix && typeof ix === 'object' ? ix[id] : null), v = new Float32Array(N + x.length), q = new Float64Array(16);
+    M[id] = { ix: x, n: x.length, v, q, e: { t: 'fast', F: 0, i: id, e: null }, c: { t: 'fast', F: 0, c: id, gr: null, mo: null },
+      s: [{ t: 'fast', F: 0, i: id, k, v }, { t: 'fast', F: 0, i: id, k, v, q }, { t: 'fast', F: 0, i: id, k, v, gr: null }, { t: 'fast', F: 0, i: id, k, v, q, gr: null }], h: fastH() };
+  }
+  return M;
+}
+// (review 2, P2-1) the lane idles: a part posts while its payload changes, once more when it holds (a flat last pair: nothing for
+// the ring to extrapolate), then nothing until it changes — at rest its rings go stale and the page's slow path paints (the marker
+// overlay gone, M-B's rule). The change first re-posts the held values stamped at the part's previous check (the fast quantum
+// before it: the ring's bracket spans one period, never the pause — a pause past EXTRA_S starts it afresh), then the new ones. A
+// part's hold (fastParts): w the twin of the message last posted (its arrays copies — allocated at a new shape or length only, never
+// per post), m that message, n the unchanged checks in a row, cF the F of the last check. Fast posts only: FR1b holds as before
+const FAST_A = Object.freeze(['v', 'q', 'gr', 'e', 'mo', 'mc', 'x', 'm']);
+const fastH = () => ({ w: null, m: null, n: 0, cF: 0 });
+// m's arrays equal to the twin's: the same message (shape), the same lengths, element by element (NaN equal to NaN)
+function fastSame(h, m) {
+  const w = h.w;
+  if (w === null || h.m !== m) return false;
+  for (let j = 0; j < FAST_A.length; j++) {
+    const k = FAST_A[j], a = m[k];
+    if (a === undefined) continue;
+    const b = w[k];
+    if (a === null || b === null) { if (a !== b) return false; continue; }
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) { const x = a[i], y = b[i]; if (x !== y && (x === x || y === y)) return false; }
+  }
+  return true;
+}
+function fastKeep(h, m) {
+  let w = h.w;
+  if (w === null || h.m !== m) { w = h.w = Object.assign({}, m); h.m = m; }
+  for (let j = 0; j < FAST_A.length; j++) {
+    const k = FAST_A[j], a = m[k];
+    if (a === undefined) continue;
+    if (a === null) { w[k] = null; continue; }
+    const b = w[k];
+    if (b === null || b === a || b.length !== a.length) w[k] = a.slice(); else b.set(a);
+  }
+}
+// a part's post through its hold (above): m filled, F = the processor's frames
+function fastSend(port, h, m, F) {
+  if (fastSame(h, m)) {
+    h.cF = F;
+    if (++h.n === 1) port.postMessage(m);
+    return;
+  }
+  if (h.n >= 2) { const w = h.w; w.F = h.cF; port.postMessage(w); }
+  h.n = 0; h.cF = F;
+  port.postMessage(m);
+  fastKeep(h, m);
+}
+
 // The track: the AudioWorkletProcessor 'synth-engine' (§6.2). It owns the events (song, MIDI OUT ring, the Insts'
 // sequencers → spans on the 4-frame grid), the transport, message dispatch, panic / end, the monitors and stats, and the
 // output stage (panicFade → DC block, limiter, clip); its Insts and Chains render each span. Until its first {t: 'graph'}
@@ -3571,6 +3654,9 @@ class Track extends Facade {
     this.ext = new Float64Array(EXT_N * 4); this.extN = 0;
     this.pnN = 0; this.pnM = Math.max(1, Math.round(this.base * 0.005)); // panic: frames left of the output fade, its length
     this.mon = false; this.monF = 0; // a snapshot / FX monitor subscription is on (smon / mon); frames since the last one
+    // FR Cut B §2: the fast lane — posts a second (0 off), its period and the frames since its last post (hz > 30), the parts'
+    // persistent messages by id (fastParts), the ix version echoed as k
+    this.fastHz = 0; this.fastP = 0; this.fastAcc = 0; this.fastM = null; this.fastK = 0;
     this.loadT = 0; this.statN = 0; this.snd = 0; // (snd: an Inst sounded in this stats window — stats())
     this.lim = new Limiter(this.base);
     this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
@@ -3985,6 +4071,7 @@ class Track extends Facade {
     this.loadT = 0; this.statN = 0; this.snd = 0; this.c0.t = 0; this.c0.mon = false;
     this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
     this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0; this.qF = 0; this.inK = null;
+    this.fastHz = 0; this.fastP = 0; this.fastAcc = 0; this.fastM = null; this.fastK = 0;
     this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0); this.liveK.fill(0);
     this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null; this.mcMon = false; this.c0.mcOn = 0;
     this.i0.restore(os);
@@ -4008,6 +4095,7 @@ class Track extends Facade {
       // (legacy), mon the Insts / Chains by id (SPEC-canvas §6.8: the modules on screen)
       case 'smon': this.watch(!!d.on, null); break;
       case 'mon': this.watch(false, d.ids); break;
+      case 'fastOn': this.fastOn(d); break; // (FR Cut B §2.1: the fast lane — no snapshot here)
       case 'fxph': this.fxph(d); break;
       case 'panic': this.panic(); break;
       case 'song': this.songMsg(d); break;
@@ -4106,7 +4194,7 @@ class Track extends Facade {
       I.mon = has(I.id); c.mon = has(c.id);
       this.mon = I.mon || c.mon || this.mcMon; this.monF = 0;
       if (I.sx) I.sx.mon = I.mon ? 1 : 0;
-      if (this.mon) this.postMon();
+      if (this.mon) { this.postMon(); if (this.fastHz > 0 && this.fastHz <= 30) this.postFast(); }
       return;
     }
     let m = this.mcMon;
@@ -4117,7 +4205,94 @@ class Track extends Facade {
     }
     for (const c of this.chains) { c.mon = has(c.id); if (c.mon) m = true; }
     this.mon = m; this.monF = 0;
-    if (this.mon) this.postMon();
+    if (this.mon) { this.postMon(); if (this.fastHz > 0 && this.fastHz <= 30) this.postFast(); }
+  }
+  // FR Cut B §2.1: {t: 'fastOn', hz, ids, ix, ixv} — the rate, the parts' persistent messages (fastParts), the first post at the end
+  // of the next quantum; the fast peaks restarted when the lane starts (nothing from before it). Nothing else: no snapshot here
+  fastOn(d) {
+    const hz = fastHzOf(d.hz), was = this.fastHz;
+    this.fastHz = hz; this.fastP = hz > 0 ? this.base / hz : 0; this.fastAcc = this.fastP;
+    this.fastK = typeof d.ixv === 'number' && d.ixv - d.ixv === 0 ? d.ixv : 0;
+    if (hz === 0) { this.fastM = null; return; }
+    this.fastM = fastParts(d.ids, d.ix, this.fastK, false);
+    if (was === 0) for (const I of this.insts) { I.mixPkF.fill(0); if (I.sx) I.sx.pkF.fill(0); }
+  }
+  // the fast posts (§2.2) in postMon's order: per watched Inst / chain with a fast part, then 'mods' (F = this.frames); each through
+  // its part's hold (fastSend: none while its payload holds)
+  postFast() {
+    const M = this.fastM;
+    if (M === null) return;
+    const F = this.frames;
+    if (this.graphed === 0) {
+      const I = this.i0, c = this.c0;
+      if (I.mon) { const d = M[I.id]; if (d !== undefined) this.fastInst(I, d, F); }
+      if (c.mon) { const d = M[c.id]; if (d !== undefined) this.fastChain(c, d, F, I.kind === 'serum'); }
+    } else {
+      const X = this.insts, C = this.chains;
+      for (let k = 0; k < X.length; k++) { const I = X[k]; if (I.mon) { const d = M[I.id]; if (d !== undefined) this.fastInst(I, d, F); } }
+      for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.mon) { const d = M[c.id]; if (d !== undefined) this.fastChain(c, d, F, false); } }
+    }
+    const mc = this.mc;
+    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); fastSend(this.port, d.h, m, F); } }
+  }
+  // an Inst's fast post: a Serum {i, k, v, q?, gr?} (v: SerumDSP.fastSnap, its mix[7…11) the engine's taps, mixPkF restarted; q
+  // sq.snapshot with a sequencer; gr its own rack's grFast() with a GR unit); a classic Inst with ModCore rows {i, e} (the slow rule)
+  fastInst(I, d, F) {
+    if (I.kind === 'serum') {
+      const SD = globalThis.SerumDSP;
+      if (!SD || !I.sx) return;
+      const v = d.v, pf = I.mixPkF;
+      SD.fastSnap(I, v, d.ix, d.n, 0);
+      for (let k = 0; k < 4; k++) { const p = pf[k]; v[7 + k] = p > 1e-6 ? 20 * Math.log10(p) : -120; pf[k] = 0; }
+      const sq = I.sxSeq, hq = sq !== null && typeof sq.snapshot === 'function', r = I.rack, g = r !== null && typeof r.grFast === 'function' ? r.grFast() : null;
+      if (hq) sq.snapshot(d.q);
+      const m = d.s[(hq ? 1 : 0) | (g !== null ? 2 : 0)];
+      m.F = F; if (g !== null) m.gr = g;
+      fastSend(this.port, d.h, m, F);
+      return;
+    }
+    if (this.mc === null || (I.moN === 0 && I.moFN === 0)) return;
+    const m = d.e; m.F = F; m.e = I.modEff();
+    fastSend(this.port, d.h, m, F);
+  }
+  // a panel's (legacy: c0's) fast post {c, gr, mo}: its rack's grFast() and its ModCore FX-context offsets; none when both are null.
+  // own (review 2, P3-1): a legacy Serum's c0 — its rack is the Serum's (I.rack = C.rack), whose GR rides the Inst's post: c0 posts
+  // only with ModCore offsets (else the page got that GR twice)
+  fastChain(c, d, F, own) {
+    const r = c.rack, mo = this.mc !== null ? this.mc.fxMon(c.id) : null;
+    if (own && mo === null) return;
+    const g = r !== null && typeof r.grFast === 'function' ? r.grFast() : null;
+    if (g === null && mo === null) return;
+    const m = d.c; m.F = F; m.gr = g; m.mo = mo;
+    fastSend(this.port, d.h, m, F);
+  }
+  // (tests: G5′'s truth, §2.4) the fast reads now, as postFast would post them, into fresh copies — the peaks (a Serum's mix) NaN,
+  // no accumulator restarted, nothing posted → {[part id]: {v, q, gr, e, mo, mc, x}}
+  fastRead() {
+    const M = this.fastM, o = {}, SD = globalThis.SerumDSP, mc = this.mc;
+    if (M === null) return o;
+    const cp = a => (a ? a.slice() : null);
+    const part = (I, c) => {
+      const d = M[I !== null ? I.id : c.id];
+      if (d === undefined) return;
+      if (I !== null && I.kind === 'serum') {
+        if (!SD || !I.sx) return;
+        const v = new Float32Array(d.v.length), q = new Float64Array(16), sq = I.sxSeq, r = I.rack;
+        SD.fastSnap(I, v, d.ix, d.n, 1);
+        for (let k = 7; k < 11; k++) v[k] = NaN;
+        if (sq !== null && typeof sq.snapshot === 'function') sq.snapshot(q);
+        o[I.id] = { v, q: sq !== null ? q : null, gr: r !== null && typeof r.grFast === 'function' ? cp(r.grFast()) : null };
+      } else if (I !== null) {
+        if (mc !== null && (I.moN > 0 || I.moFN > 0)) o[I.id] = { e: cp(I.modEff()) };
+      } else {
+        const r = c.rack;
+        o[c.id] = { gr: r !== null && typeof r.grFast === 'function' ? cp(r.grFast()) : null, mo: mc !== null ? cp(mc.fxMon(c.id)) : null };
+      }
+    };
+    if (this.graphed === 0) { if (this.i0.mon) part(this.i0, null); if (this.c0.mon) part(null, this.c0); }
+    else { for (const I of this.insts) if (I.mon) part(I, null); for (const c of this.chains) if (c.mon) part(null, c); }
+    if (this.mcMon && mc !== null && M.mods !== undefined) o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) };
+    return o;
   }
   // RULINGS2 F1: every processor's rack hears of every asset stored / dropped (FXRack.assets() decides what concerns it)
   assets() {
@@ -4734,7 +4909,9 @@ class Track extends Facade {
       off += len;
     }
     this.inSpan = 0;
-    if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
+    if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); if (this.fastHz > 0 && this.fastHz <= 30) this.postFast(); }
+    // FR Cut B §2.3: the fast lane above 30 Hz on its own accumulator (48 kHz / 120 Hz: 4, 3, 3, 3, 3, 3, 3, 3 quanta)
+    if (this.fastHz > 30 && this.mon && (this.fastAcc += n) >= this.fastP) { this.fastAcc -= this.fastP; this.postFast(); }
     this.loadT += Date.now() - t0;
     if (this.snd === 0) for (let k = 0; k < I.length; k++) if (I[k].act > 0) { this.snd = 1; break; } // (stats' snd: any quantum of the window)
     this.statN += n;
@@ -5094,6 +5271,7 @@ class Master extends AudioWorkletProcessor {
     // transport: playing; the pending start's frame (NaN: none) and seek flag
     this.play = false; this.pF = NaN; this.pS = 0; this.frames = 0;
     this.mm = false; this.mx = false; this.monF = 0; this.loadT = 0; this.statN = 0;
+    this.fastHz = 0; this.fastP = 0; this.fastAcc = 0; this.fastM = null;   // (FR Cut B §2: the fast lane, the Track's fields)
     this.lat = 0; this.ending = 0; this.wf = 0;                               // (wf: the warm-up forces the rack path)
     // A/B: target, crossfade 0 … 1, the frozen gain (linear, dB), the match pending (R1-4), the gain's glide (from abG0,
     // 0 … 1: 1 = at abG); dl: the dry line (L at 0, R at dcap), grown at set time
@@ -5164,6 +5342,7 @@ class Master extends AudioWorkletProcessor {
       case 'transport': this.transportMsg(d); break;
       case 'panic': { const r = this.c.rack; if (r !== null) r.reset(false); if (this.dl !== null) this.dl.fill(0); break; } // (tails cleared at once)
       case 'mon': this.watch(d.ids); break;
+      case 'fastOn': this.fastOn(d); break;                                 // (FR Cut B §2.1: 'meters' | 'mfx' | 'mods')
       // IMPL-MM §3.2: the master's modulation rows (ModCore) and one value of its table — the Track's two cases
       case 'mods': this.modsMsg(d); break;
       case 'mval': if (this.mc !== null) this.mc.ctl(d.k, d.v); break;
@@ -5307,7 +5486,38 @@ class Master extends AudioWorkletProcessor {
     const has = id => Array.isArray(ids) && ids.indexOf(id) >= 0;
     this.mm = has('meters'); this.mx = has('mfx'); this.mcMon = has('mods'); this.c.mon = this.mx; this.monF = 0;
     if (this.mc !== null) this.mc.watch(this.mcMon);
-    if (this.mm || this.mx || this.mcMon) this.postMon();
+    if (this.mm || this.mx || this.mcMon) { this.postMon(); if (this.fastHz > 0 && this.fastHz <= 30) this.postFast(); }
+  }
+  // FR Cut B §2.1 / §2.2: the Track's fastOn and postFast by the same names — 'meters' {m: Meters.peek (its own peaks since the
+  // previous fast post), corr, M, S}, 'mfx' {c, gr, mo}, 'mods' {mc, x}; fastRead the tests' truth (the peaks NaN, nothing restarted)
+  fastOn(d) {
+    const hz = fastHzOf(d.hz), was = this.fastHz;
+    this.fastHz = hz; this.fastP = hz > 0 ? this.base / hz : 0; this.fastAcc = this.fastP;
+    if (hz === 0) { this.fastM = null; return; }
+    this.fastM = fastParts(d.ids, null, 0, true);
+    if (was === 0 && this.M !== null) this.M.peek(null);
+  }
+  postFast() {
+    const M = this.fastM;
+    if (M === null) return;
+    const F = this.frames, mc = this.mc;
+    if (this.mm && this.M !== null) { const d = M.meters; if (d !== undefined) { const m = d.m; m.F = F; this.M.peek(m.m, 0); fastSend(this.port, d.h, m, F); } }
+    if (this.mx) {
+      const d = M.mfx;
+      if (d !== undefined) {
+        const r = this.c.rack, g = r !== null && typeof r.grFast === 'function' ? r.grFast() : null, mo = mc !== null ? mc.fxMon('mfx') : null;
+        if (g !== null || mo !== null) { const m = d.c; m.F = F; m.gr = g; m.mo = mo; fastSend(this.port, d.h, m, F); }
+      }
+    }
+    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); fastSend(this.port, d.h, m, F); } }
+  }
+  fastRead() {
+    const M = this.fastM, o = {}, mc = this.mc;
+    if (M === null) return o;
+    if (this.mm && this.M !== null && M.meters !== undefined) { const m = this.M.peek(new Float32Array(7), 1); m[0] = NaN; m[1] = NaN; m[2] = NaN; m[3] = NaN; o.meters = { m }; }
+    if (this.mx && M.mfx !== undefined) { const r = this.c.rack, g = r !== null && typeof r.grFast === 'function' ? r.grFast() : null, mo = mc !== null ? mc.fxMon('mfx') : null; o.mfx = { gr: g ? g.slice() : null, mo: mo ? mo.slice() : null }; }
+    if (this.mcMon && mc !== null && M.mods !== undefined) o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) };
+    return o;
   }
   // mo (IMPL-MM §3.2, the Track's 2b halos): a ModCore with rows on the rack posts their FX-context offsets with the rack's message —
   // the host's live dot of a rack knob; the shape is unchanged without a ModCore. {t: 'smon', mc, mcx} (the Track's message, the
@@ -5377,7 +5587,8 @@ class Master extends AudioWorkletProcessor {
         this.port.postMessage({ t: 'ab', on: true, g: this.abDb, lim: this.abLim === 1 });
       }
     }
-    if ((this.mm || this.mx || this.mcMon) && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
+    if ((this.mm || this.mx || this.mcMon) && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); if (this.fastHz > 0 && this.fastHz <= 30) this.postFast(); }
+    if (this.fastHz > 30 && (this.mm || this.mx || this.mcMon) && (this.fastAcc += n) >= this.fastP) { this.fastAcc -= this.fastP; this.postFast(); } // (FR Cut B §2.3)
     if (this.w1 !== Infinity && this.fin === 0 && F0 + n >= this.w1 && this.M !== null) {
       this.fin = 1;
       const S = this.M.summary(this.sm);

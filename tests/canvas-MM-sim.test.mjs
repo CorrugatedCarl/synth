@@ -373,6 +373,10 @@ test('G5 the \'mods\' monitor id goes to MASTER while an LFO body is live on the
   assert.equal(MM.mcMons.has('master'), true);
   const pay = MM.pay(), sl = pay.slots && pay.slots.l1;
   assert.ok(sl && sl.i >= 0, 'the LFO\'s ModCore slot');
+  // ((FR Cut B §13 P2-4) the slow path: with the fast lane live a body fed fast keeps its heard values and the rack's dots their ring's —
+  // the fast lane off here, so the smon below is the truth, as it was before Cut B; tests/canvas-FR-sim pins the fast path)
+  const FRh = globalThis.__synthTest.fr;
+  FRh.force(0); await settle(1);
   const B = X.bodies.get('l1'), mc = new Float32Array(16);
   mc[sl.i] = 0.62;
   MN()._fromProc({ t: 'smon', mc, mcx: { ph: new Float32Array(20), env: new Float32Array(8) } });
@@ -385,11 +389,45 @@ test('G5 the \'mods\' monitor id goes to MASTER while an LFO body is live on the
   try {
     MN()._fromProc({ t: 'smon', c: 'mfx', gr: null, mo });
     assert.deepEqual(lives, [String(0.5 + Math.fround(0.25))], 'base + mo');
-  } finally { was.setLive = real; }
+  } finally { was.setLive = real; FRh.force(null); }
   // leaving: the id goes
   api.selectTrack(TID.a); await settle(3);
   assert.equal((cv.monitors.on.get('master') || '').split(',').includes('mods'), false, 'dropped on leaving');
   assert.equal(MM.mcMons.has('master'), false);
+});
+
+test('(FR Cut B review 1, P3) the master\'s fast path: MASTER\'s {mc, x} at F drive the LFO body\'s view at the heard frame (the phase its editors draw) and {c: \'mfx\', mo} the rack\'s live dots (the value painted on the frame) — interpolated at Fh, never the newest post\'s', async () => {
+  M.open(); await settle(3);
+  const FRh = globalThis.__synthTest.fr, Fh = () => FRh.heard(), frame = () => { sim.run(512); sim.raf(); };
+  const pay = MM.pay(), sl = pay.slots && pay.slots.l1, B = X.bodies.get('l1');
+  assert.ok(sl && sl.i >= 0 && B, 'the LFO body and its ModCore slot (the G5 cable)');
+  const fxr = pay.rows.find(r => r.dst.kind === 'fx' && P().master.mods.find(x => x.id === r.id).dst === 'mfx:fx.rev.size');
+  assert.ok(fxr, 'the reverb size row');
+  const node = MN();
+  node.proc.msg({ t: 'fastOn', hz: 0, ids: [], ix: null, ixv: 0 }); // (MASTER's own fast posts stopped: the posts below are injected)
+  sim.run(Math.ceil(0.6 * sim.ctx().sampleRate)); await settle(2);  // (stale: the rings afresh)
+  const rec = M.ui, lives = [], real = rec.ui.setLive;
+  rec.ui.setLive = f => { lives.push([Fh(), typeof f === 'function' ? f('fx.rev.size', 0.5) : f]); return real.call(rec.ui, f); }; // (what the frame paints, at its heard frame)
+  try {
+    const F0 = Fh() + 300, G = 4800, mo = k => { const a = new Float32Array(fxr.dst.fx + 1); a[fxr.dst.fx] = k; return a; };
+    const MO = j => Math.fround(0.05 + 0.1 * j), PH = j => Math.fround(0.2 + 0.1 * j);
+    for (let j = 0; j < 4; j++) {
+      const mc = new Float32Array(16), x = new Float32Array(28);
+      mc[sl.i] = 0.1 * j; x[sl.i] = 0.2 + 0.1 * j;
+      node._fromProc({ t: 'fast', F: F0 + G * j, mc, x });
+      node._fromProc({ t: 'fast', F: F0 + G * j, c: 'mfx', gr: null, mo: mo(0.05 + 0.1 * j) }); // (base + mo stays inside [0, 1]: no clamp)
+    }
+    const at = (f, Fq) => { const a = (Fq - F0) / G, j = Math.floor(a); return f(j) + (f(j + 1) - f(j)) * (a - j); };
+    const H = B.host(), phs = [];
+    for (let i = 0; i < 200 && Fh() < F0 + 3 * G - 600; i++) { frame(); if (Fh() > F0) phs.push([Fh(), H.kit.snap().lfoPh[H.slot | 0]]); }
+    const painted = lives.filter(r => r[0] > F0 && r[0] < F0 + 3 * G);
+    assert.ok(phs.length > 20 && painted.length > 10, 'frames inside the anchors: ' + phs.length + ', painted ' + painted.length);
+    assert.deepEqual(phs.filter(([q, v]) => Math.abs(v - at(PH, q)) > 1e-5), [], 'the LFO body\'s phase at each frame\'s Fh');
+    assert.deepEqual(painted.filter(([q, v]) => !(Math.abs(v - (0.5 + at(MO, q))) < 1e-5)), [], 'the rack\'s dot on each painted frame: base + mo at its Fh');
+    assert.ok(new Set(painted.map(r => r[1].toFixed(4))).size > 5, 'it moves between the anchors');
+  } finally { rec.ui.setLive = real; }
+  sim.run(Math.ceil(0.6 * sim.ctx().sampleRate)); await settle(2);
+  api.selectTrack(TID.a); await settle(3);
 });
 
 test('G5 the collision (MM4): the track and the master both hold l1 / m1 / c1 and rows r1…r3 — every master-canvas action (the cable menu\'s Bypass, the inspector\'s amount, a macro knob move, a CC, Remove All Destinations, the Delete key on a cable, Disconnect, a module delete) does its work on the master and leaves the track\'s JSON and its node\'s messages untouched', async () => {

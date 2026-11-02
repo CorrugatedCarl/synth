@@ -335,6 +335,9 @@ a message, not a field); map-fps.md (a line: superseded by IMPL-FR); row 18's li
 =================================================================================================================================
 # Part II — Cut B (design notes; its own contract round after Cut A ships)
 =================================================================================================================================
+**The contract is docs/canvas/IMPL-FR-B.md** (2026-11-01, base c515abf; it adds the track-side BPM-LFO tempo fix, the user's scope). These
+notes stay as the design record; where they differ, IMPL-FR-B wins (e.g. `{t:'fastOn'}` instead of fields on `{t:'mon'}`, the ring in
+phase 0).
 
 ## II.1 The fast lane posts **outputs** (lane E, engine.js + sx-base.js + serum-dsp.js + sx-mod.js + fx-dsp.js + master-dsp.js) [C]
 - Request: `{t:'mon', ids, fast: hz, effIx?: { [part]: Int16Array }}` — `hz` 0 / absent = off (FR1); `effIx` = **the page's requested

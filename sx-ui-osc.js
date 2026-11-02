@@ -334,6 +334,7 @@ const CSS = `
 .sxo-pane { display: grid; gap: 8px; min-width: 0; }
 .sxo-pane .sx-krow { align-items: center; }
 .sxo-dw { position: relative; min-width: 0; }
+.sxo-fmark { position: absolute; z-index: 1; display: block; margin: 0; padding: 0; border: 0; background: none; pointer-events: none; }
 .sxo-dot { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: ${P0.xy}; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; cursor: move; touch-action: none; }
 .sxo-hl { position: absolute; z-index: 2; right: 0; width: 22px; height: 12px; margin-top: -6px; padding: 0 2px; color: var(--sxd-hl-ink, #061018); background: var(--sx-accent, #4fb3ff); border-radius: 3px 0 0 3px; font: 700 8px/12px var(--mono, ui-monospace, monospace); text-align: center; cursor: ns-resize; touch-action: none; user-select: none; -webkit-user-select: none; }
 .sxo-badge { display: inline-flex; align-items: center; padding: 1px 5px; color: var(--sx-on, #6fe3a1); border: 1px solid var(--sx-on, #6fe3a1); border-radius: 3px; font: 700 8px/1.4 var(--mono, ui-monospace, monospace); letter-spacing: 0.08em; }
@@ -1566,7 +1567,10 @@ export class WTView extends TypeView {
       wvar2: P + '.wvar2', uni: P + '.uni', det: P + '.det', on: P + '.on', phase: P + '.phase' };
     this.rmM = { q: -1, v: '' };      // the remap curve's JSON (perEdit)
     this.b3 = null;                   // the 3D view's back layers: { info, w, h, dpr, pal (the palette), L: [{ p: polyline, col }], cur } (draw3d)
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
+    // ((FR Cut B §4.2) liveIds: what it draws live — WT POS (wtPos, the eff value too) and the warp amounts — while it is the active view)
+    const lids = [P + '.wt', this.ids.warp, this.ids.warp2, this.ids.wvar1, this.ids.wvar2];
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k),
+      liveIds: () => (this.active() ? lids : []) });
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
     cv.el.setAttribute('role', 'button');
@@ -1941,7 +1945,7 @@ class SmpBase extends TypeView {
     this.head.push(sm.el, load, ren, del, emb, miss);
     // display (+ overlays: X|Y dot, Hi / Lo handles) in a positioned wrapper
     const wrap = mk(d, 'div', 'sxo-dw');
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal));
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { liveIds: () => (this.active() ? this.liveIds() : []) });
     this.cv = cv;
     cv.el.setAttribute('data-oscdisp', String(o));
     cv.el.tabIndex = 0;
@@ -1978,6 +1982,8 @@ class SmpBase extends TypeView {
   dispName() { return 'waveform'; }
   hasXY() { return false; }
   xyOn() { return this.hasXY() && !!this.O().xy.on; }
+  // (FR Cut B §4.2) the ids whose live values the display's overlays draw: the X|Y dot's X / Y while it shows
+  liveIds() { return this.xyOn() ? [this.P + '.pos', this.P + '.gy'] : []; }
   overlays() {}
   buildMore() {}
   load() { pickFiles(this.kit.doc, AUDIO_ACCEPT, true).then(fl => this.drop(fl)); }
@@ -2412,15 +2418,16 @@ class SmpBase extends TypeView {
       if (k === 'ArrowLeft' || k === 'ArrowRight') { e.preventDefault(); K.setN(P + '.pos', K.getN(P + '.pos') + (k === 'ArrowRight' ? st : -st), 'set'); }
       else if (k === 'ArrowUp' || k === 'ArrowDown') { e.preventDefault(); K.setN(P + '.gy', K.getN(P + '.gy') + (k === 'ArrowUp' ? st : -st), 'set'); }
     });
-    // live position: the eff X / Y while notes sound, else the base (zoom view applied)
-    K.live(() => {
+    // live position: the eff X / Y while notes sound, else the base (zoom view applied) — (FR Cut B §4.3) a kit.frame client: every
+    // frame of the host's tick while the fast lane is live (the view at the heard frame); a style string only when it moves
+    const idX = P + '.pos', idY = P + '.gy', at = { x: NaN, y: NaN };
+    (K.frame || K.live)(() => {
       const on = this.shown && this.xyOn();
-      if (dot.style.display !== (on ? '' : 'none')) dot.style.display = on ? '' : 'none';
+      if (dot.style.display !== (on ? '' : 'none')) { dot.style.display = on ? '' : 'none'; at.x = at.y = NaN; }
       if (!on) return;
-      const v = this.viewR(), x = (this.D.liveN(P + '.pos') - v.a) / (v.b - v.a), y = 1 - this.D.liveN(P + '.gy');
-      const l = (clamp01(x) * 100).toFixed(2) + '%', t = (clamp01(y) * 100).toFixed(2) + '%';
-      if (dot.style.left !== l) dot.style.left = l;
-      if (dot.style.top !== t) dot.style.top = t;
+      const v = this.viewR(), x = clamp01((this.D.liveN(idX) - v.a) / (v.b - v.a)), y = clamp01(1 - this.D.liveN(idY));
+      if (x !== at.x) { at.x = x; const l = (x * 100).toFixed(2) + '%'; if (dot.style.left !== l) dot.style.left = l; }
+      if (y !== at.y) { at.y = y; const t = (y * 100).toFixed(2) + '%'; if (dot.style.top !== t) dot.style.top = t; }
     });
   }
 }
@@ -2565,6 +2572,7 @@ export class SpecView extends SmpBase {
   static get type() { return 'spec'; }
   dispName() { return 'spectrogram'; }
   hasXY() { return true; }
+  liveIds() { return [this.P + '.flo', this.P + '.fhi'].concat(super.liveIds()); }
   overlays(wrap) {
     const K = this.kit, d = K.doc, P = this.P;
     this.hl = [['fhi', 'HI'], ['flo', 'LO']].map(([k, t]) => {
@@ -2588,10 +2596,15 @@ export class SpecView extends SmpBase {
       h.addEventListener('keydown', e => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); K.setN(id, K.getN(id) + (e.key === 'ArrowUp' ? 0.01 : -0.01), 'set'); } });
       return { h, id };
     });
-    K.live(() => {
-      for (const { h, id } of this.hl) {
-        const t = ((1 - yOfHz(core.lawValue(id, this.D.liveN(id)))) * 100).toFixed(2) + '%';
-        if (h.style.top !== t) h.style.top = t;
+    // ((FR Cut B §4.3) a kit.frame client; a style string only when a handle moves)
+    for (const H of this.hl) H.at = NaN;
+    (K.frame || K.live)(() => {
+      for (let j = 0; j < this.hl.length; j++) {
+        const H = this.hl[j], v = 1 - yOfHz(core.lawValue(H.id, this.D.liveN(H.id)));
+        if (v === H.at) continue;
+        H.at = v;
+        const t = (v * 100).toFixed(2) + '%';
+        if (H.h.style.top !== t) H.h.style.top = t;
       }
     });
   }
@@ -2600,7 +2613,9 @@ export class SpecView extends SmpBase {
     // the spectral FILTER: a preview (click opens the curve editor popover), presets / wavetable menu
     this.ptM = { q: -1, v: '' };      // the curve's JSON (perEdit)
     this.fIds = { cut: this.P + '.cut', smix: this.P + '.smix' };
-    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr, pal) => this.drawFilt(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.filtKeyN(k) });
+    const fl = [this.fIds.cut, this.fIds.smix];
+    const fcv = K.canvas('sxo-mini', () => this.filtKey(), (g, w, h, dpr, pal) => this.drawFilt(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.filtKeyN(k),
+      liveIds: () => (this.active() ? fl : []) });
     fcv.el.tabIndex = 0;
     fcv.el.setAttribute('role', 'button');
     fcv.el.setAttribute('aria-label', T + ' spectral filter: click to edit');
@@ -2788,17 +2803,24 @@ export class OscPanel {
     return el;
   }
   // the type view of type t (built on first use under this panel's page: its binds, canvases and editors paint with the
-  // panel); its el goes before the pitch row, its head items before the routing button (VIEWS order kept among them)
+  // panel); its el goes before the pitch row, its head items before the routing button (VIEWS order kept among them) —
+  // each reference only while it is still the body's / head's child (a rig face takes the pieces it lays: a built view's
+  // el into its screen, head items, the pitch row; its ⚙ replaces route.btn — a browser's insertBefore throws on a node that
+  // left, and the type switch died with the face on the old view): the next one still there, else appended
   typeView(t) {
     const V = VIEWS.find(X => X.type === t) || VIEWS[0];
     if (this.built[V.type]) return this.built[V.type];
     const K = this.kit, make = () => new V(null, K, this.o);
     const v = this.page && typeof K.under === 'function' ? K.under(this.page, make) : make();
     this.built[V.type] = v;
-    const next = VIEWS.slice(VIEWS.indexOf(V) + 1).map(X => this.built[X.type]).find(Boolean);
-    this.body.insertBefore(v.el, next ? next.el : this.anchor || null);
-    const hRef = next && next.head.length ? next.head[0] : this.route ? this.route.btn : null;
-    for (const h of v.head) this.head.insertBefore(h, hRef);
+    const later = VIEWS.slice(VIEWS.indexOf(V) + 1).map(X => this.built[X.type]).filter(Boolean), B = this.body, Hd = this.head;
+    const own = (p, n) => !!n && n.parentNode === p;
+    const bRef = (later.find(x => own(B, x.el)) || {}).el || (own(B, this.anchor) ? this.anchor : null);
+    B.insertBefore(v.el, bRef);
+    let hRef = null;
+    for (const x of later) { hRef = arr(x.head).find(h => own(Hd, h)) || null; if (hRef) break; }
+    if (!hRef && this.route && own(Hd, this.route.btn)) hRef = this.route.btn;
+    for (const h of v.head) Hd.insertBefore(h, hRef);
     return v;
   }
   // the view of the oscillator's current type
@@ -3157,8 +3179,14 @@ export class FilterPanel {
       bus: [F + 'bus1', F + 'bus2'], filter: k });
     head.appendChild(route.btn);
     this.route = route;
-    // display: drag x = cutoff, y = res; click / Enter / Alt-click cycles the views; right-click: the view menu
-    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { maxHz: HEAVY_HZ, keyN: k => this.keyN(k) });
+    // display: drag x = cutoff, y = res; click / Enter / Alt-click cycles the views; right-click: the view menu. (FR Cut B, the
+    // user's QB) its curve a ceiling — capHz: host.curveHz() (60 on High, 30 on Medium / Low), not the heavy displays' 60 class —,
+    // its cutoff marker every frame on an overlay while the fast lane is live (markFrame); liveIds: what it draws live
+    const I = this.ids;
+    const cv = K.canvas('sx-tall', () => this.key(), (g, w, h, dpr, pal) => this.draw(g, w, h, dpr, pal), { capHz: () => this.curveHz(), keyN: k => this.keyN(k),
+      liveIds: () => [this.typeId(), I.cutoff, I.res, I.drive, I.var, I.x, I.y] });
+    this.cv = cv;
+    (K.frame || (() => {}))((on, fast) => this.markFrame(on, fast));
     const c = cv.el;
     c.tabIndex = 0;
     c.setAttribute('role', 'button');
@@ -3272,29 +3300,77 @@ export class FilterPanel {
       x: ax(F + 'x'), y: ax(F + 'y'),
     }), () => JSON.stringify([K.s().filter[k].pz, K.getN(F + 'x'), K.getN(F + 'y')]));
   }
+  // the curve's ceiling (a second): the host's, else 60
+  curveHz() {
+    const h = this.kit.host, f = h && h.curveHz;
+    let v = NaN;
+    if (typeof f === 'function') { try { v = +f.call(h); } catch (err) { v = NaN; } }
+    return v > 0 ? v : 60;
+  }
+  // (FR Cut B §4.3, the user's QB) the cutoff marker on its own canvas (sxo-fmark, right after the display, its content box) while
+  // the fast lane is live: drawn when it moves, every frame; the curve then without it (redrawn at once at either switch: cv.last).
+  // Fast off: no overlay, the marker in the curve as before
+  markFrame(shown, fast) {
+    const cv = this.cv, c = cv.el, P = c.parentNode, want = !!fast && shown !== false && !!P && !cv.hid;
+    if (want !== !!this.ovOn) {
+      this.ovOn = want;
+      cv.last = null;
+      if (!want && this.ov) this.ov.remove();
+    }
+    if (!want) return;
+    let ov = this.ov;
+    if (!ov) { ov = this.ov = mk(this.kit.doc, 'canvas', 'sxo-fmark'); ov.setAttribute('aria-hidden', 'true'); }
+    if (ov.parentNode !== P) {
+      let nx = c.nextSibling;
+      if (nx === undefined) { const L = P.childNodes || [], i = L.indexOf ? L.indexOf(c) : -1; nx = i >= 0 ? L[i + 1] || null : null; }
+      P.insertBefore(ov, nx || null);
+      this.ovW = -1;
+    }
+    const w = cv.w | 0, h = cv.h | 0, dpr = cv.dpr > 0 ? cv.dpr : 1;
+    if (!(w > 0 && h > 0)) return;
+    if (this.ovW !== w || this.ovH !== h || this.ovD !== dpr) {   // (the display re-measured: the overlay on its content box again)
+      this.ovW = w; this.ovH = h; this.ovD = dpr; this.ovX = NaN;
+      if (ov.width !== w) ov.width = w;
+      if (ov.height !== h) ov.height = h;
+      const st = ov.style;
+      st.left = ((c.offsetLeft || 0) + (c.clientLeft || 0)) + 'px'; st.top = ((c.offsetTop || 0) + (c.clientTop || 0)) + 'px';
+      st.width = (c.clientWidth || w / dpr) + 'px'; st.height = (c.clientHeight || h / dpr) + 'px';
+    }
+    const x = this.D.liveN(this.ids.cutoff) * w;
+    if (x === this.ovX) return;
+    this.ovX = x;
+    const g = ov.getContext ? ov.getContext('2d') : null;
+    if (!g) return;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = (cv.pal || P0).cur; g.fillRect(x - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
+  }
   key() { return keyStr(k => this.keyN(k)); }
   keyN(k) {
     const K = this.kit, D = this.D, s = K.s(), kk = this.k, I = this.ids, v = s.ui.filtView[kk] | 0, sn = K.snap();
     let n = 0;
     const tid = this.typeId();
+    k[n++] = this.ovOn ? 1 : 0;   // (the marker on its overlay: the curve without it)
     k[n++] = v; k[n++] = D.liveQ(tid, tid === 'f.type' ? 95 : 107); k[n++] = D.liveQ(I.cutoff, 1e4); k[n++] = D.liveQ(I.res, 1e3); k[n++] = D.liveQ(I.drive, 1e3);
     k[n++] = D.liveQ(I.var, 1e3); k[n++] = K.getN(I.on) >= 0.5 ? 1 : 0; k[n++] = dsp() ? 1 : 0; k[n++] = sxf() ? 1 : 0;
     if (this.typeN(false) === 103) { k[n++] = perEdit(K, this.pzM, () => JSON.stringify(K.s().filter[kk].pz)); k[n++] = D.liveQ(I.x, 1e3); k[n++] = D.liveQ(I.y, 1e3); }
     if (v) { k[n++] = K.snapSeq(); k[n++] = sn && sn.notes > 0 ? 1 : 0; }
     return n;
   }
-  // impulse response of the current type (types ≥ 96 through SxFilt2.impulse with X / Y / corners), or null
+  // impulse response of the current type (types ≥ 96 through SxFilt2.impulse with X / Y / corners), or null — (FR Cut B §2.6) with
+  // this display's scratch { out } (the 4096 output reused across redraws; the filter itself stays fresh per call; x / y / pz given
+  // as their defaults below 96: the same response)
   impulse(type, fc, res, drive, vr) {
-    const K = this.kit, D = this.D, F = this.F;
+    const K = this.kit, D = this.D, F = this.F, sc = this.irs || (this.irs = { out: null });
     if (type >= 96) {
       const X = sxf();
       if (X && typeof X.impulse === 'function') {
         const pz = [].concat(...arr(K.s().filter[this.k].pz).map(c => arr(c)));
-        return X.impulse(type, fc, res, drive, vr, 48000, 4096, D.liveN(F + 'x'), D.liveN(F + 'y'), pz.length === 12 ? pz : null);
+        return X.impulse(type, fc, res, drive, vr, 48000, 4096, D.liveN(F + 'x'), D.liveN(F + 'y'), pz.length === 12 ? pz : null, sc);
       }
     }
     const S = dsp();
-    return S && typeof S.filterImpulse === 'function' ? S.filterImpulse(type, fc, res, drive, vr, 48000, 4096) : null;
+    return S && typeof S.filterImpulse === 'function' ? S.filterImpulse(type, fc, res, drive, vr, 48000, 4096, 0, 0, null, sc) : null;
   }
   draw(g, w, h, dpr, pal = P0) {
     const K = this.kit, D = this.D, s = K.s(), k = this.k, F = this.F, view = s.ui.filtView[k] | 0, type = this.typeN(true);
@@ -3320,6 +3396,7 @@ export class FilterPanel {
       g.strokeStyle = pal.ink_25;
       g.beginPath(); g.moveTo(0, h * 24 / 72); g.lineTo(w, h * 24 / 72); g.stroke();
     }
+    if (this.ovOn) return;   // (the marker on its overlay, every frame)
     const cx = D.liveN(this.ids.cutoff) * w;
     g.fillStyle = pal.cur; g.fillRect(cx - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
   }

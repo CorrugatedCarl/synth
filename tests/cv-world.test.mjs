@@ -2430,6 +2430,12 @@ test('(FR §2.1) FPS_PREF / FPS_OPTS / FPS_Q / fpsOf: the options 120 (default) 
     [120, 144, 165, 240, 'inf', 120, 120, 120, 120, 60, 90, 120, 120, 120, 120, 120, 120, 120]);
 });
 
+test('(FR Cut B §5.2) the fast lane\'s data rates beside FPS_Q: FAST_Q = { high 120, medium 60, low 30 } (Hz, per preset), FAST_MAX 120 (the engine\'s clamp), FAST_WEBKIT 0 (Safari / the iPad: the lane off there until the device harness measures it — review 2, the lead\'s P2-3; §6); all frozen numbers; every preset has one, none above FAST_MAX', () => {
+  eq([W.FAST_Q && W.FAST_Q.high, W.FAST_Q && W.FAST_Q.medium, W.FAST_Q && W.FAST_Q.low, W.FAST_MAX, W.FAST_WEBKIT, Object.isFrozen(W.FAST_Q)], [120, 60, 30, 120, 0, true]);
+  eq(W.PERFS.map(p => typeof W.FAST_Q[p] === 'number' && W.FAST_Q[p] > 0 && W.FAST_Q[p] <= W.FAST_MAX), [true, true, true]);
+  eq(Object.keys(W.FAST_Q).sort(), W.PERFS.slice().sort());
+});
+
 test('(FR §2.2) the tiers: the ceiling in force min(setting, FPS_Q[perf]) reaches wk.clock.setCap at build, on setFps and on setPerf; W.fps; the \'fps\' event ({ cap, fps, perf } once per change, none for the same pick); an unknown id → 120; the world stores nothing; destroy gives the cap back', () => {
   wk.clock._reset();
   try {

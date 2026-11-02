@@ -9,7 +9,10 @@
 // (tests/fixtures/stream-main.json); the canvas build must reproduce it exactly.
 // Left out of the comparison, by design: the monitor subscriptions ({t: 'smon'}; on the canvas from stage 1d
 // {t: 'mon', ids}, §6.8) and the FX phase read-backs they replace ({t: 'fxph'}) — which displays are live is UI (main:
-// the tab shown; canvas: the module on screen).
+// the tab shown; canvas: the module on screen). FR Cut B (IMPL-FR-B §9, the integration): {t: 'fastOn'} too — the fast lane's request
+// rides the monitor subscription (§5.1: its ids ⊆ the node's watched ids, posted after the mon that watched them, §13 P1-2; sound-free,
+// FR1b) and is posted only while a display asks (§8): here the master's OUT meters, watched ({t: 'mon', ids: ['meters']}) from each
+// power. Never left out silently: every one is checked against the mon before it (fastOk below), and none may reach the limiter.
 // Stage M (IMPL-M §7.3, the lead's decision): the record is PARTITIONED BY PROCESSOR NAME — the 'synth-engine' part (its nodes
 // re-indexed among themselves in creation order, the messages to them) equals main's fixture exactly, as before; the
 // 'synth-master' part (the master: its nodes, their options' hashes, every message to them but the same three monitor types)
@@ -32,7 +35,7 @@ import { pathToFileURL } from 'node:url';
 const HERE = new URL('../', import.meta.url);
 const FIX = new URL('./fixtures/stream-main.json', import.meta.url), FIX_M = new URL('./fixtures/stream-master.json', import.meta.url);
 const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'utf8');
-const SKIP = new Set(['smon', 'mon', 'fxph']);
+const SKIP = new Set(['smon', 'mon', 'fxph', 'fastOn']);
 // the canonical text of a structured-cloneable value (what a postMessage carries, independent of V8's representation)
 function canon(x) {
   if (x === null) return 'null';
@@ -106,6 +109,17 @@ async function session(root) {
       stream: s.posted.filter(x => ix.has(x.node) && !(x.m && SKIP.has(x.m.t))).map(x => [ix.get(x.node), x.m && x.m.t, sha(x.m)]),
     };
   };
+  // (FR Cut B) each fastOn: to a Track or MASTER, after a mon whose ids hold its ids, at a rate 1…FAST_MAX (120) — or off (hz 0, no ids)
+  const fast = [], seen = new Map();
+  for (const x of s.posted) {
+    const m = x.m;
+    if (!m || (m.t !== 'mon' && m.t !== 'fastOn')) continue;
+    if (m.t === 'mon') { seen.set(x.node, Array.isArray(m.ids) ? m.ids : []); continue; }
+    const w = seen.get(x.node) || [], ids = Array.isArray(m.ids) ? m.ids : null;
+    const ok = (x.node.name === 'synth-engine' || x.node.name === 'synth-master') && ids !== null &&
+      (m.hz === 0 ? ids.length === 0 : m.hz >= 1 && m.hz <= 120 && ids.length > 0 && ids.every(q => w.includes(q)));
+    fast.push([x.node.name, m.hz, ids && ids.join(), w.join(), ok]);
+  }
   // (structural, stage M) per live context: its MASTER(s), the index of its first track node, the transport / panic streams
   const ctxs = s.live.map(c => {
     const ws = c.nodes.filter(n => n.kind === 'worklet'), m = ws.filter(n => n.name === 'synth-master'), t0 = ws.findIndex(n => n.name === 'synth-engine');
@@ -113,7 +127,7 @@ async function session(root) {
     const sf = ws.filter(n => n.name === 'synth-safe');
     return { masters: m.length, mFirst: m.length ? ws.indexOf(m[0]) : -1, t0, mTp: tp(m[0]), tTp: tp(ws[t0]), safes: sf.length, sFirst: sf.length ? ws.indexOf(sf[0]) : -1 };
   });
-  return { engine: part('synth-engine'), master: part('synth-master'), safe: part('synth-safe'), names: [...new Set(all.map(n => n.name))].sort(), ctxs };
+  return { engine: part('synth-engine'), master: part('synth-master'), safe: part('synth-safe'), names: [...new Set(all.map(n => n.name))].sort(), ctxs, fast };
 }
 
 test('a canonical track posts exactly main\'s message stream (§5.5): the scripted p1 session, node for node, message for message', async () => {
@@ -129,6 +143,7 @@ test('a canonical track posts exactly main\'s message stream (§5.5): the script
   if (process.env.STREAM_REC_MASTER) writeFileSync(FIX_M, JSON.stringify({ v: 1, from: 'the Master stage (IMPL-M lane A)', skip: [...SKIP], nodes: R.master.nodes, stream: R.master.stream }) + '\n');
   const refM = JSON.parse(readFileSync(FIX_M, 'utf8'));
   assert.deepEqual(R.master.nodes, refM.nodes, 'the master part: its nodes and processorOptions');
+  assert.deepEqual(R.fast.filter(f => !f[4]), [], 'every fastOn asks only what a display watches (IMPL-FR-B §8, no silent poll): ' + JSON.stringify(R.fast));
   assert.deepEqual(R.master.stream, refM.stream, 'the master part: every message to it');
   assert.ok(R.ctxs.length >= 2, 'the session powers twice');
   for (const [k, c] of R.ctxs.entries()) {

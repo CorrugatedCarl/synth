@@ -73,7 +73,8 @@
  *     setRate(fs)                    new rate (re-sizes the delay lines: apply path only); invalid fs is ignored
  *     bytes                          Σ bytes of the object's own typed arrays}
  *     Hot paths (set, setXY, setPZ, tick, process, reset) never allocate.
- *   impulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null) → Float64Array(len)   (main thread)
+ *   impulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null, scratch = null) → Float64Array(len)   (main thread;
+ *           scratch { out }: FR Cut B §2.6, the output array reused across calls — the filter stays fresh)
  *           the left-channel response of a fresh family object to a 0.01 impulse divided by 0.01 (the Phase-1
  *           filterImpulse convention), with setXY(x, y) and setPZ(pz) applied when given (pz: 12 values, PZ_DEFAULT
  *           layout). Throws RangeError for a type outside 96–107 or an invalid fs, TypeError for a pz with < 12 values;
@@ -939,12 +940,16 @@
       return new Filt2(type, fs, pool);
     }
 
-    function impulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null) {
+    // scratch (FR Cut B §2.6, optional): { out } — the output array reused across calls (a new one stored there when its length
+    // differs); the filter itself is fresh every call
+    function impulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null, scratch = null) {
       if (!isType(type)) throw new RangeError('SxFilt2.impulse: type must be an integer ' + FIRST + '–' + LAST);
       if (!isRate(fs)) throw new RangeError('SxFilt2.impulse: fs must be a finite rate > 0');
       const hasPZ = pz !== null && pz !== undefined;
       if (hasPZ && !(typeof pz === 'object' && pz.length >= 12)) throw new TypeError('SxFilt2.impulse: pz must hold 12 corner values');
-      const f = new Filt2(type, fs, null), out = new Float64Array(len > 0 ? floor(len) : 0);
+      const n = len > 0 ? floor(len) : 0, sc = scratch !== null && typeof scratch === 'object' ? scratch : null, o0 = sc !== null ? sc.out : null;
+      const f = new Filt2(type, fs, null), out = o0 !== null && o0 !== undefined && o0.length === n ? o0 : new Float64Array(n);
+      if (sc !== null) sc.out = out;
       f.setXY(x, y);
       if (hasPZ) f.setPZ(pz, 0);
       f.set(fc, fc, res, drive, vr);

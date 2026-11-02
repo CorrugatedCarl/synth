@@ -462,6 +462,98 @@ test('knob: setMod halo arcs, order, live dot, depth-handle class', () => {
   assert.equal(el.classList.contains('wk-modded'), false);
 });
 
+test('(IMPL-FR-B §4.5) setLive(n): the live marker alone — the knob\'s and the ring toggle\'s dot, every modBar widget\'s mark (menu, numBox, seg, slider, the X/Y pad\'s rails, rangeBar) — with liveOf\'s 0.002 rule and m.base; no arc / segment write; update() keeps the value; setMod({ live }) as before', () => {
+  fresh();
+  const arcs = [{ from: 0.4, to: 0.7, kind: 'sel' }, { from: 0.2, to: 0.4, kind: 'neg' }];
+  // the knob: setMod paints arcs and the dot; setLive moves the dot only (cx / cy as setMod would put them)
+  const { k, st, el } = mkKnob();
+  const halo = byCls(el, 'wk-halo')[0], dot = () => byCls(el, 'wk-live')[0], paths = () => halo.children.filter(n => n.localName === 'path');
+  k.setMod({ arcs, live: 0.7 });
+  const ref = { cx: dot().getAttribute('cx'), cy: dot().getAttribute('cy') };
+  k.setMod({ arcs, live: 0.3 });
+  const at3 = [dot().getAttribute('cx'), dot().getAttribute('cy')];
+  k.setMod({ arcs, live: 0.7 });
+  assert.deepEqual([dot().getAttribute('cx'), dot().getAttribute('cy')], [ref.cx, ref.cy]);
+  const writes = [];
+  for (const p of paths()) { const sa = p.setAttribute, ra = p.removeAttribute; p.setAttribute = function (a, v) { writes.push(a); return sa.call(this, a, v); }; p.removeAttribute = function (a) { writes.push('-' + a); return ra.call(this, a); }; }
+  assert.equal(typeof k.setLive, 'function');
+  k.setLive(0.3);
+  assert.deepEqual([dot().getAttribute('cx'), dot().getAttribute('cy'), dot().hasAttribute('display')], [at3[0], at3[1], false]);
+  k.setLive(0.501);                                              // within 0.002 of the base (0.5): hidden
+  assert.equal(dot().getAttribute('display'), 'none');
+  k.setLive(null);
+  assert.equal(dot().getAttribute('display'), 'none');
+  k.setLive(0.3);
+  assert.equal(dot().hasAttribute('display'), false);
+  assert.deepEqual(writes, [], 'no arc path touched');
+  st.n = 0.6; k.update();                                        // a repaint keeps the live value setLive gave
+  assert.deepEqual([dot().getAttribute('cx'), dot().getAttribute('cy'), dot().hasAttribute('display')], [at3[0], at3[1], false]);
+  st.n = 0.3; k.update();                                        // the base moved onto it: hidden by the rule
+  assert.equal(dot().getAttribute('display'), 'none');
+  st.n = 0.5; k.update();
+  k.setMod({ arcs, live: 0.3, base: 0.3 }); k.setLive(0.301);    // m.base overrides the widget's n
+  assert.equal(dot().getAttribute('display'), 'none');
+  k.setLive(0.7);
+  assert.deepEqual([dot().getAttribute('cx'), dot().getAttribute('cy')], [ref.cx, ref.cy]);
+  k.setMod(null); k.setLive(0.9);                                // no modulation: nothing shown
+  assert.equal(dot().getAttribute('display'), 'none');
+  assert.equal(el.classList.contains('wk-modded'), false);
+  // the ring toggle (base 0 / 1)
+  let on = 1;
+  const tg = wk.toggle({ dest: 'fx.cmp.mb', label: 'MB', get: () => on, set: v => { on = v; } });
+  document.body.appendChild(tg.el);
+  const tdot = () => byCls(tg.el, 'wk-live')[0];
+  tg.setMod({ arcs, live: 1 });
+  assert.equal(tdot().getAttribute('display'), 'none');
+  tg.setLive(0.25);
+  assert.equal(tdot().hasAttribute('display'), false);
+  const t25 = [tdot().getAttribute('cx'), tdot().getAttribute('cy')];
+  tg.setMod({ arcs, live: 0.25 });
+  assert.deepEqual([tdot().getAttribute('cx'), tdot().getAttribute('cy')], t25);
+  tg.setLive(1);
+  assert.equal(tdot().getAttribute('display'), 'none');
+  // the modBar widgets: the mark's position and display; the segments untouched
+  const mark = w => one(w.el, 'wk-mlive');
+  const segs = w => byCls(w.el, 'wk-mseg').map(s => s.style.left + '|' + s.style.width + '|' + s.style.bottom + '|' + s.style.height + '|' + s.className + '|' + s.style.display);
+  const items = [0, 1, 2, 3, 4].map(v => ({ v: v / 4, label: 'I' + v }));
+  const widgets = [
+    ['menu', wk.menu({ dest: 'fx.dist.mode', label: 'MODE', items: () => items, get: () => 0.5, set: () => {} }), 0.5, 'left'],
+    ['numBox', wk.numBox({ dest: 'fx.hyper.unison', label: 'UNI', get: () => 0.5, set: () => {} }), 0.5, 'left'],
+    ['seg', wk.seg({ dest: 'fx.dly.mode', items: ['A', 'B', 'C'], get: () => 1, set: () => {} }), 0.5, 'left'],
+    ['slider', wk.slider({ dest: 'fx.cmp.mbH', get: () => 0.5, set: () => {}, def: 0.5 }), 0.5, 'left'],
+    ['rangeBar', wk.rangeBar({ label: 'KEY', min: 0, max: 127, get: () => [10, 100], set: () => {} }), null, 'left'],
+  ];
+  for (const [name, w, base] of widgets) {
+    document.body.appendChild(w.el);
+    assert.equal(typeof w.setLive, 'function', name);
+    w.setMod({ arcs, live: 0.9 });
+    const s0 = segs(w), left9 = mark(w).style.left;
+    w.setLive(0.2);
+    assert.deepEqual([mark(w).style.display, mark(w).style.left], ['', '20.00%'], name + ': the mark at 0.2');
+    if (base !== null) { w.setLive(base + 0.001); assert.equal(mark(w).style.display, 'none', name + ': within 0.002 of its base'); }
+    w.setLive(0.9);
+    assert.deepEqual([mark(w).style.display, mark(w).style.left], ['', left9], name + ': where setMod puts it');
+    assert.deepEqual(segs(w), s0, name + ': the segments untouched');
+    w.setLive(0.2); w.update();
+    assert.equal(mark(w).style.left, '20.00%', name + ': update keeps it');
+    w.setMod(null); w.setLive(0.6);
+    assert.equal(mark(w).style.display, 'none', name + ': no modulation, no mark');
+  }
+  // the X/Y pad's rails (each rail's wk: its axis alone; the Y rail's mark from the bottom)
+  const q = { x: 0.5, y: 0.5 };
+  const p = wk.xyPad({ label: 'X|Y', x: { dest: 'a.pos', get: () => q.x, set: n => { q.x = n; } }, y: { dest: 'a.gy', get: () => q.y, set: n => { q.y = n; } } });
+  document.body.appendChild(p.el);
+  const rx = byCls(p.el, 'wk-xyrx')[0], ry = byCls(p.el, 'wk-xyry')[0];
+  rx.wk.setMod({ arcs, live: 0.9 }); ry.wk.setMod({ arcs, live: 0.9 });
+  assert.equal(typeof rx.wk.setLive, 'function');
+  rx.wk.setLive(0.2); ry.wk.setLive(0.3);
+  assert.deepEqual([one(rx, 'wk-mlive').style.left, one(ry, 'wk-mlive').style.bottom], ['20.00%', '30.00%']);
+  p.update();
+  assert.deepEqual([one(rx, 'wk-mlive').style.left, one(ry, 'wk-mlive').style.bottom], ['20.00%', '30.00%'], 'the pad\'s update keeps both');
+  rx.wk.setLive(0.501);
+  assert.equal(one(rx, 'wk-mlive').style.display, 'none');
+});
+
 test('knob: labelToggle flips MIX ↔ LEVEL without dragging', () => {
   fresh();
   const lt = { v: 0, alt: 'LEVEL', get() { return lt.v; }, set(v) { lt.v = v; } };
@@ -3145,6 +3237,133 @@ test('clock: one rAF for every client, none at rest; setCap / config fire onChan
     raf.flush(2, 6000);
     assert.deepEqual([ended, raf.pending, wk.clock.clients().length], [1, 0, 0]);
     offC();
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (FR Cut B review 2, P1-1 b): the drop level — per 0.5 s window, the frames at the clock\'s own cadence (E) below 0.9 × E raise it (≤ 3) and windows that keep up count towards a recovery (2 s: one level down); a drop soon after a recovery doubles the next wait (≤ 4 s: a load gone recovers in seconds), a recovery that holds halves it again; dropReset() starts afresh (the harness: each cell its own condition); a frame dropped now and then is no drop; a stall starts the window afresh; a display the estimate followed down under load is still judged at its old rate; dropSpan(reset) the levels seen; config({ drop }) fixes it (tests)', () => {
+  const d = fresh();
+  raf.install();
+  wk.clock._reset();
+  try {
+    const el = d.createElement('div');
+    d.body.appendChild(el);
+    wk.clock.add({ fn() {}, el, name: 'probe' });
+    const lv = () => wk.clock.drop(), S = s => Math.round(s * 60);   // (frames of a 60 Hz display in s seconds)
+    let t = stream(48, 60);
+    t = stream(S(2), 60, t);
+    assert.deepEqual([wk.clock.display(), lv()], [60, 0], 'measured, nothing dropped');
+    // one frame dropped now and then (one a window: 29 of 30) is no drop
+    t = stream(S(3), i => (i % 29 === 28 ? 30 : 60), t);
+    assert.equal(lv(), 0, 'a frame dropped now and then: level 0');
+    wk.clock.dropSpan(true);
+    // every other frame dropped (40 a second of 60 — the estimate keeps 60): a level within one window, then a level per window, 3 at most
+    t = stream(24, 60, t, { drop: true });
+    assert.ok(lv() >= 1, '0.6 s of drops: up (' + lv() + ')');
+    t = stream(80, 60, t, { drop: true });
+    assert.deepEqual([lv(), wk.clock.display()], [3, 60], 'level 3 at most, the display still 60');
+    assert.deepEqual(wk.clock.dropSpan(true), { lvl: 3, lo: 0, hi: 3 }, 'the levels seen since the mark');
+    assert.deepEqual(wk.clock.dropSpan(), { lvl: 3, lo: 3, hi: 3 }, 'the span restarted at the level');
+    // the frames back: 2 s of windows that keep up (± the window straddling the change) lower it by one
+    t = stream(S(1.45), 60, t);
+    assert.equal(lv(), 3, '1.45 s: not yet');
+    t = stream(S(1.1), 60, t);
+    assert.equal(lv(), 2, '2.55 s: one level down');
+    // a drop soon after that recovery: up again, and the next recovery waits 4 s
+    t = stream(24, 60, t, { drop: true });
+    assert.equal(lv(), 3, 'dropping again: up');
+    t = stream(S(3.4), 60, t);
+    assert.equal(lv(), 3, '3.4 s later: still waiting (the wait doubled)');
+    t = stream(S(1.2), 60, t);
+    assert.equal(lv(), 2, '4.6 s: down');
+    // that recovery holds 4 s: the wait halves to 2 s — one more level at 4 s, the last 2 s after it (not 4)
+    t = stream(S(4.3), 60, t);
+    assert.equal(lv(), 1, 'held 4 s: one more level down');
+    t = stream(S(2.3), 60, t);
+    assert.equal(lv(), 0, 'and the last after 2 s');
+    // a stall (a GC, a hidden tab: one delta > 250 ms) is no verdict
+    raf.flush(1, t += 900);
+    t = stream(20, 60, t);
+    assert.equal(lv(), 0, 'a stall: the window afresh, no level');
+    // recoveries that keep failing: the wait doubles to 4 s and stays there (a load gone recovers within seconds, never tens)
+    t = stream(S(1.6), 60, t, { drop: true });
+    assert.equal(lv(), 3, 'dropping: 3');
+    t = stream(S(2.55), 60, t);
+    assert.equal(lv(), 2, 'down after 2 s');
+    for (let k = 0; k < 3; k++) {
+      t = stream(24, 60, t, { drop: true });
+      t = stream(S(0.5), 60, t);   // (the window the drops ended in gives its verdict at its end)
+      assert.equal(lv(), 3, 'failed recovery ' + (k + 1) + ': up');
+      t = stream(S(4.7), 60, t);   // (4 s from the last window with drops, ≤ 0.5 s after them; uncapped the wait would be 8 s, then 16)
+      assert.equal(lv(), 2, 'failed recovery ' + (k + 1) + ': down again within 5.2 s of the drops (the wait capped at 4 s)');
+    }
+    // dropReset(): level 0, the wait back to 2 s, the window afresh (measured again from there)
+    wk.clock.dropReset();
+    assert.deepEqual([lv(), wk.clock.dropSpan().hi], [0, 0], 'dropReset: level 0, the span restarted');
+    t = stream(S(1.6), 60, t, { drop: true });
+    assert.equal(lv(), 3, 'and measured again');
+    wk.clock.dropReset();
+    t = stream(S(2), 60, t);
+    assert.equal(lv(), 0);
+    // k > 1: a 240 Hz display at the cap 120 (E 120) — frames at 240 keep up; with half of them dropped the cadence's frames come at
+    // 80 a second of 120: dropping
+    wk.clock._reset(); wk.clock.add({ fn() {}, el }); wk.clock.setCap(120);
+    t = stream(80, 240);
+    t = stream(240, 240, t);
+    assert.deepEqual([wk.clock.display(), wk.clock.eff(), lv()], [240, 120, 0], 'E 120 on a 240 Hz display, kept up');
+    t = stream(200, 240, t, { drop: true });
+    assert.deepEqual([wk.clock.display(), lv() >= 1], [240, true], 'half the 240 Hz frames dropped: the cadence\'s frames at 80 of 120 — level ' + lv());
+    // a loaded 60 Hz display the estimate followed down (≥ 75 % of the frames slow: 30 measured): judged at 60 still
+    wk.clock._reset(); wk.clock.add({ fn() {}, el });
+    t = stream(48, 60);
+    t = stream(120, 30, t);
+    assert.deepEqual([wk.clock.display(), lv()], [30, 3], 'the estimate 30, the frames judged against 60: level 3');
+    t = stream(120, 30, t);
+    assert.equal(lv(), 3, '4 s more at 30 a second: kept');
+    t = stream(S(10), 60, t);
+    assert.deepEqual([wk.clock.display(), lv()], [60, 0], 'the frames back at 60: the estimate and the level recover');
+    // config({ drop }) fixes the level (the sims, sx-host's tests); null measures again; _reset clears it
+    wk.clock.config({ drop: 2 });
+    assert.equal(lv(), 2);
+    t = stream(S(3), 60, t);
+    assert.equal(lv(), 2, 'fixed');
+    wk.clock.config({ drop: 0 });
+    t = stream(60, 60, t, { drop: true });
+    assert.equal(lv(), 0, 'fixed at 0 while the frames drop');
+    wk.clock.config({ drop: null });
+    assert.ok(lv() >= 1, 'null: the measured level again (' + lv() + ')');
+    wk.clock.config({ drop: 1 }); wk.clock._reset();
+    assert.deepEqual([lv(), wk.clock.stats().drop], [0, 0], '_reset: level 0, in stats() too');
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('clock (FR Cut B review 2, P1-1): a `shed` client (the fast lane\'s motion — the dots\' ticks, the playhead overlays, the GR loops) paints every other frame of its cadence from drop level 2 and at the floor, SHED_MIN (30) a second, from level 3 (the top); other clients and level 0 / 1 as before; ticker(el, fn, { shed }) passes it on', () => {
+  const d = fresh();
+  raf.install();
+  wk.clock._reset();
+  try {
+    const el = d.createElement('div');
+    d.body.appendChild(el);
+    const a = [], b = [], c = [], e = [];
+    wk.clock.config({ display: 60 });
+    wk.clock.add({ fn: t => a.push(t), el, shed: true, name: 'shed' });
+    wk.clock.add({ fn: t => b.push(t), el, name: 'plain' });
+    wk.clock.add({ fn: t => c.push(t), el, shed: true, cap: 30, name: 'shed30' });
+    const tk = wk.ticker(el, t => e.push(t), { fps: Infinity, shed: true });
+    tk.start();
+    const run = (n, hz, t0) => { a.length = b.length = c.length = e.length = 0; stream(n, hz, t0); return [a.length, b.length, c.length, e.length]; };
+    for (const [lvl, want] of [[0, [60, 60, 30, 60]], [1, [60, 60, 30, 60]], [2, [30, 60, 30, 30]], [3, [30, 60, 30, 30]]]) {
+      wk.clock.config({ drop: lvl });
+      assert.deepEqual(run(60, 60, 10000 * (lvl + 1)), want, 'level ' + lvl + ' on a 60 Hz display');
+    }
+    wk.clock.config({ display: 240, drop: 2 });
+    assert.deepEqual(run(240, 240, 60000), [120, 240, 30, 120], 'level 2 at 240: the shed client at 120, the cap-30 one stays 30');
+    wk.clock.config({ display: 240, drop: 3 });
+    assert.deepEqual(run(240, 240, 70000), [30, 240, 30, 30], 'level 3 (the top): the floor, 30 a second — Cut A\'s rate');
+    wk.clock.config({ display: 120, drop: 3 });
+    assert.deepEqual(run(120, 120, 75000), [30, 120, 30, 30], 'level 3 at 120: a quarter → 30, the floor');
+    wk.clock.config({ display: 30, drop: 3 });
+    assert.deepEqual(run(30, 30, 80000), [30, 30, 30, 30], 'a 30 Hz display: never below 30 a second');
+    tk.stop();
   } finally { raf.uninstall(); wk.clock._reset(); }
 });
 

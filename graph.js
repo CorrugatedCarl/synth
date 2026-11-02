@@ -509,8 +509,9 @@ function liveRegion() {
 }
 // Playhead loop while the element is connected: a wk.ticker — a client of the frame clock at its global rate (IMPL-FR §3
 // B1a: no cap — the dot moves whenever its provider's value does), 10 fps with reduced motion, nothing while hidden or off
-// screen (the clock's IntersectionObserver).
-function animator(el, fn) { return ticker(el, () => fn(), { fps: Infinity }); }
+// screen (the clock's IntersectionObserver); (FR Cut B review 2, P1-1) shed: every other frame while the clock measures dropped
+// frames (drop level ≥ 2, never below 30 a second)
+function animator(el, fn) { return ticker(el, () => fn(), { fps: Infinity, shed: true }); }
 // Touch hit radii (§13.1: 44 px targets): points, curve handles and curves 22 px; mouse 8 / 6 px — screen px: P.k (layout
 // px per screen px, 1/k under the canvas world's zoom) turns them into the editor's layout px
 const hk = P => (P && P.k > 0 ? P.k : 1);

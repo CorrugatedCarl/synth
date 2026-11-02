@@ -47,6 +47,18 @@
 //   host.extraRows(id) / extraMatrix() — (SYNTH Canvas 2a / 2b) the canvas cables on a knob / compiled into this Serum
 //   host.editEnd({label, phase: 'end'}) — (milestone 3) a control's gesture that changed the value ended at the value of its
 //                                last move (no edit call at the end): the slot host closes its gesture there
+//   host.heardFrame() / host.sampleRate() — (FR Cut B, IMPL-FR-B §4) the frame heard now (the frame's own) and the context
+//                                rate: the fast lane's rings are read there; host.fastIx() — the requested eff indices changed
+//                                (main.js re-syncs); host.curveHz() — the filter curve's ceiling (60 High, 30 Medium / Low);
+//                                host.heavyHz() — (review 2, P1-1) every heavy display's ceiling (30 on Medium / Low, 0 none)
+// The heard-time view (FR Cut B, IMPL-FR-B §4.1): host.raw = the slow message's s (functional readers: the phase capture, the
+// CLIP recorder through kit.msg()), host.snap = the VIEW — one persistent object with exactly the slow message's fields, their
+// values copied, then overwritten at the heard frame by the fast lane's rings while they are live (setFast(d, ix): the fixed 70,
+// the requested eff values, the sequencer, the GR block; a slot host's .live({…, F})). While they are, a slow message paints
+// nothing of its own: slowDue, and the tick (the wk.clock client sx-fast) runs the slow work on its next frame; the tick paints
+// the dots (setLive), the displays (their rate class / capHz) and the kit.frame clients every frame. fastIx() → the eff indices
+// the shown views want (Int16Array, ≤ 64, the same array while unchanged); fastLive(); fastReset() (the rings flushed);
+// grNow() (the view's GR while live, else the message's).
 // Storage keys: synth.sx.prefs, synth.sx.browser (incl. autoPreview), synth.sx.meta (ratings / tags / comments of
 // factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
 // synth.sx.shapes (via graph.shapeLib), synth.fxchains.
@@ -56,6 +68,8 @@ import * as wk from './wk.js?v=9';
 import * as gx from './graph.js?v=9';
 import * as wte from './wtedit.js?v=9';
 import * as osc from './sx-ui-osc.js?v=9';
+import * as MO from './motion.js?v=9';
+import { fxLayout } from './fx-core.js?v=9';
 
 /* ================================================================ constants and small helpers */
 
@@ -1181,10 +1195,36 @@ function rafOf(doc) {
 // frame, at most P / 4 (a paint lands on some frame: 60 on a 120 / 240 Hz display, 72 on a 144 one, 82.5 at 82.5 or 165,
 // every frame on a 60–119 Hz one; while the clock has not measured the display — no client ran yet: E = D = 60 — the P / 4
 // bound keeps a 60 class ≤ 80 a second on any faster one)
-function rateMs(hz) {
-  const C = wk.clock, E = C && C.eff ? C.eff() : 60, D = C && C.display ? C.display() : 60, P = Math.max(1, Math.floor(E / hz + 1e-9)) * 1000 / E;
+// (FR Cut B, the user's QB: the filter curve) capMs, a ceiling: k = ceil(E / hz) frames — never more than hz a second (60: every
+// second frame at 120, every fourth at 240, every third at 144 → 48), less half a display frame as rateMs. (Review 2, P1-1) Both
+// are the heavy displays' (heavyMs): k doubled per level of the frame clock's drop level (wk.clock.drop(): it measured dropped
+// frames — the heavy class halves its rate per level, recovering with the clock's hysteresis), never below HEAVY_MIN a second
+const HEAVY_MIN = 15;
+function heavyMs(hz, ceil) {
+  const C = wk.clock, E = C && C.eff ? C.eff() : 60, D = C && C.display ? C.display() : 60, L = C && C.drop ? C.drop() | 0 : 0;
+  let k = Math.max(1, ceil ? Math.ceil(E / hz - 1e-9) : Math.floor(E / hz + 1e-9));
+  if (L > 0) k = Math.max(k, Math.min(k * (1 << L), Math.floor(E / HEAVY_MIN + 1e-9)));
+  const P = k * 1000 / E;
   return P - Math.min(500 / D, P / 4);
 }
+const rateMs = hz => heavyMs(hz, false), capMs = hz => heavyMs(hz, true);
+// (FR Cut B §4) the fast lane's view: SXF's array fields (motion.js: name, offset, count) written into the view at the heard frame;
+// IX_MAX requested eff indices at most (the rest stay slow); NO_IX none
+const SXF_ARR = Object.freeze(['mix', 'wtPos', 'smpPos', 'lfoPh', 'lfoOut', 'lfoY', 'env', 'envStage', 'envT'].map(k => Object.freeze([k, MO.SXF[k], k === 'mix' ? 11 : k === 'wtPos' ? 3 : k === 'smpPos' ? 12 : k === 'env' || k === 'envStage' || k === 'envT' ? 4 : 10])));
+const IX_MAX = 64, NO_IX = new Int16Array(0), ST_ON = MO.ST.EXACT;   // (EXACT, BRACKET, EXTRA, HELD: ≥ EXACT)
+const SLOT_W = Object.freeze({ lfo: 4, env: 3, chaos: 1 });
+function sxInto(V, b) {
+  for (let j = 0; j < SXF_ARR.length; j++) {
+    const f = SXF_ARR[j], a = V[f[0]];
+    if (!a || !a.length) continue;
+    const o = f[1], n = a.length < f[2] ? a.length : f[2];
+    for (let i = 0; i < n; i++) a[i] = b[o + i];
+  }
+  if ('noisePos' in V) V.noisePos = b[MO.SXF.noisePos];
+  if ('notes' in V) V.notes = b[MO.SXF.notes];
+}
+const holdKinds = n => new Uint8Array(n).fill(MO.K.HOLD);
+const ringOn = (R, Fh, sr) => !!R && R.size > 0 && R.live(Fh, sr);   // (a ring with an anchor younger than STALE_S)
 // (§7.3) two keyN keys of n elements: equal element by element (NaN equals NaN)
 function sameKeyN(a, b, n) {
   for (let i = 0; i < n; i++) { const x = a[i], y = b[i]; if (x !== y && (x === x || y === y)) return false; }
@@ -1320,7 +1360,7 @@ function numField(doc, o) {
   const q = v => +clamp(o.min + Math.round((v - o.min) / o.step) * o.step, o.min, o.max).toFixed(dec);
   const fmt = o.fmt || (v => v.toFixed(dec));
   let g = null, inp = null, dis = false, hoverT = -1e9, wacc = 0, wT = 0;
-  const W = { el, update, setMod, focus: () => val.focus(), edit, destroy: () => el.remove() };
+  const W = { el, update, setMod, setLive() {}, focus: () => val.focus(), edit, destroy: () => el.remove() };   // ((FR Cut B) no live marker: setLive nothing)
   if (o.dest) { el.wk = W; el.setAttribute('data-dest', fnOf(o.dest)()); }
 
   function update() {
@@ -1496,7 +1536,7 @@ function hSlider(doc, o) {
   el.appendChild(fill);
   if (o.dest) el.setAttribute('data-dest', fnOf(o.dest)());
   let g = null;
-  const W = { el, update, setMod() {}, focus: () => el.focus(), destroy: () => el.remove() };
+  const W = { el, update, setMod() {}, setLive() {}, focus: () => el.focus(), destroy: () => el.remove() };
   if (o.dest) el.wk = W;
   function update() {
     const n = clamp01(o.get()), b = o.bipolar ? 0.5 : 0;
@@ -1550,7 +1590,7 @@ const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ?
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
 // a page registry (the unit a view owns, §2.3): its binds, display canvases, graph editors and live callbacks; opts = the
 // effective kit options while it was built (host opts + the view's); bare = the canvas bar replaces the panel chrome
-const mkPage = (el, opts) => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [], opts: opts || null, bare: !!(opts && opts.bare) });
+const mkPage = (el, opts) => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [], frames: [], opts: opts || null, bare: !!(opts && opts.bare) });
 // The host options (kit.opts, §2.3; a slot host: undo / links / ghosts / lock / wt2lfo / osc / learn off, nomod on, names
 // ≤ 16, macro tiles as canvas jacks, srcItems: its own module menu over its track.mods rows):
 //   bare     the panels' power / name / lock mark / chevron / ENV tabs go (the canvas bar has them); their own head
@@ -1581,7 +1621,10 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 // the main.js host's edit path; everything that touches modulation, undo or locks goes through it.
 // Normative members (§11.14):
 //   host                      the main.js host (host.wt, host.smp, host.tracks, host.seqCmd, host.storage …)
-//   s() / fx() / snap()       the live Serum state, FX state, last engine snapshot (msg.s, §6.20) or null
+//   s() / fx() / snap()       the live Serum state, FX state, the engine snapshot (§6.20) or null — (FR Cut B) the heard-time
+//                             VIEW: the slow message's fields, the fast lane's at the heard frame while it is live (visual readers)
+//   msg()                     (FR Cut B, FR7) the raw slow message's s or null — functional readers (a recording, a capture, the
+//                             CLIP playhead's own post-anchored machinery): a heard-time value never drives a recording or an edit
 //   knob(id, o)               wk knob bound to destination id: data-dest, halo, drag-to-modulate drop target, knob
 //                             menu, MIDI learn, locks, typed entry, tooltip. o: { label, size, labelFn, disabled,
 //                             detents, bipolarFn }. Virtual destinations (macros m1…m8, arp.*, clip.*) read and write
@@ -1604,7 +1647,10 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //                             canvas' reused buffer — returning their count; compared element-wise, key() then unused.
 //                             o.maxHz (§3 B3, the rate class): a key change inside 1000 / maxHz waits for the period's
 //                             end (one rAF, then drawn with the newest key) — the heavy displays' work stays bounded
-//                             whatever moves their key; none: every change is drawn (dots, playheads, meters)
+//                             whatever moves their key; none: every change is drawn (dots, playheads, meters). o.capHz
+//                             (FR Cut B, the user's QB): a ceiling instead — k = ceil(E / capHz) frames (a number or a
+//                             function read each period: the filter curve's 60 / 30). o.liveIds() (FR Cut B §4.2): the
+//                             destination ids whose live values the display draws (fastIx requests their eff values)
 //   panel(title, module, powerId, cls, o)   the module panel shell (power, module menu, lock mark) → { el, head,
 //                             body, name }; o.items() = extra module-menu items appended after the module items
 //                             ([{label, checked?, disabled?, action?, sub?} | {sep: true}], e.g. ✓ Enable Pitch
@@ -1614,7 +1660,11 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //   live(fn)                  fn(shown) on every repaint and snapshot frame (live status, e.g. the unison voice warning;
 //                             playheads; clip recording). shown = the page fn was built on is on screen: hidden pages
 //                             are not painted (§13.1), so DOM work should be skipped when it is false — functional work
-//                             (e.g. a recording that goes on while another page is shown) keeps running
+//                             (e.g. a recording that goes on while another page is shown) keeps running; (FR Cut B) at
+//                             the slow messages' rate, also while the fast lane is live
+//   frame(fn)                 (FR Cut B §4.3) fn(shown, fast) on every painted frame of the host's tick while the fast lane
+//                             is live (fast = true), and on every repaint and slow paint otherwise — visual per-frame work
+//                             (meters, dots, handles, playheads read from snap()); one path for both
 //   getN(id) / setN(id, n, phase)   base n of a destination / set it (snapped; FX ids through editFx; S1 pairs synced)
 //   dragging(id)              whether the control of id is in a drag gesture (last setN phase 'start' / 'move')
 //   queue() / dead()          request a repaint (asynchronous data arrived) / the panel was destroyed
@@ -1657,7 +1707,8 @@ export function makeKit(ui) {
     host: ui.host,
     s: () => ui.s(),
     fx: () => ui.fx(),
-    snap: () => ui.snap,
+    snap: () => ui.viewNow(),
+    msg: () => ui.raw,
     knob: (id, o) => { const O = opt(o); return ui.dKnob(id, O.label || '', O); },
     menu: (id, items, o) => { const O = opt(o); return ui.dMenu(id, O.label || '', items, O); },
     toggle: (id, o) => { const O = opt(o); return ui.dToggle(id, O.label || '', O.kind, O); },
@@ -1674,6 +1725,7 @@ export function makeKit(ui) {
     canvas: (cls, key, draw, extra) => ui.canvas(cls, key, draw, extra),
     panel: (title, module, powerId, cls, o) => ui.panel(title, module, powerId, cls, o),
     live: fn => { (ui.bp || ui.headPage).lives.push(fn); return fn; },
+    frame: fn => { (ui.bp || ui.headPage).frames.push(fn); return fn; },
     getN: id => ui.getN(id),
     setN: (id, n, ph) => ui.setN(id, n, ph),
     dragging: id => ui.held.has(id),
@@ -1721,8 +1773,20 @@ export class SerumHost {
     this.el = null;                   // the primary root (the bundled panel's root, else the first part's)
     this.headPage = mkPage(null, this.opts);   // the default registry (a bind made outside any view)
     this.bp = null;                   // page being built (widget factories register into it)
-    this.snap = null;
-    this.smon = null;
+    this.snap = null;                 // (FR Cut B) the heard-time view (the persistent this.vw, or null)
+    this.smon = this.msg = null;      // the slow message
+    this.raw = null;                  // its s (FR7: the functional readers)
+    this.vw = null;
+    // (FR Cut B §4) the fast lane's rings (motion.js): fr the fixed 70, fe the requested eff values (feIx: their indices, feK the
+    // version), fq the sequencer, fg the GR block (grV its view), sl a slot host's; vF the heard frame the view was read at; vDirty:
+    // a read wrote fast values (the slow ones go back before the next); slowDue: a slow message came while the tick runs (P1-1)
+    this.fr = this.fe = this.fq = this.fg = this.sl = null;
+    this.feIx = this.vIx = null; this.feK = undefined;
+    this.fbuf = new Float64Array(MO.SXF.N); this.ebuf = this.qbuf = this.gbuf = this.sbuf = null;
+    this.grV = null; this.grOn = false; this.grKey = null; this.gkSeq = -1;
+    this.vF = NaN; this.vDirty = false; this.slowDue = false; this.tickOff = null;
+    this.ixArr = NO_IX;               // fastIx(): the requested eff indices (the same array while unchanged)
+    this.pgM = null;                  // the pages memo (pagesNow: no array per frame)
     this.dirty = false;
     this.nameOverride = null;
     this.recentSlot = new Map();
@@ -1847,7 +1911,7 @@ export class SerumHost {
     if (!el || !el.addEventListener) return el;
     if (!this.sats) this.sats = new Set();
     this.sats.add(el);
-    const V = this.viewNow();
+    const V = this.viewBuilt();
     if (V) V.sats.push(el);
     if (!quiet) this.offNow(on(el, 'contextmenu', e => this.onCtx(e)), on(el, 'pointerdown', e => this.onCapDown(e), true), on(el, 'click', e => this.onCapClick(e), true));
     return el;
@@ -1855,8 +1919,8 @@ export class SerumHost {
   // the view being built (a lazy build under its page counts) — its widgets' disposers (drag sources, an adopted
   // satellite's listeners) and its satellites go with it in unmount, never onto the host's own offs: one host serves both
   // view sets for the session, so they would keep every discarded view set alive until it dies (review 1 F1)
-  viewNow() { const V = this.bp && this.bp.view; return V && !V.dead && V.offs ? V : null; }
-  offNow(...f) { const V = this.viewNow(); (V ? V.offs : this.offs).push(...f); }
+  viewBuilt() { const V = this.bp && this.bp.view; return V && !V.dead && V.offs ? V : null; }
+  offNow(...f) { const V = this.viewBuilt(); (V ? V.offs : this.offs).push(...f); }
   rootOf(n) { for (const r of this.roots) if (n && r.contains(n)) return r; return null; }
   viewOf(n) {
     let best = null;
@@ -1907,6 +1971,7 @@ export class SerumHost {
       destroy: () => this.unmount(V) };
     page.view = V;
     this.views.push(V);
+    this.pgM = null;
     const prev = this.bp;
     this.bp = page;
     try { V.panel = make(el, this.kit, A, V) || null; } catch (err) {
@@ -1924,12 +1989,13 @@ export class SerumHost {
     V.dead = true;
     const i = this.views.indexOf(V);
     if (i >= 0) this.views.splice(i, 1);
+    this.pgM = null;
     const P = V.page;
     if (this.pop && this.pop.anchor && V.root.contains(this.pop.anchor)) this.pop.close();
     for (const ed of P.editors) if (ed && ed.destroy) { try { ed.destroy(); } catch (err) { /* gone */ } }
     if (V.panel && typeof V.panel.destroy === 'function') { try { V.panel.destroy(); } catch (err) { /* gone */ } }
     if (this.ro) for (const cv of P.canvases) { try { this.ro.unobserve(cv.el); } catch (err) { /* gone */ } }
-    P.binds.length = 0; P.canvases.length = 0; P.editors.length = 0; P.lives.length = 0;
+    P.binds.length = 0; P.canvases.length = 0; P.editors.length = 0; P.lives.length = 0; P.frames.length = 0;
     for (const f of V.offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
     // (a satellite another live view adopted too — a bar title re-used — stays the host's)
     if (this.sats) for (const e of V.sats.splice(0)) if (!this.views.some(W => W.sats && W.sats.includes(e))) this.sats.delete(e);
@@ -2062,7 +2128,8 @@ export class SerumHost {
   fctx() {
     if (this.fc) return this.fc;
     const s = this.s(), inf = [0, 1, 2].map(o => this.oscd.tinfo(o));
-    this.fc = { s, fx: this.fx(), bpm: this.bpm(), frames: inf.map(i => i.F), interp: inf.map(i => i.interp), eff: this.snap ? this.snap.eff : undefined };
+    const V = this.viewNow();
+    this.fc = { s, fx: this.fx(), bpm: this.bpm(), frames: inf.map(i => i.F), interp: inf.map(i => i.interp), eff: V ? V.eff : undefined };
     return this.fc;
   }
   parse(id, text) {
@@ -2395,6 +2462,7 @@ export class SerumHost {
   paint(full, ts) {
     const s = this.s();
     if (!s || this.dead) return;
+    if (full) this.pgM = null;
     // C1: a module that went live drops its peek on any page (only the shown page's panels repaint), so powering it
     // on and off again elsewhere (MIX strip, MATRIX row) folds it again
     if (this.peeks.size) { const fx = this.fx(); for (const id of this.peeks) if (powerLive(s, fx, id)) this.peeks.delete(id); }
@@ -2425,32 +2493,278 @@ export class SerumHost {
     if (full && this.rackDirty && this.rackShown() && this.rack && this.rack.refresh) { this.rackDirty = false; this.rack.refresh(); }
     if (full) { this.scanMods(); if (!this.prefs.helpTips) this.applyHelp(); }
     this.paintMods(full);
+    if (full) this.ixUpdate();
     this.paintCanvases(ts);
+    this.runFrames(this.fastOn());
+    this.slowDue = false;
     this.updateVoices();
     this.checkCapture();
     this.updateTouchTip();
     this.flushUndo();
   }
+  // a slow message (the monitor's, 29 Hz): raw = its s, the view its copy (FR Cut B §4.1); while the fast lane's tick runs, no
+  // paint of its own — slowDue: the tick's next frame runs the slow work once (§13 P1-1); else painted in one rAF as before
   setSnapshot(msg) {
-    this.smon = msg || null;
-    this.snap = msg && msg.s ? msg.s : null;
-    const nn = this.snap && this.snap.notes > 0 ? 1 : 0;
+    this.smon = this.msg = msg || null;
+    const s = msg && msg.s ? msg.s : null;
+    this.raw = s;
+    this.snap = s ? this.viewCopy(s) : null;
+    this.vF = NaN; this.vDirty = false;
+    const nn = s && s.notes > 0 ? 1 : 0;
     if (nn && !this.snapNotes) this.noteGroup++;   // a new note group starts (the header render cache is stale)
     this.snapNotes = nn;
     this.snapSeq = (this.snapSeq || 0) + 1;
-    if (this.ticking || this.dead) return;
+    if (this.dead) return;
+    if (this.tickOff && this.tickLive()) { this.slowDue = true; return; }
+    if (this.ticking) return;
     const now = Date.now();
     if (wk.reducedMotion && wk.reducedMotion() && now - this.snapT < 100) return;   // §9.1: 10 fps under reduced motion
     this.snapT = now;
+    this.slowKick();
+  }
+  // one slow paint in a rAF (a slow message; the fast lane gone): the dots, displays, frame clients, then the slow work
+  slowKick() {
+    if (this.ticking || this.dead) return;
     this.ticking = true;
-    this.raf(ts => {
-      this.ticking = false;
-      if (this.dead || !this.s()) return;
-      this.paintMods(false);
-      this.paintCanvases(ts);
-      this.updateVoices();
-      this.checkCapture();
-    });
+    this.raf(ts => { this.ticking = false; if (!this.dead && this.s()) this.slowPaint(ts); });
+  }
+  slowPaint(ts) {
+    this.paintMods(false);
+    this.paintCanvases(ts);
+    this.runFrames(this.fastOn());
+    this.slowDue = false;
+    this.updateVoices();
+    this.checkCapture();
+  }
+  // (§4.1) s into the persistent view: exactly its fields (a key it lacks goes: partial snapshots stay partial), typed arrays
+  // copied into the view's own (allocated when the shape changes), the rest assigned
+  viewCopy(s) {
+    const V = this.vw || (this.vw = {});
+    for (const k in V) if (!(k in s)) delete V[k];
+    for (const k in s) {
+      const x = s[k], y = V[k];
+      if (x && typeof x === 'object' && ArrayBuffer.isView(x) && typeof x.length === 'number') {
+        if (y && y !== x && y.constructor === x.constructor && y.length === x.length) y.set(x); else V[k] = x.slice();
+      } else V[k] = x;
+    }
+    return V;
+  }
+  heardF() {
+    const f = this.host.heardFrame;
+    if (typeof f !== 'function') return NaN;
+    let v = NaN;
+    try { v = +f(); } catch (err) { v = NaN; }
+    return v;
+  }
+  srNow() { const h = this.host.sampleRate, r = typeof h === 'function' ? +h() : +h; return r > 0 ? r : 48000; }
+  // (§4.1) the view at the heard frame, once per frame (memo by Fh: the editors' clock clients, the tick and the kit's readers see the
+  // same values whoever reads first); the slow values back first where a read wrote, then every live ring (≥ EXACT) written over
+  // them — BEFORE (the lane starting), NONE or stale (no post for STALE_S): the slow values stay (a lane that stopped never freezes it)
+  viewNow() {
+    const W = this.snap;
+    if (!W || !(this.fr || this.fq || this.fg || this.sl)) return W;
+    const Fh = this.heardF();
+    if (Fh === this.vF) return W;
+    this.vF = Fh;
+    if (this.vDirty) { this.slowInto(W); this.vDirty = false; }
+    this.grOn = false;
+    if (!(Fh === Fh)) return W;
+    const sr = this.srNow();
+    let w = false;
+    const fr = this.fr;
+    if (ringOn(fr, Fh, sr) && fr.at(Fh, this.fbuf, sr) >= ST_ON) {
+      sxInto(W, this.fbuf);
+      w = true;
+      const fe = this.fe, ix = this.feIx, e = W.eff, b = this.ebuf;
+      if (ringOn(fe, Fh, sr) && ix && e && fe.at(Fh, b, sr) >= ST_ON) {
+        const n = fe.w < ix.length ? fe.w : ix.length;
+        for (let j = 0; j < n; j++) { const i = ix[j]; if (i >= 0 && i < e.length) e[i] = b[j]; }
+        this.vIx = ix;
+      }
+    }
+    const fq = this.fq, q = W.seq;
+    if (q && ringOn(fq, Fh, sr) && fq.at(Fh, this.qbuf, sr) >= ST_ON) { const b = this.qbuf, n = q.length < b.length ? q.length : b.length; for (let i = 0; i < n; i++) q[i] = b[i]; w = true; }
+    const fg = this.fg;
+    if (ringOn(fg, Fh, sr) && fg.at(Fh, this.gbuf, sr) >= ST_ON) { const g = this.grV, b = this.gbuf; for (let i = 0; i < g.length; i++) g[i] = b[i]; this.grOn = true; }
+    const sl = this.sl;
+    if (ringOn(sl, Fh, sr) && sl.at(Fh, this.sbuf, sr) >= ST_ON) {
+      const b = this.sbuf, i = this.slot | 0;
+      if (this.kind === 'lfo') { if (W.lfoPh) W.lfoPh[i] = b[1]; if (W.lfoY) W.lfoY[i] = b[2]; if (W.lfoOut) W.lfoOut[i] = b[3]; }
+      else if (this.kind === 'env') { if (W.env) W.env[i] = b[0]; if (W.envStage) W.envStage[i] = b[1]; if (W.envT) W.envT[i] = b[2]; }
+      w = true;
+    }
+    this.vDirty = w;
+    return W;
+  }
+  // the fields a fast read wrote, back from the raw message (no allocation: typed-array copies)
+  slowInto(W) {
+    const R = this.raw;
+    if (!R || !W) return;
+    for (let j = 0; j < SXF_ARR.length; j++) { const k = SXF_ARR[j][0], a = W[k], b = R[k]; if (a && b && a !== b && a.length === b.length && typeof a.set === 'function') a.set(b); }
+    if ('notes' in R) W.notes = R.notes;
+    if ('noisePos' in R) W.noisePos = R.noisePos;
+    const ix = this.vIx, e = W.eff, re = R.eff;
+    if (ix && e && re) for (let j = 0; j < ix.length; j++) { const i = ix[j]; if (i >= 0 && i < e.length && i < re.length) e[i] = re[i]; }
+    if (W.seq && R.seq && W.seq !== R.seq && W.seq.length === R.seq.length) W.seq.set(R.seq);
+  }
+  // (§4.1) a fast message of this part: d = { F, v (the fixed 70, then eff at ix), k (ix's version), q?, gr? }; ix the Int16Array
+  // main.js resolved for d.k. The fixed 70 never flushed by an ix change (§13 P2-9 d): the eff values in their own ring, rebuilt
+  // when the count changes, flushed when the version does; the tick client added. Every push with the rate: motion's gap rule (review
+  // 1 R1-B — posts resuming past EXTRA_S start afresh: the slow values until the new anchor is heard, never a blend across the gap)
+  setFast(d, ix) {
+    if (this.dead || !d || !fin(d.F)) return;
+    const F = +d.F, v = d.v, N = MO.SXF.N, sr = this.srNow();
+    if (v && v.length >= N) {
+      if (!this.fr) this.fr = MO.ring(N, MO.SXF_K, { groups: MO.SXF_G, lo: MO.SXF_LO, hi: MO.SXF_HI });
+      this.fr.push(F, v, 0, sr);
+      const n = ix && ix.length ? Math.min(ix.length, v.length - N) : 0;
+      if (n > 0) {
+        if (!this.fe || this.fe.w !== n) { this.fe = MO.ring(n, null, { lo: new Float64Array(n), hi: new Float64Array(n).fill(1) }); this.ebuf = new Float64Array(n); this.feK = d.k; }
+        else if (this.feK !== d.k) { this.fe.flush(); this.feK = d.k; }
+        this.feIx = ix;
+        this.fe.push(F, v, N, sr);
+      } else if (this.fe) { this.fe = null; this.feIx = null; }
+    }
+    const q = d.q;
+    if (q && q.length) {
+      if (!this.fq || this.fq.w !== q.length) { this.fq = MO.ring(q.length, holdKinds(q.length)); this.qbuf = new Float64Array(q.length); }
+      this.fq.push(F, q, 0, sr);
+    }
+    const g = d.gr;
+    if (g && g.length) {
+      const K = this.grKinds(g.length);
+      if (!this.fg || this.fg.w !== g.length || K) {
+        this.fg = MO.ring(g.length, K ? K.k : this.grKindsNow(g.length).k);
+        this.gbuf = new Float64Array(g.length); this.grV = new Float32Array(g.length);
+      }
+      this.fg.push(F, g, 0, sr);
+    }
+    this.vF = NaN;
+    this.tickOn();
+  }
+  // the GR block's kinds (motion grKinds: a Ducker's position POS, the rest LIN) for the Serum's own FX layout — looked at once per
+  // paint (an edit may move the instances); → { key, k } when they changed since the ring was built, else null
+  grKinds(len) {
+    if (this.gkSeq === this.paintSeq && this.fg && this.fg.w === len) return null;
+    this.gkSeq = this.paintSeq;
+    const K = this.grKindsNow(len);
+    if (this.fg && this.fg.w === len && K.key === this.grKey) return null;
+    this.grKey = K.key;
+    return K;
+  }
+  grKindsNow(len) {
+    let L = null;
+    try { const fx = this.fx(); L = isObj(fx) ? fxLayout(fx) : null; } catch (err) { L = null; }
+    const k = MO.grKinds(L ? L.inst.map((e, i) => ({ idx: i, type: e.type })) : []), out = new Uint8Array(len);
+    out.set(k.length > len ? k.subarray(0, len) : k);
+    return { key: (L ? L.key : '') + '/' + len, k: out };
+  }
+  // the GR the FX page draws: the view's (heard time) while its ring is live, else the slow message's
+  grNow() {
+    this.viewNow();
+    return this.grOn && this.grV ? this.grV : (this.smon && this.smon.gr ? this.smon.gr : null);
+  }
+  // any ring live at the heard frame; fastOn(): and the tick running (kit.frame's `fast`)
+  fastLive() {
+    if (this.dead) return false;
+    const Fh = this.heardF(), sr = this.srNow();
+    return ringOn(this.fr, Fh, sr) || ringOn(this.fq, Fh, sr) || ringOn(this.fg, Fh, sr) || ringOn(this.sl, Fh, sr);
+  }
+  fastOn() { return !!this.tickOff && this.fastLive(); }
+  // the rings flushed (main.js: its part's rate went to 0, a power cycle): the slow values back, painted
+  fastReset() {
+    for (const R of [this.fr, this.fe, this.fq, this.fg, this.sl]) if (R) R.flush();
+    this.grOn = false;
+    this.fastEnd();
+  }
+  fastEnd() {
+    this.tickStop();
+    if (this.dead) return;
+    this.vF = NaN;
+    this.viewNow();
+    this.slowKick();
+  }
+  // (§4.3) the tick: one wk.clock client while the rings are live and a view of this host is shown (off-screen hosts are not
+  // live, Part II P2-6); it ends itself once they are stale (no post for STALE_S)
+  tickOn() {
+    if (this.tickOff || this.dead) return;
+    const C = wk.clock;
+    if (!C || typeof C.add !== 'function') return;
+    this.tickOff = C.add({ name: 'sx-fast', live: () => this.tickLive(), fn: ts => this.fastTick(ts), shed: true, end: () => { this.tickOff = null; } }); // ((review 2, P1-1) shed: every other frame under the clock's drop level ≥ 2
+  }
+  tickStop() { const f = this.tickOff; this.tickOff = null; if (f) f(); }
+  tickLive() {
+    if (this.dead) return false;
+    if (!this.fastLive()) { this.fastEnd(); return false; }
+    const vs = this.views;
+    if (!vs.length) return true;
+    for (let i = 0; i < vs.length; i++) if (vs[i].shown()) return true;   // (anyShown, no closure a frame)
+    return false;
+  }
+  // each painted frame: the view at its heard frame, the dots (setLive), the displays (their rate class / capHz bound the heavy
+  // ones), the header meter, the kit.frame clients; the slow work once per slow message (slowDue: the voice count, every page's
+  // kit.live — the CLIP recorder —, the phase capture)
+  fastTick(ts) {
+    if (this.dead || !this.s()) return;
+    this.viewNow();
+    this.paintMods(false);
+    this.paintCanvases(ts);
+    this.meterNow();
+    this.runFrames(true);
+    if (this.slowDue) { this.slowDue = false; this.updateVoices(); this.checkCapture(); }
+  }
+  // the pages, memoised per view change (each view's shown(), SerumUI's page; a mount / unmount / full paint / destroy drops the
+  // memo — it never holds a gone view's page): no array per frame
+  pagesNow() {
+    const M = this.pgM || (this.pgM = { v: [], pg: undefined, all: null, shown: null }), vs = this.views;
+    let ch = M.all === null || M.v.length !== vs.length || M.pg !== this.page;
+    for (let i = 0; i < vs.length; i++) { const on = !!vs[i].shown(); if (M.v[i] !== on) { M.v[i] = on; ch = true; } }
+    if (ch) { M.v.length = vs.length; M.pg = this.page; M.all = this.allPages(); M.shown = this.shownPages(); }
+    return M;
+  }
+  // kit.frame clients: fn(shown, fast) for every page's, the popover's (shown)
+  runFrames(fast) {
+    const M = this.pagesNow(), A = M.all, S = M.shown;
+    for (let i = 0; i < A.length; i++) {
+      const P = A[i], L = P.frames;
+      if (!L || !L.length) continue;
+      const on = S.indexOf(P) >= 0;
+      for (let j = 0; j < L.length; j++) L[j](on, fast);
+    }
+    const Q = this.pop && this.popPage ? this.popPage.frames : null;
+    if (Q) for (let j = 0; j < Q.length; j++) Q[j](true, fast);
+  }
+  // (§4.2) the eff indices the shown views want per frame: the modded controls (halo arcs after a full paint — scanMods lists every
+  // control with a row) and the heavy displays' liveIds(), over the shown pages and the popover; sorted, unique, ≤ IX_MAX (the rest
+  // stay slow). A new set: a new array and host.fastIx() (main.js re-syncs)
+  ixUpdate() {
+    const out = [], lim = this.raw && this.raw.eff ? this.raw.eff.length : core.NSV + 1160;
+    for (const m of this.modEls) if (m.arcs && m.arcs.length && m.i >= 0 && m.i < lim) out.push(m.i);
+    const pages = this.pagesNow().shown.concat(this.pop && this.popPage ? [this.popPage] : []);
+    for (const P of pages) for (const cv of P.canvases) {
+      if (typeof cv.liveIds !== 'function') continue;
+      let ids = null;
+      try { ids = cv.liveIds(); } catch (err) { ids = null; }
+      for (const id of arr(ids)) { const i = core.vi(id); if (i >= 0 && i < lim) out.push(i); }
+    }
+    out.sort((a, b) => a - b);
+    const u = [];
+    for (const i of out) if (!u.length || u[u.length - 1] !== i) u.push(i);
+    if (u.length > IX_MAX) u.length = IX_MAX;
+    const cur = this.ixArr;
+    if (cur.length === u.length && u.every((v, k) => cur[k] === v)) return false;
+    this.ixArr = Int16Array.from(u);
+    if (typeof this.host.fastIx === 'function') { try { this.host.fastIx(); } catch (err) { console.error(err); } }
+    return true;
+  }
+  fastIx() { return this.ixArr; }
+  // (review 2, P1-1 a) the heavy displays' ceiling a second: host.heavyHz() (main.js: 30 on Medium / Low), 0 = none (High: the class)
+  heavyHz() {
+    const f = this.host && this.host.heavyHz;
+    if (typeof f !== 'function') return 0;
+    let v = 0;
+    try { v = +f.call(this.host); } catch (err) { v = 0; }
+    return v > 0 ? v : 0;
   }
   // the halo / lock scan of the shown pages' controls (and the popover's)
   scanMods() {
@@ -2478,18 +2792,23 @@ export class SerumHost {
       }
     }
   }
+  // the halos and live dots: setMod (arcs and dot) on a full paint or new arcs, else the dot alone through the widget's setLive
+  // (FR Cut B §4.3: every frame of the tick — no arc work, no object a control; a widget without it: setMod as before)
   paintMods(full) {
-    const s = this.s(), fx = this.fx(), sel = s.ui ? s.ui.mod : '', eff = this.snap && this.snap.eff;
-    for (const m of this.modEls) {
-      if (full || !m.arcs) m.arcs = haloArcs(s, fx, m.id, sel, this.host.extraRows ? this.host.extraRows(m.id) : null);
-      if (!m.arcs.length) { if (m.had) { m.el.wk.setMod(null); m.had = false; } continue; }
-      m.el.wk.setMod({ arcs: m.arcs, live: eff && m.i >= 0 && fin(eff[m.i]) ? eff[m.i] : null });
+    const s = this.s(), fx = this.fx(), sel = s.ui ? s.ui.mod : '', V = this.viewNow(), eff = V && V.eff, L = this.modEls;
+    for (let j = 0; j < L.length; j++) {
+      const m = L[j], first = !m.arcs, w = m.el.wk;
+      if (full || first) m.arcs = haloArcs(s, fx, m.id, sel, this.host.extraRows ? this.host.extraRows(m.id) : null);
+      if (!m.arcs.length) { if (m.had) { w.setMod(null); m.had = false; } continue; }
+      const live = eff && m.i >= 0 && fin(eff[m.i]) ? eff[m.i] : null;
+      if (full || first || !m.had || typeof w.setLive !== 'function') w.setMod({ arcs: m.arcs, live });
+      else w.setLive(live);
       m.had = true;
     }
   }
   updateVoices() {
     if (this.vcEl) {
-      const s = this.s(), sn = this.snap;
+      const s = this.s(), sn = this.viewNow();
       const on = id => (this.getN(id) >= 0.5 ? 1 : 0), poly = s.voicing && s.voicing.mono ? 1 : (s.voicing ? s.voicing.poly : 8);
       const x = sn ? sn.oscVoices | 0 : 0;
       const y = sn ? sn.maxVoices | 0 : poly * (16 * (on('a.on') + on('b.on') + on('c.on')) + on('s.on') + on('n.on'));
@@ -2501,16 +2820,19 @@ export class SerumHost {
         this.vcEl.setAttribute('aria-label', 'Voices ' + x + ' of ' + y);
       }
     }
-    // output meter: the Main channel peak of the snapshot (mix[9], dBFS over the last span, §6.20)
-    if (this.meter) {
-      const mx = this.snap && this.snap.mix, v = mx && mx.length > 9 && fin(mx[9]) ? mx[9] : -Infinity;
-      if (v !== this.meterV) { this.meterV = v; this.meter.set(v); }
-    }
+    this.meterNow();
     // live callbacks (kit.live) of every page, told whether their page is on screen (§13.1: hidden pages are not painted;
     // a callback may still carry functional work, e.g. the CLIP page's recording)
     const shown = this.shownPages();
     for (const P of this.allPages()) { const on = shown.includes(P); for (const f of P.lives) f(on); }
     if (this.pop && this.popPage) for (const f of this.popPage.lives) f(true);
+  }
+  // output meter: the Main channel peak of the view (mix[9], dBFS over the last span, §6.20; heard time while the fast lane is live:
+  // every frame of the tick)
+  meterNow() {
+    if (!this.meter) return;
+    const V = this.viewNow(), mx = V && V.mix, v = mx && mx.length > 9 && fin(mx[9]) ? mx[9] : -Infinity;
+    if (v !== this.meterV) { this.meterV = v; this.meter.set(v); }
   }
   // the phase-memory menus of the oscillators and their memSet arrays (before an edit; armPhMem compares after it)
   phMemOf() {
@@ -2535,10 +2857,10 @@ export class SerumHost {
   checkCapture() {
     const s = this.s(), p = s.p, cur = { p: {}, osc: arr(s.osc).map(O => ({ phMem: isObj(O) ? O.phMem : undefined })), global: { s1: s1On(s) ? 1 : 0 } };
     for (const k of OSC_P) { cur.p[k + '.phase'] = p[k + '.phase']; cur.p[k + '.rand'] = p[k + '.rand']; }
-    const arm = this.capArm, due = captureDue(this.capPrev, cur, this.snap ? this.snap.notes : 0).filter(o => arm[o]);
+    const R = this.raw, arm = this.capArm, due = captureDue(this.capPrev, cur, R ? R.notes : 0).filter(o => arm[o]);   // (FR7: the raw message)
     this.capPrev = cur;
     arm.fill(false);
-    const mem = this.snap && this.snap.memNow;
+    const mem = R && R.memNow;
     if (!due.length || !mem) return;
     const ok = due.filter(o => mem.length >= (o + 1) * 16);
     if (!ok.length) return;
@@ -2562,7 +2884,8 @@ export class SerumHost {
     return cv;
   }
   paintCanvases(ts) {
-    for (const P of this.shownPages()) for (const cv of P.canvases) this.paintCanvas(cv, ts);
+    const S = this.pagesNow().shown;
+    for (let i = 0; i < S.length; i++) { const L = S[i].canvases; for (let j = 0; j < L.length; j++) this.paintCanvas(L[j], ts); }
   }
   // a rate-class canvas whose change came inside its period: painted by one rAF (re-armed until the period ends; a hidden
   // page's canvases wait for the full paint that shows them)
@@ -2616,9 +2939,13 @@ export class SerumHost {
       try { k = cv.key(); } catch (err) { k = Math.random(); }
       if (k === cv.last) return;
     }
-    if (cv.maxHz > 0) {
+    let cap = cv.capHz ? +(typeof cv.capHz === 'function' ? cv.capHz() : cv.capHz) : 0;
+    if (cap > 0 || cv.maxHz > 0) {
+      // (review 2, P1-1 a) Medium / Low: host.heavyHz() (30) a ceiling over every heavy display — the class and a capHz curve
+      const hv = this.heavyHz();
+      if (hv > 0 && (cap > 0 ? hv < cap : hv < cv.maxHz)) cap = hv;
       const t = ts > 0 ? ts : this.tNow();
-      if (!force && t - cv.t < rateMs(cv.maxHz)) { this.paintLater(cv); return; }
+      if (!force && t - cv.t < (cap > 0 ? capMs(cap) : rateMs(cv.maxHz))) { this.paintLater(cv); return; }
       cv.t = t;
     }
     cv.due = false;
@@ -4036,7 +4363,7 @@ export class SerumHost {
       tool: () => this.lfoTool,
       loop: () => lf().loop, setLoop: i => this.edit(s => { s.lfo[L()].loop = i; }, { label: 'LFO loop point' }),
       start: () => lf().start, setStart: i => this.edit(s => { s.lfo[L()].start = i; }, { label: 'LFO start point' }),
-      playhead: () => (this.snap && this.snap.lfoPh && fin(this.snap.lfoPh[L()]) ? this.snap.lfoPh[L()] : null),
+      playhead: () => { const V = this.viewNow(); return V && V.lfoPh && fin(V.lfoPh[L()]) ? V.lfoPh[L()] : null; },
       pointMenu: links ? (idxs, axis) => busMenuItems(this.s(), L(), idxs, axis).map(it => ({ label: it.label, checked: it.checked,
         action: () => (it.label === 'New bus' ? this.linkNew(L(), idxs, axis, this.s().ui.mod)
           : this.edit(s => linkPoints(s, this.fx(), L(), idxs, axis, it.bus, null), { label: 'Modulate point' })) })) : undefined,
@@ -4170,7 +4497,7 @@ export class SerumHost {
   // effective internal rate (§9.7, deviation 9): the processor's own rate from the snapshot (tapRate = proc.fs,
   // which already includes the device-rate cap and the CPU safeguard), else host.sampleRate (optional) × the cap
   osText() {
-    const os = this.s().global.os, sn = this.snap, h = this.host.sampleRate, base = typeof h === 'function' ? +h() : +h;
+    const os = this.s().global.os, sn = this.viewNow(), h = this.host.sampleRate, base = typeof h === 'function' ? +h() : +h;
     const kHz = r => 'Running at ' + (r >= 1000 ? +(r / 1000).toFixed(1) + ' kHz' : Math.round(r) + ' Hz');
     if (sn && sn.tapRate > 0) return kHz(sn.tapRate);
     if (!(base > 0)) return 'Runs at ' + os + '× the device rate (capped at 384 kHz)';
@@ -4192,6 +4519,7 @@ export class SerumHost {
   destroy() {
     if (this.dead) return;
     this.dead = true;
+    this.tickStop();
     if (this.drag) this.dragDone(null);
     if (this.pop) this.pop.close();
     if (this.big) { try { this.big.close(); } catch (err) { /* closed */ } this.big = null; }
@@ -4222,6 +4550,7 @@ export class SerumHost {
     if (this.lay) { this.lay.remove(); this.lay = null; }
     for (const r of this.roots) r.remove();
     this.views = [];
+    this.pgM = null;
   }
   // the shell's own pieces (SerumUI: the FX rack, mixer, keyboard, sequencer pages, oscillator panels)
   destroyShell() {}
@@ -4295,7 +4624,9 @@ const call = (f, ...a) => { try { return typeof f === 'function' ? f(...a) : und
 //   lock?: { mono: 1 }  (MM, IMPL-MM §7.2: the master's modulators — it has no notes) an LFO's and a Chaos row's MONO switch shows
 //          GLOBAL, disabled, its tap ignored (kit.opts.monoLock; a presentation: the host forces the field too); no lock = unchanged,
 //   view?: {} kept by the caller per module for the session (trackId/dev): the editor zoom, grid, tool survive a remount,
-//   devKey?: the module id (data-dev of its root) }.
+//   devKey?: the module id (data-dev of its root),
+//   heardFrame?(), sampleRate?() (FR Cut B §4.4: the frame heard now and the rate — a .live(v) with a finite v.F then goes into the
+//          host's ring, read at the heard frame by its tick) }.
 // View edits (zoom, LOCK fit, the LFO grid, the drawing tool) never reach the device. The returned host has .kind,
 // .sync() (re-overlay after an undo / redo / load) and .live(v) (the monitor: a level, or { v, ph, y, out, stage, t });
 // sx-ui-mod.js mountSlot(H, root) mounts the panel of its kind (LfoPanel 0 / EnvPanel 1 / ChaosRow 0 / MacrosPanel).
@@ -4341,6 +4672,7 @@ export function slotHost(dev, o) {
     editEnd: op => after(op || { phase: 'end' }),   // (a knob gesture that ended at its last move's value: SerumHost.setN)
     bpm: () => { const b = O.bpm ? +call(O.bpm) : 120; return b > 0 ? b : 120; },
     storage: O.storage, notify: typeof O.notify === 'function' ? O.notify : undefined,
+    heardFrame: typeof O.heardFrame === 'function' ? O.heardFrame : undefined, sampleRate: typeof O.sampleRate === 'function' ? O.sampleRate : undefined,
   };
   const rows = isObj(O.rows) ? O.rows : null;
   const srcItems = () => {
@@ -4369,10 +4701,24 @@ export function slotHost(dev, o) {
   const snap = { notes: 1, lfoPh: new Float32Array(N_LFO), lfoOut: new Float32Array(N_LFO), lfoY: new Float32Array(N_LFO),
     envStage: new Uint8Array(N_ENV), envT: new Float32Array(N_ENV), env: new Float32Array(N_ENV), eff: null };
   H.liveV = NaN;
+  // (FR Cut B §4.4) with a finite v.F (the 'mods' fast part, a heard frame to read at): into the host's ring (SLOT_K's fields: LFO
+  // v, ph, y, out · ENV v, stage, t · Chaos v, today's fallbacks), nothing painted — the tick reads it at the heard frame
+  const sw = SLOT_W[kind] || 1, sb = new Float64Array(sw);
   H.live = v => {
     if (H.dead) return;
     const x = isObj(v) ? v : { v }, i = H.slot;
     if (fin(x.v)) H.liveV = x.v;
+    if (fin(x.F) && typeof O.heardFrame === 'function') {
+      if (!H.raw) { H.smon = H.msg = { s: snap }; H.raw = snap; H.snap = H.viewCopy(snap); }   // (a view to write into, no paint of its own)
+      if (!H.sl) { H.sl = MO.ring(sw, MO.SLOT_K[kind] || MO.SLOT_K.chaos, { groups: MO.SLOT_G[kind] || MO.SLOT_G.chaos }); H.sbuf = new Float64Array(sw); }
+      if (kind === 'lfo') { sb[0] = fin(x.v) ? x.v : NaN; sb[1] = fin(x.ph) ? x.ph : NaN; sb[2] = fin(x.y) ? x.y : sb[0]; sb[3] = fin(x.out) ? x.out : sb[1]; }
+      else if (kind === 'env') { sb[0] = fin(x.v) ? x.v : 0; sb[1] = fin(x.stage) ? x.stage : 0; sb[2] = fin(x.t) ? x.t : 0; }
+      else sb[0] = fin(x.v) ? x.v : NaN;
+      H.sl.push(+x.F, sb, 0, H.srNow()); // ((review 1 R1-B) the gap rule)
+      H.vF = NaN;
+      H.tickOn();
+      return;
+    }
     if (kind === 'lfo') {
       snap.lfoPh[i] = fin(x.ph) ? x.ph : NaN;
       snap.lfoOut[i] = fin(x.out) ? x.out : fin(x.ph) ? x.ph : NaN;

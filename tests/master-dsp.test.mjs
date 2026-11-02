@@ -337,6 +337,52 @@ test('no allocation per push() (full and lite, across sub-block ends) or in summ
   assert.ok(Number.isFinite(out.m));
 });
 
+test('FR Cut B §2.4: peek(out, keep) — the fast lane\'s read [tp L, tp R, pk L, pk R (dB since the previous peek), corr, M, S]: its own accumulators (summary\'s peaks, holds and every reading untouched, bit for bit, peeks or not); keep reads without restarting; peek(null) only restarts; restart() / reset() clear both; no allocation', () => {
+  const fs = 48000, a = new MD.Meters(fs), b = new MD.Meters(fs), o = new Float32Array(7), o2 = new Float32Array(7);
+  assert.equal(typeof a.peek, 'function', 'Meters.peek');
+  const segs = [[-12, 0.4, 997, 'noise'], [-3, 0.2, 3100, 'neg'], [-40, 0.5, 220, 'same'], [-6, 0.3, 12000, 'zero'], [-18, 1.2, 440, 'noise']];
+  // a peeked every block (the fast lane at its highest rate) against b never peeked: the slow readings identical, every summary
+  let tp = [-Infinity, -Infinity], pk = [-Infinity, -Infinity], n = 0, bad = '', kb = 0, ka = 0;
+  const sa = a.summary(), sb = b.summary();
+  feed(b, fs, segs, () => { if (kb++ % 13 === 12) b.summary(sb); });
+  feed(a, fs, segs, () => {
+    a.peek(o);
+    for (let c = 0; c < 2; c++) { if (o[c] > tp[c]) tp[c] = o[c]; if (o[2 + c] > pk[c]) pk[c] = o[2 + c]; }
+    if (ka++ % 13 === 12) {
+      a.summary(sa); n++;
+      // the fast peaks since the previous summary: their maximum = the summary's (block maxima, nothing stolen)
+      for (let c = 0; c < 2; c++) if (!Object.is(Math.fround(sa.tp[c]), tp[c]) || !Object.is(Math.fround(sa.pk[c]), pk[c])) bad = `summary ${n} ch ${c}: tp ${sa.tp[c]} / ${tp[c]}, pk ${sa.pk[c]} / ${pk[c]}`;
+      tp = [-Infinity, -Infinity]; pk = [-Infinity, -Infinity];
+      if (!Object.is(Math.fround(sa.corr), o[4]) || !Object.is(Math.fround(sa.m), o[5]) || !Object.is(Math.fround(sa.s), o[6])) bad = 'corr / M / S at summary ' + n;
+    }
+  });
+  assert.equal(bad, '');
+  assert.ok(n > 50);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.summary())), JSON.parse(JSON.stringify(b.summary())), 'the slow readings bit for bit, peeked or not');
+  assert.equal(a.integrated(), b.integrated()); assert.equal(a.lra(), b.lra());
+  // keep: the same read twice; then a restart of the fast peaks only
+  feed(a, fs, [[-9, 0.05, 1000, 'same']]);
+  a.peek(o, true); a.peek(o2, true);
+  assert.deepEqual(Array.from(o2), Array.from(o), 'keep: no restart');
+  assert.ok(o[0] > -9.5 && o[0] < -8.5, 'the −9 dBFS tone\'s true peak: ' + o[0]);
+  a.peek(null);
+  a.peek(o);
+  assert.deepEqual([o[0], o[1], o[2], o[3]], [-Infinity, -Infinity, -Infinity, -Infinity], 'peek(null) restarted them');
+  feed(a, fs, [[-9, 0.05, 1000, 'same']]);
+  a.restart(); a.peek(o);
+  assert.equal(o[2], -Infinity, 'restart() clears the fast peaks too');
+  feed(a, fs, [[-9, 0.05, 1000, 'same']]);
+  a.reset(); a.peek(o);
+  assert.equal(o[0], -Infinity, 'reset() too');
+  // lite: no peaks (−Infinity), its M / S
+  const l = new MD.Meters(fs, { lite: true });
+  feed(l, fs, [[-20, 0.6, 1000, 'same']]);
+  l.peek(o);
+  assert.ok(o[0] === -Infinity && Number.isFinite(o[5]), 'lite');
+  const L = new Float32Array(128).map((_, i) => Math.sin(i / 3)), R = L.map(x => -0.5 * x);
+  noAlloc(S, () => { for (let k = 0; k < 200; k++) { a.push(L, R, 128, 0); a.peek(o); a.peek(o2, true); } a.peek(null); });
+});
+
 test('ref-M: the meters\' readings for the G3 / O3 signals (frozen at acceptance; GOLDEN_FREEZE_M=1 writes them)', (t) => {
   const REF = new URL('./ref-M/', import.meta.url), file = new URL('master-meters.json', REF);
   const got = JSON.parse(JSON.stringify(READ));

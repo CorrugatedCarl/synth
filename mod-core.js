@@ -68,6 +68,8 @@
  *                         is MC.live[l]). MC.liveEnv Float32Array(8): [j] the stage of ENV j (SxMod's eSt: 0 idle, 1 attack, 2
  *                         hold, 3 decay, 4 sustain, 5 release), [4 + j] its stage time in seconds; j in the live order (0…3 = ENV
  *                         2, 3, 4, 1: MC.live[10 + j])
+ *   MC.fastRead(x)        FR Cut B §2.4: the two fields packed into x (Float32Array(28): [livePh 20 | liveEnv 8]) for the fast
+ *                         lane's {t: 'fast', mc, x} — a copy, nothing else touched (valid while MC.mon)
  *   MC.stats() → {lfos, envs, rows, ext, spans, half}   (spans: the spans evaluated since the payload)
  *   ModCore.warmPayload(SxBase) → a {t: 'mods'} payload on a hand-built CP (2 GLOBAL LFOs, a PER NOTE LFO, an ENV, chaos,
  *                         a macro, a value source; cls / set / fx rows, one ext slot) for Track.warmUp's ModCore round
@@ -180,6 +182,14 @@
           const e = EORD[j];
           if (mv) { EV[j] = mv.eSt[e]; EV[N_ENV + j] = mv.eT[e]; } else { EV[j] = 0; EV[N_ENV + j] = 0; }
         }
+      }
+      // FR Cut B §2.4 (the fast lane's 'mods' part): the two monitor fields packed into x (28 floats: [livePh 20 | liveEnv 8]) —
+      // the values the last mread() left (valid while mon: the 'mods' id watched); no allocation, nothing else touched
+      fastRead(x) {
+        const PH = this.livePh, EV = this.liveEnv;
+        for (let j = 0; j < 2 * N_LFO; j++) x[j] = PH[j];
+        for (let j = 0; j < 2 * N_ENV; j++) x[2 * N_LFO + j] = EV[j];
+        return x;
       }
       /* ---- the payload (allocation here only; a rejected one leaves the previous state as it was) ---- */
       setRows(m) {

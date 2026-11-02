@@ -864,6 +864,26 @@ test('IMPL-3 §2.9: with the monitor fields on, MC.span / mread / watch allocate
   assert.ok(MC.mon === 1 && MC.livePh.some(x => x !== 0) && st > 0, 'ran with the fields on');
 });
 
+test('FR Cut B §2.4: MC.fastRead(x) packs the monitor fields for the fast lane — x[0…20) = livePh (phase | Path Y), x[20…28) = liveEnv (stage | time), the values mread() left; no allocation, no state touched', () => {
+  const S = scope(), vi = S.vi;
+  const p = junoTrack(S, payload(mcxSynth(), { rows: mcxRows(vi), ext: [{ k: 1, src: S_LFO1 }, { k: 2, src: S_ENV2 }] })), MC = p.mc;
+  assert.equal(typeof MC.fastRead, 'function', 'MC.fastRead');
+  p.msg({ t: 'mon', ids: ['mods'] });
+  p.msg({ t: 'on', n: 60, v: 0.8 });
+  const x = new Float32Array(28).fill(NaN);
+  let checks = 0;
+  for (let k = 0; k < 60; k++) {
+    S.run(p, 3, (q, P) => mcxEv(q + 3 * k, P));
+    const ph = Float32Array.from(MC.livePh), env = Float32Array.from(MC.liveEnv), live = Float32Array.from(MC.live);
+    noAlloc(S.D, () => MC.fastRead(x));
+    for (let j = 0; j < 20; j++) assert.ok(Object.is(x[j], ph[j]), 'x[' + j + '] = livePh');
+    for (let j = 0; j < 8; j++) assert.ok(Object.is(x[20 + j], env[j]), 'x[' + (20 + j) + '] = liveEnv');
+    for (let j = 0; j < 16; j++) assert.ok(Object.is(MC.live[j], live[j]), 'MC.live untouched');
+    checks++;
+  }
+  assert.ok(checks === 60 && x.some(v => v !== 0), 'the fields moved');
+});
+
 test('P2: Track.warmUp\'s ModCore round (warmMods: a payload on a hand-built CP with cls / set / fx rows and ext on the warm graph) runs and leaves nothing — mc null, the Insts without rows, the panel unmodulated, nHeld 0; a fresh scope\'s first Track is clean after its warm-up', () => {
   const S = scope(), p = S.mk({ offline: true });
   // the round itself on an explicit warm graph (offline: no warm-up ran in the constructor)

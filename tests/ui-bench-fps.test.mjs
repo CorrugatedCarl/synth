@@ -48,6 +48,118 @@ test('rateOf: the classes — eff / snap (the worklets\' 29 Hz) / gr (30) / heav
   assert.deepEqual([B.HZ.snap, B.HZ.gr, B.HZ.heavyMax], [29, 30, 60]);
 });
 
+test('(FR Cut B §5.6) rateOf under o.fast: snap and gr → eff (the view moves every frame); heavy → min(o.snap ?? eff, E / max(1, floor(E / 60))) (its Cut B comment: 82.5 at 165, 72 at 144, 60 at 120 / 240, E itself at 60–119); the new curve class (the filter display\'s curve, the user\'s QB) → min(eff, 60) on High, min(eff, 30) on Medium / Low; without o.fast every class as before (curve as snap)', () => {
+  const F = { fast: true };
+  assert.deepEqual([60, 90, 120, 144, 165, 240].map(e => B.rateOf('snap', e, F)), [60, 90, 120, 144, 165, 240], 'snap: every frame');
+  assert.deepEqual([60, 120, 240].map(e => B.rateOf('gr', e, F)), [60, 120, 240], 'gr: every frame');
+  assert.deepEqual([60, 90, 120, 144, 165, 240].map(e => B.rateOf('heavy', e, F)), [60, 90, 60, 72, 82.5, 60], 'heavy: E / floor(E / 60)');
+  assert.deepEqual([B.rateOf('heavy', 240, { fast: true, snap: 30 }), B.rateOf('heavy', 90, { fast: true, snap: 120 })], [30, 90], 'heavy: never above the data');
+  assert.equal(B.rateOf('heavy', 119.8, { fast: true, eff: 120 }), 60, 'heavy: its cadence k from the clock\'s E (o.eff, evalExpect\'s ctx), not from the frames delivered (119.8 → k 1 would ask 119.8)');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'heavy' }, { found: 1, rates: [59.9] }, { eff: 120, delivered: 119.84, fast: true }).pass, true, 'a 120 Hz cell delivering 119.84: the heavy class at 60');
+  assert.deepEqual([60, 120, 240, 30].map(e => B.rateOf('curve', e, F)), [60, 60, 60, 30], 'curve: ≤ 60 on High');
+  assert.deepEqual([60, 120, 240].map(e => B.rateOf('curve', e, { fast: true, perf: 'medium' })), [30, 30, 30], 'curve: ≤ 30 on Medium');
+  assert.deepEqual([60, 120].map(e => B.rateOf('curve', e, { fast: true, perf: 'low' })), [30, 30], 'curve: ≤ 30 on Low');
+  assert.deepEqual([B.rateOf('curve', 120), B.rateOf('snap', 120, { fast: false }), B.rateOf('gr', 120, { fast: false }), B.rateOf('heavy', 120, { fast: false })], [29, 29, 30, 29], 'fast off: today\'s classes');
+  assert.deepEqual([B.rateOf('eff', 120, F), B.rateOf(10, 120, F)], [120, 10]);
+});
+
+test('(FR Cut B §5.6) evalExpect under fast: a snap display at 0.8 × eff, the curve judged from above too (> 1.25 × its cap fails: the filter curve redraws at most 60 / 30 a second)', () => {
+  assert.equal(B.evalExpect({ name: 'x', rate: 'snap' }, { found: 1, rates: [100] }, { eff: 120, fast: true }).pass, true, '0.8 × 120 = 96');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'snap' }, { found: 1, rates: [90] }, { eff: 120, fast: true }).pass, false);
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve' }, { found: 1, rates: [58] }, { eff: 120, fast: true }).pass, true);
+  const over = B.evalExpect({ name: 'x', rate: 'curve' }, { found: 1, rates: [110] }, { eff: 120, fast: true });
+  assert.deepEqual([over.pass, /above/.test(over.why)], [false, true], 'a curve at the display\'s rate: the cap ignored — ' + over.why);
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve' }, { found: 1, rates: [36] }, { eff: 120, fast: true, perf: 'medium' }).pass, true, 'Medium: 30, ≤ 37.5');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve' }, { found: 1, rates: [55] }, { eff: 120, fast: true, perf: 'medium' }).pass, false, 'Medium: above 1.25 × 30');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve' }, { found: 1, rates: [26] }, { eff: 120 }).pass, true, 'fast off: the curve is a snap display (29)');
+});
+
+test('(FR Cut B review 2, P1-1) rateOf: on Medium / Low every heavy display ≤ 30 a second (a ceiling: E / ceil(E / 30)); the frame clock\'s drop level o.drop halves the heavy and curve classes per level (k doubled), never below 15 a second, fast off too (under the data\'s 29); evalExpect judges from below at the window\'s highest level (ctx.drop) and the curve from above at its lowest (ctx.dropLo); --perf high|medium|low', () => {
+  assert.deepEqual([60, 120, 144, 240].map(e => B.rateOf('heavy', e, { fast: true, perf: 'medium' })), [30, 30, 28.8, 30], 'heavy on Medium: ≤ 30');
+  assert.deepEqual([60, 120].map(e => B.rateOf('heavy', e, { fast: true, perf: 'low' })), [30, 30], 'heavy on Low: ≤ 30');
+  assert.deepEqual([0, 1, 2, 3].map(L => B.rateOf('heavy', 120, { fast: true, drop: L })), [60, 30, 15, 15], 'heavy on High at 120: halved per level, ≥ 15');
+  assert.deepEqual([0, 1, 2].map(L => B.rateOf('heavy', 240, { fast: true, drop: L })), [60, 30, 15]);
+  assert.deepEqual([0, 1, 2].map(L => B.rateOf('heavy', 60, { fast: true, perf: 'medium', drop: L })), [30, 15, 15], 'Medium: 30 → 15');
+  assert.deepEqual([0, 1, 2].map(L => B.rateOf('curve', 120, { fast: true, drop: L })), [60, 30, 15], 'the curve the same');
+  assert.deepEqual([B.rateOf('heavy', 120, { drop: 2 }), B.rateOf('heavy', 120, { drop: 1 }), B.rateOf('curve', 60, { drop: 2 }), B.rateOf('heavy', 120)], [15, 29, 15, 29], 'fast off: the data\'s 29, a level below it');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'heavy' }, { found: 1, rates: [25] }, { eff: 120, fast: true, drop: 1, dropLo: 0 }).pass, true, '25 ≥ 0.8 × 30 at level 1');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'heavy' }, { found: 1, rates: [25] }, { eff: 120, fast: true, drop: 0, dropLo: 0 }).pass, false, '25 < 0.8 × 60 at level 0');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve', tol: 0.4 }, { found: 1, rates: [58] }, { eff: 120, fast: true, drop: 1, dropLo: 0 }).pass, true, 'a window begun at level 0: 60 allowed from above');
+  assert.equal(B.evalExpect({ name: 'x', rate: 'curve', tol: 0.4 }, { found: 1, rates: [58] }, { eff: 120, fast: true, drop: 2, dropLo: 2 }).pass, false, 'all of it at level 2: > 1.25 × 15');
+  assert.deepEqual([B.parseArgs([]).perf, B.parseArgs(['--perf', 'medium']).perf, B.parseArgs(['--perf', 'fast']).errors.length], [null, 'medium', 1], '--perf: the app\'s preset for every cell (default: the app\'s own, High)');
+  // from level 2 the fast lane's motion sheds (wk.clock `shed` clients: every other frame, ≥ 30 a second): snap / gr under fast
+  assert.deepEqual([0, 1, 2, 3].map(L => B.rateOf('snap', 60, { fast: true, drop: L })), [60, 60, 30, 30], 'snap at 60: shed from level 2');
+  assert.deepEqual([B.rateOf('snap', 240, { fast: true, drop: 2 }), B.rateOf('snap', 240, { fast: true, drop: 3 }), B.rateOf('gr', 120, { fast: true, drop: 3 }), B.rateOf('snap', 30, { fast: true, drop: 3 }), B.rateOf('snap', 120, { drop: 2 })], [120, 30, 30, 30, 29], 'half the cadence at level 2, the floor (30) at 3; fast off: the data\'s 29');
+  // each cell its own condition: prepare starts the clock's drop level afresh (a 6 × cell must not leave a 1 × one shedding); the
+  // smooth probe judged by the cell's own lane (the touch sizes read as iPadOS: WebKit, the lane off — recorded, not judged)
+  const src = readFileSync(new URL('./ui-bench-fps.mjs', import.meta.url), 'utf8');
+  assert.ok(/wk\.clock\.dropReset\(\)/.test(src.slice(src.indexOf('export async function prepare'), src.indexOf('export async function smoothProbe'))), 'prepare: dropReset');
+  assert.ok(/pass: !pre\.fast \|\| !!r\.pass/.test(src), 'the probe by the cell\'s lane');
+});
+
+test('(FR Cut B §5.6) the EXPECT changes: the filter display\'s curve is the curve class, its cutoff marker a snap entry of its own; the LFO-driven knob dots tol 0.5, the master OUT meters tol 0.4; the GR bars keep gr and their tol; every other class as it was', () => {
+  const fd = B.EXPECT.tutorial.find(e => e.name === 'filter display');
+  assert.deepEqual(fd && [fd.rate, fd.kind], ['curve', 'canvas']);
+  const mk = B.EXPECT.tutorial.find(e => e.name === 'filter cutoff marker');
+  assert.deepEqual(mk && [mk.rate, mk.kind, mk.fast, /sxo-fmark/.test(mk.sel)], ['snap', 'canvas', true, true], 'the marker overlay (lane M-B\'s canvas.sxo-fmark): every frame under fast; it exists only then');
+  const off = B.evalExpect(mk, { found: 0, rates: [] }, { eff: 120 });
+  assert.deepEqual([off.pass, off.skipped], [true, true], 'fast off: the marker is not asked for (no overlay)');
+  assert.equal(B.evalExpect(mk, { found: 0, rates: [] }, { eff: 120, fast: true }).pass, false, 'fast on: it must be there');
+  assert.equal(B.EXPECT.serum.find(e => e.name === 'LFO-driven knob dots').tol, 0.5);
+  assert.equal(B.EXPECT.master.find(e => e.name === 'OUT meters').tol, 0.4);
+  assert.deepEqual(B.EXPECT.tutorial.find(e => e.name === 'Ducker GR bar').rate + '/' + B.EXPECT.tutorial.find(e => e.name === 'Ducker GR bar').tol, 'gr/0.4');
+  assert.equal(B.EXPECT.master.find(e => e.name === 'rack GR bars + Ducker position').rate, 'gr');
+});
+
+test('(FR Cut B §5.6) parseArgs: --fast on|off (default on), --load, --serve --port N; nonsense rejected', () => {
+  const d = B.parseArgs([]);
+  assert.deepEqual([d.fast, d.load, d.serve, d.port], [true, false, false, 0]);
+  const o = B.parseArgs(['--fast', 'off', '--load', '--serve', '--port', '9123', '--out', 'r.json']);
+  assert.deepEqual([o.fast, o.load, o.serve, o.port, o.out, o.errors], [false, true, true, 9123, 'r.json', []]);
+  assert.equal(B.parseArgs(['--fast', 'on']).fast, true);
+  assert.equal(B.parseArgs(['--fast', 'maybe']).errors.length, 1);
+  assert.equal(B.parseArgs(['--port', '80']).errors.length, 1, 'not a privileged port');
+  assert.equal(B.parseArgs(['--port', '8817']).errors.length, 1, 'never the preview server\'s port');
+});
+
+test('(FR Cut B §7 G7) smoothOf: the probe\'s x per painted frame → moved (the share of frames whose x differs from the previous), cv (the coefficient of variation of |Δx|, wrap frames excluded), pass at moved ≥ 0.9 and cv ≤ 0.3; a 29 Hz probe on a 240 Hz display fails', () => {
+  const lin = Array.from({ length: 240 }, (_, i) => (i * 3.1) % 200);
+  const s = B.smoothOf(lin);
+  assert.deepEqual([s.n, s.moved >= 0.99, s.cv < 0.01, s.wraps >= 3, s.pass], [240, true, true, true, true], JSON.stringify(s));
+  const steps = Array.from({ length: 240 }, (_, i) => Math.floor(i * 29 / 240) * 25 % 200); // (a 29 Hz data rate on 240 frames)
+  const t = B.smoothOf(steps);
+  assert.deepEqual([t.moved < 0.2, t.pass], [true, false], JSON.stringify(t));
+  const jit = Array.from({ length: 240 }, (_, i) => (i * 3 + (i % 2 ? 2 : 0)) % 200);
+  assert.equal(B.smoothOf(jit).pass, false, 'uneven steps: cv > 0.3 — ' + JSON.stringify(B.smoothOf(jit)));
+  const back = Array.from({ length: 120 }, (_, i) => 200 - ((i * 2.5) % 200));
+  assert.equal(B.smoothOf(back).pass, true, 'a backward LFO: its own direction');
+  assert.deepEqual([B.smoothOf([]).pass, B.smoothOf([NaN, NaN, NaN]).moved], [false, 0]);
+});
+
+test('(FR Cut B §7 G8) the --load protocol: loadPlan = 10 cycles of [fast on 5 s, off 5 s] interleaved with A/A [off 5 s, off 5 s]; loadVerdict → Δ (median on − median off), the A/A spread, the gate Δ ≤ max(0.005, 2 × spread)', () => {
+  const P = B.loadPlan();
+  assert.equal(P.length, 40);
+  assert.deepEqual(P.slice(0, 4).map(x => x.arm + ':' + x.fast + ':' + x.ms), ['ab:true:5000', 'ab:false:5000', 'aa:false:5000', 'aa:false:5000']);
+  assert.equal(P.filter(x => x.arm === 'ab' && x.fast).length, 10);
+  assert.deepEqual(B.loadPlan(2, 1000).map(x => x.arm + ':' + (x.fast ? 1 : 0) + ':' + x.ms + ':' + x.pair), ['ab:1:1000:0', 'ab:0:1000:0', 'aa:0:1000:0', 'aa:0:1000:0', 'ab:1:1000:1', 'ab:0:1000:1', 'aa:0:1000:1', 'aa:0:1000:1']);
+  const res = [];
+  for (let k = 0; k < 10; k++) res.push({ arm: 'ab', fast: true, pair: k, load: 0.102 + 0.001 * (k % 3) }, { arm: 'ab', fast: false, pair: k, load: 0.1 + 0.001 * (k % 3) }, { arm: 'aa', fast: false, pair: k, load: 0.1 }, { arm: 'aa', fast: false, pair: k, load: 0.1 + 0.0005 * (k % 2) });
+  const v = B.loadVerdict(res);
+  assert.ok(Math.abs(v.delta - 0.002) < 1e-9 && v.spread >= 0 && v.spread <= 0.0006 && Math.abs(v.limit - 0.005) < 1e-12 && v.pass, JSON.stringify(v));
+  const bad = B.loadVerdict(res.map(r => (r.arm === 'ab' && r.fast ? Object.assign({}, r, { load: r.load + 0.01 }) : r)));
+  assert.equal(bad.pass, false, JSON.stringify(bad));
+});
+
+test('(FR Cut B §5.6) the harness\'s Cut B source: the cells pass --fast through __synthTest.fr.force; the smooth probe hooks arc on the LFO 1 overlay (.gx-lfo canvas.gx-ov); --serve has COOP / COEP and POST /result (≤ 1 MB) → --out; ui-bench.html?fps=1&load=1&post=1 runs the load protocol and posts it', () => {
+  const src = readFileSync(new URL('./ui-bench-fps.mjs', import.meta.url), 'utf8');
+  assert.ok(/fr\.force\(/.test(src), '__synthTest.fr.force');
+  assert.ok(/\.gx-lfo canvas\.gx-ov/.test(src) && /'arc'/.test(src), 'the probe on the LFO overlay\'s arc');
+  assert.ok(/POST/.test(src) && /\/result/.test(src) && /1048576|1 << 20/.test(src), 'POST /result, 1 MB');
+  assert.ok(/Cross-Origin-Opener-Policy/.test(src) && /Cross-Origin-Embedder-Policy/.test(src));
+  assert.ok(/load=1/.test(src) && /post=1/.test(src), 'the device page\'s load / post switches');
+  for (const f of ['smoothOf', 'loadPlan', 'loadVerdict', 'smoothProbe', 'loadRun']) assert.equal(typeof B[f], 'function', f);
+});
+
 test('evalExpect: each element ≥ tol × the expected rate; found ≥ min; `any` needs min of them; the verdict says why', () => {
   const e = { name: 'x', rate: 'eff' };
   assert.equal(B.evalExpect(e, { found: 2, rates: [118, 119.5] }, { eff: 120 }).pass, true);
@@ -234,7 +346,7 @@ test('the expected-live lists: every scene has one, entries are well formed (kin
     for (const e of list) {
       assert.ok(['canvas', 'attr'].includes(e.kind), id + ' / ' + e.name + ': kind');
       assert.ok(typeof e.sel === 'string' && e.sel.length > 3, id + ' / ' + e.name + ': a selector');
-      assert.ok(['eff', 'snap', 'gr', 'heavy'].includes(e.rate) || e.rate > 0, id + ' / ' + e.name + ': a rate class');
+      assert.ok(['eff', 'snap', 'gr', 'heavy', 'curve'].includes(e.rate) || e.rate > 0, id + ' / ' + e.name + ': a rate class'); // ((FR Cut B §5.6) + curve: the filter display's curve
       if (e.kind === 'attr') assert.ok(typeof e.attr === 'string', id + ' / ' + e.name + ': the attribute whose writes count');
       assert.ok(e.tol == null || (e.tol > 0 && e.tol <= 1), id + ' / ' + e.name + ': tol');
       assert.ok(e.box == null || (typeof e.box === 'string' && e.kind === 'attr'), id + ' / ' + e.name + ': a box (the ancestor that says "on screen") only for the attribute writers');
@@ -306,6 +418,23 @@ test('the hooks are one self-contained function (they are stringified into the p
   assert.deepEqual([d2.msgN, Object.keys(d2.byType)], [1, ['smon']]);
 });
 
+test('(FR Cut B review 2, the lead\'s P2-3) the device protocol runs in the app\'s own top-level page, never a srcdoc / iframe: main.js under ?fpsdev=1 imports the harness and calls devBoot(window) before its store opens; ui-bench.html?fps=1 (main) is the launcher; devUrl keeps the protocol\'s query (never ?fps=, cv-world\'s frame-rate setting) and steps i', () => {
+  for (const f of ['devBoot', 'devRun', 'devUrl', 'main']) assert.equal(typeof B[f], 'function', f);
+  const M = readFileSync(new URL('../main.js', import.meta.url), 'utf8'), gate = M.indexOf("/[?&]fpsdev=1(?:&|$)/.test("), store = M.indexOf('await openAppStore(');
+  assert.ok(gate > 0 && store > gate, 'the ?fpsdev=1 gate before the store opens');
+  const G = M.slice(gate, store);
+  assert.ok(/globalThis\.__synthTest = globalThis\.__synthTest \|\| \{\}/.test(G) && /tests\/ui-bench-fps\.mjs/.test(G) && /\.devBoot\(window\)/.test(G), 'the test hooks object, the harness, devBoot(window)');
+  assert.equal(B.devUrl('http://h:1/index.html', '?fps=1&scenes=tutorial,master&load=1&post=1&x=9&cycles=3&auto=1', 0), 'http://h:1/index.html?fpsdev=1&scenes=tutorial%2Cmaster&load=1&post=1&cycles=3&auto=1&i=0');
+  assert.equal(B.devUrl('http://h:1/index.html?fpsdev=1&scenes=idle&i=0', '?fpsdev=1&scenes=idle&i=0', 1), 'http://h:1/index.html?fpsdev=1&scenes=idle&i=1', 'step to step on the app page');
+  const src = readFileSync(new URL('./ui-bench-fps.mjs', import.meta.url), 'utf8'), dev = src.slice(src.indexOf('on a device: index.html?fpsdev=1'), src.indexOf('the driver (node)'));
+  assert.ok(dev.length > 2000 && !/srcdoc|<iframe|mountFrame|contentWindow/.test(dev.replace(/never in a\s*(?:\/\/\s*)?srcdoc or an iframe|in a srcdoc or an iframe|a srcdoc \/ iframe/g, '')), 'the device section: no frame');
+  assert.ok(/location\.replace\(devUrl\(/.test(dev) && /sessionStorage/.test(dev) && /powerOn/.test(dev), 'one scene a page load, the report carried, the audio started (a tap where WebKit wants one)');
+  // &fast: off | on (the preset's rate — 0 in WebKit, where the lane ships off) | a rate forced (G8i: &fast=60 measures the lane WebKit would run)
+  assert.deepEqual(['off', 'on', null, '', '60', '120', '0', 'x'].map(B.devFast), [false, true, true, true, 60, 120, true, true]);
+  assert.ok(/fr\.force\(cfg\.fast === false \? 0 : typeof cfg\.fast === 'number' \? cfg\.fast : null\)/.test(src), 'prepare forces a numeric rate');
+  assert.ok(/fr\.force\(ph\.fast \? on : 0\)/.test(src), 'loadRun\'s on arm at the rate asked');
+});
+
 test('the page module: imports with no DOM and no node (its work only in buildScene / prepare / begin / finish / gearCheck / main and the driver), ui-bench.html routes ?fps=1 to it, ?run=1 does not start the 1h bench with it', () => {
   for (const f of ['buildScene', 'prepare', 'begin', 'finish', 'gearCheck', 'main', 'drive', 'appOf', 'installHooks']) assert.equal(typeof B[f], 'function', f);
   const html = readFileSync(new URL('./ui-bench.html', import.meta.url), 'utf8');
@@ -314,8 +443,8 @@ test('the page module: imports with no DOM and no node (its work only in buildSc
   assert.match(html, /!FPS && !M3 && !M9 && !WC\) \$\('#run'\)\.click\(\)/);
   assert.match(html, /!M3 && !M9 && !WC\) \$\('#run'\)\.click\(\)/, 'ui-bench-wc.test\'s pin still holds');
   const src = readFileSync(new URL('./ui-bench-fps.mjs', import.meta.url), 'utf8');
-  assert.equal(/\.srcdoc\s*=/.test(src.replace(/f\.removeAttribute\('src'\); f\.srcdoc = ''/, '')), false, 'the app frame is mounted through ui-bench-frame.mjs mountFrame, never a direct srcdoc');
-  assert.ok(/mountFrame\(/.test(src), 'mountFrame');
+  // ((FR Cut B review 2, the lead's P2-3) the device protocol runs in the app's own top-level page: no frame at all — below)
+  assert.equal(/\.srcdoc\s*=|<iframe|mountFrame\(/.test(src), false, 'no srcdoc, no iframe, no mounted frame');
   assert.ok(/id: 'build errors'/.test(src) && /id: 'gear fits'/.test(src) && /id: 'clients audit'/.test(src), 'the per-scene checks: build errors, the ⚙ popover, the clients audit');
   assert.ok(/x\.id === 'gear fits' && x\.size === sk/.test(src), 'the ⚙ check once per size, whatever other checks came first');
   assert.equal(/8817/.test(src.replace(/never 8817|never port 8817/g, '')), false, 'never the preview server\'s port');

@@ -2021,6 +2021,36 @@ test('IMPL-SC §6.4 (the lead\'s decision d): the FX page\'s rack adapter forwar
   assert.equal(fxStub.made.at(-1).host.scSources(), null);
 });
 
+test('IMPL-FR-B §4.6: the FX page\'s rack adapter — gr() the heard-time GR view while the fast lane is live (else the slow message\'s gr), fast() whether it is (the rack lifts its 30 cap); the kit\'s msg() / frame(fn), mirrored by the sub-panel stub kit', async () => {
+  const FHv = { v: 0 };
+  const { doc, u } = await mount({ heardFrame: () => FHv.v, sampleRate: () => 48000 });
+  u.setPage('fx');
+  await flush(doc);
+  const rack = fxStub.made.at(-1), A = rack.host;
+  assert.deepEqual([typeof A.gr, typeof A.fast], ['function', 'function']);
+  const gr = new Float32Array(192);
+  gr[0] = 3;
+  const s0 = { notes: 1, eff: new Float32Array(core.NSV + 8) };
+  u.setSnapshot({ s: s0, gr, fxph: null });
+  assert.deepEqual([A.gr() === gr, A.fast()], [true, false], 'fast off: the slow message\'s gr');
+  const v = new Float32Array(70);
+  u.setFast({ t: 'fast', F: 1000, i: 'i1', k: 1, v, gr: Float32Array.of(2, 0, 0, 0) }, null);
+  u.setFast({ t: 'fast', F: 1400, i: 'i1', k: 1, v, gr: Float32Array.of(6, 0, 0, 0) }, null);
+  FHv.v = 1200;
+  const g = A.gr();
+  assert.ok(A.fast() === true && g !== gr && Math.abs(g[0] - 4) < 1e-6, 'live: the GR at the heard frame (' + g[0] + ')');
+  FHv.v = 1400 + 0.6 * 48000;
+  assert.deepEqual([A.fast(), A.gr() === gr], [false, true], 'stale: the slow gr again');
+  // the kit: msg() is the raw message's s, frame(fn) a frame client; the stub kit has both
+  assert.equal(u.kit.msg(), s0);
+  assert.equal(typeof u.kit.frame, 'function');
+  const K = kitStub.makeKit({ doc, s: fresh(), fx: core.defaultFxV1() });
+  assert.deepEqual([typeof K.msg, typeof K.frame], ['function', 'function']);
+  const real = Object.keys(u.kit).sort(), stub = Object.keys(K).sort();
+  assert.deepEqual(real.filter(k => !stub.includes(k)), [], 'every member of the real kit in the stub');
+  u.destroy();
+});
+
 test('SerumUI: MIX (sx-ui-mix on demand), FX (FXRackUI v2: 3 racks, IRs), ARP / CLIP (sx-ui-seq) pages through the kit; LFO PHASE snap', async () => {
   const { doc, host, u, s } = await mount();
   u.setPage('mix');

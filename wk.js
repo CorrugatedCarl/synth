@@ -25,6 +25,8 @@
 //   · `setMod({ arcs: [{ from, to, kind: 'sel' | 'neg' | 'other' }], live: n | null })` draws modulation
 //     (knob: halo arcs + live dot, menu: underline bar, toggle: ring segment); `setMod(null)` clears it; the live
 //     marker shows only while |live − base| > 0.002 (base = the control's own n, or an optional `base` field);
+//     `setLive(n)` (IMPL-FR-B §4.5, every frame of the fast lane) moves that marker alone — the arcs as setMod drew them, no array,
+//     no string but the marker's own position; a repaint (update) keeps it; on the knob, the ring toggle, every modBar widget;
 //   · ContextMenu / Shift+F10 and a 500 ms touch long-press dispatch a `contextmenu` MouseEvent on the
 //     focusable element (bubbles), so one `contextmenu` listener serves mouse, keyboard and touch.
 import { jumpy } from './gesture.js?v=9';
@@ -151,10 +153,17 @@ function arcList(out, arcs) {
   return n;
 }
 // Halo arcs on an SVG group: a pool of paths (classes `wk-arc k-<kind>`) plus one live dot (`wk-live`), last.
+// paint(arcs, liveN) → the arc count; paint.dot(liveN) the dot alone (setLive: pt()'s maths inline, no array; attr skips no-ops)
 function haloPainter(g, r, c, extra) {
   const pool = [], list = [], live = sv('circle', Object.assign({ class: 'wk-live', r: c > 20 ? 2.4 : 1.8, display: 'none' }, extra));
   g.appendChild(live);
-  return (arcs, liveN) => {
+  const dot = liveN => {
+    if (liveN == null || !isFinite(liveN)) { attr(live, 'display', 'none'); return; }
+    const a = (-135 + 270 * num01(liveN)) * Math.PI / 180;
+    attr(live, 'cx', (c + r * Math.sin(a)).toFixed(2)); attr(live, 'cy', (c - r * Math.cos(a)).toFixed(2));
+    if (live.hasAttribute('display')) live.removeAttribute('display');
+  };
+  const paint = (arcs, liveN) => {
     const n = arcList(list, arcs);
     for (let i = 0; i < Math.max(n, pool.length); i++) {
       if (i >= n) { attr(pool[i], 'display', 'none'); continue; }
@@ -164,26 +173,25 @@ function haloPainter(g, r, c, extra) {
       attr(pool[i], 'd', arc(a.from, a.to, r, c));
       if (pool[i].hasAttribute('display')) pool[i].removeAttribute('display');
     }
-    if (liveN == null || !isFinite(liveN)) attr(live, 'display', 'none');
-    else {
-      const p = pt(num01(liveN), r, c);
-      attr(live, 'cx', p[0].toFixed(2)); attr(live, 'cy', p[1].toFixed(2));
-      live.removeAttribute('display');
-    }
+    dot(liveN);
     return n;
   };
+  paint.dot = dot;
+  return paint;
 }
 // Live marker rule (§9.4): shown only when the live value differs from the base by more than 0.002. `base` = the
 // control's own n (null when unknown → shown whenever finite); `m.base` (optional) overrides it.
-function liveOf(m, base) {
-  const ln = m && m.live;
+function liveOf(m, base) { return liveOfV(m && m.live, m, base); }
+// the rule for a live value ln given apart from m (setLive)
+function liveOfV(ln, m, base) {
   if (ln == null || !isFinite(ln)) return null;
   const b = m && m.base != null && isFinite(m.base) ? +m.base : base;
   return b != null && isFinite(b) && Math.abs(ln - b) <= 0.002 ? null : ln;
 }
 // Underline bar (menus, numBoxes, segs, sliders): one segment per arc, x = n (vertical sliders: y = n, from the
-// bottom). paint(m, base): base = the control's current n for the live-marker rule. The returned painter carries
-// the bar element as `.el` (callers insert content before it).
+// bottom). paint(m, base, lv): base = the control's current n for the live-marker rule, lv the live value (undefined: m.live);
+// paint.dot(lv, m, base) the live mark alone (setLive). The returned painter carries the bar element as `.el` (callers insert
+// content before it).
 function modBar(host, vertical) {
   const bar = h('span', 'wk-modbar' + (vertical ? ' wk-vbar' : '')), live = h('b', 'wk-mlive'), segs = [], list = [];
   const P0 = vertical ? 'bottom' : 'left', P1 = vertical ? 'height' : 'width';
@@ -191,7 +199,15 @@ function modBar(host, vertical) {
   live.style.display = 'none';
   bar.appendChild(live);
   host.appendChild(bar);
-  const paint = (m, base) => {
+  let at = NaN;                                              // (the mark's drawn position: a frame that leaves it writes nothing)
+  const dot = (lv, m, base) => {
+    const ln = liveOfV(lv, m, base);
+    if (ln == null) { if (live.style.display !== 'none') live.style.display = 'none'; return; }
+    if (live.style.display !== '') live.style.display = '';
+    const v = num01(ln);
+    if (v !== at) { at = v; live.style[P0] = (v * 100).toFixed(2) + '%'; }
+  };
+  const paint = (m, base, lv) => {
     const n = arcList(list, m && m.arcs);
     for (let i = 0; i < Math.max(n, segs.length); i++) {
       if (i >= n) { segs[i].style.display = 'none'; continue; }
@@ -202,13 +218,12 @@ function modBar(host, vertical) {
       segs[i].style[P0] = (lo * 100).toFixed(2) + '%';
       segs[i].style[P1] = (Math.max(hi - lo, 0.01) * 100).toFixed(2) + '%';
     }
-    const ln = liveOf(m, base);
-    if (ln == null) live.style.display = 'none';
-    else { live.style.display = ''; live.style[P0] = (num01(ln) * 100).toFixed(2) + '%'; }
+    dot(lv === undefined ? m && m.live : lv, m, base);
     host.classList.toggle('wk-modded', n > 0);
     return n;
   };
   paint.el = bar;
+  paint.dot = dot;
   return paint;
 }
 
@@ -326,11 +341,11 @@ export function knob(o) {
   el.append(svg, lab, out, dh);
   const paint = haloPainter(halo, 29, 32);
   const fmt = o.fmt || (n => Math.round(n * 100) + '%');
-  const W = { el, update, setMod, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
   el.wk = W;
   ctxGuard(el);
 
-  let cur = NaN, curBip = null, text = null, dis = false, mod = null, g = null, inp = null, lastTap = null, lastType = 'mouse', hoverT = -1e9;
+  let cur = NaN, curBip = null, text = null, dis = false, mod = null, lv = null, g = null, inp = null, lastTap = null, lastType = 'mouse', hoverT = -1e9;
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
@@ -351,14 +366,16 @@ export function knob(o) {
     }
     const t = String(fmt(n));
     if (t !== text) { text = t; out.textContent = t; el.setAttribute('aria-valuetext', t); }
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(el);
   }
   function setMod(m) {
     mod = m && ((m.arcs && m.arcs.length) || m.live != null) ? m : null;
-    const live = liveOf(mod, cur);
-    el.classList.toggle('wk-modded', paint(mod && mod.arcs, live) > 0);
+    lv = mod ? mod.live : null;
+    modPaint();
   }
+  function modPaint() { el.classList.toggle('wk-modded', paint(mod && mod.arcs, liveOfV(lv, mod, cur)) > 0); }
+  function setLive(n) { lv = n; if (mod) paint.dot(liveOfV(n, mod, cur)); }
   function put(n, ph) {
     n = snap(n, stepsOf());
     if (ph === 'set' && n === cur && n === num01(o.get())) return;
@@ -585,10 +602,10 @@ export function menu(o) {
   if (lab) el.append(lab);
   el.append(row);
   const bar = modBar(el);
-  const W = { el, update, setMod, focus, open, close, destroy };
+  const W = { el, update, setMod, setLive, focus, open, close, destroy };
   el.wk = W;
   ctxGuard(btn);
-  let P = null, hoverT = -1e9, lp = null, noClick = false, mod = null;
+  let P = null, hoverT = -1e9, lp = null, noClick = false, mod = null, lv = null;
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
@@ -597,7 +614,7 @@ export function menu(o) {
     if (txt.textContent !== t) txt.textContent = t;
     attr(btn, 'aria-label', (o.label ? o.label + ': ' : '') + t);
     setDest(el, call(o.dest));
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(btn);
   }
   // base n of a menu = position of the current item in the list (items enumerate the dest's grid in order:
@@ -607,7 +624,9 @@ export function menu(o) {
     const list = o.items(), i = indexOfV(list, o.get());
     return i >= 0 && list.length > 1 ? i / (list.length - 1) : null;
   }
-  function setMod(m) { mod = m || null; bar(mod, mod ? baseN() : null); }
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
+  function modPaint() { bar(mod, mod ? baseN() : null, lv); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, baseN()); }
   function focus() { btn.focus({ preventScroll: true }); }
   function choose(it) {
     if (!same(it.v, o.get())) o.set(it.v, 'set');
@@ -808,10 +827,10 @@ export function toggle(o) {
   const ring = sv('svg', { class: 'wk-ring', viewBox: '0 0 40 40', preserveAspectRatio: 'none', 'aria-hidden': 'true', focusable: 'false' });
   const paint = haloPainter(ring, 18, 20, { 'vector-effect': 'non-scaling-stroke' });
   el.append(ring);
-  const W = { el, update, setMod, focus, destroy };
+  const W = { el, update, setMod, setLive, focus, destroy };
   el.wk = W;
   ctxGuard(el);
-  let dis = false, lp = null, noClick = false, mod = null;
+  let dis = false, lp = null, noClick = false, mod = null, lv = null;
 
   function on() { return +o.get() >= 0.5; }
   function update() {
@@ -822,10 +841,12 @@ export function toggle(o) {
     setDest(el, call(o.dest));
     dis = !!(o.disabled && o.disabled());
     setDis(el, dis);
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(el);
   }
-  function setMod(m) { mod = m || null; el.classList.toggle('wk-modded', paint(mod && mod.arcs, liveOf(mod, on() ? 1 : 0)) > 0); }
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
+  function modPaint() { el.classList.toggle('wk-modded', paint(mod && mod.arcs, liveOfV(lv, mod, on() ? 1 : 0)) > 0); }
+  function setLive(n) { lv = n; if (mod) paint.dot(liveOfV(n, mod, on() ? 1 : 0)); }
   function focus() { el.focus({ preventScroll: true }); }
   el.addEventListener('click', e => {
     if (noClick) { noClick = false; e.preventDefault(); return; }
@@ -922,13 +943,13 @@ export function numBox(o) {
   box.append(txt);
   el.append(lab, box);
   const bar = modBar(box);
-  const W = { el, update, setMod, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
   el.wk = W;
   ctxGuard(el);
   const stepsOf = () => { const s = call(o.steps); return s > 0 ? Math.round(s) : 100; };
   const kLims = st => [Math.ceil((o.min != null ? num01(call(o.min)) : 0) * st - 1e-9), Math.floor((o.max != null ? num01(call(o.max)) : 1) * st + 1e-9)];
   const fmt = n => String(o.fmt ? o.fmt(n) : Math.round(n * stepsOf()));
-  let cur = NaN, text = null, dis = false, g = null, ti = null, lastTap = null, lastType = 'mouse', hoverT = -1e9, mod = null;
+  let cur = NaN, text = null, dis = false, g = null, ti = null, lastTap = null, lastType = 'mouse', hoverT = -1e9, mod = null, lv = null;
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
@@ -943,10 +964,12 @@ export function numBox(o) {
     if (n !== cur) { cur = n; attr(el, 'aria-valuenow', Math.round(n * st)); }
     const t = fmt(n);
     if (t !== text) { text = t; txt.textContent = t; el.setAttribute('aria-valuetext', t); }
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(el);
   }
-  function setMod(m) { mod = m || null; el.classList.toggle('wk-modded', bar(mod, num01(o.get())) > 0); }
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, num01(o.get()), lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, num01(o.get())); }
   function put(k, ph) { // k = grid index
     const st = stepsOf(), lim = kLims(st), n = clamp(Math.round(k), lim[0], lim[1]) / st + 0; // + 0: never -0
     if (ph === 'set' && n === num01(o.get())) { update(); return; }
@@ -1082,9 +1105,9 @@ function segCore(o, icons) {
   const lab = h('span', 'wk-lab'), row = h('div', 'wk-segs');
   el.append(lab, row);
   const bar = modBar(row);
-  const W = { el, update, setMod, focus, destroy };
+  const W = { el, update, setMod, setLive, focus, destroy };
   el.wk = W;
-  let btns = [], key = null, dis = false, lp = null, noClick = false, mod = null;
+  let btns = [], key = null, dis = false, lp = null, noClick = false, mod = null, lv = null;
 
   function build() {
     const raw = call(o.items) || [];
@@ -1123,7 +1146,7 @@ function segCore(o, icons) {
       attr(b, 'aria-checked', i === i0 ? 'true' : 'false');
       b.tabIndex = i === i0 || (i0 < 0 && i === 0) ? 0 : -1;
     });
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(el);
   }
   function choose(i, keyFocus) {
@@ -1145,7 +1168,10 @@ function segCore(o, icons) {
     choose(j, true);
   }
   // base n = selected index over the grid (the items enumerate the dest's values in order)
-  function setMod(m) { mod = m || null; const i = idx(); el.classList.toggle('wk-modded', bar(mod, i >= 0 && btns.length > 1 ? i / (btns.length - 1) : null) > 0); }
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
+  function segBase() { const i = idx(); return i >= 0 && btns.length > 1 ? i / (btns.length - 1) : null; }
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, segBase(), lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, segBase()); }
   function focus() { const i = idx(); const b = btns[i >= 0 ? i : 0]; if (b) b.focus({ preventScroll: true }); }
   function destroy() { if (lp) lp.cancel(); hideTip(el); for (const b of btns) hideTip(b); el.remove(); el.wk = null; }
   update();
@@ -1172,13 +1198,13 @@ function sliderCore(o) {
   trk.append(fill, thumb);
   el.append(lab, trk, out);
   const bar = modBar(trk, vert);
-  const W = { el, update, setMod, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
   el.wk = W;
   ctxGuard(el);
   const stepsOf = () => { const s = call(o.steps); return s > 0 ? Math.round(s) : 0; };
   const fmt = n => String(o.fmt ? o.fmt(n) : Math.round(n * 100) + '%');
   const P0 = vert ? 'bottom' : 'left', P1 = vert ? 'height' : 'width';
-  let cur = NaN, text = null, dis = false, g = null, ti = null, lastTap = null, lastType = 'mouse', hoverT = -1e9, mod = null;
+  let cur = NaN, text = null, dis = false, g = null, ti = null, lastTap = null, lastType = 'mouse', hoverT = -1e9, mod = null, lv = null;
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
@@ -1199,10 +1225,12 @@ function sliderCore(o) {
     }
     const t = fmt(n);
     if (t !== text) { text = t; out.textContent = t; el.setAttribute('aria-valuetext', t); }
-    if (mod) setMod(mod);
+    if (mod) modPaint();
     refreshTip(el);
   }
-  function setMod(m) { mod = m || null; el.classList.toggle('wk-modded', bar(mod, num01(o.get())) > 0); }
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, num01(o.get()), lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, num01(o.get())); }
   function put(n, ph) {
     n = snap(n, stepsOf());
     if (ph === 'set' && n === num01(o.get())) { update(); return; }
@@ -1485,12 +1513,13 @@ export function xyPad(o) {
   el.wk = W;
   // Each rail is a destination element of its own (`data-dest` + `wk`), so a panel that paints halos by scanning
   // [data-dest] elements (el.wk.setMod) reaches one axis: rail.wk.setMod(m) = setMod({ …current, [axis]: m }).
-  const axisMod = k => m => setMod(Object.assign({}, mod || {}, { [k]: m || null }));
-  rx.wk = { el: rx, axis: 'x', pad: W, update, focus, setMod: axisMod('x') };
-  ry.wk = { el: ry, axis: 'y', pad: W, update, focus, setMod: axisMod('y') };
+  // (IMPL-FR-B §4.5) rail.wk.setLive(n): that axis' live mark alone; an axis' setMod keeps the other's live value
+  const axisMod = k => m => { mod = Object.assign({}, mod || {}, { [k]: m || null }); if (k === 'x') lvx = m ? m.live : null; else lvy = m ? m.live : null; modPaint(); };
+  rx.wk = { el: rx, axis: 'x', pad: W, update, focus, setMod: axisMod('x'), setLive: n => { lvx = n; if (mod && mod.x) barX.dot(n, mod.x, gx()); } };
+  ry.wk = { el: ry, axis: 'y', pad: W, update, focus, setMod: axisMod('y'), setLive: n => { lvy = n; if (mod && mod.y) barY.dot(n, mod.y, gy()); } };
   ctxGuard(dot);
   const railOffs = [rx, ry].map(r => { r.tabIndex = -1; r.addEventListener('focus', () => focus()); return menuSource(r); });
-  let dis = false, g = null, mod = null, text = null;
+  let dis = false, g = null, mod = null, lvx = null, lvy = null, text = null;
   const gx = () => num01(X.get ? X.get() : 0), gy = () => num01(Y.get ? Y.get() : 0);
   const fx = n => String(X.fmt ? X.fmt(n) : Math.round(n * 100) + '%'), fy = n => String(Y.fmt ? Y.fmt(n) : Math.round(n * 100) + '%');
   const LX = () => String(call(X.label) || 'X'), LY = () => String(call(Y.label) || 'Y');
@@ -1513,11 +1542,15 @@ export function xyPad(o) {
     if (t !== text) { text = t; out.textContent = t; attr(dot, 'aria-valuetext', t); }
     attr(dot, 'aria-valuenow', Math.round(x * 1000) / 10);
     attr(dot, 'aria-label', L ? L + ' ' + LX() + '/' + LY() : LX() + '/' + LY());
-    if (mod) setMod(mod);
+    if (mod) modPaint();
   }
   function setMod(m) {
     mod = m || null;
-    const a = barX(mod && mod.x || null, gx()), b = barY(mod && mod.y || null, gy());
+    lvx = mod && mod.x ? mod.x.live : null; lvy = mod && mod.y ? mod.y.live : null;
+    modPaint();
+  }
+  function modPaint() {
+    const a = barX(mod && mod.x || null, gx(), lvx), b = barY(mod && mod.y || null, gy(), lvy);
     el.classList.toggle('wk-modded', a + b > 0);
   }
   function focus() { dot.focus({ preventScroll: true }); }
@@ -1684,9 +1717,9 @@ export function rangeBar(o) {
   trk.append(body, hLo, hHi);
   el.append(lab, trk, out);
   const bar = modBar(trk);
-  const W = { el, update, setMod, focus, edit, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, destroy };
   el.wk = W;
-  let dis = false, g = null, ti = null, lastTap = null, text = null, lastType = 'mouse', mod = null;
+  let dis = false, g = null, ti = null, lastTap = null, text = null, lastType = 'mouse', mod = null, lv = null;
   const fmt = v => String(o.fmt ? o.fmt(v) : v);
   const cur = () => { const [mn, mx] = lims(); return rbNorm(o.get ? o.get() : [mn, mx], mn, mx); };
 
@@ -1709,9 +1742,11 @@ export function rangeBar(o) {
     }
     const t = lo === hi ? fmt(lo) : fmt(lo) + '–' + fmt(hi);
     if (t !== text) { text = t; out.textContent = t; }
-    if (mod) setMod(mod);
+    if (mod) modPaint();
   }
-  function setMod(m) { mod = m || null; el.classList.toggle('wk-modded', bar(mod, null) > 0); } // underline bar (n over the track)
+  function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); } // underline bar (n over the track)
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, null, lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, null); }
   function focus(part) { (part === 'hi' ? hHi : hLo).focus({ preventScroll: true }); }
   function put(r, ph) {
     const [mn, mx] = lims(), v = rbNorm(r, mn, mx), c = cur();
@@ -2987,24 +3022,40 @@ export function reducedMotion() {
 // ≥ 1, no floor (a 30 fps loop whose data is 29 Hz stays 30); reduced motion: cap 10 unless `essential`, read once per
 // frame on the first client whose gate passes (the old ticker's two-stage rule). The gate: t − last ≥ k·k_c·P − slack,
 // slack = half the ACTUAL frame (≤ half the period: right even while the estimate is still 60 on a 120 Hz display).
-// "Live": el on screen through one shared IntersectionObserver (optimistic until it answers; a client added on an element
+// (o.shed: see the drop level below.) "Live": el on screen through one shared IntersectionObserver (optimistic until it answers; a client added on an element
 // already watched starts as its siblings are), else a getClientRects probe
 // at most every CLK_PROBE ms; `live()` when given; `el.isConnected` every frame (a client whose element left the document
 // is dropped: `end()`). Hidden document: nothing runs. `every` clients run on every rAF, ungated (the stall meter).
-// Test mode: config({ display, gate }) fixes the estimate / disables the gate; _reset() drops everything (a stale frame —
-// from before it, or dropped with the last client under a no-op cancel — is inert: a token per armed frame, one in flight).
-// stats(): the clients' summed self time per painted frame, 2 s window (STAT_N: 2 s at 240).
+// Test mode: config({ display, gate, drop }) fixes the estimate / disables the gate / fixes the drop level (a fixed display or the
+// gate off: the drop level is not measured — 0 unless fixed); _reset() drops
+// everything (a stale frame — from before it, or dropped with the last client under a no-op cancel — is inert: a token per armed
+// frame, one in flight). stats(): the clients' summed self time per painted frame, 2 s window (STAT_N: 2 s at 240).
+// (FR Cut B review 2, P1-1 b) The drop level drop() (0…DROP_MAX): per DROP_WIN window the frames that came at the clock's own cadence
+// (rAF ticks ≥ one E period apart, less the slack — every frame of a display that keeps up) against E. A window below DROP_LO × E
+// raises it; windows that keep up add their length towards a recovery, `rec` (DROP_REC) of them lower it by one. A drop within `rec`
+// of a recovery doubles `rec` (≤ DROP_REC_MAX: a load the recovery brings back is retried less often — and a load gone recovers in
+// seconds, level by level), a recovery that holds `rec` halves it (≥ DROP_REC); dropReset() starts afresh (the harness's cells).
+// The reference E: the rate of the display before a decrease the estimate adopted while dropping (a loaded display followed down by
+// the 75 % rule — its own frames then "keep up") for ≤ DREF_MS; a stall (> CLK_LONG) or a hidden
+// document starts the window afresh. The heavy displays halve their rate per level (sx-host heavyMs, ≥ 15 a second); from level 2
+// a `shed` client (the fast lane's per-frame motion: the dots' ticks, the playhead overlays, the GR loops — measured: with the heavy
+// displays at 15 a second the busy scene still dropped frames at Medium 4×) paints every other frame of its cadence, and at the top
+// level at SHED_MIN a second (Cut A's ≈ 29 Hz data: never coarser than before Cut B); dropSpan(reset) → { lvl, lo, hi } the levels
+// since the last reset (the harness's window)
 export const DISPLAY_RATES = Object.freeze([30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240]);
 export const DISPLAY_MAX = 240, FLOOR_HZ = 60, RING_N = 32;
 const CLK_OVER = 1.25, CLK_HYST = 1000, CLK_PROBE = 500, CLK_STAT = 2000, CLK_LONG = 250, CLK_SNAP = 0.08, CLK_EVERY = 8;
 const STAT_N = 512; // (the self-time ring: 2 s at DISPLAY_MAX = 480 painted frames)
+const DROP_WIN = 500, DROP_LO = 0.9, DROP_MAX = 3, DROP_REC = 2000, DROP_REC_MAX = 4000, DREF_MS = 10000, SHED_MIN = 30;
+const clkLd = () => ({ lvl: 0, t0: -1, n: 0, g: -Infinity, E: 0, ok: 0, rec: DROP_REC, upT: -Infinity, dref: 0, drefT: 0, lo: 0, hi: 0, fix: -1 });
 const CLK = {
   armed: null, cancel: null, list: [], byEl: new Map(), io: null, change: new Set(), lastEff: 60,
   cap: Infinity, D: 60, meas: false, ring: new Float64Array(RING_N), sort: new Float64Array(RING_N), rn: 0, ri: 0, nth: 0, pend: 0, pendT: 0, lastT: -1,
   cfg: { display: 0, gate: true }, rm: false, frames: 0, paints: 0, sMs: new Float64Array(STAT_N), sT: new Float64Array(STAT_N), si: 0, sn: 0,
+  ld: clkLd(),
 };
-function clkK() {
-  const D = CLK.D, C = Math.min(CLK.cap, DISPLAY_MAX);
+function clkK(D = CLK.D) {
+  const C = Math.min(CLK.cap, DISPLAY_MAX);
   let k = 1;
   if (D > CLK_OVER * C) { k = Math.ceil(D / (CLK_OVER * C) - 1e-9); if (D / k > CLK_OVER * C) k++; }
   while (k > 1 && D / k < FLOOR_HZ) k--;
@@ -3032,13 +3083,40 @@ function clkMeasure(dt, t) {
   if (!CLK.meas) { CLK.meas = true; CLK.D = cand; CLK.pend = 0; clkEmit(); return; }
   if (cand === CLK.D) { CLK.pend = 0; return; }
   if (CLK.pend !== cand) { CLK.pend = cand; CLK.pendT = t; return; }
-  if (t - CLK.pendT >= CLK_HYST) { CLK.D = cand; CLK.pend = 0; clkEmit(); }
+  if (t - CLK.pendT >= CLK_HYST) {
+    const L = CLK.ld; // (a decrease while dropping: the frames stay judged at the old rate, ≤ DREF_MS; back at it, or above, it goes)
+    if (cand < CLK.D && L.lvl > 0) { if (!(L.dref > CLK.D)) L.dref = CLK.D; L.drefT = t; } else if (cand >= L.dref) L.dref = 0;
+    CLK.D = cand; CLK.pend = 0; clkEmit();
+  }
 }
+// (review 2, P1-1 b) the drop level's window, per rAF tick (dt: the delta since the previous one; NaN: none)
+function clkLoad(t, dt) {
+  const L = CLK.ld, Dr = L.dref > CLK.D && t - L.drefT < DREF_MS ? L.dref : CLK.D, E = Dr / clkK(Dr);
+  if (!(dt > 0) || dt > CLK_LONG || L.t0 < 0 || E !== L.E) { L.t0 = t; L.n = 0; L.g = t; L.E = E; return; } // (a new rate: a new window)
+  if (t - L.g >= 1000 / E - 0.5 * Math.min(dt, 1000 / Dr)) { L.g = t; L.n++; }
+  const w = t - L.t0;
+  if (w < DROP_WIN - 1) return;
+  if (L.n * 1000 / w < DROP_LO * E) {
+    if (t - L.upT < L.rec) L.rec = Math.min(2 * L.rec, DROP_REC_MAX);
+    if (L.lvl < DROP_MAX) L.lvl++;
+    L.ok = 0; L.upT = -Infinity;
+  } else {
+    L.ok += w;
+    if (L.upT > -Infinity && t - L.upT >= L.rec) { L.rec = Math.max(DROP_REC, L.rec / 2); L.upT = -Infinity; }
+    if (L.lvl > 0 && L.ok >= L.rec) { L.lvl--; L.ok = 0; L.upT = t; }
+  }
+  if (L.lvl < L.lo) L.lo = L.lvl;
+  if (L.lvl > L.hi) L.hi = L.lvl;
+  L.t0 = t; L.n = 0;
+}
+const clkDropLvl = () => (CLK.ld.fix >= 0 ? CLK.ld.fix : CLK.ld.lvl);
 function clkPeriod(c) {
   const E = clkEff(), o = c.o;
   let cap = o.cap > 0 ? +o.cap : Infinity;
   if (CLK.rm && !o.essential) cap = Math.min(cap, 10);
-  const kc = cap === Infinity ? 1 : Math.max(1, Math.round(E / cap));
+  let kc = cap === Infinity ? 1 : Math.max(1, Math.round(E / cap));
+  const L = clkDropLvl();
+  if (o.shed && L >= 2) { const f = Math.floor(E / SHED_MIN + 1e-9); kc = Math.max(kc, L >= DROP_MAX ? f : Math.min(2 * kc, f)); } // ((review 2, P1-1) motion sheds: ½, then the floor
   return kc * 1000 / E;
 }
 function clkIO() {
@@ -3097,6 +3175,7 @@ function clkTick(tok, t) {
   const dtF = CLK.lastT >= 0 ? t - CLK.lastT : NaN;
   CLK.lastT = t; CLK.frames++;
   if (!hidden && !(CLK.cfg.display > 0)) clkMeasure(dtF, t);
+  if (hidden || CLK.cfg.display > 0 || !CLK.cfg.gate) CLK.ld.t0 = -1; else clkLoad(t, dtF); // ((review 2) measured with the display only: test mode fixes it — config({ drop })
   const PD = 1000 / CLK.D, slack = 0.5 * Math.min(dtF > 0 ? dtF : PD, PD), t0 = nowMs();
   let painted = false, rmRead = false;
   for (const c of L) {
@@ -3135,6 +3214,9 @@ export const clock = Object.freeze({
   eff: () => clkEff(),
   period: () => 1000 / clkEff(),
   k: () => clkK(),
+  drop: () => clkDropLvl(),
+  dropReset() { const f = CLK.ld.fix; CLK.ld = clkLd(); CLK.ld.fix = f; },
+  dropSpan(reset) { const L = CLK.ld, l = clkDropLvl(), r = { lvl: l, lo: Math.min(L.lo, l), hi: Math.max(L.hi, l) }; if (reset) { L.lo = L.lvl; L.hi = L.lvl; } return r; },
   clients: () => CLK.list.map(c => c.o.name || (c.o.el ? 'el' : 'client')),
   onChange(fn) { if (typeof fn !== 'function') return () => {}; CLK.change.add(fn); return () => { CLK.change.delete(fn); }; },
   stats() {
@@ -3142,13 +3224,14 @@ export const clock = Object.freeze({
     for (let i = 0; i < CLK.sn; i++) if (T - CLK.sT[i] <= CLK_STAT) ms.push(CLK.sMs[i]);
     ms.sort((a, b) => a - b);
     const q = p => (ms.length ? ms[Math.min(ms.length - 1, Math.floor(p * (ms.length - 1)))] : 0);
-    return { display: CLK.D, measured: CLK.meas, cap: CLK.cap, eff: clkEff(), k: clkK(), frames: CLK.frames, paints: CLK.paints, clients: CLK.list.length,
+    return { display: CLK.D, measured: CLK.meas, cap: CLK.cap, eff: clkEff(), k: clkK(), drop: clkDropLvl(), frames: CLK.frames, paints: CLK.paints, clients: CLK.list.length,
       ms: { n: ms.length, med: q(0.5), p95: q(0.95), max: ms.length ? ms[ms.length - 1] : 0 } };
   },
   config(o) {
     if (!o) return { display: CLK.cfg.display, gate: CLK.cfg.gate };
     if ('display' in o) { const v = +o.display; if (v > 0) { CLK.cfg.display = v; CLK.D = v; CLK.meas = true; CLK.pend = 0; } else { CLK.cfg.display = 0; } }
     if ('gate' in o) CLK.cfg.gate = o.gate !== false;
+    if ('drop' in o) CLK.ld.fix = typeof o.drop === 'number' && o.drop >= 0 ? Math.min(DROP_MAX, o.drop | 0) : -1; // (null / undefined: measured)
     clkEmit();
     return { display: CLK.cfg.display, gate: CLK.cfg.gate };
   },
@@ -3162,7 +3245,7 @@ export const clock = Object.freeze({
     if (CLK.io) { try { CLK.io.disconnect(); } catch (err) { /* gone */ } }
     CLK.io = null; CLK.byEl.clear(); CLK.change.clear();
     CLK.cap = Infinity; CLK.D = 60; CLK.meas = false; CLK.rn = 0; CLK.ri = 0; CLK.nth = 0; CLK.pend = 0; CLK.pendT = 0; CLK.lastT = -1; CLK.lastEff = 60;
-    CLK.cfg = { display: 0, gate: true }; CLK.rm = false; CLK.frames = 0; CLK.paints = 0; CLK.si = 0; CLK.sn = 0;
+    CLK.cfg = { display: 0, gate: true }; CLK.rm = false; CLK.frames = 0; CLK.paints = 0; CLK.si = 0; CLK.sn = 0; CLK.ld = clkLd();
   },
 });
 // ticker(el, fn, o): the display loop of an animated canvas — a client of the clock over el (IMPL-FR §1.1): fn(t, dt) on the
@@ -3172,7 +3255,7 @@ export const clock = Object.freeze({
 export function ticker(el, fn, o) {
   const cap = o && o.fps > 0 ? +o.fps : 30;
   let off = null, on = false;
-  const C = { el, cap, name: 'ticker', fn: (t, dt) => fn(t, dt), end: () => { on = false; off = null; } };
+  const C = { el, cap, shed: !!(o && o.shed), name: 'ticker', fn: (t, dt) => fn(t, dt), end: () => { on = false; off = null; } };
   return {
     start() { if (on) return; on = true; off = clock.add(C); },
     stop() { on = false; if (off) off(); off = null; },

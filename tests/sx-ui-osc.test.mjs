@@ -262,6 +262,41 @@ test('OscPanel: type menu, one view per type (the current one shown, its head in
   assert.equal(shown(sv.el), true);
 });
 
+test('(a rig face) OscPanel.typeView: a view first built after a Wavecraft face took the panel\'s pieces (the route button replaced by its ⚙, a built view\'s el in a screen, its head items and the pitch row on the face) goes in beside what is still there — never an insertBefore on a node that left (a browser throws: the type switch died and the face stayed on the old view)', () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0), d = kit.doc;
+  T.paint();
+  // the browser's rule (the fake DOM is lax): the reference node must be a child
+  for (const n of [P.body, P.head]) { const ib = n.insertBefore; n.insertBefore = function (x, ref) { if (ref && ref.parentNode !== this) throw new Error('NotFoundError: not a child'); return ib.call(this, x, ref); }; }
+  const face = d.createElement('div'), gear = d.createElement('button');
+  d.body.appendChild(face); face.appendChild(gear);
+  P.route.btn = gear;                                             // (rig-ui routeOf: the face's ⚙ anchors the route pane)
+  s.osc[0].type = 'gran';
+  T.paint();
+  const G = P.built.gran;
+  assert.ok(G && G.el.parentNode === P.body && P.body.children.indexOf(G.el) < P.body.children.indexOf(P.anchor), 'Granular built before the pitch row');
+  assert.ok(G.head.length > 0 && G.head.every(h => h.parentNode === P.head), 'its head items in the title row');
+  assert.deepEqual([P.view() === G, shown(G.el), shown(P.built.wt.el)], [true, true, false]);
+  // the face takes the Granular view whole (its screen) and its name: Sample, before it in VIEWS order, goes before the pitch row
+  face.appendChild(G.el); face.appendChild(G.head[0]);
+  s.osc[0].type = 'sample';
+  T.paint();
+  const Sv = P.built.sample;
+  assert.ok(Sv && Sv.el.parentNode === P.body && P.body.children.indexOf(Sv.el) < P.body.children.indexOf(P.anchor), 'Sample built before the pitch row');
+  assert.ok(Sv.head.every(h => h.parentNode === P.head));
+  assert.deepEqual([P.view() === Sv, shown(Sv.el), shown(G.el)], [true, true, false]);
+  // the pitch row on the face too: Multisample still lands in the body (appended), the others' order kept
+  face.appendChild(P.anchor);
+  s.osc[0].type = 'multi';
+  T.paint();
+  const Mv = P.built.multi;
+  assert.ok(Mv && Mv.el.parentNode === P.body && P.body.children.indexOf(Mv.el) < P.body.children.indexOf(Sv.el), 'Multisample before Sample (VIEWS order)');
+  assert.deepEqual([P.view() === Mv, shown(Mv.el)], [true, true]);
+  s.osc[0].type = 'spec';
+  T.paint();
+  assert.ok(P.built.spec && P.built.spec.el.parentNode === P.body && P.view() === P.built.spec);
+});
+
 /* ================================================================ OSC header: routing, module menu */
 
 test('OSC routing popover: route seg, balance (Filter only), ENV (Main / Direct only), buses; the button names the route', () => {
@@ -2149,7 +2184,8 @@ test('IMPL-FR §3 B3 / §7.3: the wavetable display, the filter display and the 
   T.paint(); await settle(); T.paint();
   const by = re => T.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
   const wc = by(/^OSC A wavetable display/), fc = by(/^FILTER 1 display/), nc = by(/^Noise overview/);
-  assert.deepEqual([wc.maxHz, fc.maxHz, nc.maxHz || 0], [60, 60, 0]);
+  // (IMPL-FR-B §4.3, the user's QB: the filter display's curve moved from the 60 class to a capHz ceiling)
+  assert.deepEqual([wc.maxHz, fc.maxHz || 0, typeof fc.capHz, nc.maxHz || 0], [60, 0, 'function', 0]);
   assert.deepEqual([typeof wc.keyN, typeof fc.keyN, typeof nc.keyN], ['function', 'function', 'undefined']);
   const V = P.views.wt;
   for (const f of [k => V.keyN(k), k => F1.keyN(k)]) {
@@ -2250,6 +2286,113 @@ test('IMPL-FR §3 B3: the filter display caches its response by its inputs — a
   const g2 = doc.createElement('canvas').getContext('2d');
   F2.draw(g2, 300, 120, 1);
   assert.deepEqual(draw(), g2.calls.map(c => c.slice()));
+});
+
+test('IMPL-FR-B §4.2: the heavy displays declare liveIds() while their view is the active one — the wavetable display its WT POS and warp amounts, the filter display cutoff, res, drive, var, x, y and its type, the spectral filter CUT / MIX, the spectral display its Hi / Lo (and an X|Y dot\'s X / Y)', async () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0), F1 = new osc.FilterPanel(root, kit, 0), F2 = new osc.FilterPanel(root, kit, 1);
+  void Object.values(P.views);
+  T.paint(); await settle(); T.paint();
+  const by = re => T.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
+  const ids = cv => (cv && typeof cv.liveIds === 'function' ? cv.liveIds().slice().sort() : null);
+  assert.deepEqual(ids(by(/^OSC A wavetable display/)), ['a.warp', 'a.warp2', 'a.wt', 'a.wvar1', 'a.wvar2']);
+  assert.deepEqual(ids(by(/^FILTER 1 display/)), ['f.cutoff', 'f.drive', 'f.res', 'f.type2', 'f.var', 'f.x', 'f.y']);
+  assert.deepEqual(ids(by(/^FILTER 2 display/)), ['f2.cutoff', 'f2.drive', 'f2.res', 'f2.type', 'f2.var', 'f2.x', 'f2.y']);
+  s.global.s1 = 1;
+  assert.ok(ids(by(/^FILTER 1 display/)).includes('f.type'), 'S1 mode: its type id');
+  s.global.s1 = 0;
+  assert.deepEqual(ids(by(/^OSC A spectral filter/)), [], 'an inactive view: none');
+  const spec = () => T.canvases.filter(cv => typeof cv.liveIds === 'function' && P.views.spec.el.contains(cv.el)).flatMap(cv => cv.liveIds());
+  assert.deepEqual(spec(), []);
+  s.osc[0].type = 'spec';
+  T.paint();
+  assert.deepEqual(ids(by(/^OSC A wavetable display/)), [], 'the wavetable display inactive: none');
+  assert.deepEqual(ids(by(/^OSC A spectral filter/)), ['a.cut', 'a.smix']);
+  assert.ok(spec().includes('a.flo') && spec().includes('a.fhi'), 'the spectral display\'s Hi / Lo');
+  s.osc[0].xy.on = 1;
+  assert.ok(spec().includes('a.pos') && spec().includes('a.gy'), 'X|Y on: its X / Y');
+  for (const cv of T.canvases.filter(c => typeof c.liveIds === 'function')) for (const id of cv.liveIds()) assert.ok(core.vi(id) >= 0, id + ': an eff index');
+});
+
+test('IMPL-FR-B §4.3 (the user\'s QB): the filter display — its curve a capHz ceiling read each period (kit.host.curveHz(), else 60); its cutoff marker in the curve while the fast lane is off, on an overlay canvas (sxo-fmark, after the display, no pointer events) drawn on every kit.frame while it is live — the curve then without it, redrawn at once at the switch; off again: the overlay goes, the marker back in the curve', async () => {
+  const { s, kit, T, root, doc, host } = mount();
+  const F1 = new osc.FilterPanel(root, kit, 0);
+  T.paint();
+  const fc = T.canvases.find(cv => /^FILTER 1 display/.test(cv.el.getAttribute('aria-label') || ''));
+  assert.equal(fc.capHz(), 60, 'no host.curveHz: 60');
+  let hz = 30;
+  host.curveHz = () => hz;
+  assert.equal(fc.capHz(), 30);
+  hz = 60;
+  assert.equal(fc.capHz(), 60, 'read each time');
+  const marks = g => g.calls.filter(c => c[0] === 'fillRect' && c[3] === 2 && c[4] === 5).length;   // (the 2 × 5 marker at dpr 1)
+  const g = doc.createElement('canvas').getContext('2d');
+  globalThis.SerumDSP = { filterImpulse: (t, fc0, r, d, v, fs, len) => { const u = new Float64Array(len); u[0] = 1; return u; } };
+  try {
+    F1.draw(g, 300, 120, 1);
+    assert.equal(marks(g), 1, 'fast off: the marker in the curve');
+    assert.equal(T.frames.length >= 1, true, 'a kit.frame client');
+    fc.w = 300; fc.h = 120; fc.dpr = 1;                             // (the host's measure)
+    const eff = new Float32Array(core.NSV + 8);
+    eff[core.vi('f.cutoff')] = 0.4;
+    T.fast = true;
+    T.setSnap({ notes: 1, eff });
+    const ov = dom.byCls(root, 'sxo-fmark');
+    assert.equal(ov.length, 1, 'the overlay while fast');
+    assert.ok(ov[0].parentNode === fc.el.parentNode && ov[0].parentNode.children.indexOf(ov[0]) === ov[0].parentNode.children.indexOf(fc.el) + 1, 'right after the display');
+    assert.equal(ov[0].getAttribute('aria-hidden'), 'true');
+    assert.equal(fc.last, null, 'the curve redrawn at once (its key forced)');
+    g.calls.length = 0;
+    F1.draw(g, 300, 120, 1);
+    assert.equal(marks(g), 0, 'the curve without the marker');
+    const og = ov[0].getContext('2d'), n0 = og.calls.filter(c => c[0] === 'fillRect').length;
+    eff[core.vi('f.cutoff')] = 0.6;
+    T.setSnap({ notes: 1, eff });
+    T.setSnap({ notes: 1, eff });                                   // (unchanged: nothing drawn again)
+    assert.equal(og.calls.filter(c => c[0] === 'fillRect').length, n0 + 1, 'the marker drawn when it moves, once');
+    T.fast = false;
+    T.setSnap({ notes: 1, eff });
+    assert.equal(dom.byCls(root, 'sxo-fmark').length, 0, 'fast off again: the overlay gone');
+    g.calls.length = 0;
+    F1.draw(g, 300, 120, 1);
+    assert.equal(marks(g), 1, 'the marker back in the curve');
+  } finally { delete globalThis.SerumDSP; }
+  void s;
+});
+
+test('IMPL-FR-B §2.6 / §4.6: the filter display hands filterImpulse / SxFilt2.impulse a scratch { out } of its own — the same object at every redraw, another for another display (the response bit-identical: the explicit x / y / pz are the defaults)', async t => {
+  const got = [];
+  globalThis.SerumDSP = { filterImpulse: (...a) => { got.push(['c', a.length, a[7], a[8], a[9], a[10]]); return new Float64Array(a[6]); } };
+  globalThis.SxFilt2 = { impulse: (...a) => { got.push(['x', a.length, a[10]]); return new Float64Array(a[6]); } };
+  t.after(() => { delete globalThis.SerumDSP; delete globalThis.SxFilt2; });
+  const { s, kit, root, doc } = mount();
+  const F1 = new osc.FilterPanel(root, kit, 0), F2 = new osc.FilterPanel(root, kit, 1), g = doc.createElement('canvas').getContext('2d');
+  F1.draw(g, 300, 120, 1);
+  s.p['f.cutoff'] = 0.31;
+  F1.draw(g, 300, 120, 1);
+  F2.draw(g, 300, 120, 1);
+  assert.deepEqual(got.map(x => x.slice(0, 5)), [['c', 11, 0, 0, null], ['c', 11, 0, 0, null], ['c', 11, 0, 0, null]]);
+  const [a, b, c] = got.map(x => x[5]);
+  assert.ok(a && typeof a === 'object' && 'out' in a, 'a scratch { out }');
+  assert.ok(a === b && a !== c, 'one per display, kept');
+  s.p['f.type2'] = 100 / 107;                                       // a type ≥ 96: SxFilt2
+  F1.draw(g, 300, 120, 1);
+  assert.deepEqual([got.at(-1)[0], got.at(-1)[1], got.at(-1)[2] === a], ['x', 11, true]);
+});
+
+test('IMPL-FR-B §4.3: kit.frame clients — the X|Y dot, the spectral Hi / Lo handles and the filter marker; the unison warning stays a kit.live one', async () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0);
+  T.paint();
+  const f0 = T.frames.length, l0 = T.lives.length;
+  s.osc[0].type = 'gran'; T.paint();
+  assert.equal(T.frames.length, f0 + 1, 'the X|Y dot');
+  s.osc[0].type = 'spec'; T.paint();
+  assert.equal(T.frames.length, f0 + 3, 'the spectral view\'s X|Y dot and its Hi / Lo handles');
+  assert.equal(T.lives.length, l0, 'no new kit.live');
+  new osc.FilterPanel(root, kit, 0);
+  assert.equal(T.frames.length, f0 + 4, 'the filter marker');
+  void P;
 });
 
 /* ================================================================ through the real DSP scripts */

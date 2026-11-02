@@ -610,6 +610,30 @@ test('IMPL-FR §3 B3 (review 2, P3-2): the rate class is timed by the frame\'s r
   } finally { WK.clock._reset(); X.destroy(); }
 });
 
+test('FR Cut B review 2 (P1-1): the heavy displays on Medium / Low (host.heavyHz() 30) redraw at ≤ 30 a second — a ceiling over the 60 class and a capHz curve —, and the frame clock\'s drop level halves every heavy display\'s rate per level (the class, the ceiling, the curve), never below 15 a second; a plain canvas (a marker, a dot, a playhead) every frame whatever the level', () => {
+  // [display, host.heavyHz (0: none — High), the canvas (maxHz 60 | capHz n), the drop level, the rate a second]
+  const rows = [[120, 0, 'm', 0, 60], [120, 30, 'm', 0, 30], [60, 30, 'm', 0, 30], [240, 30, 'm', 0, 30], [144, 30, 'm', 0, 28.8],
+    [120, 0, 'm', 1, 30], [120, 0, 'm', 2, 15], [120, 0, 'm', 3, 15], [240, 0, 'm', 1, 30], [60, 0, 'm', 1, 30], [60, 0, 'm', 2, 15], [60, 0, 'm', 3, 15],
+    [120, 30, 'm', 1, 15], [120, 30, 'm', 3, 15], [165, 0, 'm', 3, 15],
+    [120, 0, 60, 0, 60], [120, 30, 60, 0, 30], [120, 0, 60, 1, 30], [120, 0, 30, 1, 15], [120, 0, 60, 3, 15], [240, 0, 60, 2, 15]];
+  for (const [Dd, hv, kind, drop, want] of rows) {
+    let T = 1000;
+    const doc = D.fresh(), X = H.createHost(mkHost(hv ? { heavyHz: () => hv } : {}), { doc, now: () => T });
+    WK.clock._reset(); WK.clock.config({ display: Dd, drop });
+    try {
+      let a = 0;
+      const ta = [], tl = [];
+      X.canvas('t-heavy', () => a, () => { ta.push(T); }, kind === 'm' ? { maxHz: 60 } : { capHz: kind });
+      X.canvas('t-light', () => a, () => { tl.push(T); });
+      frameAt(doc, T); X.paintCanvases();
+      for (let f = 1; f <= 2 * Dd; f++) { T += 1000 / Dd; frameAt(doc, T); a = f; X.paintCanvases(); }
+      const rate = (ta.length - 1) / ((ta.at(-1) - ta[0]) / 1000), tag = `D ${Dd} heavyHz ${hv} ${kind === 'm' ? 'maxHz 60' : 'capHz ' + kind} drop ${drop}`;
+      assert.ok(Math.abs(rate - want) < 1e-6, `${tag}: ${rate} a second, want ${want}`);
+      assert.equal(tl.length - 1, 2 * Dd, tag + ': the plain canvas every frame');
+    } finally { WK.clock._reset(); X.destroy(); }
+  }
+});
+
 test('IMPL-FR §7.3: keyN(out) — the key as numbers into the canvas\' own buffer (two, swapped: no array per paint), compared element-wise (NaN equals NaN; a count change differs); key() is never called; a throwing keyN redraws', () => {
   const doc = D.fresh(), X = H.createHost(mkHost(), { doc });
   const kk = [1, 'a', NaN];
@@ -648,7 +672,8 @@ test('IMPL-FR §3 B3 (§13 P1-2): the heavy displays declare maxHz 60 and a keyN
     const cvOf = (V, re) => V.page.canvases.find(cv => re.test(cv.el.getAttribute('aria-label') || ''));
     const rate = cv => [cv.maxHz || 0, typeof cv.keyN === 'function'];
     assert.deepEqual(rate(cvOf(A, /^OSC A wavetable display/)), [60, true]);
-    assert.deepEqual(rate(cvOf(F, /^FILTER 1 display/)), [60, true]);
+    // (IMPL-FR-B §4.3, the user's QB: the filter display's curve moved to a ceiling — capHz, host.curveHz() or 60 — from the 60 class)
+    assert.deepEqual([...rate(cvOf(F, /^FILTER 1 display/)), typeof cvOf(F, /^FILTER 1 display/).capHz], [0, true, 'function']);
     assert.deepEqual(rate(cvOf(N, /^Noise overview/)), [0, false]);
     s().osc[0].type = 'spec';
     X.refresh();
@@ -925,4 +950,320 @@ test('(WC-2 displays) a display canvas\' palette: resolved at its sizing once pe
     for (let f = 1; f <= 20; f++) { T += 1000 / 120; eff[vi] = 0.5 + 0.3 * Math.sin(f / 3); X.setSnapshot({ s: { notes: 1, eff } }); frameAt(doc, T); }
     assert.equal(reads - n0, P1.length, 'and not per frame');
   } finally { WK.clock._reset(); X.destroy(); }
+});
+
+/* ================================================================ FR Cut B (IMPL-FR-B §4): the view in heard time, the rings, the tick */
+const MO = await import('../motion.js?v=9');
+const FH = { v: 0 };
+const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, a + ' != ' + b);
+// a parts host told the heard frame (FH.v) and the rate (the fast lane's host members as main.js gives them)
+const fparts = over => parts(Object.assign({ heardFrame: () => FH.v, sampleRate: () => 48000 }, over));
+// a Serum part's fast message at F (IMPL-FR-B §2.2): the fixed 70 (motion SXF) from o's fields, then the requested eff values
+function fmsg(F, o, eff) {
+  const L = MO.SXF, v = new Float32Array(L.N + (eff ? eff.length : 0));
+  for (const k of ['mix', 'wtPos', 'smpPos', 'lfoPh', 'lfoOut', 'lfoY', 'env', 'envStage', 'envT']) if (o && o[k]) v.set(o[k], L[k]);
+  if (o && o.notes !== undefined) v[L.notes] = o.notes;
+  if (eff) v.set(eff, L.N);
+  return Object.assign({ t: 'fast', F, i: 'i2', k: 1, v }, o && o.q ? { q: o.q } : null, o && o.gr ? { gr: o.gr } : null);
+}
+const slowSnap = o => Object.assign({ eff: new Float32Array(core.NSV + 64), lfoPh: new Float32Array(10), lfoOut: new Float32Array(10), lfoY: new Float32Array(10),
+  env: new Float32Array(4), envStage: new Uint8Array(4), envT: new Float32Array(4), wtPos: new Float32Array(3), smpPos: new Float32Array(12),
+  mix: new Float32Array(11).fill(-120), notes: 1, noisePos: 0, oscVoices: 2, maxVoices: 8, memNow: new Float32Array(48), seq: new Float64Array(16) }, o);
+const mrow = o => Object.assign({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }, o);
+// the frame clock driven by hand (wk.clock's frames through globalThis.requestAnimationFrame): run(T) runs the queued frame at T
+function manualClock(display) {
+  const q = [], rAF = globalThis.requestAnimationFrame, cAF = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = f => { q.push(f); return q.length; };
+  globalThis.cancelAnimationFrame = () => {};
+  WK.clock._reset(); WK.clock.config({ display, gate: false });
+  return {
+    run: T => { for (const f of q.splice(0)) f(T); },
+    done: () => {
+      WK.clock._reset();
+      if (rAF === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = rAF;
+      if (cAF === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = cAF;
+    },
+  };
+}
+
+test('IMPL-FR-B §4.1: the view — kit.snap() is one persistent object holding exactly the slow message\'s fields (its own arrays, the values copied), kit.msg() / host.raw the message\'s s itself (FR7); partial snapshots stay partial; null clears both', async () => {
+  const { doc, X } = fparts();
+  await flush(doc);
+  const s1 = slowSnap(), vi = core.vi('f.cutoff');
+  s1.eff[vi] = 0.25; s1.lfoPh[0] = 0.5;
+  X.setSnapshot({ s: s1 });
+  const V = X.kit.snap();
+  assert.ok(V !== s1 && X.kit.msg() === s1 && X.raw === s1, 'the view its own object, msg() the raw s');
+  assert.ok(V.eff !== s1.eff && V.eff[vi] === s1.eff[vi] && V.lfoPh[0] === s1.lfoPh[0] && V.oscVoices === 2 && V.eff.length === s1.eff.length);
+  const s2 = slowSnap({ oscVoices: 5 });
+  s2.eff[vi] = 0.75;
+  X.setSnapshot({ s: s2 });
+  assert.ok(X.kit.snap() === V && V.eff[vi] === s2.eff[vi] && V.oscVoices === 5 && X.kit.msg() === s2, 'the same view, the new values');
+  X.setSnapshot({ s: { notes: 0 } });
+  assert.deepEqual(Object.keys(X.kit.snap()), ['notes'], 'a partial snapshot stays partial');
+  X.setSnapshot(null);
+  assert.deepEqual([X.kit.snap(), X.kit.msg()], [null, null]);
+  X.destroy();
+});
+
+test('IMPL-FR-B §4.1 / §3: setFast — the fixed 70 and the requested eff values read at the heard frame (LIN / PH / HOLD / TIME bracketed), the slow values back before the first anchor and once the posts stop (stale), kit.msg() never moved; an ix of another count rebuilds the eff ring and keeps the fixed ring\'s anchors (§13 P2-9 d); fastReset flushes', async () => {
+  const { doc, X } = fparts();
+  await flush(doc);
+  const s1 = slowSnap(), vi = core.vi('f.cutoff'), ix = Int16Array.of(vi);
+  s1.eff[vi] = 0.9; s1.lfoPh[0] = 0.9; s1.lfoOut[0] = 0.9; s1.envStage[0] = 3; s1.envT[0] = 1;
+  X.setSnapshot({ s: s1 });
+  const slow = () => [s1.lfoPh[0], s1.lfoOut[0], s1.eff[vi], 3, s1.envT[0]], now = () => { const V = X.kit.snap(); return [V.lfoPh[0], V.lfoOut[0], V.eff[vi], V.envStage[0], V.envT[0]]; };
+  FH.v = 900;
+  X.setFast(fmsg(1000, { lfoPh: [0.2], lfoOut: [0.4], envStage: [1], envT: [0.01], notes: 1 }, [0.3]), ix);
+  X.setFast(fmsg(1400, { lfoPh: [0.3], lfoOut: [0.6], envStage: [1], envT: [0.01 + 400 / 48000], notes: 1 }, [0.5]), ix);
+  assert.deepEqual(now(), slow(), 'before the first anchor (BEFORE): the slow values');
+  FH.v = 1200;
+  const v = now();
+  near(v[0], 0.25, 1e-6); near(v[1], 0.5, 1e-6); near(v[2], 0.4, 1e-6); near(v[4], 0.01 + 200 / 48000, 1e-6);
+  assert.equal(v[3], 1);
+  assert.equal(X.fastLive(), true);
+  assert.ok(X.kit.msg() === s1 && s1.eff[vi] === Math.fround(0.9) && s1.lfoPh[0] === Math.fround(0.9), 'the raw message untouched');
+  FH.v = 900;
+  assert.deepEqual(now(), slow(), 'the heard frame back before the anchors: the slow values again');
+  FH.v = 1400 + 0.6 * 48000;
+  assert.deepEqual([...now(), X.fastLive()], [...slow(), false], 'no post for STALE_S: the slow values, not live');
+  // (§13 P2-9 d) an ix of another count: the eff ring rebuilt (flushed), the fixed ring keeps its anchors
+  X.setFast(fmsg(FH.v + 100, { lfoPh: [0.4] }, [0.5]), ix);
+  const fr = X.fr, n0 = fr.size;
+  X.setFast(fmsg(FH.v + 500, { lfoPh: [0.5] }, [0.6, 0.7]), Int16Array.of(vi, core.vi('f.res')));
+  assert.deepEqual([X.fr === fr, fr.size, X.fe.w, X.fe.size], [true, n0 + 1, 2, 1]);
+  X.fastReset();
+  assert.deepEqual([X.fr ? X.fr.size : 0, X.fastLive()], [0, false]);
+  assert.deepEqual(now(), slow(), 'after fastReset: the slow values');
+  X.destroy();
+});
+
+test('IMPL-FR-B §4.3 (§13 P1-1): while the fast data is live a slow message schedules no paint of its own — slowDue, and the tick (wk.clock client sx-fast) runs the slow work once: every page\'s kit.live (the CLIP recorder anchors its clock), the phase capture from the raw message (FR7); kit.frame(fn) every tick frame with fast = true; the client goes once the posts stop', async () => {
+  const C0 = manualClock(120);
+  try {
+    let T = 1e6;
+    const { doc, box, X, s } = fparts({ tracks: () => [], seqCmd() {}, onInput: () => {}, metronome() {} });
+    X.tNow = () => T;
+    const Cv = M.mountPart(X, 'clip', box);
+    await flush(doc);
+    const clip = Cv.panel.panel;
+    let lives = 0;
+    const fr = [];
+    X.kit.under(Cv.page, () => { X.kit.live(() => { lives++; }); X.kit.frame((on, fast) => { fr.push(!!fast); }); });
+    const q0 = new Float64Array(16); q0[0] = -1; q0[5] = -1;
+    X.setSnapshot({ s: slowSnap({ seq: q0 }) });
+    await flush(doc);
+    assert.ok(fr.length >= 1 && fr.every(f => f === false), 'kit.frame on the slow paint while fast is not live: fast = false');
+    assert.equal(clip.record(true), true);
+    assert.equal(clip.rec.wait, true, 'waiting for the launch');
+    // the fast lane goes live
+    FH.v = 1200;
+    X.setFast(fmsg(1000, { notes: 1 }), null);
+    X.setFast(fmsg(1400, { notes: 1 }), null);
+    assert.ok(WK.clock.clients().includes('sx-fast'), 'the tick client added at the first fast push');
+    const l0 = lives, raf0 = doc.defaultView.raf.length;
+    const q1 = new Float64Array(16); q1[0] = -1; q1[4] = 1; q1[5] = 0;   // the launch happened (the clip plays at 0)
+    X.setSnapshot({ s: slowSnap({ seq: q1 }) });
+    assert.deepEqual([doc.defaultView.raf.length, X.slowDue, lives, clip.rec.wait], [raf0, true, l0, true], 'no paint of its own: slowDue');
+    fr.length = 0;
+    T += 1000 / 120; C0.run(T);
+    assert.deepEqual([lives - l0, X.slowDue, clip.rec.wait], [1, false, false], 'the tick ran the slow work once: the recorder anchored');
+    T += 1000 / 120; C0.run(T);
+    assert.equal(lives - l0, 1, 'once per slow message, not per frame');
+    assert.ok(fr.length === 2 && fr.every(f => f === true), 'kit.frame every tick frame, fast = true');
+    // the phase capture reads the raw message: notes sound (raw) though the heard view says none yet
+    s().osc[2].phMem = 'all';
+    X.refresh();
+    X.setFast(fmsg(1800, { notes: 0 }), null);
+    X.setSnapshot({ s: slowSnap({ notes: 1, memNow: new Float32Array(48).fill(0.25), seq: q1 }) });
+    FH.v = 1800;
+    assert.equal(X.kit.snap().notes, 0, 'the view: no notes heard');
+    X.kit.edit(st => { st.osc[2].phMem = 'voice'; }, 'Phase memory');
+    await flush(doc);
+    assert.deepEqual(s().osc[2].memSet, new Array(16).fill(0.25), 'captured from the raw message');
+    // the posts stop: past STALE_S the client removes itself and the view is the slow one
+    FH.v = 1800 + 0.6 * 48000;
+    T += 1000 / 120; C0.run(T);
+    T += 1000 / 120; C0.run(T);
+    assert.deepEqual([WK.clock.clients().includes('sx-fast'), X.fastLive(), X.kit.snap().notes], [false, false, 1]);
+    clip.record(false);
+    X.destroy();
+  } finally { C0.done(); }
+});
+
+test('IMPL-FR-B §4.2 (§13 P2-3): fastIx() — the modded controls with halo arcs (not every control scanMods lists) and the heavy displays\' liveIds, over the shown views, sorted, unique, ≤ 64; the same array while unchanged; a full paint that changes it tells host.fastIx()', async () => {
+  let told = 0, on = true;
+  const { doc, box, X } = fparts({ fastIx: () => { told++; } });
+  const A = M.mountPart(X, 'oscA', box), F = M.mountPart(X, 'filter', box, { shown: () => on });
+  X.edit(st => { st.matrix[0] = mrow({ src: 'lfo1', amt: 0.3, dst: 'a.level' }); }, { label: 'Row' });
+  await flush(doc);
+  const heavy = V => V.page.canvases.filter(cv => typeof cv.liveIds === 'function').flatMap(cv => cv.liveIds().map(id => core.vi(id)));
+  const want = L => [...new Set(L.filter(i => i >= 0))].sort((a, b) => a - b);
+  assert.ok(heavy(A).includes(core.vi('a.wt')), 'the wavetable display declares its WT POS');
+  assert.ok(['f.cutoff', 'f.res', 'f.drive', 'f.var', 'f.x', 'f.y'].every(id => heavy(F).includes(core.vi(id))), 'the filter display declares cutoff, res, drive, var, x, y');
+  const ix0 = X.fastIx();
+  assert.ok(ix0 instanceof Int16Array);
+  assert.deepEqual([...ix0], want([core.vi('a.level'), ...heavy(A), ...heavy(F)]));
+  assert.ok(!ix0.includes(core.vi('a.pan')), 'a shown control with no arcs: not requested');
+  const t0 = told;
+  X.paint(true);
+  assert.deepEqual([X.fastIx() === ix0, told], [true, t0], 'unchanged: the same array, nothing told');
+  X.edit(st => { st.matrix[1] = mrow({ src: 'lfo2', amt: 0.2, dst: 'a.pan' }); }, { label: 'Row' });
+  await flush(doc);
+  const ix1 = X.fastIx();
+  assert.ok(ix1 !== ix0 && ix1.includes(core.vi('a.pan')) && told === t0 + 1, 'a new modded control: a new array, host.fastIx() told');
+  on = false;
+  X.paint(true);
+  assert.ok(!X.fastIx().includes(core.vi('f.res')), 'a hidden view\'s displays drop out');
+  // ≤ 64: the rest stay slow (64 rows on 64 shown controls, and the displays' ids)
+  const B = M.mountPart(X, 'oscB', box), Cc = M.mountPart(X, 'oscC', box);
+  on = true;
+  await flush(doc);
+  const dests = [...new Set([A, B, Cc].flatMap(V => V.root.querySelectorAll('[data-dest]').map(n => n.getAttribute('data-dest'))))].filter(id => core.vi(id) >= 0);
+  assert.ok(dests.length >= 64, dests.length + ' destinations shown');
+  X.edit(st => { dests.slice(0, 64).forEach((id, k) => { st.matrix[k] = mrow({ src: 'lfo1', amt: 0.1, dst: id }); }); }, { label: 'Rows' });
+  await flush(doc);
+  assert.equal(X.fastIx().length, 64);
+  assert.ok([...X.fastIx()].every((v, i, a) => !i || v > a[i - 1]), 'sorted, unique');
+  X.destroy();
+});
+
+test('IMPL-FR-B §4.3 (the user\'s QB, §13 P1-3): the filter display\'s curve redraws at ≤ 60 / s on High (host.curveHz 60) and ≤ 30 / s on Medium / Low (30) — capHz, a ceiling — while its cutoff marker, an overlay while the fast lane is live, moves every frame; fast off: the marker in the curve, no overlay', async () => {
+  const C0 = manualClock(120), HZ = { v: 60 };
+  try {
+    let T = 1e6;
+    const { doc, box, X } = fparts({ curveHz: () => HZ.v });
+    X.tNow = () => T;
+    const F = M.mountPart(X, 'filter', box);
+    await flush(doc);
+    const disp = F.page.canvases.find(cv => /^FILTER 1 display/.test(cv.el.getAttribute('aria-label') || ''));
+    assert.deepEqual([disp.maxHz || 0, typeof disp.capHz, typeof disp.keyN], [0, 'function', 'function']);
+    assert.equal(F.root.querySelectorAll('canvas.sxo-fmark').length, 0, 'fast off: no overlay');
+    X.setSnapshot({ s: slowSnap() });
+    await flush(doc);
+    const g = disp.el.getContext('2d'), clears = () => g.calls.filter(c => c[0] === 'clearRect').length;
+    const vi = core.vi('f.cutoff');
+    let Fp = 10000;
+    const run = n => {
+      let marks = 0, mk0 = null;
+      const c0 = clears();
+      for (let f = 0; f < n; f++) {
+        Fp += 400;
+        const ix = X.fastIx(), e = Array.from(ix, i => (i === vi ? 0.3 + 0.4 * Math.sin(Fp / 4000) : 0.5));
+        X.setFast(fmsg(Fp, { notes: 1 }, e), ix);
+        FH.v = Fp - 1200;
+        T += 1000 / 120;
+        frameAt(doc, T); C0.run(T);
+        const ov = F.root.querySelectorAll('canvas.sxo-fmark')[0];
+        if (ov) { const k = ov.getContext('2d').calls.filter(c => c[0] === 'fillRect').length; if (mk0 !== null && k > mk0) marks++; mk0 = k; }
+      }
+      return { curve: clears() - c0, marks };
+    };
+    run(12);                                   // (the fast lane starting: the overlay comes in)
+    const hi = run(120);
+    assert.equal(F.root.querySelectorAll('canvas.sxo-fmark').length, 1, 'one overlay');
+    assert.ok(hi.curve >= 55 && hi.curve <= 60, 'High: ' + hi.curve + ' curve redraws in 1 s');
+    assert.ok(hi.marks >= 115, 'the marker every frame: ' + hi.marks + ' of 120');
+    HZ.v = 30;
+    run(12);
+    const lo = run(120);
+    assert.ok(lo.curve >= 27 && lo.curve <= 30, 'Medium / Low: ' + lo.curve + ' curve redraws in 1 s');
+    assert.ok(lo.marks >= 115, 'the marker still every frame: ' + lo.marks);
+    X.destroy();
+  } finally { C0.done(); }
+});
+
+test('IMPL-FR-B §7 G6 (the host): a retrigger, an ENV stage change, a GR step and a peak posted at F show on the first frame whose heard frame reaches F — and never before it (HOLD / PEAK; a PH jump > a quarter holds); a frame\'s view is computed from that frame\'s heard frame', async () => {
+  const { doc, X } = fparts();
+  await flush(doc);
+  X.setSnapshot({ s: slowSnap() });
+  const step = 4000;                                 // anchors every 400 frames (120 Hz); the events at F = 4000
+  for (let F = 0; F <= 8000; F += 400) {
+    const after = F >= step;
+    X.setFast(fmsg(F, { lfoPh: [after ? 0.05 + (F - step) / 48000 : 0.6 + F / 48000], envStage: [after ? 2 : 1], mix: [after ? -3 : -40], notes: 1,
+      gr: Float32Array.of(after ? 6 : 0, 0, 0, 0) }), null);
+  }
+  const seen = [];
+  for (let Fh = 2000; Fh <= 6000; Fh += 200) {       // a 240 Hz display's frames (200 frames apart)
+    FH.v = Fh;
+    const V = X.kit.snap(), gr = X.grNow();
+    seen.push({ Fh, ph: V.lfoPh[0], st: V.envStage[0], pk: V.mix[0], gr: gr ? gr[0] : NaN });
+  }
+  for (const o of seen) {
+    if (o.Fh >= step) assert.deepEqual([o.st, o.gr], [2, 6], 'shown at ' + o.Fh);
+    else { assert.equal(o.st, 1, 'not before: ' + o.Fh); assert.ok(o.ph >= 0.6 && o.pk === -40, 'the old phase line and peak until F: ' + o.Fh); }
+  }
+  assert.equal(seen.find(o => o.Fh === step).pk, -3, 'the peak drained at the frame that reaches it');
+  assert.ok(seen.filter(o => o.Fh > step).every(o => o.ph < 0.2), 'the new phase after F');
+  X.destroy();
+});
+
+test('IMPL-FR-B §4.4: a slot host given o.heardFrame — H.live({…, F}) pushes into its ring and paints nothing; the view at the heard frame (an LFO\'s phase / output / Y, an ENV\'s stage and stage time); without F today\'s path', async () => {
+  const L = slot('lfo', {}, { heardFrame: () => FH.v, sampleRate: () => 48000 });
+  await flush(L.doc);
+  const r0 = L.doc.defaultView.raf.length;
+  L.X.live({ v: 0.1, ph: 0.2, y: 0.3, out: 0.4, F: 1000 });
+  L.X.live({ v: 0.3, ph: 0.4, y: 0.5, out: 0.6, F: 1400 });
+  assert.equal(L.doc.defaultView.raf.length, r0, 'no paint queued');
+  FH.v = 1200;
+  const V = L.X.kit.snap();
+  near(V.lfoPh[0], 0.3, 1e-6); near(V.lfoOut[0], 0.5, 1e-6); near(V.lfoY[0], 0.4, 1e-6);
+  L.X.live({ v: 0.5, ph: 0.7 });                     // (no F: the slow path — the raw message)
+  assert.equal(L.X.kit.msg().lfoPh[0], Math.fround(0.7));
+  near(L.X.kit.snap().lfoPh[0], 0.3, 1e-6);          // (the ring still live: the view at the heard frame)
+  L.X.destroy();
+  const E = slot('env', {}, { heardFrame: () => FH.v, sampleRate: () => 48000 });
+  await flush(E.doc);
+  E.X.live({ v: 0.5, stage: 1, t: 0.1, F: 1000 });
+  E.X.live({ v: 0.7, stage: 1, t: 0.1 + 400 / 48000, F: 1400 });
+  E.X.live({ v: 0.8, stage: 2, t: 0, F: 1800 });
+  FH.v = 1200;
+  near(E.X.kit.snap().envT[1], 0.1 + 200 / 48000, 1e-6);
+  assert.equal(E.X.kit.snap().envStage[1], 1);
+  FH.v = 1600;
+  assert.deepEqual([E.X.kit.snap().envStage[1], E.X.kit.snap().envT[1] >= 0.1], [1, true], 'a stage change holds until its anchor');
+  FH.v = 1800;
+  assert.equal(E.X.kit.snap().envStage[1], 2);
+  E.X.destroy();
+});
+
+test('(review 1, R1-B) a part\'s posts resuming after a gap > EXTRA_S (it left the fast ids while another display kept the lane on: no hz 0, no fastReset) start the host\'s rings afresh — before the resumed anchor is heard the view shows the slow values, never the stale anchor blended into the new one; the slot host\'s ring likewise', async () => {
+  const { doc, X } = fparts();
+  await flush(doc);
+  const s1 = slowSnap(), vi = core.vi('f.cutoff'), ix = Int16Array.of(vi);
+  s1.lfoOut[0] = 0.5; s1.eff[vi] = 0.5;
+  X.setSnapshot({ s: s1 });
+  FH.v = 900;
+  X.setFast(fmsg(1000, { lfoOut: [0.1], notes: 1 }, [0.1]), ix); X.setFast(fmsg(1400, { lfoOut: [0.1], notes: 1 }, [0.1]), ix);
+  const F3 = 1400 + 48000; // (a 1 s gap)
+  X.setFast(fmsg(F3, { lfoOut: [0.9], notes: 1 }, [0.9]), ix); X.setFast(fmsg(F3 + 400, { lfoOut: [0.9], notes: 1 }, [0.9]), ix);
+  const at = Fh => { FH.v = Fh; const V = X.kit.snap(); return [+V.lfoOut[0].toFixed(4), +V.eff[vi].toFixed(4)]; };
+  assert.deepEqual([at(F3 - 2000), at(F3 - 100)], [[0.5, 0.5], [0.5, 0.5]], 'before the resumed anchor is heard: the slow values (no blend of 0.1 into 0.9)');
+  assert.deepEqual(at(F3 + 200), [0.9, 0.9], 'heard: the new anchors');
+  X.destroy();
+  const L = slot('lfo', {}, { heardFrame: () => FH.v, sampleRate: () => 48000 });
+  await flush(L.doc);
+  L.X.live({ v: 0.5, ph: 0.5, y: 0.5, out: 0.5 });   // (the slow value)
+  for (const F of [1000, 1400]) L.X.live({ v: 0.1, ph: 0.1, y: 0.1, out: 0.1, F });
+  for (const F of [F3, F3 + 400]) L.X.live({ v: 0.9, ph: 0.2, y: 0.9, out: 0.9, F });
+  FH.v = F3 - 2000;
+  assert.deepEqual([+L.X.kit.snap().lfoOut[0].toFixed(4), +L.X.kit.snap().lfoY[0].toFixed(4)], [0.5, 0.5], 'the slot host: the slow values before the resumed anchor is heard');
+  FH.v = F3 + 200;
+  assert.equal(+L.X.kit.snap().lfoOut[0].toFixed(4), 0.9);
+  L.X.destroy();
+});
+
+test('IMPL-FR-B §4.4: cv-mods-ui slotBody forwards o.heardFrame and o.sampleRate to its slot host; update(v) with F takes the ring path', async () => {
+  const U = await import('../cv-mods-ui.js?v=9');
+  await U.ready();
+  const doc = D.fresh(), hf = () => FH.v, sr = () => 44100;
+  const B = U.slotBody('lfo', { doc, get: () => song.normModDev({ kind: 'lfo' }), heardFrame: hf, sampleRate: sr });
+  doc.body.appendChild(B.el);
+  await flush(doc);
+  const H = B.host();
+  assert.ok(H && H.host.heardFrame === hf && H.host.sampleRate === sr);
+  B.update({ v: 0.1, ph: 0.2, F: 1000 }); B.update({ v: 0.2, ph: 0.4, F: 1882 });
+  FH.v = 1441;
+  near(H.kit.snap().lfoPh[0], 0.3, 1e-6);
+  B.destroy();
 });

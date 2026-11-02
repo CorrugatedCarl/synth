@@ -1481,9 +1481,17 @@ export class FXRackUI {
           get: () => ui.val(id, cur()), set: (n, ph) => ui.setP(id, cur(), n, ph), def: () => (row(cur()) ? row(cur()).def : 0),
           fmt: n => ui.fmtV(id, cur(), n), parse: t => ui.parse(id, cur(), t),
         });
+        // ((FR Cut B §5.4) setLive per frame: the stashed halo keeps the live value; the dot through the knob's own setLive while this id
+        // is the one bound, else the knob's setMod as before)
         for (const [d, pid] of [[mixId, mp], [lvlId, lp]]) {
           ui.knobs.set(d, { el: w.el, update: () => w.update(), focus: () => w.focus(), edit: () => w.edit(), destroy: () => {},
-            setMod: m => { stash.set(d, m); if (cur() === pid) w.setMod(m); } });
+            setMod: m => { stash.set(d, m); if (cur() === pid) w.setMod(m); },
+            setLive: v => {
+              const m = stash.get(d);
+              if (m) m.live = v;
+              if (cur() !== pid) return;
+              if (typeof w.setLive === 'function') w.setLive(v); else if (m) w.setMod(m);
+            } });
         }
         P.widgets.push(w);
         ui.tip(w, () => dest(cur()));
@@ -1835,7 +1843,7 @@ export class FXRackUI {
     };
     const update = () => { const t = text(); if (txt.textContent !== t) txt.textContent = t; b.setAttribute('aria-label', 'Note filter: ' + t); };
     b.addEventListener('click', () => { const r = b.getBoundingClientRect(); contextMenu(r.left, r.bottom + 2, this.noteItems(c), { anchor: b }); });
-    const w = { el, update, setMod: () => {}, focus: () => b.focus({ preventScroll: true }), destroy: () => el.remove() };
+    const w = { el, update, setMod: () => {}, setLive: () => {}, focus: () => b.focus({ preventScroll: true }), destroy: () => el.remove() };
     update();
     return c.reg('note', w);
   }
@@ -2609,18 +2617,25 @@ export class FXRackUI {
   rendered() { const el = this.el; return el.isConnected && !(typeof el.getClientRects === 'function' && el.getClientRects().length === 0); }
   // the GR display loop while a compressor or a Ducker is shown (a wk.ticker: a frame-clock client capped at 30 — its data,
   // host.gr(), is the 29 Hz monitor's —, 10 fps with prefers-reduced-motion, nothing painted while the page is hidden; a frame
-  // repaints only what changed); it stops when no compressor is shown or the rack is hidden (refresh() restarts it)
+  // repaints only what changed); it stops when no compressor is shown or the rack is hidden (refresh() restarts it).
+  // (FR Cut B §5.4) host.fast() true — host.gr() is the heard-time view of the fast lane, new every frame —: the cap lifted (every
+  // frame); the loop sees the flip itself (re-armed at the other cap within a tick) and at a refresh
   grLoop() {
     const want = !!(this.host.gr && this.grPanels().length && this.rendered());
     if (!want) { if (this.grTick) this.grTick.stop(); this.drawGrs(true); return; }
+    const fast = this.grFastNow();
+    if (this.grTick && this.grFast !== fast) { const T = this.grTick; this.grTick = null; T.stop(); }
     if (!this.grTick) {
-      this.grTick = ticker(this.rack, () => {
-        if (this.dead || !this.grShown()) { this.grTick.stop(); return; }
+      this.grFast = fast;
+      const T = this.grTick = ticker(this.rack, () => {
+        if (this.dead || !this.grShown()) { T.stop(); return; }
+        if (this.grTick === T && this.grFastNow() !== this.grFast) { this.grTick = null; T.stop(); this.grLoop(); }
         this.drawGrs(true);
-      }, { fps: 30 });
+      }, { fps: fast ? Infinity : 30, shed: true }); // ((review 2, P1-1) shed: every other frame under the clock's drop level ≥ 2, ≥ 30 a second
     }
     this.grTick.start();
   }
+  grFastNow() { const f = this.host.fast; if (typeof f !== 'function') return false; try { return !!f(); } catch (err) { return false; } }
 
   /* ---------------------------------------------------------- X-Shaper popover */
   openXs(P, key, opener) {
@@ -3166,18 +3181,28 @@ export class FXRackUI {
   // (halos fix) the live dots: liveOf(destId, base) → the knob's effective normalised value or null (the host's: a Serum's
   // snapshot eff, a panel's base + ModCore's offset), asked of the knobs that carry arcs only, at the monitor rate; a null
   // takes the dot off. No host call → every dot off
+  // (FR Cut B §5.4) called every frame while the host's fast values are live: the knob's fx.<inst>.<pid> split is parsed once
+  // (w.modI / w.modP; '' = not a dynamic id), the dot written through the kit's setLive(n) when the widget has it (the dot
+  // alone: no arcs object), else setMod as before; an unchanged value writes nothing
   setLive(liveOf) {
     if (this.dead) return;
     for (const [id, w] of this.knobs) {
       if (!w.modded || !w.modArcs) continue;
-      const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id);
+      if (w.modI === undefined) { const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id); w.modI = m ? m[1] : ''; w.modP = m ? m[2] : ''; }
       let v = null;
-      if (typeof liveOf === 'function' && m) { try { v = liveOf(id, clamp01(this.val(m[1], m[2]))); } catch (err) { v = null; } }
+      if (typeof liveOf === 'function' && w.modI) { try { v = liveOf(id, clamp01(this.val(w.modI, w.modP))); } catch (err) { v = null; } }
       v = fin(v) ? clamp01(v) : null;
       if (v === w.modLive) continue;
       w.modLive = v;
-      w.setMod({ arcs: w.modArcs, live: v });
+      if (typeof w.setLive === 'function') w.setLive(v); else w.setMod({ arcs: w.modArcs, live: v });
     }
+  }
+  // (FR Cut B §5.3) the knobs carrying halo arcs: a Serum's own FX rack asks the fast lane for their FX-context eff values
+  moddedIds() {
+    const out = [];
+    if (this.dead) return out;
+    for (const [id, w] of this.knobs) if (w.modded && w.modArcs) out.push(id);
+    return out;
   }
   // the control-specific items of a parameter's context menu (§13.5): Compressor RATIO ▸ Limiter Latency Comp (disabled,
   // deviation 11), Bode SHIFT ▸ ✓ Retrig. Appended by ctlMenu; a host mod layer that owns the control menus (mod: true:

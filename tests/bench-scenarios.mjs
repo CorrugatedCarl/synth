@@ -14,7 +14,8 @@
 // graph node with several instruments: {t: 'graph'}, {t: 'patch', i} per instrument, {t: 'chain', c} per shared panel, the
 // chord reaching every instrument (full key zones); classic instruments at the app's oversampling (4). The row of kind 'sweep'
 // (the idle-DSP review #3 d) times a reverb rack on exact zeros after the noise: its load is the slowest quantum holding a
-// denormal sweep (fresh racks, median of `runs`).
+// denormal sweep (fresh racks, median of `runs`). Rows of kind 'fast' (FR Cut B G8) are a monitored 'track' or 'master' build
+// (B.host) with the fast lane on, their base the same without: measure() or measureFast() (paired medians with an A/A pair).
 //   const S = scenarios();                          // [{id, label, node, ipad, kind, gran?, build()}]
 //   const r = measure(S[0], env, {runs: 5});        // {load, loads, peak, worst}
 // env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms, mkMaster(processorOptions, bare) → a
@@ -101,7 +102,7 @@ function rowD(s) {
 /* ------------------------------------------------------------------ FX scenarios */
 function fxRow(type, pid) { const r = (core.FXP_TAB[type]['2'] || core.FXP_TAB[type]['1']).find(x => x.pid === pid); return r; }
 function setP(I, pid, v) { const r = fxRow(I.type, pid); I.p[pid] = lawN(r.law, r.lo, r.hi, v); }
-function fxInst(fx, type, vals, where) {
+export function fxInst(fx, type, vals, where) {
   const id = core.newInstance(fx, type, Object.assign({ rack: 0 }, where || {}));
   const find = L => { for (const I of L) { if (I.id === id) return I; if (Array.isArray(I.br)) for (const b of I.br) { const x = find(b); if (x) return x; } } return null; };
   const I = find(fx.racks[0].mods);
@@ -473,7 +474,7 @@ export function masterInput() {
   return () => { for (let i = 0; i < 128; i++) { L[i] = noise[(pos + i) & 4095]; R[i] = noise[(pos + 2048 + i) & 4095]; } pos = (pos + 128) & 4095; return io; };
 }
 // a mastering chain of five: EQ → compressor (multiband) → Distortion (light saturation) → Utility (width) → compressor (Limit)
-function master5make(fx) {
+export function master5make(fx) {
   fxInst(fx, 'eq', { gainL: 0.6, gainH: 0.55 });
   fxInst(fx, 'cmp', { mb: 1 });
   fxInst(fx, 'dist', { drive: 0.15, mix: 0.3 });
@@ -498,6 +499,57 @@ export function masterPayload(fx) {
   return pay;
 }
 function masterMods() { const B = fxScn(master5make); B.mods = masterPayload(B.fx); return B; }
+
+/* ------------------------------------------------------------------ FR Cut B G8 (lane E, IMPL-FR-B §2.7): the fast lane */
+// Each row is a monitored build ({t: 'mon'} on its parts, every post cloned as a port would: structuredClone where the scope has
+// it) with {t: 'fastOn', hz: 120} (build) against the same build without (base) — the fast reads, posts and clones alone.
+// fast-sx: a Serum (4 voices, three LFOs on cutoff / res / pan, ENV 2 on drive, an own-FX compressor) with 5 requested eff
+// values; fast-fx: a Juno-60 into a panel compressor, a GLOBAL canvas LFO on its cutoff and the compressor's threshold (cls + fx
+// rows, 'mods'); fast-master: master-mods (rack5 + its ModCore payload) + the meters. measureFast() times them.
+const VIX = id => core.vi(core.DEST_INDEX[id]);
+function fastSx(on) {
+  const fx = core.defaultFx2();
+  fxInst(fx, 'cmp', { thr: Math.pow(10, -24 / 20), ratio: 4, att: 2, rel: 80 });
+  const s = core.defaultSerum();
+  Object.assign(s.p, { 'a.rand': 0, 'b.rand': 0, 'c.rand': 0, 'f.on': 1, 'e2.att': timeN(0.1), 'e2.dec': timeN(0.3), 'e2.sus': 0.5 });
+  s.global.os = 2; s.voicing.poly = 4;
+  [[0.5, 'f.cutoff'], [2, 'f.res'], [6, 'a.pan']].forEach(([hz, dst], l) => { globalLfo(s, l, hz); s.matrix[l] = row('lfo' + (l + 1), dst, 0.3); });
+  s.matrix[3] = row('env2', 'f.drive', 0.4);
+  const st = core.normalizeSerum(s), Z = { lo: 0, hi: 127, xp: 0 };
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [], edges: [['i1', 'out', 1]], out: 'out', key: 'fast-sx' },
+    patches: { i1: patchFor('serum', { s: st }, fx, { sr: SR, bpm: 120 }) }, chains: {}, notes: chord(4), host: 'track', mon: ['i1'],
+    fast: on ? { hz: 120, ids: ['i1'], ix: { i1: Int16Array.from([VIX('a.pan'), VIX('f.cutoff'), VIX('f.res'), VIX('f.drive'), core.NSV + 8]) }, ixv: 1 } : null };
+}
+function fastFx(on) {
+  const fx = core.defaultFx2(), c = fxInst(fx, 'cmp', { thr: Math.pow(10, -24 / 20), ratio: 4, att: 2, rel: 80 });
+  const m = MODELS.find(x => x.id === 'juno60'), v = Object.fromEntries(m.controls.map(k => [k.id, k.def]));
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
+  delete p.fxr; delete p.fxrT;
+  const t = { id: 'trk_fast_fx', prim: 'i1', mid: 3, dev: { i1: { kind: 'synth', model: 'juno60', vals: v, preset: null }, fx1: { kind: 'panel', fx }, out: { kind: 'out' },
+    l1: normModDev({ kind: 'lfo', lfo: { mono: 1, mode: 'free', bpm: 0, anchor: 0 }, rate: hzN(1.5) }) },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }],
+    mods: [mrow('r1', 'l1.out', 'i1:cf', 0.3, 0), mrow('r2', 'l1.out', `fx1:fx.${c.id}.thr`, 0.3, 0)] };
+  const pay = compileMods(t, { bpm: 120, perf: { wheel: null }, tracks: [], pads: [] }, { smooth: 1, qr: null, ultra: 0 });
+  if (!pay || pay.rows.length !== 2) throw new Error('bench fast-fx: the payload compiles ' + (pay ? pay.rows.length : 'no') + ' rows');
+  pay.bpm = 120;
+  const Z = { lo: 0, hi: 127, xp: 0 }, ids = ['i1', 'fx1', 'mods'];
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'fast-fx' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: chord(4), mods: pay, host: 'track', mon: ids,
+    fast: on ? { hz: 120, ids, ix: null, ixv: 1 } : null };
+}
+function fastMaster(on) {
+  const B = masterMods(), ids = ['meters', 'mfx', 'mods'];
+  return Object.assign(B, { host: 'master', mon: ids, fast: on ? { hz: 120, ids, ix: null, ixv: 1 } : null });
+}
+// the build's monitors (B.mon, B.fast) on processor p: every post cloned (B.posts counts the fast ones), {t: 'mon'}, {t: 'fastOn'}
+const CLONE = typeof structuredClone === 'function' ? structuredClone : null;
+function monitor(p, B) {
+  if (!B.mon) return;
+  B.posts = 0;
+  p.port.postMessage = m => { if (CLONE !== null) CLONE(m); if (m && m.t === 'fast') B.posts++; };
+  p.msg({ t: 'mon', ids: B.mon });
+  if (B.fast) p.msg(Object.assign({ t: 'fastOn' }, B.fast));
+}
 
 export function scenarios() {
   const A = () => assets();
@@ -649,6 +701,14 @@ export function scenarios() {
       kind: 'master', build: () => masterMods() },
     { id: 'master-mods-d', label: 'Master: master-mods minus master-rack5, interleaved (the ModCore\'s cost on MASTER: its span, setMods, the units\' coefficient updates for knobs that move)', node: 0.004, ipad: 0.006, jsc: 0.005,
       kind: 'master', base: () => master5(), build: () => masterMods() },
+    // FR Cut B §2.7 G8 (lane E): the fast lane at 120 Hz minus the same monitored build without it (measureFast: paired interleaved
+    // medians with an A/A pair; the gate Δ ≤ max(0.002, 2 × the A/A spread), tests/fast-lane.test.mjs)
+    { id: 'fast-sx', label: 'Fast lane: a monitored Serum (4 voices, 3 LFOs, ENV 2, an own-FX compressor) at 120 Hz with 5 eff values, minus the same without (posts cloned)', node: 0.002, ipad: 0.003, jsc: 0.003,
+      kind: 'fast', base: () => fastSx(false), build: () => fastSx(true) },
+    { id: 'fast-fx', label: 'Fast lane: a monitored Juno-60 + panel compressor + a canvas LFO on both (cls + fx rows, mods) at 120 Hz, minus the same without (posts cloned)', node: 0.002, ipad: 0.003, jsc: 0.003,
+      kind: 'fast', base: () => fastFx(false), build: () => fastFx(true) },
+    { id: 'fast-master', label: 'Fast lane: monitored master-mods (rack5 + its ModCore payload + the meters) at 120 Hz, minus the same without (posts cloned)', node: 0.002, ipad: 0.003, jsc: 0.003,
+      kind: 'fast', base: () => fastMaster(false), build: () => fastMaster(true) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -670,7 +730,8 @@ function sendTables(p, patch) {
 }
 // prepares one build in env → {step(frames, timed?), peak(), runPeak(), grains(), worst()}: step renders whole quanta
 // (timed: each quantum timed on its own, the slowest kept, ms)
-function prepare(B, kind, env, now) {
+function prepare(B, kind0, env, now) {
+  const kind = kind0 === 'fast' ? B.host : kind0;   // (FR Cut B G8: a fast row is a monitored track or master build)
   if (B.assets) for (const [id, e] of Object.entries(B.assets)) env.SxBase.storeAsset(id, e);
   let pk = 0, rpk = 0, wq = 0;
   const track = (L, n) => { for (let i = 0; i < n; i++) { const a = L[i] < 0 ? -L[i] : L[i]; if (a > rpk) rpk = a; } if (rpk > pk) pk = rpk; };
@@ -698,6 +759,7 @@ function prepare(B, kind, env, now) {
       if (!p.mc) throw new Error('bench ' + (B.graph.key || '') + ': the ModCore payload was refused');
     }
     for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
+    monitor(p, B); // (FR Cut B G8: the fast rows' monitors)
     const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]], cyc = B.cycle || null;
     let cf = 0, ck = 0; // ((IMPL-8) dvm: the next panel of the cycle at each bar, between quanta — the app's {t: patch} on a switch)
     return api(() => {
@@ -719,6 +781,7 @@ function prepare(B, kind, env, now) {
     const p = env.mkMaster({}, B.meters === false), inp = masterInput(), L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
     if (B.fxp) p.msg({ t: 'chain', fxr: B.fxp, fxrT: B.fxt });
     if (B.mods) p.msg(B.mods);                    // (IMPL-MM: the master's {t: 'mods'} payload, after its chain as the host posts it)
+    monitor(p, B);                                // (FR Cut B G8: the fast rows' monitors)
     return api(() => { p.process(inp(), out); env.advance(128); track(L, 128); }, () => -1);
   }
   const rack = new env.FXDSP.FXRack(SR);
@@ -810,6 +873,33 @@ export function measure(scn, env, o = {}) {
   const loads = [];
   for (let k = 0; k < runs; k++) loads.push(Z ? (k & 1 ? -time(Z, 'base') + time(A, 'row') : time(A, 'row') - time(Z, 'base')) : time(A, 'row'));
   return { load: Math.max(0, med(loads)), loads, peak: A.peak(), worst: A.worst() / Q_MS };
+}
+/** FR Cut B §2.7 G8: a fast row (its build = fast on, its base = fast off) as paired interleaved medians with an A/A pair — three
+ *  prepared processors (on, off, a second off), `pairs` (≥ 9) rounds of [on, off] then [off', off] in alternating order, each
+ *  `seconds` of audio timed, every run audible → { d (the median of on − off), on (the median load of on), aa (the median of
+ *  off' − off), spread (the median |off' − off|: the pair noise), ds / aas (the per-pair values), posts (fast posts per second per
+ *  part of the on build), peak } */
+export function measureFast(scn, env, o = {}) {
+  const pairs = Math.max(9, o.pairs | 0), seconds = o.seconds || 1, now = env.now || (() => performance.now()), fr = Math.round(seconds * SR);
+  const bld = mk => { const B = mk(); if (B.host === 'master') B.meters = true; return B; };
+  const Bon = bld(scn.build), A = prepare(Bon, scn.kind, env, now), Z = prepare(bld(scn.base), scn.kind, env, now), Y = prepare(bld(scn.base), scn.kind, env, now);
+  const time = (X, what) => {
+    X.runPeak(); const t0 = now(); X.step(fr); const t = (now() - t0) / 1000 / seconds;
+    if (!(X.runPeak() > 1e-4)) throw new Error(`bench ${scn.id}: the ${what} run is silent — it would time silence`);
+    return t;
+  };
+  for (const X of [A, Z, Y]) X.step(Math.round(0.25 * SR));
+  const p0 = Bon.posts || 0, ds = [], aas = [], ons = [];
+  for (let k = 0; k < pairs; k++) {
+    let a, z;
+    if (k & 1) { z = time(Z, 'off'); a = time(A, 'on'); } else { a = time(A, 'on'); z = time(Z, 'off'); }
+    ds.push(a - z); ons.push(a);
+    let y, z2;
+    if (k & 1) { y = time(Y, 'off\''); z2 = time(Z, 'off'); } else { z2 = time(Z, 'off'); y = time(Y, 'off\''); }
+    aas.push(y - z2);
+  }
+  const nParts = Bon.fast && Array.isArray(Bon.fast.ids) ? Bon.fast.ids.length : 1;
+  return { d: med(ds), on: med(ons), aa: med(aas), spread: med(aas.map(Math.abs)), ds, aas, posts: ((Bon.posts || 0) - p0) / (pairs * seconds) / nParts, peak: A.peak() };
 }
 /** Row `scn` prepared in env as measure() prepares it → { step(frames), peak() } (whole quanta; IMPL-SC G7's node gates in
  *  tests/fx-dsp.test.mjs time it through tests/cpu-gate.mjs). */

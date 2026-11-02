@@ -4,11 +4,16 @@
 //   numbers M / S / I / LRA with the short-term bar and the target tick (a menu: −9 / −14 / −16 / −23 / off), true peak L / R
 //   bars with the max-hold number (red ≥ −1 dBTP; a tap resets), the correlation bar (red below 0), A/B (shows the match gain)
 //   and Mono, the safety limiter. Returns { el, update(summary), clear(), setBypass(on, gainDb, lim), setMono(on), setSafe(on),
-//   setLimit(gr), setLive(on), draw(t?), drawImage(L, R), setMode(m), mode(), setTarget(t), target(), state(), destroy() }.
+//   setLimit(gr), setLive(on), draw(t?), drawImage(L, R), setMode(m), mode(), setTarget(t), target(), state(), destroy(),
+//   heard(tp0, tp1), setHeard(on) } (FR Cut B §5.5: below).
 // createMasterRow(el, o) → the Master row of the track list's footer (§5.1): "Master", a stereo peak meter, the short-term
 //   LUFS number (the safety limiter's "−2.5 LIM" in its place while that acts), A/B, Mono, the open chevron. Returns { el,
 //   update(summary), clear(), setBypass(on, gainDb, lim), setMono(on), setSafe(on), setLimit(gr), setActive(on), setLive(on),
-//   destroy() }.
+//   destroy(), heard(pk0, pk1, tp), setHeard(on) }.
+// (FR Cut B §5.5) The peaks at heard time: the host reads MASTER's fast meters at the frame heard now and hands each new peak to
+// heard() (the OUT: true peak L / R; the row: sample peak L / R and the true peak for its over); setHeard(true) while that data is
+// live — update(summary) then keeps the text values (M / S / I / LRA / the hold / corr) but no longer folds the bars' peaks (the
+// bars rise when the peak is heard, FR4); setHeard(false) is exactly the summaries' path. state().heard says which.
 // The safety limiter (engine.js 'synth-safe', after the Volume): o.safe its state at build (absent: on); the OUT's button is its
 // switch (o.onSafe(on) a tap); setSafe(on) silent; setLimit(gr) its report {t: 'safe', gr} (dB of reduction) — "limiting" with the
 // reduction for LIM_MS after the last report (the OUT: "Limiting −2.5 dB", the row: "−2.5 LIM"), amber; ignored while off; clear()
@@ -209,8 +214,9 @@ export function createMasterOut(host, o) {
   let mode = MODES.includes(O.mode) ? O.mode : 'wave';
   let target = O.target === null ? null : fin(O.target) ? O.target : -14;
   // the true peaks: acc0 / acc1 the summaries' since the last frame; per channel the peak pA held until pE (fallAt), tpLv the
-  // level at the last frame, tpPaint the level painted (a move under MOVED dB is not repainted); sfG / sfOn: syncSafe's memo
-  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, sfG, sfOn;
+  // level at the last frame, tpPaint the level painted (a move under MOVED dB is not repainted); sfG / sfOn: syncSafe's memo;
+  // heardOn (FR Cut B §5.5): the host folds the peaks at heard time (heard()), update() no longer does
+  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, sfG, sfOn, heardOn = false;
   const pA = new Float64Array(2).fill(-Infinity), pE = new Float64Array(2).fill(-Infinity), tpLv = new Float64Array(2).fill(TP_LO), tpPaint = new Float64Array(2).fill(NaN);
   let dirty = true, textDirty = true, scopeDirty = true, lastText = -Infinity, lastState = '';
   let bufs = null, binSr = 0, bins = null, warned = false;
@@ -457,9 +463,15 @@ export function createMasterOut(host, o) {
     const n = norm(s);
     // the held peaks of the interval: a peak between two frames is not lost (two numbers, no array per summary)
     cur = n;
-    if (n.tp[0] > acc0) acc0 = n.tp[0];
-    if (n.tp[1] > acc1) acc1 = n.tp[1];
+    if (!heardOn) { if (n.tp[0] > acc0) acc0 = n.tp[0]; if (n.tp[1] > acc1) acc1 = n.tp[1]; }
     dirty = textDirty = true;
+  }
+  // (FR Cut B §5.5) the true peaks heard since the last frame (the host's ring, drained at the heard frame): folded as a summary's
+  // were — the a ≥ v → hold rule at the next frame; silence / junk folds nothing
+  function heard(t0, t1) {
+    if (dead) return;
+    if (fin(t0) && t0 > acc0) acc0 = t0;
+    if (fin(t1) && t1 > acc1) acc1 = t1;
   }
   // silence at once (the engine went off): every readout "—", the bars empty without waiting for their fall; the controls stay
   function clear() {
@@ -499,7 +511,9 @@ export function createMasterOut(host, o) {
 
   return {
     el: root,
-    update, clear,
+    update, clear, heard,
+    // (FR Cut B §5.5) on: the bars take only heard() peaks (update() keeps the text values); off: exactly as before
+    setHeard(on) { if (!dead) heardOn = !!on; },
     setBypass(on, gainDb, lim) {
       if (dead) return;
       bypass = !!on;
@@ -514,7 +528,7 @@ export function createMasterOut(host, o) {
     mode: () => mode,
     target: () => target,
     // (tp: the true-peak levels at the last frame, dBTP)
-    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, mode, target, menu: menuOpen, safe: LS.on, limiting: fin(g), gr: g, tp: [tpLv[0], tpLv[1]] }; },
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, mode, target, menu: menuOpen, safe: LS.on, limiting: fin(g), gr: g, tp: [tpLv[0], tpLv[1]], heard: heardOn }; },
     destroy() {
       if (dead) return;
       closeMenu(false); dead = true; live = false;
@@ -540,7 +554,7 @@ export function createMasterRow(host, o) {
   let dead = false, live = O.live !== false, bypass = false, gain = NaN, limited = false, mono = false, active = false;
   // the peaks: acc0 / acc1 (sample peak) and accTp (true peak) since the last refresh; per bar the peak pA held until pE
   // (fallAt), lv the level shown, qs its rounded % written; off: the row's frame-clock client while a bar is up (IMPL-FR §6)
-  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, accTp = -Infinity, overUntil = 0, lastText = -Infinity, textDirty = true, off = null, sfG;
+  let cur = norm(null), acc0 = -Infinity, acc1 = -Infinity, accTp = -Infinity, overUntil = 0, lastText = -Infinity, textDirty = true, off = null, sfG, heardOn = false; // (heardOn: FR Cut B §5.5, the OUT's)
   const pA = new Float64Array(2).fill(-Infinity), pE = new Float64Array(2).fill(-Infinity), lv = new Float64Array(2).fill(PK_LO), qs = new Float64Array(2).fill(NaN);
   const sig = {};
 
@@ -640,13 +654,24 @@ export function createMasterRow(host, o) {
       if (dead) return;
       const n = norm(s);
       cur = n;
-      if (n.pk[0] > acc0) acc0 = n.pk[0];
-      if (n.pk[1] > acc1) acc1 = n.pk[1];
-      if (n.tp[0] > accTp) accTp = n.tp[0];
-      if (n.tp[1] > accTp) accTp = n.tp[1];
+      if (!heardOn) {
+        if (n.pk[0] > acc0) acc0 = n.pk[0];
+        if (n.pk[1] > acc1) acc1 = n.pk[1];
+        if (n.tp[0] > accTp) accTp = n.tp[0];
+        if (n.tp[1] > accTp) accTp = n.tp[1];
+      }
       textDirty = true;
       if (live) run();
     },
+    // (FR Cut B §5.5) the peaks heard since the last call (pk L / R dBFS, the true peak dBTP: the over): folded and shown at once
+    heard(p0, p1, tp) {
+      if (dead) return;
+      if (fin(p0) && p0 > acc0) acc0 = p0;
+      if (fin(p1) && p1 > acc1) acc1 = p1;
+      if (fin(tp) && tp > accTp) accTp = tp;
+      if (live) run();
+    },
+    setHeard(on) { if (!dead) heardOn = !!on; },
     setBypass(on, gainDb, lim) {
       if (dead) return;
       bypass = !!on;
@@ -673,7 +698,7 @@ export function createMasterRow(host, o) {
       if (on) { lastText = -Infinity; textDirty = true; run(); } else clockIf(now());
     },
     // (pk: the bars' levels at the last refresh, dBFS)
-    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, active, safe: LS.on, limiting: fin(g), gr: g, pk: [lv[0], lv[1]] }; },
+    state: () => { const g = LS.at(now()); return { live, bypass, gain, limited, mono, active, safe: LS.on, limiting: fin(g), gr: g, pk: [lv[0], lv[1]], heard: heardOn }; },
     destroy() {
       if (dead) return;
       dead = true; live = false;

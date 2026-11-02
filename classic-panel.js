@@ -419,6 +419,8 @@ export class ClassicPanel {
     const H = this.hnodes.get(id), c = this.ctls.get(id);
     if (!H || !c || this.dead) return;
     const live = this.liveN(id, c);
+    if (H.lv === live) return; // ((FR Cut B review 1) the fast lane's per-frame setLive: an unchanged dot touches nothing, as fx-ui / wk)
+    H.lv = live;
     if (H.mode === 'knob') {
       if (live == null) { if (H.dot.getAttribute('display') !== 'none') H.dot.setAttribute('display', 'none'); }
       else { const q = dialPt(live, H.R, H.sw); H.dot.setAttribute('cx', q[0].toFixed(2)); H.dot.setAttribute('cy', q[1].toFixed(2)); if (H.dot.hasAttribute('display')) H.dot.removeAttribute('display'); }

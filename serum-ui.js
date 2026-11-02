@@ -399,7 +399,8 @@ export class SerumUI extends SerumHost {
         fx: () => this.fx(),
         editFx: (fn, o) => this.editFx(fn, o, true),
         bpm: () => this.bpm(),
-        gr: () => (this.smon && this.smon.gr ? this.smon.gr : null),
+        gr: () => this.grNow(),              // (FR Cut B §4.6) the GR at the heard frame while the fast lane is live, else the message's
+        fast: () => this.fastLive(),         // (FR Cut B §5.4) live: the rack's GR loop lifts its 30 cap
         tap: () => (this.smon && this.smon.ftap ? this.smon.ftap : null),   // the rack's monitor tap (§13.5 Delay overlay)
         setTap: inst => { if (typeof this.host.fxTap === 'function') this.host.fxTap(inst); },
         locked: id => arr(this.s().locks.p).includes(id),

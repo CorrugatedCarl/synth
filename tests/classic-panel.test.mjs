@@ -430,6 +430,45 @@ test('the mod menu (2b): a right-click, a 500 ms touch long-press (≤ 8 px: wk.
   P3.destroy();
 });
 
+test('(FR Cut B review 1, P3) setLive at the frame rate: an unchanged live value touches nothing on the dot / mark / badge (no read, no write: the fast lane calls it every frame), a changed one paints; a fresh halo paints its first value', () => {
+  const doc = fresh(), log = [], m = modelOf('minimoog'), t = track('trk_1', 'minimoog'), P = mount(doc, t, null, log);
+  const fc = m.controls.find(c => c.id === 'fc');
+  P.setMods({ fc: [{ id: 'r1', src: 'l1.out', amt: 0.5 }] }, null);
+  const dot = one(one(widget(P.root, 'fc'), 'cp-halo'), 'cp-live');
+  let n = 0;
+  for (const k of ['setAttribute', 'removeAttribute', 'getAttribute', 'hasAttribute']) { const o = dot[k]; dot[k] = function (...x) { n++; return o.apply(this, x); }; }
+  P.setLive({ fc: fc.max });
+  const painted = n > 1, shown = dot.getAttribute('display') !== 'none', n1 = n; // (the test's own read counted before n1)
+  assert.ok(painted && shown, 'the first value paints (the top of the sweep)');
+  P.setLive({ fc: fc.max }); P.setLive({ fc: fc.max });
+  assert.equal(n - n1, 0, 'the same value again: nothing touched');
+  P.setLive({ fc: fc.min });
+  assert.ok(n > n1, 'a new value paints');
+  const n2 = n;
+  P.setLive(null);
+  const n3 = n;
+  P.setLive(null); P.setLive(null);
+  const n4 = n;
+  assert.deepEqual([n3 > n2, n4 - n3, dot.getAttribute('display')], [true, 0, 'none'], 'hidden once, then nothing');
+  // a slider's mark: an unchanged value writes no style
+  const tj = track('trk_2', 'juno60'), J = mount(doc, tj, null, log), cf = modelOf('juno60').controls.find(c => c.id === 'cf');
+  J.setMods({ cf: [{ id: 'r1', src: 'l1.out', amt: 0.5 }] }, null);
+  const mark = one(ctl(J.root, 'cf'), 'cp-livemk');
+  assert.ok(mark, 'the slider\'s live mark');
+  {
+    let w = 0;
+    const st = mark.style, sp = st.setProperty;
+    const prox = new Proxy(st, { set(o, k, val) { w++; o[k] = val; return true; }, get(o, k) { const x = o[k]; return typeof x === 'function' ? x.bind(o) : x; } });
+    Object.defineProperty(mark, 'style', { value: prox, configurable: true });
+    J.setLive({ cf: (cf.min + cf.max) / 3 });
+    const w1 = w;
+    J.setLive({ cf: (cf.min + cf.max) / 3 });
+    assert.deepEqual([w1 > 0, w - w1], [true, 0], 'the slider mark: written once');
+    void sp;
+  }
+  P.destroy(); J.destroy();
+});
+
 test('(2b fixer C) U2: host.changed(track, id, phase) — a drag\'s moves say \'move\' and its lift \'end\' (once, only after a move); a key, the wheel, a double-click, Reset and Enter Value say nothing; U12: Enter Value… prefills the knob-unit number, not the display text; P7: setLive touches the live dot alone (no arc attribute written); U13: slider range bars are thin bars beside the groove (--cp-i per bar), the cap above them', () => {
   const doc = fresh(), log = [], tr = track('trk_1', 'juno60'), H = host(doc, log), phases = [];
   H.changed = (t, id, ph) => { phases.push(id + ':' + (ph === undefined ? '-' : ph)); };

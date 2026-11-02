@@ -2297,6 +2297,7 @@
         this.nI = 0; this.NFX = 8; this.key = '';
         this.rByp = new Uint8Array(3); this.rRoute = new Uint8Array(3); this.rx = new Float64Array(3);
         this.phOut = new Float64Array(MAXI).fill(NaN); this.grOut = new Float32Array(4 * MAXI);
+        this.grF = null;                                       // (FR Cut B: grOut's GR block, 4·(hi + 1) — grFast(); null without a GR unit)
         // monitor tap (§13.5 Delay spectrum overlay, IMPL: the post-module mono signal of one instance): id, its unit,
         // ring and write index, the chronological copy tapOut() returns
         this.tapId = ''; this.tapU = null; this.tapB = new Float32Array(TAP_N); this.tapW = 0; this.tapO = new Float32Array(TAP_N);
@@ -2519,7 +2520,7 @@
         for (let i = 0; i < U.length; i++) { const k = U[i].k; if (k === 19) nc++; else if (k === 22 || (k === 14 && U[i].v === 3)) ns++; }
         this.nConv = nc; this.nSC = ns;
         const key = typeof P.key === 'string' ? P.key : '';
-        if (key !== this.key || nI !== this.nI) this.grOut.fill(0);   // instance indices moved
+        if (key !== this.key || nI !== this.nI) { this.grOut.fill(0); this.grSize(U); }   // instance indices moved
         this.U = U; this.C0 = C[0]; this.C1 = C[1]; this.C2 = C[2]; this.byId = byId; this.gc = 0;
         this.tapU = this.tapId !== '' ? byId.get(this.tapId) || null : null;
         this.nI = nI; this.NFX = NFX; this.key = key;
@@ -2768,6 +2769,22 @@
         return o;
       }
       gr() { return this.grOut; }                             // [4·i … 4·i + 3]: compressor gain reduction of FXP instance i
+      // [+] FR Cut B §2.4 (the engine's fast lane): grF = grOut[0, 4·(hi + 1)), hi the highest index of a GR unit (kinds 6 / 14 /
+      // 22: compressors, the Ducker), copied in place — the same array until the layout moves the indices (grSize, set() only;
+      // a wipe / clear zeroes it, never resizes: the page's kinds stay valid); null without a GR unit
+      grFast() {
+        const g = this.grF;
+        if (g === null) return null;
+        const o = this.grOut;
+        for (let j = 0; j < g.length; j++) g[j] = o[j];
+        return g;
+      }
+      grSize(U) {
+        let hi = -1;
+        for (let i = 0; i < U.length; i++) { const u = U[i], k = u.k; if ((k === 6 || k === 14 || k === 22) && u.idx > hi && u.idx < MAXI) hi = u.idx; }
+        const n = 4 * (hi + 1), g = this.grF;
+        this.grF = hi < 0 ? null : g !== null && g.length === n ? g.fill(0) : new Float32Array(n);
+      }
       // [+] monitor tap (§13.5 Delay: the filter display's realtime spectrum overlay, IMPL: post-delay mono tap): the last
       // TAP_N frames of instance id's output, (L + R)/2 after the module (its mix, enable fade; nothing while it does not
       // run). '' switches it off. tapOut() → Float32Array(TAP_N), oldest first (one reused array), or null when off
@@ -2831,7 +2848,7 @@
       wipe() {
         const U = this.U;
         for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
-        this.flushPend(); this.dropGone(); this.grOut.fill(0); this.seed(1);
+        this.flushPend(); this.dropGone(); this.grOut.fill(0); if (this.grF !== null) this.grF.fill(0); this.seed(1);
         this.quietT = QBIG; this.calm = 0; this.swT = 0; this.swi = 0; this.swN = 0;
       }
       clear() {
@@ -2839,7 +2856,7 @@
         for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
         this.quietT = QBIG; this.qmax = 0; this.rf = 1; this.rfT = 1;    // (qmax: this span counts from the clear on)
         this.swT = 0; this.swi = 0; this.swN = 0;
-        this.grOut.fill(0);
+        this.grOut.fill(0); if (this.grF !== null) this.grF.fill(0);
         this.snap(); this.seed(1);
         this.calm = 0;
       }

@@ -2073,3 +2073,57 @@ test('hidden warm-up note-ons (voice.hid > 0) touch no processor LFO state: MONO
   assert.notEqual(m.r2p, before[0], 'a real note-on restarts it (draw from r2p)');
   assert.equal(m.P.lPh[0], 0); assert.equal(m.recent, R.vs[1]);
 });
+
+/* ------------------------------------------------------------------ FR Cut B §2.4: the fast reads (lane E) */
+// fastRead(proc, sx, v, off) / effAt(proc, sx, ix, n, v, off): an additive copy of snap's eff / LFO / ENV lines for the engine's fast
+// lane (snap untouched): v[off …] = lfoPh (10), lfoOut (10), lfoY (10), env (4), envStage (4), envT (4); v[off + j] = eff[ix[j]].
+// 200 random states (every LFO MODE × MONO kind, Normal / Path / S&H / chaos types, ENVs, 0–2 voices, an FXP base) read both ways.
+// fn() with the rig scope's typed-array constructors throwing (the fast reads allocate nothing)
+function noAllocRig(R, fn) {
+  const ctx = R.sc, names = ['Float64Array', 'Float32Array', 'Uint8Array', 'Int16Array', 'Int32Array', 'Array'], saved = {};
+  for (const k of names) { saved[k] = Object.prototype.hasOwnProperty.call(ctx, k) ? { v: ctx[k] } : null; ctx[k] = function () { throw new Error('allocation: ' + k); }; }
+  try { fn(); } finally { for (const k of names) { if (saved[k]) ctx[k] = saved[k].v; else delete ctx[k]; } }
+}
+test('FR Cut B §2.4: fastRead / effAt equal snap on 200 random states (per-voice / processor / FREE kinds, a Path LFO, S&H, chaos, no voice, an FXP base); no allocation', () => {
+  let seed = 0x13579BDF;
+  const rnd = () => { seed = XS(seed); return seed / 4294967296; }, pick = (a) => a[Math.floor(rnd() * a.length)];
+  const N = NSV + MAXFX, all = Int16Array.from({ length: N }, (_, i) => i), L = new Float32Array(42), E = new Float32Array(N + 3);
+  const SR2 = ['lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'lfo9', 'lfo10', 'lfo1y', 'lfo3y', 'env2', 'env3', 'env4', 'velo', 'note'];
+  const DS = ['f.cutoff', 'f.res', 'f.drive', 'a.pan', 'a.level', 'b.level', 'a.wt', 'b.wt', 'a.fine', 'b.pan', 'f.var', 'a.warp'];
+  let states = 0, none = 0, voiced = 0, paths = 0, bad = '';
+  const check = (R, what) => {
+    const s2 = R.snap(), M = R.M;
+    assert.equal(typeof M.fastRead, 'function', 'SxMod.fastRead');
+    M.fastRead(R.proc, R.sx, L, 0);
+    M.effAt(R.proc, R.sx, all, N, E, 3);
+    for (let l = 0; l < 10 && !bad; l++) {
+      if (!Object.is(s2.lfoPh[l], L[l]) || !Object.is(s2.lfoOut[l], L[10 + l]) || !Object.is(s2.lfoY[l], L[20 + l])) bad = `${what}: LFO ${l + 1}`;
+    }
+    for (let e = 0; e < 4 && !bad; e++) if (!Object.is(s2.env[e], L[30 + e]) || !Object.is(s2.envStage[e], L[34 + e]) || !Object.is(s2.envT[e], L[38 + e])) bad = `${what}: ENV ${e + 1}`;
+    for (let i = 0; i < N && !bad; i++) if (!Object.is(s2.eff[i], E[3 + i])) bad = `${what}: eff[${i}] ${s2.eff[i]} vs ${E[3 + i]}`;
+    states++;
+    if (R.m.recent === null) none++; else voiced++;
+  };
+  for (let k = 0; states < 200 && !bad; k++) {
+    const R = rig(st((s) => {
+      for (let l = 0; l < 10; l++) {
+        const type = pick(['normal', 'normal', 'path', 'sh', 'lorenz']);
+        if (type === 'path') paths++;
+        s.lfo[l] = { ...s.lfo[l], mode: pick(['retrig', 'env', 'free']), mono: rnd() < 0.5 ? 1 : 0, bpm: 0, anchor: 0, type };
+        s.p[`l${l + 1}.rate`] = hzN(0.3 + 7 * rnd());
+      }
+      Object.assign(s.p, { 'e2.att': timeN(0.2 * rnd()), 'e2.dec': timeN(0.4 * rnd()), 'e2.sus': rnd(), 'e2.rel': timeN(0.3 * rnd()), 'e3.att': timeN(0.3 * rnd()), 'e4.dec': timeN(0.2 * rnd()) });
+      for (let r = 0; r < 14; r++) s.matrix[r] = mrow(pick(SR2), pick(DS), 0.8 * rnd() - 0.4, rnd() < 0.3 ? { bi: 1 } : {});
+    }), { nv: 2 });
+    if (k % 3 === 1) R.proc.p.fxr = { base: Float64Array.from({ length: 40 + (k % 7) * 30 }, () => rnd()) };
+    R.span(); check(R, `rig ${k}: no voice`);
+    R.vs[0].noteOn(48 + (k % 12), 0.8); R.run(0.02 + 0.3 * rnd(), null, 8); check(R, `rig ${k}: one voice`);
+    R.vs[1].noteOn(55 + (k % 7), 0.6); R.run(0.02 + 0.3 * rnd(), null, 8); check(R, `rig ${k}: two voices`);
+    R.vs[0].noteOff(); R.run(0.05 + 0.3 * rnd(), null, 8); check(R, `rig ${k}: a release`);
+    R.vs[1].noteOff(); R.run(0.4 + rnd(), null, 8);
+    noAllocRig(R, () => { R.M.fastRead(R.proc, R.sx, L, 0); R.M.effAt(R.proc, R.sx, all, 64, E, 3); });
+    check(R, `rig ${k}: after the releases`);
+  }
+  assert.equal(bad, '');
+  assert.ok(states >= 200 && none >= 30 && voiced >= 150 && paths > 10, `${states} states (${none} without a voice, ${voiced} with), ${paths} Path LFOs`);
+});

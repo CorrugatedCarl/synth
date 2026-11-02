@@ -1361,6 +1361,103 @@ test('IMPL-FR §3 B1b: the GR loop\'s tick reads no layout, runs no fxLayout, li
   } finally { raf.uninstall(); wk.clock._reset(); } // (a failure leaves no armed frame behind for the next tests)
 });
 
+// (FR Cut B §5.4) the host's fast() — its GR ring live: host.gr() is the heard-time view, a new value every frame — lifts the GR
+// loop's 30 cap (a clock client at the display's rate); without it, or once it reads false, the loop is back at 30 (the pins above).
+// The flip is seen by the loop itself (no refresh needed) and at a refresh
+test('(Cut B §5.4) the GR loop: host.fast() true → every frame (the 30 cap lifted), false → ≤ 30 a second; the flip re-arms the loop within a tick, at a refresh too; one clock client either way', () => {
+  raf.install();
+  wk.clock._reset(); wk.clock.config({ display: 120 });
+  try {
+    const { rack, st, host } = mkRack({ fx: fx2([inst('cmp', 'cmp')]) });
+    let fast = true;
+    host.fast = () => fast;
+    st.gr = new Float32Array(4 * 48);
+    const ctx = rack.panels.get('cmp').grCv.getContext('2d');
+    rack.refresh();
+    const paints = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
+    const run = (n, t0) => { for (let i = 0; i < n; i++) { st.gr[0] = (st.gr[0] + 1) % 20; raf.flush(1, t0 + i * 1000 / 120); } };
+    const grN = () => wk.clock.clients().filter(c => c === 'ticker').length;
+    run(4, 0);
+    ctx.calls.length = 0;
+    run(120, 100);                                                                       // 1 s at 120 Hz, a new value every frame
+    assert.ok(paints() >= 115, 'fast: a paint every frame: ' + paints());
+    assert.equal(grN(), 1, 'one GR loop client');
+    fast = false;
+    run(4, 1200);
+    ctx.calls.length = 0;
+    run(120, 1300);
+    assert.ok(paints() >= 26 && paints() <= 32, 'fast off: back at the 30 cap: ' + paints());
+    assert.equal(grN(), 1, 'one GR loop client');
+    fast = true; rack.refresh();
+    run(2, 2400);
+    ctx.calls.length = 0;
+    run(60, 2500);
+    assert.ok(paints() >= 57, 'a refresh with fast on: every frame again: ' + paints());
+    assert.equal(grN(), 1);
+    rack.destroy();
+    assert.equal(grN(), 0, 'destroyed: no client');
+  } finally { raf.uninstall(); wk.clock._reset(); }
+});
+
+test('(Cut B §5.4) setLive per frame: the knob\'s fx.<inst>.<pid> split is parsed once (no regex per knob per call), liveOf asked with the cached split; a knob with setLive(n) gets the dot through it (no setMod, no arcs object), else setMod as before; an unchanged value writes nothing', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('eq', 'eq')]) });
+  st.fx.racks[0].mods.find(x => x.id === 'rev').p.mix = 0.5;
+  rack.refresh();
+  rack.paintMods(id => (id === 'fx.rev.mix' ? [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1 }] : []));
+  const w = rack.knobs.get('fx.rev.mix'), mods = [], lives = [];
+  const sm = w.setMod;
+  w.setMod = m => { mods.push(m ? m.live : 'clear'); return sm.call(w, m); };
+  w.setLive = v => { lives.push(v); };
+  const RE = RegExp.prototype.exec;
+  let execs = 0;
+  RegExp.prototype.exec = function (s) { if (typeof s === 'string' && s.startsWith('fx.')) execs++; return RE.call(this, s); };
+  let asked = 0;
+  try {
+    for (let i = 0; i < 20; i++) rack.setLive((id, base) => { asked++; return base + 0.01 * Math.floor(i / 5); });
+  } finally { RegExp.prototype.exec = RE; }
+  assert.equal(asked, 20, 'liveOf once per modded knob per call');
+  assert.ok(execs <= 1, 'the split parsed once, not per call: ' + execs);
+  assert.deepEqual([mods.length, lives.length], [0, 4], 'through setLive alone (an unchanged value writes nothing): ' + lives.length);
+  assert.ok(Math.abs(lives[1] - 0.51) < 1e-9 && lives[0] === 0.5, 'the values: ' + lives.slice(0, 3).join());
+  delete w.setLive;
+  rack.setLive(() => 0.7);
+  assert.deepEqual(mods, [0.7], 'no setLive on the widget: setMod({ arcs, live }) as before');
+  rack.destroy();
+});
+
+test('(Cut B §5.4, lane M-B\'s ask) the wrapper widgets have setLive too — the MIX / LEVEL knob (both ids: the dot through the shown one\'s knob, the other id\'s stash kept) and the Ducker\'s note filter (a no-op) — so a per-frame setLive never falls back to setMod', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('duck', 'duck')]), sc: scStub() });
+  rack.refresh();
+  const mixId = 'fx.rev.mix', lvlId = 'fx.rev.level', W = rack.knobs.get(mixId), L = rack.knobs.get(lvlId);
+  assert.deepEqual([typeof W.setLive, typeof L.setLive], ['function', 'function'], 'the MIX / LEVEL wrapper');
+  const note = [...rack.knobs.entries()].find(([id]) => /^fx\.duck\.note$/.test(id));
+  assert.ok(!note || typeof note[1].setLive === 'function', 'the note filter\'s widget');
+  rack.paintMods(id => (id === mixId || id === lvlId ? [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1 }] : []));
+  // the inner knob: its setMod / setLive seen through the wrapper's element
+  const inner = [], mods = [];
+  const knobOf = rack.panels.get('rev').widgets.find(w => w.el === W.el);
+  const sm = knobOf.setMod;
+  knobOf.setMod = m => { mods.push(m ? m.live : 'clear'); return sm.call(knobOf, m); };
+  knobOf.setLive = v => { inner.push(v); };
+  rack.setLive((id, base) => (id === mixId ? 0.7 : 0.2));
+  assert.deepEqual([mods.length, inner], [0, [0.7]], 'the shown id (MIX): its dot through the knob\'s setLive, no setMod');
+  delete knobOf.setLive;
+  rack.setLive((id, base) => (id === mixId ? 0.8 : 0.2));
+  assert.deepEqual(mods, [0.8], 'a knob without setLive: setMod({ arcs, live }) for the shown id');
+  st.fx.racks[0].mods.find(x => x.id === 'rev').ui = { lvl: 1, lvl2: 0 };
+  rack.destroy();
+});
+
+test('(Cut B §5.3) FXRackUI.moddedIds(): the knobs carrying halo arcs (the own-FX rec\'s ix(): their FX-context indices ride the Serum\'s fast message)', () => {
+  const { rack } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('eq', 'eq')]) });
+  assert.deepEqual(rack.moddedIds(), []);
+  rack.paintMods(id => (id === 'fx.rev.mix' || id === 'fx.eq.gainL' ? [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1 }] : id === 'fx.rev.size' ? [{ id: 'r2', src: 'ext1', amt: 0, out: 1 }] : []));
+  assert.deepEqual(rack.moddedIds().slice().sort(), ['fx.eq.gainL', 'fx.rev.mix'], 'arcs only (a zero row draws none)');
+  rack.paintMods(() => []);
+  assert.deepEqual(rack.moddedIds(), []);
+  rack.destroy();
+});
+
 test('IMPL-FR §3 B1c: the Delay spectrum overlay\'s loop (a clock client at the 30 cap) redraws the display only when host.tap() hands a new array', () => {
   raf.install();
   try {
@@ -1759,7 +1856,9 @@ test('(2b halos) FXRackUI.setLive(liveOf): the live dot on the modded knobs only
   rack.refresh();
   let rows = { 'fx.rev.mix': [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1 }], 'fx.rv2.mix': [{ id: 'r2', src: 'ext1', amt: 0.5, bi: 0, byp: 0, out: 1 }] };
   const log = [];
-  const hook = () => { for (const [id, w] of rack.knobs) if (!w.hooked) { w.hooked = true; const o = w.setMod; w.setMod = m => { log.push([id, m ? [m.arcs.map(a => [+a.from.toFixed(3), +a.to.toFixed(3)]), m.live == null ? null : +m.live.toFixed(3)] : null]); return o.call(w, m); }; } };
+  // ((Cut B §5.4) a knob with the kit's setLive(n) takes the dot through it: logged as the same [arcs, live] pair — the arcs it keeps)
+  const arcsOf = A => A.map(a => [+a.from.toFixed(3), +a.to.toFixed(3)]);
+  const hook = () => { for (const [id, w] of rack.knobs) if (!w.hooked) { w.hooked = true; const o = w.setMod; w.setMod = m => { log.push([id, m ? [arcsOf(m.arcs), m.live == null ? null : +m.live.toFixed(3)] : null]); return o.call(w, m); }; if (typeof w.setLive === 'function') { const l = w.setLive; w.setLive = v => { log.push([id, [arcsOf(w.modArcs || []), v == null ? null : +v.toFixed(3)]]); return l.call(w, v); }; } } };
   const last = id => { for (let k = log.length - 1; k >= 0; k--) if (log[k][0] === id) return log[k][1]; return undefined; };
   hook();
   rack.paintMods(id => rows[id] || []);

@@ -267,9 +267,11 @@ export const SLOT_KINDS = Object.freeze(['lfo', 'env', 'macro', 'chaos']);
  * record, edit(fields) (one History step), live?(fields), cancel?(), set?(k, v) (macro knob moves), bpm?(), rows?: { count,
  * bypassed, bypass(on), remove } (its ⋯ menu's Bypass / Remove All Destinations), storage?, notify?, view? (kept by the
  * host per module: zoom, grid, tool), devKey?, lock?: { mono: 1 } (MM, IMPL-MM §7.2: the master's LFO / Chaos have no notes — their MONO switch
- * shows GLOBAL, disabled; a presentation, the host forces the field too) }. → { el, update(v), sync(), menuItems(), host(), view(), destroy() };
+ * shows GLOBAL, disabled; a presentation, the host forces the field too), heardFrame?(), sampleRate?() (FR Cut B §4.4: forwarded to the
+ * slot host) }. → { el, update(v), sync(), menuItems(), host(), view(), destroy() };
  * update(v): the monitor — a level, or { v, ph, y, out } (an LFO's phase dot / PATH playhead), { v, stage, t } (an ENV's
- * playhead); a macro body ignores it (its knobs show the values).
+ * playhead), each with F (the audio frame of a fast post: into the host's ring, shown at the heard frame); a macro body ignores it
+ * (its knobs show the values).
  * @param {'lfo'|'env'|'macro'|'chaos'} kind
  */
 export function slotBody(kind, o) {
@@ -279,7 +281,8 @@ export function slotBody(kind, o) {
   const build = () => {
     if (dead || H || !SX) return;
     H = SX.host.slotHost(kind, { get: O.get, live: O.live, edit: O.edit, cancel: O.cancel, set: kind === 'macro' ? O.set : undefined, bpm: O.bpm,
-      rows: O.rows, storage: O.storage, notify: O.notify, view: O.view, devKey: O.devKey, lock: O.lock, doc: d });
+      rows: O.rows, storage: O.storage, notify: O.notify, view: O.view, devKey: O.devKey, lock: O.lock, doc: d,
+      heardFrame: O.heardFrame, sampleRate: O.sampleRate });   // ((FR Cut B §4.4) an update with F: read at the heard frame)
     V = SX.mod.mountSlot(H, el);
     if (pend !== null) H.live(pend);
   };

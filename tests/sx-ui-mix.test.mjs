@@ -412,6 +412,32 @@ test('MixerPage: the filter mini display draws 4096 taps, passes X / Y / PZ corn
   } finally { delete globalThis.SerumDSP; }
 });
 
+test('IMPL-FR-B §4.3: the meters are a kit.frame client (every painted frame of the host\'s tick while the fast lane is live, every slow paint otherwise) — a kit without frame() keeps kit.live; OutputsPanel too', () => {
+  const { T, page } = mount();
+  assert.deepEqual([T.frames.length, T.lives.length], [1, 0], 'MIX: its meters on kit.frame');
+  const lv = () => page.meters[0].w.meter && page.meters[0].last;
+  T.fast = true;
+  T.snap = { mix: Float32Array.from([-7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -7]) };
+  T.frames[0](true, true);
+  assert.equal(lv(), -7, 'a frame reads the view');
+  T.frames[0](false, true);
+  T.snap = { mix: Float32Array.from([-9, -9, -9, -9, -9, -9, -9, -9, -9, -9, -9]) };
+  T.frames[0](false, true);
+  assert.equal(lv(), -7, 'hidden: nothing painted');
+  // a kit without frame(): kit.live as before
+  const doc = dom.fresh(), lives = [];
+  const k0 = Object.assign({}, makeKit({ doc, s: fresh(), fx: core.defaultFx2() }));
+  delete k0.frame;
+  k0.live = fn => { lives.push(fn); return fn; };
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  new mix.MixerPage(root, k0);
+  new mix.OutputsPanel(root, k0);
+  assert.equal(lives.length, 2);
+  const { T: T2 } = (() => { const d2 = dom.fresh(), k2 = makeKit({ doc: d2, s: fresh(), fx: core.defaultFx2() }), r2 = d2.createElement('div'); d2.body.appendChild(r2); new mix.OutputsPanel(r2, k2); return { T: stubOf(k2) }; })();
+  assert.deepEqual([T2.frames.length, T2.lives.length], [1, 0], 'OutputsPanel: kit.frame');
+});
+
 test('MixerPage: touch rules under (pointer: coarse) and .wk-touch', () => {
   const { doc } = mount();
   const css = doc.getElementById('sxm-css').textContent;

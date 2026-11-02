@@ -882,3 +882,85 @@ test('row clear(): the LUFS number "—", both peak bars empty and "silent", the
   assert.deepEqual([cls(q.root, 'mr-lv').textContent, clsAll(q.root, 'mr-bar')[0].children[0].style.transform], [DASH, 'translateX(0%)']);
   q.m.destroy(); q.m.clear();
 });
+
+/* ================================================================ (FR Cut B §5.5) the peaks at heard time */
+// main.js reads the master's fast meters at the heard frame (motion.js, PEAK drained once) and hands the drained peaks to heard();
+// setHeard(true) while that ring is live: update(s) then takes the text values (M / S / I / LRA / the hold / corr) but never folds
+// the bar peaks — the bars rise when the peak is heard (FR4). Off is exactly today (every test above runs with it off).
+test('(Cut B §5.5) OUT heard(tp0, tp1): folds at heard time with the a ≥ v → hold rule (held PK_HOLD ms, then TP_REL dB/s); setHeard(true): update() writes the text but folds no bar peak; setHeard(false): today', () => {
+  const r = rig();
+  r.m.setLive(true);
+  assert.equal(typeof r.m.heard, 'function', 'heard');
+  assert.equal(typeof r.m.setHeard, 'function', 'setHeard');
+  r.m.setHeard(true);
+  assert.equal(r.m.state().heard, true, 'state().heard');
+  r.clock.t = 0; r.m.update(sum({ tp: [-2, -5], m: -11.1 })); r.m.draw(0);
+  assert.deepEqual(r.m.state().tp, [U.TP_LO, U.TP_LO], 'heard on: the summary\'s tp is not folded (the bars wait for the heard peak)');
+  r.clock.t = 120; r.m.draw(120);
+  assert.equal(val(r.root, 'Momentary loudness'), MINUS + '11.1', 'the text still follows the summary');
+  r.m.heard(-3, -9); r.m.draw(130);
+  assert.deepEqual(r.m.state().tp, [-3, -9], 'the heard peaks land at once');
+  r.m.heard(-20, -20); r.m.draw(150);
+  assert.deepEqual(r.m.state().tp, [-3, -9], 'a lower heard peak inside the hold changes nothing');
+  r.m.draw(130 + U.PK_HOLD + 100);
+  const near = (x, y) => Math.abs(x - y) < 1e-9;
+  assert.ok(near(r.m.state().tp[0], -3 - U.TP_REL * 0.1) && near(r.m.state().tp[1], -9 - U.TP_REL * 0.1), 'then falls at TP_REL: ' + r.m.state().tp.join());
+  r.m.update(sum({ tp: [0, 0] })); r.m.draw(300);
+  assert.ok(r.m.state().tp[0] < -3, 'still heard: a loud summary does not raise the bars');
+  // off: exactly today — the summary folds again
+  r.m.setHeard(false);
+  assert.equal(r.m.state().heard, false);
+  r.m.update(sum({ tp: [-1.5, -2.5] })); r.m.draw(310);
+  assert.deepEqual(r.m.state().tp, [-1.5, -2.5], 'off: update() folds as before');
+  r.m.heard(0, 0); r.m.draw(320);
+  assert.deepEqual(r.m.state().tp, [0, 0], 'heard() folds in either mode (a drained peak is never dropped)');
+  r.m.destroy(); r.m.heard(-1, -1); r.m.setHeard(true);
+});
+
+test('(Cut B §5.5) OUT: a heard peak repaints the meters at the next frame; heard -Infinity / NaN (silence, junk) folds nothing', () => {
+  const r = rig();
+  r.m.setLive(true); r.m.setHeard(true);
+  r.m.draw(0); r.m.draw(10);
+  const k = n(r.mlog(), 'clearRect');
+  r.m.draw(20);
+  assert.equal(n(r.mlog(), 'clearRect'), k, 'at rest: no paint');
+  r.m.heard(-Infinity, NaN); r.m.draw(30);
+  assert.deepEqual([n(r.mlog(), 'clearRect'), r.m.state().tp[0], r.m.state().tp[1]], [k, U.TP_LO, U.TP_LO], 'silence: nothing');
+  r.m.heard(-6, -12); r.m.draw(40);
+  assert.ok(n(r.mlog(), 'clearRect') > k, 'a heard peak paints');
+});
+
+test('(Cut B §5.5) row heard(pk0, pk1, tp): the bars rise at once (at or above the level shown: held, then TP_REL), the over from the heard true peak; setHeard(true): update() writes the LUFS text but moves no bar; off: today', () => {
+  const r = rig({}, 'row');
+  const lv = () => cls(r.root, 'mr-lv').textContent, bars = clsAll(r.root, 'mr-bar'), cov = bars.map(b => b.children[0]), over = () => bars.map(b => b.classList.contains('over')).join();
+  assert.equal(typeof r.m.heard, 'function', 'heard');
+  assert.equal(typeof r.m.setHeard, 'function', 'setHeard');
+  r.m.setHeard(true);
+  assert.equal(r.m.state().heard, true);
+  r.clock.t = 0; r.m.update(sum({ s: -14.23, pk: [-6, -12], tp: [-0.5, -3] }));
+  assert.deepEqual([lv(), cov[0].style.transform, cov[1].style.transform, over()], [MINUS + '14.2', 'translateX(0%)', 'translateX(0%)', 'false,false'], 'heard on: the text, no bar, no over');
+  r.clock.t = 10; r.m.heard(-6, -12, -0.5);
+  assert.deepEqual([cov[0].style.transform, cov[1].style.transform, over()], ['translateX(90%)', 'translateX(80%)', 'true,true'], 'the heard peaks: at once');
+  r.clock.t = 30; r.m.heard(-40, -40, -40);
+  assert.equal(cov[0].style.transform, 'translateX(90%)', 'held');
+  r.clock.t = 10 + U.PK_HOLD + 100; r.m.heard(-Infinity, -Infinity, -Infinity);
+  assert.equal(cov[0].style.transform, 'translateX(86%)', '24 dB/s release');
+  r.m.setHeard(false);
+  assert.equal(r.m.state().heard, false);
+  r.clock.t = 400; r.m.update(sum({ pk: [-3, -3], tp: [-3, -3] }));
+  assert.equal(cov[0].style.transform, 'translateX(95%)', 'off: update() folds as before');
+  r.m.destroy(); r.m.heard(-1, -1, -1); r.m.setHeard(true);
+});
+
+test('(Cut B §5.5) row heard() while not live: folded, shown when it goes live (as update); garbage does not throw', () => {
+  const r = rig({}, 'row'), cov = clsAll(r.root, 'mr-bar').map(b => b.children[0]);
+  r.m.setHeard(true);
+  r.clock.t = 0; r.m.update(sum({ pk: [-Infinity, -Infinity], tp: [-Infinity, -Infinity] })); // (the bars drawn once, empty)
+  r.m.setLive(false);
+  r.m.heard(-10, -10, -10);
+  assert.equal(cov[0].style.transform, 'translateX(0%)', 'not live: no write');
+  r.clock.t = 20; r.m.setLive(true);
+  assert.equal(cov[0].style.transform, 'translateX(83%)', 'live: the heard peak shows');
+  r.m.heard('x', null, undefined); r.m.heard();
+  assert.equal(cov[0].style.transform, 'translateX(83%)');
+});
