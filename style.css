@@ -1721,9 +1721,14 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
   --sxd-f1: #b4501e; --sxd-f2: #a8325e; --sxd-spec-lo: #f3efe4; --sxd-spec-hi: #3c0014; --sxd-hl-ink: #f3efe4;
 }
 /* glass (WC-2, the user: "a translucent skin for wavecraft that has a frosted glass look … so that we can see cables through the glass when
-   they are in behind mode"): smoked frosted glass — the module is the pane (--rig-case, a cool slate at 55 %: the cords behind it show, the
-   words stay ≥ 4.5 : 1 over the canvas and ≥ 3 : 1 with the lightest cord right behind them), a faint sheen on the face and the bar, light
-   hairlines; everything solid on it opaque — the ink, the knob caps and buttons, the screens, the menus and popovers */
+   they are in behind mode"): smoked frosted glass — the module is the pane (--rig-case, a neutral smoke at 55 %: the cords behind it show,
+   the words stay ≥ 4.5 : 1 over the canvas and ≥ 3 : 1 with the lightest cord right behind them), a faint sheen on the face and the bar,
+   light hairlines; everything solid on it opaque — the ink, the knob caps and buttons, the screens, the menus and popovers. (The user,
+   2026-11-02: "its own identity" — "neutral", not Serum's blue) every grey R = G = B, the accent white (dark ink on a lit button: the kit's
+   --sx-bg), the screens' traces white and silver — osc A / B / C and filters 1 / 2 white, silver, grey (each in its own module), the off
+   state a darker grey below them; one quiet hue where a mark must part from the traces (the cursor / playhead, champagne) and a muted coral
+   for a negative amount and a missing sample; the spectrogram dark → gold (its blue runs at √q in sx-ui-osc: any blue at the loud end
+   tints the quiet levels navy, so its blue stays at the quiet end's). The screws and the jack hole are the shared screw image's */
 #world[data-cv-skin="glass"] .cv-mod[data-cv-rig],
 #world[data-cv-skin="glass"] .cv-mod[data-cv-rig] .sx-root,
 #world[data-cv-skin="glass"] .cv-mod[data-cv-rig] .rig-face,
@@ -1736,13 +1741,13 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 .cv-jn[data-cv-skin="glass"],
 .wk-ctx[data-cv-skin="glass"],
 .wk-pop[data-cv-skin="glass"] {
-  --sx-bg: #141a21; --sx-panel: #19202a; --sx-panel2: #0e1217; --sx-line: #3b4653; --sx-graph: #e3ecf5; --sx-ink: #eef2f6; --sx-mute: #b9c3ce;
-  --sx-accent: #7cc8ff; --sx-neg: #ff8f7a; --text: #eef2f6; --mute: #b9c3ce;
-  --rig-case: #1e26308c; --rig-face: #ffffff08; --rig-bar: #ffffff0f; --rig-title: #eef2f6; --rig-line: #ffffff29; --rig-font: 'Archivo Narrow', Inter, var(--ui);
-  --rig-screen: #0c1015; --rig-jack-ring: #e3ecf5; --rig-jack-nut: #6d7884; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
-  --sxd-bg: #0a0d10; --sxd-grid: #2a333d; --sxd-mute: #7f8b98; --sxd-ink: #dfe6ee; --sxd-wave: #59c2ff; --sxd-loop: #4fb3ff; --sxd-on: #6fe3a1;
-  --sxd-cur: #ffd84a; --sxd-slice: #f7c948; --sxd-mark: #ffffff; --sxd-xy: #ff5b5b; --sxd-osc-a: #4fb3ff; --sxd-osc-b: #6fe3a1; --sxd-osc-c: #f7c948;
-  --sxd-f1: #ff8a5b; --sxd-f2: #ff5b8a; --sxd-spec-lo: #000000; --sxd-spec-hi: #ffffff; --sxd-hl-ink: #061018;
+  --sx-bg: #161616; --sx-panel: #1c1c1c; --sx-panel2: #0f0f0f; --sx-line: #474747; --sx-graph: #d6d6d6; --sx-ink: #f0f0f0; --sx-mute: #bababa;
+  --sx-accent: #ffffff; --sx-neg: #e89a86; --text: #f0f0f0; --mute: #bababa;
+  --rig-case: #2626268c; --rig-face: #ffffff08; --rig-bar: #ffffff0f; --rig-title: #f0f0f0; --rig-line: #ffffff29; --rig-font: 'Archivo Narrow', Inter, var(--ui);
+  --rig-screen: #0d0d0d; --rig-jack-ring: #e6e6e6; --rig-jack-nut: #787878; --rig-jack-hole: #0b0b0c; --rig-screw: #9c978a; --rig-screw-lo: #55524a;
+  --sxd-bg: #0d0d0d; --sxd-grid: #2e2e2e; --sxd-mute: #7c7c7c; --sxd-ink: #e6e6e6; --sxd-wave: #f0f0f0; --sxd-loop: #c4c4c4; --sxd-on: #a8a8a8;
+  --sxd-cur: #d8b677; --sxd-slice: #9c9c9c; --sxd-mark: #ffffff; --sxd-xy: #e8907c; --sxd-osc-a: #f0f0f0; --sxd-osc-b: #c4c4c4; --sxd-osc-c: #a0a0a0;
+  --sxd-f1: #f0f0f0; --sxd-f2: #c4c4c4; --sxd-spec-lo: #0d0d0d; --sxd-spec-hi: #e6d80d; --sxd-hl-ink: #141414;
 }
 /* the glass skin's own rules (WC-2) — after the blocks, scoped to the glass skin alone, no box changed (the gate's one exception: a block
    sets custom properties only). (1) The pane is the module: the layers inside it that paint the case or the kit's ground again — a rig's
@@ -1750,7 +1755,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    twice in a rig's body, four times in an FX rack's; (MOD1) a modulator's module is a pane the same). (2) The two popovers over a face — the X-Shaper's, the ⚙ drawer in the top layer —
    take the opaque --sx-panel (see-through over the knobs they cover, they would be unreadable). (3) The frost: backdrop-filter (the
    expensive part — one blur a pane, each frame the canvas moves) on every preset but Low (#viewport[data-cv-perf], cv-world's): Low keeps
-   the translucency alone. With the cables behind, the world draws the ropes under the panes (cv-cords behind(fn, true)): seen frosted */
+   the translucency alone; (2026-11-02, neutral) a blur alone — no saturate() boost: the pane shifts no hue (the canvas's faint cool cast
+   and every cord seen through it as they are). With the cables behind, the world draws the ropes under the panes (cv-cords behind(fn,
+   true)): seen frosted */
 #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) :is(.cv-body, .inst.custom, .fxtab, .fxr-root) { background-color: transparent; }
 #world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"] { background-color: var(--sx-panel); }
-#viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) { -webkit-backdrop-filter: blur(12px) saturate(1.6); backdrop-filter: blur(12px) saturate(1.6); }
+#viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) { -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }

@@ -1747,17 +1747,43 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
     ['#e9e3d3', '#e9e3d3', '#e9e3d3', '#e9e3d3', '#d9d2c0', '#bfb7a4', '#bfb7a4', '#1d1c1a', '#1d1c1a', '#1d1c1a', '#5d574c', '#5d574c', '#97431a'], 'cream faces on a darker cream body, charcoal engraving');
   assert.deepEqual([I['--sx-panel2'], I['--sx-graph'], I['--rig-screen'], I['--rig-jack-ring'], I['--rig-jack-nut'], I['--rig-jack-hole'], I['--rig-screw'], I['--rig-screw-lo'], I['--sx-neg']],
     ['#f8f5ee', '#97431a', '#f3efe4', '#2b2a27', '#6f6a60', '#0b0b0c', '#9c978a', '#55524a', '#a3301e'], 'light caps with charcoal pointers, a burnt-orange arc; charcoal-ringed jacks');
-  // ((WC-2 displays; the user: the displays follow the skin) charcoal and glass keep the screens exactly as they were — today's colours, the
+  // ((WC-2 displays; the user: the displays follow the skin) charcoal keeps the screens exactly as they were — today's colours, the
   // defaults (sx-ui-osc's draws pinned call for call: tests/sx-ui-osc); Ivory a cream screen (its --rig-screen) with dark traces and grid: the
   // accents darkened until they read on cream (the oscillators' blue · green · ochre, the cursor the skin's burnt orange, the filters'
   // orange and pink), the S / E markers its ink, the spectrogram cream → gold → dark brown (its green runs at 0.85: the far end's green 0),
-  // the Hi / Lo handles' words cream on the burnt orange (the default's near-black on it: 2.8 : 1)
+  // the Hi / Lo handles' words cream on the burnt orange (the default's near-black on it: 2.8 : 1); ((the user, 2026-11-02; moved by design)
+  // glass its own neutral screens: below)
   const TODAY = ['#0a0d10', '#2a333d', '#7f8b98', '#dfe6ee', '#59c2ff', '#4fb3ff', '#6fe3a1', '#ffd84a', '#f7c948', '#ffffff', '#ff5b5b',
     '#4fb3ff', '#6fe3a1', '#f7c948', '#ff8a5b', '#ff5b8a', '#000000', '#ffffff', '#061018'];
-  for (const id of ['charcoal', 'glass']) assert.deepEqual(DISP_VARS.map(k => V[id][k]), TODAY, id + ': the displays as they were');
+  assert.deepEqual(DISP_VARS.map(k => V.charcoal[k]), TODAY, 'charcoal: the displays as they were');
   assert.deepEqual(DISP_VARS.map(k => I[k]), ['#f3efe4', '#d3cbb8', '#5d574c', '#1d1c1a', '#2a6496', '#1f5f99', '#1e7a4a', '#97431a', '#8a6200', '#1d1c1a', '#a3301e',
     '#1f5f99', '#1e7a4a', '#8a6200', '#b4501e', '#a8325e', '#f3efe4', '#3c0014', '#f3efe4'], 'ivory: a cream screen, dark traces');
   assert.equal(I['--sxd-bg'], I['--rig-screen'], 'ivory: the screen its frame\'s cream');
+  // ((the user, 2026-11-02: "i dont like how the frosted glass skin is using the blue serum colors. we need it to have its own identity" …
+  // "i think neutral"; moved by design) glass = neutral smoked glass: every grey R = G = B — the pane (a neutral smoke at 55 %), its sheens
+  // and hairlines, the kit's grounds, the ink and the accent (white: a lit button's word the kit's dark --sx-bg, the Hi / Lo handles' a near-
+  // black), the screen, its grid and words, the traces (osc A / B / C and filters 1 / 2 white, silver, grey — each in its own module; the
+  // off state's grey below the dimmest) —; a hue only where a mark must part from the traces, quiet: the cursor / playhead champagne, a
+  // negative amount and a missing sample a muted coral, the spectrogram's loud end gold. No blue anywhere: the spectrogram's blue never rises
+  // (sx-ui-osc's ramp runs blue at √q — a bluer loud end tints the quiet levels navy); the jack hole and the screws are the one screw image's
+  const G = V.glass, rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  assert.deepEqual([G['--rig-case'], G['--rig-face'], G['--rig-bar'], G['--rig-line'], G['--sx-bg'], G['--sx-panel'], G['--sx-panel2'], G['--sx-line'], G['--sx-ink'], G['--rig-title'], G['--text'],
+    G['--sx-mute'], G['--mute'], G['--sx-graph'], G['--sx-accent'], G['--sx-neg']],
+  ['#2626268c', '#ffffff08', '#ffffff0f', '#ffffff29', '#161616', '#1c1c1c', '#0f0f0f', '#474747', '#f0f0f0', '#f0f0f0', '#f0f0f0', '#bababa', '#bababa', '#d6d6d6', '#ffffff', '#e89a86'],
+  'glass: a neutral smoke pane, white ink and accent, silver arcs, a muted coral for a negative amount');
+  assert.deepEqual([G['--rig-screen'], G['--rig-jack-ring'], G['--rig-jack-nut'], G['--rig-jack-hole'], G['--rig-screw'], G['--rig-screw-lo']],
+    ['#0d0d0d', '#e6e6e6', '#787878', '#0b0b0c', '#9c978a', '#55524a'], 'glass: a neutral screen frame, light-ringed jacks');
+  assert.deepEqual(DISP_VARS.map(k => G[k]), ['#0d0d0d', '#2e2e2e', '#7c7c7c', '#e6e6e6', '#f0f0f0', '#c4c4c4', '#a8a8a8', '#d8b677', '#9c9c9c', '#ffffff', '#e8907c',
+    '#f0f0f0', '#c4c4c4', '#a0a0a0', '#f0f0f0', '#c4c4c4', '#0d0d0d', '#e6d80d', '#141414'], 'glass: a neutral screen, white and silver traces');
+  assert.equal(G['--sxd-bg'], G['--rig-screen'], 'glass: the screen its frame\'s');
+  const HUED = ['--sx-neg', '--sxd-cur', '--sxd-xy', '--sxd-spec-hi', '--rig-jack-hole', '--rig-screw', '--rig-screw-lo'];
+  for (const k of SKIN_VARS.filter(x => x !== '--rig-font')) {
+    const [r, g, b] = rgb(G[k]);
+    assert.ok(HUED.includes(k) || (r === g && g === b), 'glass ' + k + ': a neutral grey, R = G = B (' + G[k] + ')');
+    assert.ok(k === '--rig-jack-hole' || b <= Math.min(r, g), 'glass ' + k + ': no blue cast (' + G[k] + ')');
+  }
+  assert.ok(rgb(G['--sxd-spec-hi'])[2] <= rgb(G['--sxd-spec-lo'])[2], 'glass: the spectrogram\'s blue never rises from its quiet end');
+  assert.ok(['--sxd-osc-a', '--sxd-osc-b', '--sxd-osc-c', '--sxd-f1', '--sxd-f2'].every(k => lum(G[k]) > lum(G['--sxd-mute'])), 'glass: the off state (a filter, a multisample\'s envelope) darker than every trace');
   // the chrome: every [data-cv-rig] rule outside the skins, colours only through custom properties (a #hex only as a var() fallback: the plain module's
   // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
   // ((MOD1 §4.4) the screws and the jack row's jack are shared with the modulators' faces: the very rules, never a copy)
@@ -1840,8 +1866,10 @@ test('style.css (WC-2): the glass skin\'s own rules after the blocks — the pan
     `${W} ${MODS} :is(.cv-body, .inst.custom, .fxtab, .fxr-root)`,
     `${W} .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"]`,
     `#viewport:not([data-cv-perf="low"]) ${W} ${MODS}`]);
+  // ((the user, 2026-11-02: the glass neutral; moved by design) the frost a blur alone: no saturate() boost — the pane shifts no hue (the
+  // canvas's faint cool cast, every cord seen through it as it is)
   assert.deepEqual(glass.map(r => decls(r.body)), [[['background-color', 'transparent']], [['background-color', 'var(--sx-panel)']],
-    [['-webkit-backdrop-filter', 'blur(12px) saturate(1.6)'], ['backdrop-filter', 'blur(12px) saturate(1.6)']]], 'the pane, the popovers, the frost (WebKit\'s prefix first)');
+    [['-webkit-backdrop-filter', 'blur(12px)'], ['backdrop-filter', 'blur(12px)']]], 'the pane, the popovers, the frost (WebKit\'s prefix first)');
   for (const r of glass) {
     for (const part of splitTop(r.sel)) {
       const ids = [...part.matchAll(/\[data-cv-skin="([a-z]+)"\]/g)].map(m => m[1]);

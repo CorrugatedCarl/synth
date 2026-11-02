@@ -2617,13 +2617,15 @@ const DISP_REF = {
   'noise: an overview with its playhead, a colour noise, none yet': '99981ab7e5c092067b6d',
   'filters: on / off, the views (magnitude, + FFT, phase), FILTER 2, a symbolic type, no signal, no DSP': '448c95e5eda3c16edf76',
 };
-test('(WC-2 displays) charcoal, glass and Serum complete (no skin): every display draws exactly today\'s calls and colours — with no palette, the defaults, and the palettes the charcoal and glass blocks resolve to', async () => {
+// ((the user, 2026-11-02: the glass skin "its own identity" — "neutral"; moved by design) glass no longer draws today's colours: its own
+// neutral screens, the next test but one)
+test('(WC-2 displays) charcoal and Serum complete (no skin): every display draws exactly today\'s calls and colours — with no palette, the defaults, and the palette the charcoal block resolves to', async () => {
   const got = {};
   for (const name of Object.keys(DISP_SCENES)) got[name] = digest(await sceneRun(name, undefined));
   assert.deepEqual(got, DISP_REF, 'today\'s draws');
   assert.equal(typeof osc.dispPalette, 'function', 'the palette resolver');
-  const P0 = palFor(null), Pc = palFor(skinVals('charcoal')), Pg = palFor(skinVals('glass'));
-  assert.ok(P0 === Pc && P0 === Pg && P0 === osc.dispPalette(), 'charcoal and glass: the defaults, one palette (interned)');
+  const P0 = palFor(null), Pc = palFor(skinVals('charcoal'));
+  assert.ok(P0 === Pc && P0 === osc.dispPalette(), 'charcoal: the defaults, one palette (interned)');
   for (const name of Object.keys(DISP_SCENES)) assert.equal(digest(await sceneRun(name, P0)), DISP_REF[name], name + ': the default palette');
 });
 
@@ -2685,6 +2687,38 @@ test('(WC-2 displays) Ivory: every display draws in the Ivory tokens — each wh
   const src = readFileSync(new URL('../sx-ui-osc.js', import.meta.url), 'utf8');
   assert.match(src, /\n\.sxo-hl \{[^}\n]*; color: var\(--sxd-hl-ink, #061018\); background: var\(--sx-accent, #4fb3ff\);/);
   assert.match(skinVals('ivory')['--sxd-hl-ink'] || '', /^#[0-9a-f]{6}$/, 'the Ivory block sets it');
+});
+
+// ((the user, 2026-11-02: "i dont like how the frosted glass skin is using the blue serum colors. we need it to have its own identity" … "i
+// think neutral"; moved by design) Glass draws in its own tokens — each where today's colour was (the probe mapped to glass's colours draws
+// glass's calls), every colour a glass token's — and nothing blue: no colour drawn whose blue is above its red or its green (white and silver
+// traces, grey grid and words, the cursor champagne, a missing sample's coral), every spectrogram pixel between glass's ends and none blue
+test('(WC-2 displays; the user, 2026-11-02) Glass: every display draws in the glass tokens, each where today\'s colour was; no blue anywhere — no colour drawn, no spectrogram pixel with a blue cast', async () => {
+  assert.equal(typeof osc.dispPalette, 'function', 'the palette resolver');
+  const P0 = palFor(null), Pg = palFor(skinVals('glass')), Pq = palFor(PROBE);
+  assert.ok(Pg !== P0 && Pg !== Pq, 'glass: its own palette');
+  assert.deepEqual(SXD.map(k => /^#[0-9a-f]{6}$/.test(skinVals('glass')[k] || '')), SXD.map(() => true), 'the glass block sets every display token');
+  const glass = new Set(palColors(Pg).values());
+  const blue = c => {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/.exec(c), r = /^rgba\((\d+), (\d+), (\d+), [\d.]+\)$/.exec(c);
+    const v = m ? m.slice(1).map(x => parseInt(x, 16)) : r ? r.slice(1).map(Number) : null;
+    return !v || v[2] > Math.min(v[0], v[1]);
+  };
+  for (const name of Object.keys(DISP_SCENES)) {
+    const q = await sceneRun(name, Pq), gl = await sceneRun(name, Pg);
+    assert.equal(firstDiff(mapLog(q.log, Pq, Pg), gl.log), null, name + ': the probe mapped to glass = glass\'s calls');
+    const cols = gl.log.filter(c => c[0] === '=fillStyle' || c[0] === '=strokeStyle').map(c => c[1]);
+    assert.deepEqual(cols.filter(c => !glass.has(c)), [], name + ': every colour a glass token\'s');
+    assert.deepEqual([...new Set(cols.filter(blue))], [], name + ': no blue');
+    for (const im of gl.imgs) {
+      const data = Array.from({ length: im.width * im.height }, (_, j) => (j * 7 + (j / im.width | 0) * 13) & 255);
+      assert.ok(Buffer.from(im.data).equals(Buffer.from(specPixels(Pg, data))), name + ': the spectrogram\'s pixels between glass\'s ends');
+      let n = 0;
+      for (let j = 0; j < im.data.length; j += 4) if (im.data[j + 2] > Math.min(im.data[j], im.data[j + 1])) n++;
+      assert.equal(n, 0, name + ': no blue pixel in the spectrogram');
+    }
+  }
+  assert.match(skinVals('glass')['--sxd-hl-ink'] || '', /^#[0-9a-f]{6}$/, 'the glass block sets the Hi / Lo handles\' words');
 });
 
 test('(WC-2 displays) a palette change re-derives what was cached in the old one — the 3D view\'s back layers, the spectrogram\'s image — and only then', async () => {
