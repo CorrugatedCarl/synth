@@ -216,6 +216,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    the RIG grid), the Modulators view (the user's Q5), tiles add into a rig on a rig track (`modTile` → `rigAdd`) else `modAdd`,
    `numsOf` / `rigNumber` numbering, `linkSources` lists a rig's on-canvas modules only, `faceMark` sets `data-cv-face=""` (cv-face's
    gl / dom / svg untouched), `sxReshow` reshows the slot hosts. No schema change. Next: ROADMAP 28 (Serum out of canvas entirely).
+26. **(2026-11-02.)** **Glass skin neutral** (7919b32: greys, white accent, no Serum blue; leftovers in JS: the XY dot, the Splitter band,
+   `--sx-on` green, the CC Learn lit text). **SX0 deployed** (ROADMAP 28; canvas b8e4ad3; contract IMPL-SX0, §15 skeptic, §14 every lane /
+   review note and per-case table): no 'serum' model; `serumOut` (cv-migrate, always run, schema 17) converts old Serums to Wavecrafts;
+   the rig's host is `createHost`; `isSxId` keeps 'serum' for STEPS; serum-ui.js deleted; kept-but-callerless for ROADMAP 15: renderLast,
+   savePresetUI / stepPresetUI / authorDialog, the C1 folds, alignPhase, swing, the lay flag `ui: 'parts'` and the `voice` part sizes.
+   Next: ROADMAP 26 (LFO combiner), then 19 (drum machine, IMPL-DM skeptic first).
 
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
