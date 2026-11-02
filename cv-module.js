@@ -53,6 +53,8 @@
 // module, the arrows move it), patch modules (kind 'pm', 'iN/m<k>': their entry's size and face jacks, the compact bar — title
 // over its sub, ⋯ —, no fold; nofold on any entry: the controller), Tidy's patch rows from host.rackLayout, host.onRelay(ports)
 // after every relayout (the cord layer's anchors), host.members(key) (a driver outlines its driven modules).
+// Stage MOD1 (IMPL-MOD1 §4.3; lane H): every modulator wears a face on the RIG grid — MOD_W[kind] = faceW(MOD_COLS[kind]), its height its
+// content's (SX_MODS: every kind; MOD_H the guesses), its out jack inline on the face's jack row (the right-edge dot the fallback).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_PREFIX, keyKind, MACRO_PORTS, partsView, hiddenTag, NOTE_END } from './cv-cables.js?v=9';
@@ -60,6 +62,8 @@ import { PARTS, splitKey, kindOf as sxKind, partLabel, partOn, endOf } from './s
 // ((WC) a part's kind; ENV 1 is a module of the rig — an Envelope — whether or not sx-edges' table knows it yet)
 const partKind = p => sxKind(p) || (p === 'env1' ? 'env' : null);
 import { isSxId } from './models.js?v=9'; // ((WC) the own-FX key and module of a Serum-engine device — the Serum and the rig; the bundled panel's sizes stay the Serum's)
+import { MOD_COLS } from './cv-mods.js?v=9'; // ((MOD1 §2.3) each modulator face's RIG-grid columns
+import { faceW } from './rig-grid.js?v=9';
 export { MOD_COLOR, MOD_PREFIX, keyKind } from './cv-cables.js?v=9';
 
 /** Top bar height on every device (world px); the bar's hit area grows upward only (::before, calc(… * var(--ik))). */
@@ -79,20 +83,23 @@ export const FLOW_W = Object.freeze({
  * number). (2b) MOD_KINDS: every track-device mod kind devicesOf lists (the project wheel is the host's). */
 export const W_MOD = 240;
 /** (2b) the heights by mod kind; (milestone 3) for the Serum-faithful kinds (SX_MODS: LFO / ENV / Macro / Chaos, their bodies
- * a Serum panel whose height is its content, measured) Tidy's and the drop ghost's guess until measured. */
+ * a Serum panel whose height is its content, measured) Tidy's and the drop ghost's guess until measured; (MOD1 §4.3) every kind's: a face's
+ * height is its content (the numbers as they were — cv-migrate's STEPS[6] reads them). */
 export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224 });
 export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
 export const MOD_KINDS = Object.freeze(new Set(MOD_ORDER.filter(k => k !== 'wheel')));
 /** (milestone 3, IMPL-3 §2.2) The modulator kinds whose body is a Serum panel on a slot host (lane B: the same class a Serum's
- * own slot uses): height = content (measured), width MOD_W. */
-export const SX_MODS = Object.freeze(new Set(['lfo', 'env', 'macro', 'chaos']));
+ * own slot uses): height = content (measured), width MOD_W. (MOD1 §4.3) every kind: each wears a face on the RIG grid, its height its
+ * content's (measured; MOD_H the guess). */
+export const SX_MODS = Object.freeze(new Set(MOD_ORDER));
+// (the slot faces — LFO / Envelope / Macros / Chaos over a slot host — cost a part's share of the world's DOM budget; the plain ones a meter's)
+const SLOT_MODS = new Set(['lfo', 'env', 'macro', 'chaos']);
 /** (milestone 3) A module width from a panel's: its width in the 1200 px bundled Serum rounded up to the dots (32 px). */
 export const roundW = w => Math.ceil((+w || 0) / DOT) * DOT;
-/** (milestone 3, §2.2) The modulator module widths by kind (world px): the Serum-faithful ones their panels' columns in the
- * 1200 px bundled Serum (sx-ui-mod PART_W, lane B: LFO 393 → 416, ENV 314 → 320, MACROS 236 → 256; the chaos row a GLOBAL
- * page column ≈ 388 → 416) rounded by roundW — frozen here (cv-migrate STEPS[6] reads them); the parity gate re-measures —,
- * the others W_MOD. */
-export const MOD_W = Object.freeze({ wheel: W_MOD, velo: W_MOD, at: W_MOD, bend: W_MOD, note: W_MOD, cc: W_MOD, lfo: 416, env: 320, macro: 256, chaos: 416 });
+/** (milestone 3, §2.2) The modulator module widths by kind (world px). (MOD1 §4.3) Each kind's face on the RIG grid: rig-grid
+ * faceW(cv-mods MOD_COLS[kind]) — LFO / Envelope 352 (a rig's LFO / Envelope), Macros 288, every other kind 224 (MOD1 review 2: the
+ * wheel / Aftertouch / Bend's 160 left a bar title 52 px) (cv-migrate STEPS[6] keeps milestone 3's own, MOD_W6). */
+export const MOD_W = Object.freeze(Object.fromEntries(MOD_ORDER.map(k => [k, faceW(MOD_COLS[k])])));
 /** (milestone 3) A modulator module's width by mod kind (W_MOD for an unknown one). */
 export const modW = kind => MOD_W[kind] || W_MOD;
 /** (2b) A macro module's knob rows: MACRO_ROW world px each from MACRO_Y0 (the bar, then the body's padding; cv-mods-ui
@@ -103,11 +110,12 @@ export const MACRO_ROW = 28, MACRO_Y0 = BAR_H + 12;
 export function modJackY(kind, i) { return kind === 'macro' ? MACRO_Y0 + MACRO_ROW * (i | 0) + MACRO_ROW / 2 : BAR_H + JACK_Y; }
 /** (2b) The jack specs of a modulator module by kind: a macro's k1…k8, else one 'out'. (Milestone 3) a macro's are INLINE:
  * each name tile of its Serum MACROS panel ([data-jack="k<n>"]) is its jack; without the tiles (a 2b body) at the right
- * edge at its knob rows (y). */
+ * edge at its knob rows (y). (MOD1 §4.3) every kind's out INLINE too: the face's jack row [data-jack="out"] its anchor, the
+ * right-edge dot at JACK_Y the fallback; kind 'mod' (a line, on every canvas), the ids as before. */
 export function modJacks(kind, title) {
   const T = title || 'Modulator';
   if (kind === 'macro') return MACRO_PORTS.map((id, i) => ({ id, side: 'inline', kind: 'mod', label: T + ' knob ' + (i + 1), y: modJackY(kind, i) }));
-  return [{ id: 'out', side: 'right', kind: 'mod', label: T + ' out' }];
+  return [{ id: 'out', side: 'inline', kind: 'mod', label: T + ' out', y: modJackY(kind, 0) }];
 }
 /** (2a U8) The gap between the modulator column and the instruments (world px): the column at x −(W_MOD + MOD_GAP) = −320,
  * so a fit with the Sources tray open on a portrait iPad keeps it beside the instrument. (Milestone 3) every modulator's
@@ -1265,7 +1273,7 @@ export function createTrackView(world, track, host) {
     if (!m || !ids || ids.length < 2 || !ids.includes(key)) return null;
     return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
   };
-  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : ((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SX_MODS.has(mkOf(key)) ? 160 : 40; };
+  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : ((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SLOT_MODS.has(mkOf(key)) ? 160 : 40; };
   const colorOf = key => { const d = devOf(key), e = DEV ? DM.get(key) : null; return (d && typeof d.color === 'string' && d.color) || (e && typeof e.color === 'string' && e.color) || (kindOf(key) === 'mod' && MOD_COLOR[mkOf(key)]) || T.color; }; // ((8) an entry's own colour: the Pads module's)
   // (3) a part's title and chip: the host's, else 'OSC B' and 'S<n>' (the Serum's number: its group)
   const partMeta = (key, M0) => { const P = partOf(key), n = /(\d+)$/.exec(P.dev || ''); return { title: M0.title || partLabel(P.part), sub: M0.sub, chip: M0.chip !== undefined ? M0.chip : 'S' + (n ? n[1] : '1') }; };

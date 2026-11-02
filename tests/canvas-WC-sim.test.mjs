@@ -1104,16 +1104,17 @@ test('integration fixer L, review WC-int B4: the tray\'s "+ Add a track…" mode
   assert.equal(tiles.mode(), 'replace', 'the tray back to replacing');
   cv.undo(); await settle(3);
   assert.equal(P().tracks.length, n0, '↶: the new track gone');
-  // greyed by the track a tap would change: a rig with Macros on the canvas greys Macros while a tap adds to it, not while a tap makes a new track
+  // greyed by the track a tap would change: a rig with Noise on the canvas greys Noise while a tap adds to it, not while a tap makes a new track
+  // ((MOD1 §5) the one-off was the Macros tile, now the Modulators' — one tile per type: lane H pins its routing)
   await fresh(RIG.ID);
-  RG.add(null, 'macros'); await settle(2);
+  RG.add(null, 'noise'); await settle(2);
   sh.cvOpenSources('replace');
-  assert.equal(tiles.partPlaced('macros'), 'Macros is on the canvas');
+  assert.equal(tiles.partPlaced('noise'), 'Noise is on the canvas');
   sh.cvOpenSources('track');
-  assert.deepEqual(['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros'].map(k => tiles.partPlaced(k)), [null, null, null, null, null, null, null], 'a new track: every tile live');
+  assert.deepEqual(['osc', 'sub', 'noise', 'filter'].map(k => tiles.partPlaced(k)), [null, null, null, null], 'a new track: every tile live');
   const n1 = P().tracks.length, rigT = T().id;
-  tap('macros'); await settle(3);
-  assert.deepEqual([P().tracks.length, keys()], [n1 + 1, 'i1,i1/fx,i1/macros,out'], 'Macros starts a new ' + RIG.NAME);
+  tap('noise'); await settle(3);
+  assert.deepEqual([P().tracks.length, keys()], [n1 + 1, 'i1,i1/fx,i1/noise,out'], 'Noise starts a new ' + RIG.NAME);
   sh.cvOpenSources('replace');
   // a tile dropped on the track list (the tray's drag over the track list: info.over 'tracks')
   const n2 = P().tracks.length;
@@ -1571,4 +1572,31 @@ test('(WC-2) ⚙ → Canvas → "<NAME> skin": one line (#cvSkin, after the Fram
     sel.value = 'charcoal'; sel.onchange();
     assert.deepEqual([api.store.get('synth.rig.skin'), W.el.getAttribute('data-cv-skin'), W.glass], ['charcoal', 'charcoal', false], 'charcoal: as before');
   } finally { off(); api.store.set('synth.rig.skin', 'charcoal'); }
+});
+
+// (MOD1 §5, lane H — phase 0's ask) the LFO / Envelope / Macros tiles left the Wavecraft modules' section (one tile per type): the
+// Modulators' tiles route by the track — on a rig they ADD into it (rigAdd: its slot, its auto-plug, its number), never a replace, never a
+// track device; the parts' drop of a modulator kind (the hook) on any other instrument adds a track device, never a replace
+test('(MOD1 §5) the Modulators\' Macros tile on a rig adds its Macros (one step "Add Macros 1", "Added Macros 1 · tap to undo"; a second tap says it is on the canvas, no step); its Envelope tile on a gate-only rig takes the LEVEL, its LFO tile the rig\'s LFO 1; in "+ Add a track…" mode the same (no new track); never a track device; a modulator kind dropped on a Juno: a track device, the Juno kept', async () => {
+  const tiles = sh.shell.tiles, tap = async id => { tiles.modTile(id).dispatchEvent({ type: 'click', defaultPrevented: false, stopPropagation() {}, preventDefault() {} }); await settle(3); };
+  const own = () => Object.keys(T().dev).filter(k => CMOD.kindOfId(k)).sort().join();
+  await fresh('juno60'); await tile('osc'); // (a gate-only rig: the Juno replaced by Oscillator 1 into the Amplifier)
+  assert.deepEqual([I().model, RC.isGate(S())], [RIG.ID, true]);
+  const u0 = cv.hist.u.at(-1); // (History is at its cap here: steps counted from a step, as since())
+  await tap('macro');
+  assert.deepEqual([keys().includes('i1/macros'), since(u0), cv.hist.u.at(-1).label, note(), own()], [true, 1, 'Add Macros 1', 'Added Macros 1 · tap to undo', '']);
+  await tap('macro');
+  assert.deepEqual([since(u0), note(), own()], [1, 'Macros 1 is already on the canvas', ''], 'one Macros per rig: said, no step');
+  await tap('env');
+  assert.deepEqual([keys().includes('i1/env1'), RC.isGate(S()), ends().includes('env1.out>voice.level'), cv.hist.u.at(-1).label, own()], [true, false, true, 'Add Envelope 1', ''], 'the Envelope takes the LEVEL (the amp slot)');
+  const n1 = P().tracks.length;
+  sh.cvOpenSources('track');
+  await tap('lfo');
+  assert.deepEqual([P().tracks.length, keys().includes('i1/lfo1'), cv.hist.u.at(-1).label, own(), I().model], [n1, true, 'Add LFO 1', '', RIG.ID], '"+ Add a track…": the tile adds where it always did — no new track');
+  sh.cvOpenSources('replace');
+  cv.undo(); await settle(3);
+  assert.equal(keys().includes('i1/lfo1'), false, 'undo');
+  await fresh('juno60');
+  RG.drop('lfo'); await settle(3);
+  assert.deepEqual([I().model, own(), cv.hist.u.at(-1).label], ['juno60', 'l1', 'Add LFO 1'], 'never a replace: a track LFO');
 });

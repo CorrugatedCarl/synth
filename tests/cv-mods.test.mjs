@@ -262,8 +262,8 @@ test('2b descriptors carry the centred flag and the class: classic (law / lo / h
 
 test('2b modulator ids, labels, sources: kindOfId / modLabelOf / modDevs / srcOf / perNoteOf; sourcesOf over every module (a macro: 8 knobs); linkSources', () => {
   assert.deepEqual(['l1', 'e12', 'm1', 'c3', 'h2', 'nt', 've', 'at', 'bd', 'i1', 'fx1', 'l0', 'x', null].map(V.kindOfId), ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend', null, null, null, null, null]);
-  assert.deepEqual([V.modLabelOf('l3'), V.modLabelOf('m1', { kind: 'macro' }), V.modLabelOf('ve'), V.modLabelOf('h2', { kind: 'chaos' }), V.modLabelOf('i1')], ['LFO 3', 'Macro 1', 'Velocity', 'Chaos 2', 'i1']);
-  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'ENV', macro: 'Macro', cc: 'CC', chaos: 'Chaos' });
+  assert.deepEqual([V.modLabelOf('l3'), V.modLabelOf('m1', { kind: 'macro' }), V.modLabelOf('ve'), V.modLabelOf('h2', { kind: 'chaos' }), V.modLabelOf('i1')], ['LFO 3', 'Macros 1', 'Velocity', 'Chaos 2', 'i1']); // ((MOD1 §2.2) the words: "Macros n", "Envelope n" — tests/mod1-model.test.mjs
+  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos' });
   assert.deepEqual([V.srcOf('wheel'), V.srcOf('m1.k3'), V.srcOf('i2/lfo10.out'), V.srcOf('i2/env2.out'), V.srcOf('i2/lfo11.out'), V.srcOf('x'), V.srcOf(null)],
     [{ dev: 'wheel', port: '', link: '' }, { dev: 'm1', port: 'k3', link: '' }, { dev: 'i2', port: 'out', link: 'lfo10' }, { dev: 'i2', port: 'out', link: 'env2' }, null, null, null]);
   const s = C.normalizeSerum(C.defaultSerum());
@@ -275,7 +275,7 @@ test('2b modulator ids, labels, sources: kindOfId / modLabelOf / modDevs / srcOf
   const S = V.sourcesOf(t, { perf: { wheel: { v: 1 } } });
   assert.deepEqual(S.map(x => x.id + (x.perNote ? '*' : '')), ['wheel', 've.out*', 'at.out', 'bd.out', 'nt.out*', 'l1.out', 'l3.out*', 'e1.out*', 'm1.k1', 'm1.k2', 'm1.k3', 'm1.k4', 'm1.k5', 'm1.k6', 'm1.k7', 'm1.k8',
     'm2.k1', 'm2.k2', 'm2.k3', 'm2.k4', 'm2.k5', 'm2.k6', 'm2.k7', 'm2.k8', 'c1.out', 'h1.out', 'h2.out*']);
-  assert.deepEqual(S.filter(x => x.dev === 'm1').slice(0, 3).map(x => [x.label, x.port, x.kind]), [['Cut', 'k1', 'macro'], ['Macro 1 · 2', 'k2', 'macro'], ['Mix', 'k3', 'macro']]);
+  assert.deepEqual(S.filter(x => x.dev === 'm1').slice(0, 3).map(x => [x.label, x.port, x.kind]), [['Cut', 'k1', 'macro'], ['Macros 1 · 2', 'k2', 'macro'], ['Mix', 'k3', 'macro']]);
   assert.deepEqual(S[0], { id: 'wheel', label: 'Mod Wheel', scope: 'project', kind: 'wheel', dev: 'wheel', port: '', perNote: false });
   assert.deepEqual(S[5], { id: 'l1.out', label: 'LFO 1', scope: 'track', kind: 'lfo', dev: 'l1', port: 'out', perNote: false });
   assert.deepEqual(V.sourcesOf(t, {}).length, S.length - 1, 'no wheel');

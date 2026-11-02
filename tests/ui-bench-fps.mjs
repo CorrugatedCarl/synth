@@ -59,7 +59,7 @@ export const BUDGET = Object.freeze({
   rate: 0.8,
   delivered: 0.8, // frames delivered ≥ 0.8 × the virtual display's (a starved main thread says so)
 });
-export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'serum', 'master', 'busy', 'clip']);
+export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'serum', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) mods: a Juno's modulators — the serum scene leaves with Serum complete (ROADMAP 28)
 /** The scenes whose layout + style budget (< 1 ms / s, "idle-animating") is gated: the engine on, nothing playing. The others are recorded — a
  * playing project writes the transport's text every frame (IMPL-FR §3 A1: "the recorded exception"). `--layout-gate all` gates every scene. */
 export const LAYOUT_SCENES = Object.freeze(['idle']);
@@ -109,6 +109,12 @@ export const EXPECT = Object.freeze({
     { name: 'wavetable display', kind: 'canvas', sel: 'canvas.sx-disp', rate: 'heavy', any: true },
     { name: 'compressor GR', kind: 'canvas', sel: 'canvas.fxr-gr', rate: 'gr', any: true },
     { name: 'LFO-driven knob dots', kind: 'attr', attr: 'cx', sel: '[data-dest="a.wt"] .wk-live, [data-dest="f.res"] .wk-live, [data-dest="a.level"] .wk-live', box: '[data-dest]', rate: 'snap', any: true, min: 2, tol: 0.5 }, // ((Cut B §5.6) change-gated writers: a dot whose rounded position held writes nothing
+  ]),
+  // (MOD1 G6) a Juno's modulators — one face each, every LFO and Envelope cabled and moving: the six LFO / Envelope faces' playheads (the donors'
+  // overlays keep their classes; the LFO's carries the smooth probe's arc hook). The camera frames the modulators and the Juno (the OUT is
+  // off screen at every size: no scope asked for)
+  mods: Object.freeze([
+    { name: 'LFO / ENV playheads', kind: 'canvas', sel: '.gx-lfo canvas.gx-ov, .gx-env canvas.gx-ov', rate: 'snap', min: 6 },
   ]),
   master: Object.freeze([
     { name: 'OUT scope', kind: 'canvas', sel: 'canvas.mo-sc', rate: 'eff' },
@@ -674,6 +680,24 @@ const BUILD = {
     A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
     await sleep(300); await startPlay(A);
   },
+  async mods(A) { // (MOD1 G6) a Juno with 4 LFOs, 2 Envelopes, 1 Macros, a CC, a Chaos and the wheel — each a face; every LFO and Envelope cabled on a Juno knob, playing
+    await prelude(A, 0);
+    A.shell.srcPick('juno60', 'track'); await mounted(A);
+    const t = A.trk(), dev = t.prim, made = {}, L = [['l1', 'lfo'], ['l2', 'lfo'], ['l3', 'lfo'], ['l4', 'lfo'], ['e1', 'env'], ['e2', 'env'], ['m1', 'macro'], ['c1', 'cc'], ['h1', 'chaos'], ['wheel', 'wheel']];
+    // dropped as two rows of five left of the Juno (Tidy's one column is taller than any viewport at the canvas's least zoom): each where it lands
+    L.forEach(([w, k], i) => { try { made[w] = A.cv.mod.add(k, { x: -2048 + (i % 5) * 384, y: Math.floor(i / 5) * 576 }); if (!made[w]) A.notes.push('mod ' + k + ' refused'); } catch (e) { A.notes.push('mod ' + k + ': ' + e.message); } });
+    await mounted(A);
+    for (const [w, pid] of [['l1', 'cf'], ['l2', 'rs'], ['l3', 'hp'], ['l4', 'lv'], ['e1', 'ep'], ['e2', 'nz'], ['m1', 'sb']]) {
+      const src = made[w] ? made[w] + (w === 'm1' ? '.k1' : '.out') : null;
+      try { if (!src || !A.cv.mod.connect(src, dev + ':' + pid)) A.notes.push('row ' + w + ' → ' + pid + ' refused'); } catch (e) { A.notes.push('row ' + w + ': ' + e.message); }
+    }
+    await mounted(A);
+    A.cv.world().fit({ ids: Object.values(made).filter(Boolean).concat(dev), animate: false }); await sleep(500); // (the modulators and the Juno framed)
+    A.cv.setProjectBpm(128);
+    await audioOn(A);
+    A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
+    await sleep(300); await startPlay(A);
+  },
   async master(A) { // the master canvas: a Compressor and a Ducker in its rack, two LFOs cabled on them, the OUT; a Juno playing under it
     await prelude(A, 0);
     A.shell.srcPick('juno60', 'track'); await mounted(A);
@@ -778,7 +802,8 @@ export async function prepare(win, cfg) {
   out.clock = { display: s.display, measured: s.measured, eff: s.eff, cap: s.cap, k: s.k };
   return out;
 }
-/** (FR Cut B §7 G7) the smooth probe: LFO 1's overlay (the first `.gx-lfo canvas.gx-ov` on screen — the tutorial's) has its context's
+/** (FR Cut B §7 G7) the smooth probe: LFO 1's overlay (the first `.gx-lfo canvas.gx-ov` on screen — the tutorial's; (MOD1 G6) the mods scene's
+ * track LFO face) has its context's
  * 'arc' hooked (its playhead dot) and the x drawn is recorded once per delivered frame for `ms` → smoothOf of the series (+ the first 600). */
 export async function smoothProbe(win, ms = 2000) {
   const A = appOf(win), F = A.F, c = Array.from(A.doc.querySelectorAll('.gx-lfo canvas.gx-ov')).find(el => onScreen(win, el));
@@ -1247,7 +1272,7 @@ export async function drive(o) {
               '  clock ' + (raw.clock.measured ? raw.clock.eff + '/' + raw.clock.display : '–') + ' ms ' + raw.clock.ms.med + '  L+S ' + r3(cell.cdp.layoutMs + cell.cdp.styleMs) + ' ms/s  heap ' + (cell.heapBytesPerS != null ? Math.round(cell.heapBytesPerS / 1024) + ' KB/s' : '–') +
               '  live ' + cell.expect.filter(x => x.pass).length + '/' + cell.expect.length + (cell.retry ? '  (re-measured: ' + cell.retry.soft.join(', ') + ')' : '') + '  ' + (v.pass ? 'ok' : 'FAIL ' + v.gates.filter(x => x.gated && !x.pass).map(x => x.id).join(', ')));
           }
-          if (scene === 'tutorial') { // ((FR Cut B §7 G7) the smooth probe at 120 and 240, 1 ×: LFO 1's overlay x on ≥ 0.9 of the frames, cv(|Δx|) ≤ 0.3
+          if (scene === 'tutorial' || scene === 'mods') { // ((FR Cut B §7 G7) the smooth probe at 120 and 240, 1 ×: LFO 1's overlay x on ≥ 0.9 of the frames, cv(|Δx|) ≤ 0.3; (MOD1 G6) a track LFO's face too
             await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
             for (const cap of [120, 240]) {
               const pre = await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap, display: cap, warm: 1500, throttle: 1, fast: o.fast, perf: o.perf }) + ')', 120000);

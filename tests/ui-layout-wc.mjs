@@ -8,12 +8,21 @@
 // the stage-3 panel of the same part (mounted beside it, hidden) and the element count against it; (review 2 P3-2) each module's bar as
 // cv-module builds it (⏻ slot, stripe, title — rig-core barOf —, ⋯, ▾): its title never clipped. Then the contact sheets: a PNG per size
 // of every face side by side in the charcoal skin.
-//   node --max-old-space-size=2048 tests/ui-layout-wc.mjs [--out <dir>] [--narrow [<Archivo Narrow woff2>]] [--sizes d,l,p] [--json]
+// (MOD1 G5, lane F) the ten modulators' faces too: LFO, Envelope, Macros and Chaos (cv-mods-ui slotBody: rig-ui's slot faces on their slot
+// hosts; parity against the old body's panel — the same panel class on a second slot host, hidden — and ≤ 1.2 × its element count, G11's
+// ratio), Mod Wheel, Velocity, Aftertouch, Bend, Note and CC (the plain faces, cv-mods-ui MOD_FACE: ≤ 48 elements); the same numbers,
+// margins, fill and contrast; their words (no "ENV" — the LFO's mode excepted —, no "Serum", no "Xfer", "Macro" a knob's name only); then
+// the skins: each face's box unmoved by a switch to ivory and glass, its label contrast in each. (MOD1 review, reviewer 2 P2) each modulator's
+// bar as cv-module builds it (⏻ slot hidden, stripe, title over its sub — cv-mods modBarSub —, chip, CPU, ⋯, ▾) at its face's width: its title
+// and sub never clipped, in every skin.
+//   node --max-old-space-size=2048 tests/ui-layout-wc.mjs [--out <dir>] [--narrow [<Archivo Narrow woff2>]] [--sizes d,l,p] [--json] [--profile <dir>]
 //     sizes: d 1440 × 900 at 100 % (mouse) · l 1366 × 1024 and p 1024 × 1366 (touch) — every one at dpr 2 (§10 G11; review 2 P3-8: d ran
 //     at 1); --narrow measures with the narrow face too (each size twice: Inter alone — fonts.css served WITHOUT its Archivo Narrow face, so
 //     the skin's stack falls to Inter as it does when that face fails —, then Archivo Narrow: the bundled fonts/ArchivoNarrowVariable.woff2,
 //     or the file given); each pass checks the face it measured really is that one (a probe's width); exit 1 on any failure. Chrome:
-//     /Applications/Google Chrome.app (or $CHROME); a temporary profile; nothing of the user's is touched.
+//     (MOD1, CLAUDE.md) Chrome for Testing — $CHROME, else .claude/test-browser's (the repo's or, from a worktree, the main checkout's);
+//     never the user's Google Chrome; a temporary profile (under --profile <dir>, the caller's scratchpad, else the OS temp dir); downloads
+//     denied; nothing of the user's is touched.
 // Not a node --test file (not in the sweep): a CDP harness like ui-bench-m9.mjs. In the page the module is imported by the harness
 // HTML the driver serves (/__wc.html): page(o) builds and measures; nothing at top level touches node or the DOM.
 
@@ -67,7 +76,7 @@ export async function page(o) {
   // the faces of the sheet: [key, kind, part, title, the stage-3 part (parity)]
   const FACES = [['osc1', 'osc', 'oscA', 'Oscillator 1', 'oscA'], ['filter1', 'filter', 'filter', 'Filter 1', 'filter'], ['amp', 'amp', 'voice', 'Amplifier', 'voice'],
     ['env1', 'env', 'env1', 'Envelope 1', 'env1'], ['sub', 'sub', 'sub', 'Sub oscillator', 'sub'], ['noise', 'noise', 'noise', 'Noise', 'noise'],
-    ['env2', 'env', 'env2', 'Envelope 2', 'env2'], ['lfo1', 'lfo', 'lfo1', 'LFO 1', 'lfo1'], ['macros', 'macros', 'macros', 'Macros', 'macros'],
+    ['env2', 'env', 'env2', 'Envelope 2', 'env2'], ['lfo1', 'lfo', 'lfo1', 'LFO 1', 'lfo1'], ['macros', 'macros', 'macros', 'Macros 1', 'macros'], // ((MOD1 §2.2) "Macros 1"
     ['osc2', 'osc', 'oscB', 'Oscillator 2', 'oscB'], ['osc3', 'osc', 'oscC', 'Oscillator 3', 'oscC']];
   const views = [];
   for (const [key, kind, part, ttl, p3] of FACES) {
@@ -91,12 +100,60 @@ export async function page(o) {
     const V3 = MOD.mountPart(H3, p3, b3, {});
     views.push({ key, kind, part, V, V3, b3, mod });
   }
+  // (MOD1 G5) the modulators: [key, kind, module id, title]; a slot kind's old panel (its view kind on a second slot host) for parity
+  window.__wcStep = 'modulators';
+  const [SXH, CMU, song, CVMODS] = await Promise.all(['../sx-host.js', '../cv-mods-ui.js', '../song.js', '../cv-mods.js'].map(p => import(p + v)));
+  await CMU.ready();
+  const MODS = [['m-lfo', 'lfo', 'l1', 'LFO 1'], ['m-env', 'env', 'e1', 'Envelope 1'], ['m-macro', 'macro', 'm1', 'Macros 1'], ['m-chaos', 'chaos', 'h1', 'Chaos 1'],
+    ['m-wheel', 'wheel', 'wheel', 'Mod Wheel'], ['m-velo', 'velo', 've', 'Velocity'], ['m-at', 'at', 'at', 'Aftertouch'], ['m-bend', 'bend', 'bd', 'Bend'],
+    ['m-note', 'note', 'nt', 'Note'], ['m-cc', 'cc', 'c1', 'CC 1']];
+  const SLOTV = { lfo: 'lfo', env: 'env', macro: 'macros', chaos: 'chaos' }, rows0 = { count: () => 1, bypassed: () => false, bypass() {}, remove() {} };
+  for (const [key, kind, dk, ttl] of MODS) {
+    const mod = d.createElement('div'); mod.className = 'cv-mod'; mod.setAttribute('data-cv-rig', ''); mod.setAttribute('data-cv-mod', key); // (the page's charcoal block: the rig's)
+    // ((MOD1 review, reviewer 2 P2) the bar as cv-module builds it on the canvas (createModule): the ⏻ slot hidden (no power), the stripe, the
+    // title (main.js cvTitle: modLabelOf, "Mod Wheel") over its sub — the track's name on a face of 4 or more columns only (cv-mods modBarSub) —,
+    // the chip hidden, the CPU slot empty, ⋯ and ▾; the module as wide as its face (cv-module's fixed width) — so a clipped title shows here
+    const bar = d.createElement('div'); bar.className = 'cv-bar';
+    const pow = d.createElement('span'); pow.className = 'cv-pow'; pow.hidden = true;
+    const stripe = d.createElement('span'); stripe.className = 'cv-stripe';
+    const tt = d.createElement('span'); tt.className = 'cv-ttl'; const te = d.createElement('span'); te.className = 'cv-title'; te.textContent = ttl;
+    const se = d.createElement('span'); se.className = 'cv-sub'; se.textContent = typeof CVMODS.modBarSub !== 'function' || CVMODS.modBarSub(kind) ? 'Juno-60 12' : ''; se.hidden = !se.textContent;
+    tt.append(te, se);
+    const chip = d.createElement('span'); chip.className = 'cv-chip'; chip.hidden = true;
+    const cpu = d.createElement('span'); cpu.className = 'cv-cpu';
+    const more = d.createElement('button'); more.className = 'cv-btn cv-more'; more.textContent = '⋯';
+    const fold = d.createElement('button'); fold.className = 'cv-btn cv-fold'; fold.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg>';
+    bar.append(pow, stripe, tt, chip, cpu, more, fold);
+    const body = d.createElement('div'); body.className = 'cv-body';
+    mod.append(bar, body);
+    world.appendChild(mod);
+    window.__wcStep = 'modulator ' + key;
+    const slot = !!SLOTV[kind], dev = song.normModDev({ kind: kind === 'wheel' ? 'lfo' : kind });
+    const val = { wheel: 0.5, velo: 100 / 127, at: 0.6, bend: -0.3 }[kind];
+    const B = CMU.bodyFor(kind, { doc: d, get: () => (kind === 'cc' ? Object.assign(dev, { cc: 74, ch: 0 }) : slot ? dev : val), edit() {}, live() {}, cancel() {}, bpm: () => 120,
+      devKey: dk, rows: rows0, shown: () => true });
+    body.appendChild(B.el);
+    if (kind === 'note') B.update(60);
+    if (kind === 'cc') B.update(0.5);
+    let b3 = null;
+    if (slot) {
+      b3 = d.createElement('div'); s3.appendChild(b3);
+      const H3 = SXH.slotHost(kind, { doc: d, get: () => dev, edit() {}, live() {}, cancel() {}, devKey: dk, rows: rows0 });
+      H3.mount(SLOTV[kind], b3, { k: H3.slot, bare: true, dev: dk });
+      H3.paint(true);
+    }
+    const V = slot ? B.view() : { el: B.el, face: B.face, menuItems: () => [] };
+    mod.style.width = V.face.w + 'px'; // (cv-module's fixed width: the bar never wider than the face)
+    views.push({ key, kind, part: dk, V, b3, mod, recipe: slot ? null : CMU.MOD_FACE[kind], slot, plain: !slot, host: slot ? B.host() : null, body: B });
+  }
   window.__wcStep = 'mounted';
+  for (const F of views) if (F.host) F.host.paint(true);
   H.paint(true); H3.paint(true);
   if (d.fonts && d.fonts.ready) await d.fonts.ready;
-  for (let i = 0; i < 6; i++) { await new Promise(r => requestAnimationFrame(r)); H.paint(true); }
+  const paintAll = () => { H.paint(true); for (const F of views) if (F.host) F.host.paint(true); };
+  for (let i = 0; i < 6; i++) { await new Promise(r => requestAnimationFrame(r)); paintAll(); }
   await new Promise(r => setTimeout(r, 300));
-  H.paint(true);
+  paintAll();
   window.__wcStep = 'measure';
   const res = { size: [innerWidth, innerHeight, devicePixelRatio], touch: !!O.touch, narrow: !!O.narrow, faces: [], fails: [] };
   // (review 2 P3-8) the face this pass measures is the one it names: the skin's stack ('Archivo Narrow', Inter) against Inter alone — wider
@@ -109,6 +166,22 @@ export async function page(o) {
   // the Amplifier's drawer, open (its cells measured as a sheet of their own)
   const amp = views.find(x => x.key === 'amp');
   if (amp && amp.V.drawer) { amp.V.drawer.open(); H.paint(true); await new Promise(r => requestAnimationFrame(r)); res.drawer = measureDrawer(amp.V.drawer.el, d); amp.V.drawer.close(); }
+  // (MOD1 G5 / G4's skin half) the modulators under each skin: no face's box moves, its label contrast per skin
+  const mods = views.filter(F => F.slot || F.plain), box0 = mods.map(F => F.V.el.getBoundingClientRect());
+  res.skins = {};
+  for (const sk of ['ivory', 'glass', 'charcoal']) {
+    world.setAttribute('data-cv-skin', sk);
+    paintAll();
+    await new Promise(r => requestAnimationFrame(r));
+    res.skins[sk] = mods.map((F, i) => {
+      const r = F.V.el.getBoundingClientRect(), b = box0[i], moved = ['left', 'top', 'width', 'height'].some(k => Math.abs(r[k] - b[k]) > 0.01);
+      if (moved) res.fails.push(F.key + ': the ' + sk + ' skin moved its box');
+      const te = F.mod.querySelector('.cv-title'), tt = F.mod.querySelector('.cv-ttl'); // ((MOD1 review) its bar's title whole in each skin (the skin sets the face font)
+      if (te && tt && te.scrollWidth > tt.clientWidth + 0.5) res.fails.push(F.key + ': the ' + sk + ' skin clips its bar title (' + te.scrollWidth + ' > ' + tt.clientWidth + ')');
+      const lab = F.V.el.querySelector('.wk-knob > .wk-lab, .rig-mlab, .rig-jl'), bg = getComputedStyle(F.V.el).backgroundColor;
+      return { key: F.key, contrast: lab ? +(contrast(getComputedStyle(lab).color, bg) || 0).toFixed(2) : null };
+    });
+  }
   for (const f of res.faces) for (const m of f.fails) res.fails.push(f.key + ': ' + m);
   if (res.drawer) for (const m of res.drawer.fails) res.fails.push('amp drawer: ' + m);
   res.css = !!d.getElementById(RU.CSS_ID);
@@ -117,27 +190,29 @@ export async function page(o) {
 }
 const vis = (el, root) => { if (!el || !el.getClientRects || !el.getClientRects().length) return false; if (el.closest && el.closest('.rig-screen[data-h="K"]')) return false; // (the kit's own type view in the frame: WC-2 lays it)
   for (let n = el; n && n !== root; n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return false; if (n.classList && (n.classList.contains('rig-park') || n.classList.contains('rig-drawer'))) return false; } return true; };
-const TEXT_SEL = '.wk-knob > .wk-lab, .wk-knob > .wk-num, .wk-nb > .wk-lab, .sx-nf > .sx-nfl, .wk-nbv, .sx-nfv, .rig-cap, .rig-jl, .rig-hint, .sx-vc, .sxo-wl, .wk-sl > .wk-lab, .wk-mtxt, .wk-tl, .wk-seg button, .sx-seg button, .sx-tile .sx-tl';
-const CTL_SEL = '.wk-knob > .wk-svg, .wk-nbv, .sx-nfv, .wk-tog, .wk-mbtn, .wk-arr, .sx-hbtn, input, .rig-jack, .rig-disp, .wk-seg button, .sx-seg button, .sx-tile, .wk-slt, .rig-glyph';
+const TEXT_SEL = '.wk-knob > .wk-lab, .wk-knob > .wk-num, .wk-nb > .wk-lab, .sx-nf > .sx-nfl, .wk-nbv, .sx-nfv, .rig-cap, .rig-jl, .rig-hint, .sx-vc, .sxo-wl, .wk-sl > .wk-lab, .wk-mtxt, .wk-tl, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mval, .rig-mlab, .rig-mothers, .rig-mlearn'; // ((MOD1) the plain faces' readouts, chip and Learn
+const CTL_SEL = '.wk-knob > .wk-svg, .wk-nbv, .sx-nfv, .wk-tog, .wk-mbtn, .wk-arr, .sx-hbtn, input, .rig-jack, .rig-disp, .wk-seg button, .sx-seg button, .sx-tile, .wk-slt, .rig-glyph, .rig-mw, .rig-mothers, .rig-mlearn';
 const FILL_SEL = '.wk-knob, .wk-nb, .sx-nf, .wk-tog, .wk-menu, .sx-hbtn, input, .rig-jack, .rig-jl, .rig-disp, .wk-seg, .sx-seg, .sx-tile, .rig-cap, .rig-hint, .sx-vc, .wk-meter, .rig-glyph, .wk-sl';
 function textBox(el) {
   // a text element's box: the element itself when it shrinks to its text, else its text's range (a button's / a menu's label)
-  if (el.matches('.wk-mtxt, .wk-tl, .wk-nbv, .sx-nfv, .wk-seg button, .sx-seg button, .sx-tile .sx-tl') && el.firstChild) {
+  if (el.matches('.wk-mtxt, .wk-tl, .wk-nbv, .sx-nfv, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mothers, .rig-mlearn') && el.firstChild) {
     const r = document.createRange(); r.selectNodeContents(el); const b = r.getBoundingClientRect();
     if (b.width > 0) return b;
   }
   return el.getBoundingClientRect();
 }
 const gap = (a, b) => { const dx = Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right)), dy = Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)); return Math.hypot(dx, dy); };
-const cellOf = el => (el.closest ? el.closest('.rig-cell, .rig-head > *, .rig-strip > *') : null);
+const cellOf = el => (el.closest ? el.closest('.rig-cell, .rig-head > *, .rig-strip > *, .rig-mread') : null); // ((MOD1) a readout's value / label stack is one
 function measure(F, RU, d) {
   const face = F.V.el, fr = face.getBoundingClientRect(), fails = [], out = { key: F.key, kind: F.kind, variant: F.V.face && F.V.face.variant };
   const rel = r => ({ left: r.left - fr.left, top: r.top - fr.top, right: r.right - fr.left, bottom: r.bottom - fr.top, width: r.width, height: r.height });
-  const L = RU.layoutOf(RU.FACE[out.variant]), G = RU.GRID, n = L.cols, kit = out.variant === 'osc.kit';
+  const L = RU.layoutOf(F.recipe || RU.FACE[out.variant]), G = RU.GRID, n = L.cols, kit = out.variant === 'osc.kit';
   out.w = Math.round(fr.width * 100) / 100; out.h = Math.round(fr.height * 100) / 100;
   // (review 2 P3-2) the bar's title: all of it in the room the bar leaves it
   const te = F.mod.querySelector('.cv-title'), tt = F.mod.querySelector('.cv-ttl');
   if (te && tt) { out.bar = { title: te.textContent, w: te.scrollWidth, room: tt.clientWidth }; if (te.scrollWidth > tt.clientWidth + 0.5) fails.push('bar title "' + te.textContent + '" clipped (' + te.scrollWidth + ' > ' + tt.clientWidth + ')'); }
+  const se = F.mod.querySelector('.cv-sub'); // ((MOD1 review) a modulator's sub-label, where its bar shows one: whole too (a typical track name)
+  if (se && !se.hidden && se.scrollWidth > se.clientWidth + 0.5) fails.push('bar sub "' + se.textContent + '" clipped (' + se.scrollWidth + ' > ' + se.clientWidth + ')');
   if (Math.abs(fr.width - (64 * n + 32)) > 0.5 || (64 * n + 32) % 32) fails.push('width ' + fr.width + ' ≠ ' + (64 * n + 32));
   if (!kit && Math.abs(fr.height - L.h) > 0.5) fails.push('height ' + fr.height + ' ≠ ' + L.h);
   // rows
@@ -197,7 +272,7 @@ function measure(F, RU, d) {
       if (g < G.margin - 0.01) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" ' + g.toFixed(1) + ' px from a control (' + (c.getAttribute('data-dest') || c.className.baseVal || c.className) + ')');
     }
     const fs = parseFloat(getComputedStyle(e).fontSize) || 0, fs2 = e.matches('.wk-lab[data-l]') ? parseFloat(getComputedStyle(e, '::after').fontSize) : fs; // (a relabelled knob prints its ::after)
-    const want = e.matches('.wk-num, .wk-nbv, .sx-nfv, .rig-jl, .sxo-wl, .wk-sl > .wk-lab') ? MIN.val : e.closest('.rig-head') ? MIN.head : MIN.lab;
+    const want = e.matches('.wk-num, .wk-nbv, .sx-nfv, .rig-jl, .sxo-wl, .wk-sl > .wk-lab, .rig-mothers') ? MIN.val : e.closest('.rig-head') ? MIN.head : MIN.lab;
     minFont = Math.min(minFont, fs2);
     if (fs2 < want - 0.01) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" ' + fs2 + ' px < ' + want);
     const name = e.matches('.wk-mtxt') && (e.closest('.rig-grow') || e.closest('.rig-strip') || e.closest('.rig-sel'));
@@ -240,20 +315,35 @@ function measure(F, RU, d) {
   if (out.contrastVal != null && out.contrastVal < 4.5) fails.push('value contrast ' + out.contrastVal);
   // parity with the stage-3 panel: every data-dest it shows is on the face (Envelope 1's ids are the amp's no longer: §3.1)
   const ids = el => new Set(Array.from(el.querySelectorAll('[data-dest]')).map(e => e.getAttribute('data-dest')));
-  const mine = ids(face), theirs = ids(F.b3);
+  const mine = ids(face), theirs = F.b3 ? ids(F.b3) : new Set(); // ((MOD1) a plain modulator face: no old panel)
   if (F.kind === 'amp') for (const x of Array.from(theirs)) if (/^e\d\./.test(x)) theirs.delete(x);
   out.missing = Array.from(theirs).filter(x => !mine.has(x));
   if (out.missing.length) fails.push('data-dest missing: ' + out.missing.join(' '));
   out.dests = mine.size; out.dests3 = theirs.size;
   const count = el => el.querySelectorAll('*').length + 1;
   const painted = el => Array.from(el.querySelectorAll('*')).filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').length + 1;
-  out.count = count(face); out.count3 = count(F.b3); out.painted = painted(face);
-  F.b3.style.visibility = 'visible'; out.painted3 = painted(F.b3); F.b3.style.visibility = '';
-  out.ratio = +(out.count / out.count3).toFixed(2); out.pratio = +(out.painted / out.painted3).toFixed(2);
-  // G13's words on a face (lane K / H gate them; listed here): no Serum / Xfer / VOICE in its texts, titles or names
-  const words = new Set();
-  for (const e of [face].concat(Array.from(face.querySelectorAll('*')))) for (const v of [e.getAttribute && e.getAttribute('title'), e.getAttribute && e.getAttribute('aria-label'), e.children && !e.children.length ? e.textContent : '']) if (v && /Serum|Xfer|\bVOICE\b/.test(v)) words.add(v.slice(0, 60));
+  out.count = count(face); out.painted = painted(face);
+  if (F.b3) {
+    out.count3 = count(F.b3);
+    F.b3.style.visibility = 'visible'; out.painted3 = painted(F.b3); F.b3.style.visibility = '';
+    out.ratio = +(out.count / out.count3).toFixed(2); out.pratio = +(out.painted / out.painted3).toFixed(2);
+  } else { out.count3 = out.painted3 = out.ratio = out.pratio = null; }
+  // ((MOD1 G5) the modulators' element counts: a slot face ≤ 1.2 × its old panel's (the ratio above), a plain face ≤ 48
+  if (F.slot && out.count > 1.2 * out.count3) fails.push('elements ' + out.count + ' > 1.2 × ' + out.count3);
+  if (F.plain && out.count > 48) fails.push('elements ' + out.count + ' > 48');
+  // G13's words on a face (lane K / H gate them; listed here): no Serum / Xfer / VOICE in its texts, titles or names; (MOD1 G8) a modulator's:
+  // no ENV (the LFO's mode ENV is no module name), "Macro" a knob's name only — failures
+  const words = new Set(), mw = new Set(), modf = F.slot || F.plain;
+  for (const e of [face].concat(Array.from(face.querySelectorAll('*')))) {
+    const lfoMode = !!(e.closest && e.closest('[aria-label="LFO mode"]'));
+    for (const v of [e.getAttribute && e.getAttribute('title'), e.getAttribute && e.getAttribute('aria-label'), e.children && !e.children.length ? e.textContent : '']) {
+      if (v && /Serum|Xfer|\bVOICE\b/.test(v)) words.add(v.slice(0, 60));
+      if (modf && v && !lfoMode && /Serum|Xfer|\bENV\b|\bMacro\b(?! [1-8]\b)/.test(v)) mw.add(v.slice(0, 60));
+    }
+  }
+  if (modf && F.V.menuItems) for (const i of F.V.menuItems()) if (i && i.label && /Serum|Xfer|\bENV\b|\bMacro\b(?! [1-8]\b)/.test(i.label)) mw.add('⋯ ' + i.label);
   out.words = Array.from(words);
+  if (mw.size) fails.push('words: ' + Array.from(mw).join(' | '));
   out.fails = fails;
   return out;
 }
@@ -306,8 +396,13 @@ async function main() {
   });
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const port = srv.address().port;
-  const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  const prof = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-chrome-'));
+  // ((MOD1, CLAUDE.md) Chrome for Testing, never the user's Chrome: $CHROME, else .claude/test-browser's — this checkout's or, from a
+  // worktree (.claude/worktrees/<name>), the main checkout's
+  const CFT = 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
+  const cft = () => { for (const base of [ROOT, path.resolve(ROOT, '../../..')]) { const dir = path.join(base, '.claude', 'test-browser'); let vs = []; try { vs = fs.readdirSync(dir).sort().reverse(); } catch (e) { /* none */ } for (const v of vs) { const f = path.join(dir, v, CFT); if (fs.existsSync(f)) return f; } } return null; };
+  const CHROME = process.env.CHROME || cft();
+  if (!CHROME) { console.log('Chrome for Testing not found (.claude/test-browser): set $CHROME'); process.exit(2); }
+  const prof = fs.mkdtempSync(path.join(arg('profile', os.tmpdir()), 'wc-chrome-'));
   const ch = cp.spawn(CHROME, ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + prof, '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--force-color-profile=srgb', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const wsUrl = await new Promise((res, rej) => { let b = ''; const t = setTimeout(() => rej(new Error('Chrome did not start')), 20000); ch.stderr.on('data', x => { b += x; const m = /DevTools listening on (ws:\/\/\S+)/.exec(b); if (m) { clearTimeout(t); res(m[1]); } }); });
   const browserWs = new WebSocket(wsUrl);
@@ -320,6 +415,7 @@ async function main() {
     else if (x.method === 'Runtime.consoleAPICalled' && (x.params.type === 'error' || x.params.type === 'warning')) logs.push(x.params.type + ': ' + x.params.args.map(a => a.value != null ? a.value : a.description).join(' '));
   };
   const send = (method, params = {}, sessionId) => new Promise((r, j) => { const i = ++id; pend.set(i, { r, j }); browserWs.send(JSON.stringify(Object.assign({ id: i, method, params }, sessionId ? { sessionId } : {}))); });
+  await send('Browser.setDownloadBehavior', { behavior: 'deny' }); // ((CLAUDE.md) no download ever reaches the user's folders
   const SZ = { d: { w: 1440, h: 900, dpr: 2, touch: false, name: 'desktop-1440x900' }, l: { w: 1366, h: 1024, dpr: 2, touch: true, name: 'ipad-1366x1024' }, p: { w: 1024, h: 1366, dpr: 2, touch: true, name: 'ipad-1024x1366' } }; // ((review 2 P3-8) d at dpr 2 too, as §10 G11 says
   const all = [], sheets = [];
   let failed = 0;

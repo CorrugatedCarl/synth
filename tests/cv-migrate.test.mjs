@@ -903,7 +903,7 @@ test('2b splitTracks: rows from any port (a macro knob), the instrument\'s own L
   assert.deepEqual(r.p.tracks.map(x => G.compileTrack(x).canonical), [true, true]);
   assert.deepEqual(S.deserialize(JSON.stringify(r.p)).tracks.map(x => x.mods.map(y => y.id)), [['r1', 'r6'], ['r2', 'r3', 'r5']]);
   const v = M.toV1({ schema: M.SCHEMA, perf: { wheel: null }, tracks: [A] });
-  assert.deepEqual(v.lost, ['“Duo”: 2 modulation cables', '“Duo”: its LFO 1, Macro 1, Chaos 2 modules']);
+  assert.deepEqual(v.lost, ['“Duo”: 2 modulation cables', '“Duo”: its LFO 1, Macros 1, Chaos 2 modules']); // ((MOD1 §2.2) "Macros n")
 });
 
 /* ------------------------------------------------------------ milestone 3 (IMPL-3 §3): schema 7 */
@@ -938,11 +938,11 @@ test('3 schema 7: STEPS[6] moves stored modulator places only — the content an
   const L = up.p.tracks[0].lay;
   // (cv-module's MOD_W (lane C): LFO / ENV / Macro keep their right edge at −MOD_GAP and grow left from MOD_W0; the CC row, NOTE,
   //  the wheel stay; the chaos module laid over the Serum moves left past it)
-  const g = k => -320 + M.MOD_W0 - CVM.modW(k), want = Object.assign(jclone(t.lay), { h1: null });
+  const g = k => -320 + M.MOD_W0 - M.MOD_W6[k], want = Object.assign(jclone(t.lay), { h1: null }); // ((MOD1 §4.3) cv-module's MOD_W moved on to the faces: STEPS[6] grows to its frozen MOD_W6
   Object.assign(want.l1, { x: g('lfo') }); Object.assign(want.l2, { x: g('lfo') }); Object.assign(want.e1, { x: g('env') }); Object.assign(want.m1, { x: g('macro') });
   assert.deepEqual(Object.assign({}, L, { h1: null }), want, 'every other entry as it was but the grown ones (folds, z kept)');
   // (off the Serum: past its left edge − MOD_GAP (on the dots), where it meets the grown LFO 2 (y 320…): past that one's left edge too)
-  const wc = CVM.modW('chaos'), x0 = Math.floor((0 - CVM.MOD_GAP - wc) / 32) * 32;
+  const wc = M.MOD_W6.chaos, x0 = Math.floor((0 - CVM.MOD_GAP - wc) / 32) * 32;
   assert.ok(x0 + wc > g('lfo'), 'the first step lands on LFO 2');
   assert.deepEqual(L.h1, { x: Math.floor((g('lfo') - CVM.MOD_GAP - wc) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
   assert.deepEqual(Object.assign({}, up.p.tracks[0], { lay: null }), Object.assign(jclone(t), { lay: null }), 'content unchanged');
@@ -969,7 +969,7 @@ test('3 growMods (IMPL-3 §2.2): with Serum\'s widths each LFO / ENV / Macro / C
 test('3 STEPS[6]\'s widths are frozen in cv-migrate (MOD_W6: cv-module MOD_W at milestone 3 — a later width change never changes what a schema-6 project opens as); growMods grows to them by default', () => {
   assert.deepEqual(M.MOD_W6, { lfo: 416, env: 320, macro: 256, chaos: 416 });
   assert.equal(Object.isFrozen(M.MOD_W6), true);
-  for (const k of Object.keys(M.MOD_W6)) assert.equal(M.MOD_W6[k], CVM.MOD_W[k], k + ': equal to MOD_W today');
+  for (const k of Object.keys(M.MOD_W6)) assert.notEqual(M.MOD_W6[k], CVM.MOD_W[k], k + ': (MOD1 §4.3) MOD_W moved on to the faces — a schema-6 project opens as before (the freeze\'s purpose)');
   const t = MB.tracks()[1];
   t.lay = { l1: { x: -320, y: 0 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 } };
   assert.deepEqual(M.growMods({ tracks: [jclone(t)] }).tracks[0].lay, M.growMods({ tracks: [jclone(t)] }, k => M.MOD_W6[k]).tracks[0].lay);

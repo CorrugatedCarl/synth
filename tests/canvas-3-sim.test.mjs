@@ -336,18 +336,19 @@ test('slot hosts (a canvas LFO / Macro module is Serum\'s own panel): a drag is 
   assert.deepEqual([ops.count(), hsteps()], [0, n3 + 2]);
 });
 
-test('the modulator column grows leftwards (modX / modW): a tapped LFO at x −512, 416 wide, never over the instrument; a drop over the instrument moves on left of it; the drop ghost is the kind\'s width', async () => {
+test('the modulator column grows leftwards (modX / modW): a tapped LFO at x −448, 352 wide ((MOD1) its face), never over the instrument; a drop over the instrument moves on left of it; the drop ghost is the kind\'s width', async () => {
   const t = T();
-  assert.deepEqual([CVM.modX('lfo'), CVM.modW('lfo'), CVM.modX('env'), CVM.modX('wheel')], [-512, 416, -416, -320]);
+  assert.deepEqual([CVM.modX('lfo'), CVM.modW('lfo'), CVM.modX('env'), CVM.modX('wheel')], [-448, 352, -448, -320]); // ((MOD1 §4.3) the faces' widths: LFO / Envelope 352, the wheel 224 (MOD1 review: 3 columns)
   const k = M.add('lfo'); await settle();
   const r = V().modules.get(k).rect();
-  assert.deepEqual([r.x, r.w, r.x + r.w <= -CVM.MOD_GAP], [-512, 416, true]);
+  assert.deepEqual([r.x, r.w, r.x + r.w <= -CVM.MOD_GAP], [-448, 352, true]);
   const I1 = V().modules.get('i1').rect(), p = PT.modClear(t, 'lfo', { x: I1.x + 20, y: I1.y + 20 });
-  assert.equal(p.x + 416 <= I1.x - CVM.MOD_GAP, true, 'a drop over VOICE: left of it');
+  assert.equal(p.x + CVM.modW('lfo') <= I1.x - CVM.MOD_GAP, true, 'a drop over VOICE: left of it');
   const n0 = hsteps();
-  assert.equal(M.drag.drop('env', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 200, y: I1.y + 100 } }), true); await settle();
-  const e = [...V().modules.keys()].filter(q => /^e\d+$/.test(q)).pop(), re = V().modules.get(e).rect();
-  assert.deepEqual([hsteps(), re.w, re.x + re.w <= I1.x - CVM.MOD_GAP], [n0 + 1, 320, true], 'an ENV dropped onto VOICE lands left of it');
+  // ((MOD1 §5) on a rig an LFO / Envelope / Macros tile adds into the rig: a Chaos is the track's own on every canvas)
+  assert.equal(M.drag.drop('chaos', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 200, y: I1.y + 100 } }), true); await settle();
+  const e = [...V().modules.keys()].filter(q => /^h\d+$/.test(q)).pop(), re = V().modules.get(e).rect();
+  assert.deepEqual([hsteps(), re.w, re.x + re.w <= I1.x - CVM.MOD_GAP], [n0 + 1, CVM.modW('chaos'), true], 'a Chaos dropped onto VOICE lands left of it');
 });
 
 test('the ModCore meters are track-level (role none, no part: lane E\'s \'mods\' id); mcx moves an LFO\'s phase dot in Serum\'s panel', async () => {
@@ -578,17 +579,17 @@ test('review 2 P1-4: a modulator dropped near an instrument is cleared by its ki
   m0.rect = () => Object.assign(r0(), { h: 451 }); // (a Serum-faithful LFO's measured height in Chrome; the guess MOD_H.lfo is 256)
   try {
     const I1 = V().modules.get('i1').rect(), at = { x: I1.x + 64, y: I1.y - CVM.MOD_H.lfo - 32 };
-    const p = PT.modClear(t, 'lfo', at), R = V().rects();
-    assert.equal(hit({ x: p.x, y: p.y, w: 416, h: 451 }, I1), false, 'clear of VOICE by 451 px, not 256');
-    assert.deepEqual(Object.keys(R).filter(k => hit({ x: p.x, y: p.y, w: 416, h: 451 }, R[k])), [], 'clear of every module');
+    const p = PT.modClear(t, 'lfo', at), R = V().rects(), LW = CVM.modW('lfo'); // ((MOD1 §4.3) the LFO face's width
+    assert.equal(hit({ x: p.x, y: p.y, w: LW, h: 451 }, I1), false, 'clear of VOICE by 451 px, not 256');
+    assert.deepEqual(Object.keys(R).filter(k => hit({ x: p.x, y: p.y, w: LW, h: 451 }, R[k])), [], 'clear of every module');
     // onto VOICE at the column's height: left of VOICE, then below the LFO standing there (the column stays one column) — (WC: VOICE's row, the rig's group is laid out by the placing rule, not Show parts' re-layout, so the LFO is not on it)
     const q = PT.modClear(t, 'lfo', { x: I1.x + 20, y: I1.y + 8 });
-    assert.deepEqual(Object.keys(R).filter(k => hit({ x: q.x, y: q.y, w: 416, h: 451 }, R[k])), [], 'never on another modulator');
-    assert.equal(q.x + 416 <= I1.x - CVM.MOD_GAP, true, 'left of VOICE');
+    assert.deepEqual(Object.keys(R).filter(k => hit({ x: q.x, y: q.y, w: LW, h: 451 }, R[k])), [], 'never on another modulator');
+    assert.equal(q.x + LW <= I1.x - CVM.MOD_GAP, true, 'left of VOICE');
     // a tile dropped there: clear once settled
     const n0 = hsteps();
-    assert.equal(M.drag.drop('lfo', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 220, y: I1.y + 200 } }), true); await settle(); await settle();
-    const k = [...V().modules.keys()].filter(z => /^l\d+$/.test(z)).pop(), R2 = V().rects();
+    assert.equal(M.drag.drop('chaos', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 220, y: I1.y + 200 } }), true); await settle(); await settle(); // ((MOD1 §5) a track modulator: the LFO tile adds into the rig
+    const k = [...V().modules.keys()].filter(z => /^h\d+$/.test(z)).pop(), R2 = V().rects();
     assert.deepEqual([hsteps(), Object.keys(R2).filter(z => z !== k && hit(R2[k], R2[z]))], [n0 + 1, []]);
     cv.undo(); await settle();
   } finally { m0.rect = r0; }

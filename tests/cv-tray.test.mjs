@@ -20,7 +20,11 @@ import { MODULE_LAYOUTS } from '../panels/index.js?v=9';
 import { RIG, MODULES, SKINS, SKIN_DEFAULT } from '../rig-core.js?v=9';
 import { PALETTE } from '../cv-cords.js?v=9'; // ((WC-2) the lightest cord that can pass behind a glass pane
 // (WC, IMPL-WC §7) the rig view's note (the srcNote line) and its tiles' tip, from the display constant
-const RIG_NOTE = `Drop a module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`;
+const RIG_NOTE = `Drop a ${RIG.NAME} module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`; // ((MOD1 §5) its own modules only: the modulators are the next view's)
+// (MOD1 §5, Q5) the Modulators view: its words, and what Hardware / Simple point to; the views in menu order (the Modulators after the rig)
+const MODS_NOTE = `Drop a modulator on the canvas and cable its jack to any knob. On a ${RIG.NAME} an LFO, Envelope or Macros goes into it; the others are modules of the track.`; // ((MOD1 review) true: only those three go into a rig
+const TO_MODS = 'Modulators: the Modulators view. Serum: the Serum view (the menu above).';
+const VIEW_IDS = ['hw', 'flow', 'serum', 'rig', 'mods', 'drums', 'ctl', 'moog'];
 // (integration fixer L, review WC-int P3-8: our own words through RIG.NAME — the old "Arrive with the next cut." was the plan's jargon)
 const RIG_SOON = `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.`;
 const RIG_TIP = n => `${n} — tap to add it to this track's ${RIG.NAME} (or start one with it), or drag it onto the canvas`;
@@ -763,17 +767,17 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   assert.deepEqual([btn.tagName, btn.className, btn.type, btn.getAttribute('aria-haspopup'), btn.getAttribute('aria-expanded'), btn.children[0].textContent, btn.getAttribute('aria-label')],
     ['BUTTON', 'cv-vbtn', 'button', 'menu', 'false', 'Simple', 'Sources view: Simple']);
   assert.deepEqual([menu.getAttribute('role'), menu.hidden, items.map(b => [b.getAttribute('role'), b.getAttribute('data-view'), b.children[0].textContent, b.getAttribute('aria-checked')])],
-    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'rig', RIG.NAME, 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
-  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog'], 'flow', 'flow']);
+    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'rig', RIG.NAME, 'false'], ['menuitemradio', 'mods', 'Modulators', 'false'], ['menuitemradio', 'drums', 'Drums', 'false'], ['menuitemradio', 'ctl', 'Controllers', 'false'], ['menuitemradio', 'moog', 'Moog modules', 'false']]]);
+  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', VIEW_IDS, 'flow', 'flow']);
   assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
   assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808') && !classic.includes('tr606') && !classic.includes('rig'));
-  assert.deepEqual([secs(), note.textContent], [['rigmods:hidden', 'rignotes:hidden'], 'Serum and its modulators: the Serum view (the menu above).'], '((WC, IMPL-WC §6, §7) no Serum parts / Note tools sections any more; the rig view\'s two (placeholders here: no o.parts) hidden');
+  assert.deepEqual([secs(), note.textContent], [['rigmods:hidden', 'rignotes:hidden'], TO_MODS], '((MOD1 §5) Hardware / Simple point to the Modulators view; (WC, IMPL-WC §6, §7) no Serum parts / Note tools sections any more; the rig view\'s two (placeholders here: no o.parts) hidden');
   // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
   btn.click();
   assert.deepEqual([menu.hidden, btn.getAttribute('aria-expanded'), S.viewOpen()], [false, 'true', true]);
   items[2].click();
   assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
-    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false,false,false,false']);
+    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false,false,false,false,false']);
   assert.deepEqual([shown(), secs(), list.getAttribute('data-layout'), S.layout()],
     [['serum'], ['rigmods:hidden', 'rignotes:hidden'], 'flow', 'flow'], 'Serum: its tile alone ((WC) no placeholders of its own; the rig view\'s hidden); the classics\' layout kept');
   assert.equal(note.textContent, 'Drop a modulator on the canvas and cable its jack to any knob.');
@@ -820,8 +824,8 @@ test('sourcesTray (views): data-driven — o.views lists the views in order (a l
   // ((7a) Drums, (8) Controllers, (9) Moog modules are entries of SRC_VIEWS now: the later family here is a fictional one, appended after the six)
   const views = [...T.SRC_VIEWS, { id: 'later', label: 'Later', tip: 'A later family', sections: [{ id: 'kits', head: 'A later family', note: 'Arrive later.' }] }];
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, viewBtn: btn, viewMenu: menu, secEl: sec, views, view: 'flow', onView: v => got.push(v) });
-  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog', 'later'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
-  btn.click(); menu.children[7].click();
+  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [[...VIEW_IDS, 'later'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
+  btn.click(); menu.children[8].click();
   assert.deepEqual([S.view(), S.layout(), got, S.tiles().filter(b => !b.hidden).length, sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''))],
     ['later', 'flow', ['later'], 0, ['rigmods:hidden', 'rignotes:hidden', 'kits']]);
   S.destroy();
@@ -840,7 +844,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
     ['drums', 'hw', ['tr808', 'tr606', 'tr909', 'sdsv'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
   assert.equal(note.textContent, 'More machines later.');
-  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Drums', 'Controllers', 'Moog modules']);
+  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules']);
   assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
   // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
   assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
@@ -873,7 +877,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
       [12, false, false, false, false, true, true, true, true, null], v);
   }
   S.setView('serum'); assert.deepEqual(shown(), ['serum']);
-  btn.click(); menu.children[4].click();
+  btn.click(); menu.children[5].click();
   assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606', 'tr909', 'sdsv']], 'picked: layout hw (a drum machine has no Simple layout)');
   tile.click(); tile6.click(); tile9.click(); tileV.click();
   assert.deepEqual(picks, [['tr808', 'replace'], ['tr606', 'replace'], ['tr909', 'replace'], ['sdsv', 'replace']], 'a tap picks any of them as any instrument');
@@ -1071,11 +1075,18 @@ test('(WC, fixer K; review P3-14) the Sources tray scrolls as one under the mous
 });
 
 /* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): the six new tiles */
-test('sourcesTray (2b): MOD_TILES lists every kind in MOD_ORDER (the wheel project-scoped; LFO / ENV / Macro / CC / Chaos multi); the tiles carry original glyphs (one each) and data-multi; a multi tile never greys out (setPlaced ignored); the Serum view\'s note and the Note tools placeholder re-worded', () => {
-  assert.deepEqual(T.MOD_TILES.map(m => m.id + ':' + m.scope + (m.multi ? ':multi' : '')), ['wheel:project', 'velo:track', 'at:track', 'bend:track', 'note:track', 'lfo:track:multi', 'env:track:multi', 'macro:track:multi', 'cc:track:multi', 'chaos:track:multi']);
+test('sourcesTray (2b): MOD_TILES lists every kind ((MOD1 §5) LFO · Envelope · Macros first, then MOD_ORDER\'s rest; the wheel project-scoped; LFO / Envelope / Macros / CC / Chaos multi); the tiles carry original glyphs (one each) and data-multi; a multi tile never greys out (setPlaced ignored); the Serum view\'s note and the Note tools placeholder re-worded', () => {
+  assert.deepEqual(T.MOD_TILES.map(m => m.id + ':' + m.scope + (m.multi ? ':multi' : '')), ['lfo:track:multi', 'env:track:multi', 'macro:track:multi', 'wheel:project', 'velo:track', 'at:track', 'bend:track', 'note:track', 'cc:track:multi', 'chaos:track:multi']);
   const R = modRig({ mods: T.MOD_TILES });
   assert.deepEqual([R.S.modTiles().length, new Set(R.S.modTiles().map(b => b.children[0].innerHTML)).size], [10, 10], 'ten tiles, ten glyphs');
   assert.ok(R.S.modTiles().every(b => /<svg /.test(b.children[0].innerHTML) && !/<text|<image|href/.test(b.children[0].innerHTML)), 'inline strokes, no text / images / links');
+  // ((MOD1 §5) the LFO, Envelope and Macros tiles wear the Wavecraft's glyphs — the Envelope's ADSR trace on a baseline and the LFO's shape, each with
+  // the editor's square handles at its points (three each), the Macros' four panes — and the other seven keep the Modulators' own (drawn with circles and paths)
+  const G = Object.fromEntries(R.S.modTiles().map(b => [b.getAttribute('data-mod'), b.children[0].innerHTML])), nrect = g => (g.match(/<rect /g) || []).length;
+  assert.match(G.env, /<path d="M4 24.5h32"\/>/, 'the Envelope: an ADSR trace on a baseline');
+  assert.deepEqual([nrect(G.env), nrect(G.lfo), nrect(G.macro)], [3, 3, 4], 'the editor\'s handles (three each); the Macros\' four panes');
+  assert.match(G.env, /<path d="M6 24 12 5l6 9.5h10L34 24"\/>/, 'the trace itself');
+  assert.match(G.lfo, /<path d="M5 21C9 21 9 6 14 6s7 15 12 15 5-8 9-8"\/>/, 'the LFO\'s shape');
   const lfo = mtile(R, 'lfo'), velo = mtile(R, 'velo');
   assert.deepEqual([lfo.hasAttribute('data-multi'), velo.hasAttribute('data-multi'), lfo.title, mtile(R, 'wheel').title],
     [true, false, 'LFO — tap to add one, or drag it onto the canvas', 'Mod Wheel — tap to add it (one for the whole project), or drag it onto the canvas']);
@@ -1088,12 +1099,60 @@ test('sourcesTray (2b): MOD_TILES lists every kind in MOD_ORDER (the wheel proje
   assert.deepEqual([serum.note, serum.sections.map(s => s.id)], ['Drop a modulator on the canvas and cable its jack to any knob.', ['serum', 'mods']], '((WC) the Serum view: its tile and the modulators — the part tiles are the rig view\'s, lane U)');
 });
 
+/* ---------------------------------------------------------------- (MOD1 §5, IMPL-MOD1 Q5; lane U) the Modulators view */
+// the user (2026-11-02): "Own Modulators menu" — a view of its own in the Sources menu, and the Modulators section stays under the rig (and Serum, until ROADMAP 28)
+test('sourcesTray (MOD1 §5, Q5): the Modulators view — SRC_VIEWS lists it after the rig view (label, tip, note, the Modulators section alone, no layout of its own); all ten tiles, LFO · Envelope · Macros first, and no synth tile, part row, Controllers or Moog row; the section stays in the rig and Serum views; Hardware / Simple point to it, the rig view\'s note speaks of its own modules only; a menu pick, a stored "mods" view, the classics\' layout kept', () => {
+  const V = T.SRC_VIEWS.find(v => v.id === 'mods'), rigV = T.SRC_VIEWS.find(v => v.id === RIG.VIEW);
+  assert.deepEqual([T.SRC_VIEWS.indexOf(V), V.label, V.tip, V.note, V.layout, V.sections], [4, 'Modulators', 'LFO, Envelope, Macros and the rest, cabled to any knob', MODS_NOTE, undefined, [{ id: 'mods' }]]);
+  assert.deepEqual(T.SRC_VIEWS.filter(v => v.sections.some(s => s.id === 'mods')).map(v => v.id), ['serum', 'rig', 'mods'], 'the section: the Serum view (until 28), the rig view, its own');
+  assert.deepEqual([T.SRC_VIEWS.find(v => v.id === 'hw').note, T.SRC_VIEWS.find(v => v.id === 'flow').note], [TO_MODS, TO_MODS], 'Hardware / Simple point to the Modulators view (and Serum\'s)');
+  assert.ok(/Modulators view/.test(TO_MODS) && !T.SRC_VIEWS.some(v => /Serum and its modulators/.test(v.note)), 'the Serum view no longer owns "its modulators"');
+  assert.deepEqual([rigV.note, /modulator/i.test(rigV.note), rigV.sections.at(-1).id], [RIG_NOTE, false, 'mods'], 'the rig view: its note speaks of its own modules; the Modulators still close it');
+  const got = [], R = mastRig({ view: 'mods', onView: v => got.push(v) });
+  const visible = () => R.scroll.children.filter(c => !c.hidden).map(c => (c === R.list ? 'list' : c === R.mods.s ? 'mods' : c.getAttribute('data-sec') || '?'));
+  assert.deepEqual([R.S.view(), R.list.getAttribute('data-view'), R.host.children[0].children[0].textContent, R.note.textContent], ['mods', 'mods', 'Modulators', MODS_NOTE], 'a stored "mods" view opens it');
+  assert.deepEqual([visible(), modIds(R.S), R.S.tiles().filter(b => !b.hidden).length, R.S.setTiles().filter(b => !b.hidden).length],
+    [['list', 'mods'], T.MOD_TILES.map(m => m.id), 0, 0], 'the Modulators section alone (the parts, Note tools, Controllers and Moog sections hidden): its ten tiles in MOD_TILES\' order, no synth or set tile');
+  assert.deepEqual(modIds(R.S).slice(0, 3), ['lfo', 'env', 'macro'], 'LFO · Envelope · Macros first');
+  // the section follows the views: the Serum and rig views keep it, every other view hides it
+  for (const v of VIEW_IDS) { R.S.setView(v); assert.equal(R.mods.s.hidden, !['serum', 'rig', 'mods'].includes(v), v + ': the Modulators section'); }
+  // the menu: the fifth item, a pick calls back once; the classics' layout is kept through it (a view of its own with no layout)
+  R.S.setView('flow');
+  const [btn, menu] = R.host.children;
+  btn.click(); menu.children[4].click();
+  assert.deepEqual([R.S.view(), got, R.S.layout(), R.list.getAttribute('data-layout'), btn.children[0].textContent, menu.children.map(b => b.getAttribute('aria-checked')).join()],
+    ['mods', ['mods'], 'flow', 'flow', 'Modulators', 'false,false,false,false,true,false,false,false']);
+  // a tap picks in the tray's mode, a drag drops as a Modulators tile (the master's four are the same tiles)
+  R.S.modTile('env').click(); R.S.setMode('track'); R.S.modTile('macro').click();
+  assert.deepEqual(R.picks, ['mod env:replace', 'mod macro:track']);
+  R.S.setMaster(true);
+  assert.deepEqual([modIds(R.S), R.host.hidden], [['lfo', 'macro', 'cc', 'chaos'], true], 'the master: its four tiles, the view menu away');
+  R.S.setMaster(false);
+  assert.deepEqual([R.S.view(), modIds(R.S).length, R.host.hidden], ['mods', 10, false], 'back in the Modulators view');
+  R.S.destroy();
+});
+
+test('sourcesTray (MOD1 review, reviewer 2 P3): the Modulators view says "Modulators" once — its section\'s own heading (index.html\'s h3.cv-tgrp) hidden in that view only; the rig and Serum views and the master (no view menu there) keep it', () => {
+  const R = mastRig({ view: 'hw' }), h = R.d.createElement('h3');
+  h.className = 'cv-tgrp'; h.textContent = 'Modulators';
+  R.mods.s.insertBefore(h, R.mods.b);
+  const st = () => [R.S.view(), R.mods.s.hidden, h.hidden].join(':');
+  const got = [];
+  for (const v of ['mods', 'rig', 'serum', 'mods']) { R.S.setView(v); got.push(st()); }
+  R.S.setMaster(true); got.push(st());
+  R.S.setMaster(false); got.push(st());
+  R.S.setView('hw'); got.push(st());
+  assert.deepEqual(got, ['mods:false:true', 'rig:false:false', 'serum:false:false', 'mods:false:true', 'mods:false:false', 'mods:false:true', 'hw:true:false']);
+  R.S.destroy();
+});
+
 /* ---------------------------------------------------------------- (WC, IMPL-WC §7; lane U) the rig view: its tile, its module tiles, Note tools */
 // (milestone 3's Serum parts / Note tools tiles became the rig's: RIG_TILES — nine kinds, two of them (ARP, CLIP) the next cut's, so WC-1's Note tools
-// section is a placeholder — in the rig view only; the machinery (o.parts, partTiles / partTile / setPartPlaced / partPlaced) is milestone 3's)
+// section is a placeholder — in the rig view only; the machinery (o.parts, partTiles / partTile / setPartPlaced / partPlaced) is milestone 3's;
+// (MOD1 §5) six kinds: the Envelope, LFO and Macros tiles are the Modulators' — one tile per type)
 test('sourcesTray (WC): the rig view — SRC_VIEWS\'s fourth (after Serum: RIG.NAME, its tip, note and sections); the rig tile alone in it (its own art, "2026 · modular synth", no maker word, no SIMPLE badge), hidden elsewhere; a stored "rig" view opens it', () => {
   const V = T.SRC_VIEWS.find(v => v.id === RIG.VIEW);
-  assert.deepEqual(T.SRC_VIEWS.map(v => v.id), ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']);
+  assert.deepEqual(T.SRC_VIEWS.map(v => v.id), VIEW_IDS);
   assert.deepEqual([V.label, V.tip, V.note, V.layout, V.sections.map(s => s.id + (s.head ? ':' + s.head : '') + (s.note ? ':' + s.note : ''))],
     [RIG.NAME, 'Our own modular synth, patched with cords', RIG_NOTE, undefined, ['rig', 'rigmods:' + RIG.NAME + ' modules', 'rignotes:Note tools:' + RIG_SOON, 'mods']]);
   assert.deepEqual([MODELS.filter(V.sections[0].models).map(m => m.id), T.SRC_VIEWS.filter(v => v.sections.some(s => s.models && s.models(MODELS.find(m => m.id === 'rig')))).map(v => v.id)], [['rig'], ['rig']], 'the rig tile: in its view only');
@@ -1106,15 +1165,15 @@ test('sourcesTray (WC): the rig view — SRC_VIEWS\'s fourth (after Serum: RIG.N
   assert.equal(tile.title, `${RIG.NAME} (2026) — our modular synth: modules patched with cords, a small starter rig that plays — tap to use it, or drag it onto the canvas or the track list`);
   assert.ok(!/undefined|serum|xfer/i.test(tile.title + tile.textContent), tile.title);
   assert.equal(tile.children[0].innerHTML, cvArt.art('rig', cvArt.TILE));
-  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog']) { S.setView(v); assert.equal(tile.hidden, true, v); }
+  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl', 'moog']) { S.setView(v); assert.equal(tile.hidden, true, v); }
   S.setView('rig'); tile.click();
   assert.deepEqual([tile.hidden, picks], [false, ['rig:replace']]);
   S.destroy();
 });
 
-test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise, Filter, Envelope, LFO, Macros; Arpeggiator and Clip sequencer the next cut\'s) in the host\'s sections, headed from RIG.NAME, shown in the rig view only; Note tools a placeholder; a tap → partPick, a drag → partDrag (info.part, the world point); setPartPlaced greys one with rigFull\'s text', () => {
+test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise, Filter ((MOD1 §5) the Envelope, LFO and Macros: the Modulators\' tiles); Arpeggiator and Clip sequencer the next cut\'s) in the host\'s sections, headed from RIG.NAME, shown in the rig view only; Note tools a placeholder; a tap → partPick, a drag → partDrag (info.part, the world point); setPartPlaced greys one with rigFull\'s text', () => {
   assert.deepEqual(T.RIG_TILES.map(p => [p.id, p.name, p.group, p.cut]), [['osc', 'Oscillator', 'rigmods', 1], ['sub', 'Sub oscillator', 'rigmods', 1], ['noise', 'Noise', 'rigmods', 1],
-    ['filter', 'Filter', 'rigmods', 1], ['env', 'Envelope', 'rigmods', 1], ['lfo', 'LFO', 'rigmods', 1], ['macros', 'Macros', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
+    ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
   assert.ok(T.RIG_TILES.every(p => p.name === MODULES[p.id].label && p.cut === MODULES[p.id].cut && Object.isFrozen(p)) && Object.isFrozen(T.RIG_TILES), 'names and cuts: rig-core MODULES');
   assert.equal(T.RIG_CUT, 1, 'WC-1: the tiles of cut 1 are live');
   assert.equal(T.PART_TILES, undefined, 'PART_TILES became RIG_TILES');
@@ -1123,25 +1182,23 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   const picks = [], log = [];
   const R = modRig({ view: 'rig', parts: T.RIG_TILES, partsEl: pe, partsSec: ps, notesEl: ne, notesSec: ns, partPick: (id, mode) => picks.push('part ' + id + ':' + mode),
     partDrag: { begin: (id, i) => log.push('begin ' + id + (i.part ? ' part' : '')), move() {}, drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.part ? ' part' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => log.push('cancel ' + id) } });
-  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.length, R.S.partTiles().length, R.S.partTile('arp')], [['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros'], 0, 7, null], 'seven live tiles; ARP / CLIP not yet');
+  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.length, R.S.partTiles().length, R.S.partTile('arp')], [['osc', 'sub', 'noise', 'filter'], 0, 4, null], 'four live tiles; ARP / CLIP not yet');
   // the host's sections, headed by the tray (index.html holds no name): the modules' heading from RIG.NAME; Note tools a placeholder (cv-tsoon: its heading, the note)
   const kids = s => s.children.map(c => c.tagName + (c.className ? '.' + c.className.replace(/ /g, '.') : '') + (c.tagName === 'H3' || c.tagName === 'P' ? ':' + c.textContent : ''));
   assert.deepEqual([kids(ps), ps.getAttribute('aria-label'), ps.className], [['H3.cv-tgrp:' + RIG.NAME + ' modules', 'DIV'], RIG.NAME + ' modules', '']);
   assert.deepEqual([kids(ns), ns.getAttribute('aria-label'), ns.classList.contains('cv-tsoon'), ne.hidden], [['H3.cv-tgrp:Note tools', 'DIV', 'P.cv-tnote:' + RIG_SOON], 'Note tools', true, true]);
   assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the rig view');
-  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
+  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
   R.S.setView('rig');
   const osc = R.S.partTile('osc');
   assert.deepEqual([osc.className, osc.getAttribute('data-group'), osc.children.map(c => c.className), osc.children[1].textContent, osc.title],
     ['cv-tile cv-ptile', 'rigmods', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'Oscillator', RIG_TIP('Oscillator')]);
-  // glyphs: one original each; the Envelope's and the LFO's are not the Modulators' ENV / LFO (both rows show in this view)
+  // glyphs: one original each ((MOD1 §5) the Envelope's and the LFO's, with the editor's handles, go to the Modulators' tiles: lane U pins them there)
   const G = Object.fromEntries(R.S.partTiles().map(b => [b.getAttribute('data-part'), b.children[0].innerHTML]));
-  assert.equal(new Set(Object.values(G)).size, 7, 'one original glyph each');
+  assert.equal(new Set(Object.values(G)).size, 4, 'one original glyph each');
   assert.ok(Object.values(G).every(g => /<svg /.test(g) && !/<text|<image|href/.test(g)));
-  assert.match(G.env, /<path d="M4 24.5h32"\/>/, 'the Envelope: an ADSR trace on a baseline');
-  assert.equal((G.env.match(/<rect /g) || []).length + (G.lfo.match(/<rect /g) || []).length, 3 + 3, 'with the editor\'s handles (three each)');
-  osc.click(); R.S.setMode('track'); R.S.partTile('lfo').click();
-  assert.deepEqual([picks, R.picks], [['part osc:replace', 'part lfo:track'], []], 'partPick, not the synth pick');
+  osc.click(); R.S.setMode('track'); R.S.partTile('noise').click();
+  assert.deepEqual([picks, R.picks], [['part osc:replace', 'part noise:track'], []], 'partPick, not the synth pick');
   // a drag onto the canvas: info.part, the world point
   const f = R.S.partTile('filter'), tp = { pointerType: 'touch' };
   ptr(f, 'pointerdown', 100, 300, at(tp)); ptr(f, 'pointermove', 112, 302, at(tp)); ptr(f, 'pointermove', 400, 300, at(tp));
@@ -1167,15 +1224,17 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   assert.deepEqual([osc.classList.contains('cv-placed'), R.S.partPlaced('osc'), osc.title], [false, null, RIG_TIP('Oscillator')]);
   R.S.destroy();
   assert.deepEqual([pe.children.length + ne.children.length, kids(ps), kids(ns), ns.classList.contains('cv-tsoon'), ne.hidden], [0, ['DIV'], ['DIV'], false, false], 'destroy takes the tiles and what it put in the host\'s sections');
-  // the Envelope's and the LFO's glyphs are not the Modulators' ENV / LFO (both rows show in this view)
-  const M2 = modRig({ mods: T.MOD_TILES, view: 'rig' });
-  assert.ok(G.env !== M2.S.modTile('env').children[0].innerHTML && G.lfo !== M2.S.modTile('lfo').children[0].innerHTML, 'not the Modulators\' glyphs');
+  // ((MOD1 §5) no Envelope / LFO part tile beside the Modulators' any more: one tile per type)
+  const M2 = modRig({ mods: T.MOD_TILES, parts: T.RIG_TILES, view: 'rig' });
+  assert.deepEqual([M2.S.partTiles().map(b => b.getAttribute('data-part')), ['lfo', 'env', 'macro'].map(id => M2.S.modTile(id).hidden)], [['osc', 'sub', 'noise', 'filter'], [false, false, false]],
+    'the Modulators\' tiles are the rig view\'s LFO / Envelope / Macros');
+  assert.equal(new Set([...M2.S.partTiles(), ...M2.S.modTiles()].map(b => b.children[0].innerHTML)).size, 14, 'the Wavecraft view\'s fourteen tiles, fourteen glyphs');
   M2.S.destroy();
-  // in o.secEl when the host gives no elements: the modules' section with its seven tiles, Note tools a placeholder; without o.parts: both placeholders
+  // in o.secEl when the host gives no elements: the modules' section with its four tiles, Note tools a placeholder; without o.parts: both placeholders
   const d = fresh(), list = d.createElement('div'), sec = d.createElement('div');
   const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec, parts: true, view: 'rig' });
   assert.deepEqual(sec.children.map(s => s.getAttribute('data-sec') + ':' + s.className + ':' + s.children.map(c => (c.tagName === 'DIV' ? c.children.length : c.textContent)).join('/')),
-    ['rigmods:cv-tsec cv-psec:' + RIG.NAME + ' modules/7', 'rignotes:cv-tsec cv-tsoon:Note tools/' + RIG_SOON]);
+    ['rigmods:cv-tsec cv-psec:' + RIG.NAME + ' modules/4', 'rignotes:cv-tsec cv-tsoon:Note tools/' + RIG_SOON]);
   S2.setView('flow');
   assert.deepEqual(sec.children.map(s => s.hidden), [true, true]);
   S2.destroy();
@@ -1225,8 +1284,8 @@ function ctlRig(o = {}) {
 
 test('sourcesTray (8): the Controllers view — SRC_VIEWS lists it after Drums (its tip and note); one Pads tile in a row of its own (an original 3 × 3 glyph, one lit; the name, a hidden reason) in its own section, shown only in this view; tiles() stays the synths\' (all hidden here); a tap picks in the tray\'s mode (ctlPick, else modPick, else pick); the view is remembered (a stored "ctl"), an unknown one opens Hardware', () => {
   const V = T.SRC_VIEWS.map(v => v.id);
-  assert.deepEqual(V, ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']); // ((9) the Moog modules view after it; (WC) the rig view after Serum)
-  const ctl = T.SRC_VIEWS[5];
+  assert.deepEqual(V, VIEW_IDS); // ((9) the Moog modules view after it; (WC) the rig view after Serum; (MOD1) the Modulators after the rig)
+  const ctl = T.SRC_VIEWS[6];
   assert.deepEqual([ctl.label, ctl.tip, ctl.note, ctl.sections, ctl.layout], ['Controllers', 'Pad grids that play and modulate any track',
     'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', [{ id: 'ctls' }], undefined], 'no layout of its own: the classics\' is kept');
   assert.deepEqual(T.CTL_TILES.map(t => [t.id, t.name]), [['pads', 'Pads']]);
@@ -1239,7 +1298,7 @@ test('sourcesTray (8): the Controllers view — SRC_VIEWS lists it after Drums (
   const g = p.children[0].innerHTML;
   assert.deepEqual([p.children[0].getAttribute('aria-hidden'), (g.match(/<rect /g) || []).length, (g.match(/fill="currentColor"/g) || []).length, /<(text|image)|href|url\(/.test(g)], ['true', 9, 1, false], 'a 3 × 3 of rounded squares, one lit; monochrome');
   assert.equal(p.title, 'Pads — tap to add a Pads module (it plays any track), or drag it onto the canvas');
-  for (const v of ['hw', 'flow', 'serum', 'drums']) { R.S.setView(v); assert.equal(R.sec.hidden, true, v + ': no Controllers row'); }
+  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums']) { R.S.setView(v); assert.equal(R.sec.hidden, true, v + ': no Controllers row'); }
   R.S.setView('ctl');
   assert.deepEqual([R.sec.hidden, R.S.layout()], [false, 'hw'], 'back; the layout kept (no layout of its own)');
   p.click();
@@ -1356,10 +1415,10 @@ function moogRig(o = {}) {
   return { d, tray, list, scroll, layer, S, log, picks, sec: () => scroll.children.find(c => c.getAttribute('data-sec') === 'moog') || null };
 }
 
-test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s seventh ((WC) the rig view before it; tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
+test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s eighth ((WC) the rig view, (MOD1) the Modulators view before it; tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), (9c) a sixth, 1960s, the 35 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
   const V = T.SRC_VIEWS.find(v => v.id === 'moog');
   assert.deepEqual([T.SRC_VIEWS.map(v => v.id).indexOf('moog'), V.label, V.tip, V.layout, V.sections.map(s => s.id), V.note],
-    [6, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
+    [7, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
       'Model 15, System 35, System 55 and System IIIc bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.']);
   assert.deepEqual(MODELS.filter(m => V.sections[0].models(m)).map(m => m.id), ['m900'], 'the m15 section: the 900 Series model tile only');
   assert.deepEqual(T.MOOG_TILES.map(t => [t.id, t.name, t.group]), [['921', '921 Oscillator', 'src'], ['921a', '921A Driver', 'src'], ['921b', '921B Oscillator', 'src'],
@@ -1404,7 +1463,7 @@ test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s seventh ((WC) 
   }
   assert.ok(/width="34"/.test(T.MOOG_GLYPH['907a']) && /width="20"/.test(T.MOOG_GLYPH['921']) && /width="12"/.test(T.MOOG_GLYPH['911']), 'the 907A wide, the 921 2 MU, the rest 1 MU');
   // only in this view; Hardware / Simple: the twelve classics (classicOf: the 900 Series is not one); back
-  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl']) { R.S.setView(v); assert.equal(sec.hidden, true, v); }
+  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(sec.hidden, true, v); }
   R.S.setView('flow');
   assert.deepEqual(shown(), MODELS.filter(classicOf).map(m => m.id));
   assert.equal(shown().length, 12);
@@ -1538,7 +1597,7 @@ test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — S
   // only in the Moog view
   const vis = () => [b.hidden, b5.hidden, b3.hidden].join();
   assert.equal(vis(), 'false,false,false');
-  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl']) { R.S.setView(v); assert.equal(vis(), 'true,true,true', v); }
+  for (const v of ['hw', 'flow', 'serum', 'mods', 'drums', 'ctl']) { R.S.setView(v); assert.equal(vis(), 'true,true,true', v); }
   R.S.setView('moog');
   // a tap: setPick in the tray's mode, never the model pick
   b.click(); R.S.setMode('track'); b5.click(); R.S.setMode('replace'); b3.click();
@@ -1599,6 +1658,11 @@ test('style.css (9): the Moog tiles\' glyph box, the target chip in #overlay, th
 });
 
 /* ---------------------------------------------------------------- (WC, IMPL-WC §3.2, §5; lane U) the rig's chrome and skins in style.css */
+// ((MOD1 §4.4) the modulators' mark. cv-face.js already sets data-cv-face on a hardware module — its tier: gl | dom | svg (main.js sxHeavyCount
+// reads 'gl') — so no rule may match the bare attribute (every skinned instrument would take the rig's chrome): a modulator's mark is the
+// attribute with any other value (the host sets ''); :where keeps the specificity of the rig's and the FX look's marks.
+const FACE = '.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))';
+const splitTop = sel => { const out = []; let d = 0, a = 0; for (let i = 0; i < sel.length; i++) { const c = sel[i]; if (c === '(' || c === '[') d++; else if (c === ')' || c === ']') d--; else if (c === ',' && !d) { out.push(sel.slice(a, i).trim()); a = i + 1; } } out.push(sel.slice(a).trim()); return out; };
 // WCAG relative luminance and contrast of two #rrggbb colours
 const lum = h => { const c = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
 const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
@@ -1624,8 +1688,9 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   // the skins: one block per SKINS id, the three scopes (the module — its bar inherits —, .sx-root where the kit declares its tokens, .rig-face), last in the file
   // ((WC-2, moved by design) the file's tail: the blocks — custom properties only —, then the glass skin's own rules, next test)
   const tail = rules.filter(r => r.sel.includes('[data-cv-skin=')), skins = tail.filter(r => decls(r.body).every(([k]) => k.startsWith('--')));
-  // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too)
-  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
+  // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too;
+  // (MOD1 §4.4) and every modulator's face: the module, its host's root (.sx-root) and the .rig-face, in the same order in every skin)
+  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root', ' ' + FACE, ' ' + FACE + ' .sx-root', ' ' + FACE + ' .rig-face'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
   assert.equal(SKIN_DEFAULT, 'charcoal');
   // ((WC-2, the user) two more: Ivory (light: cream faces, dark engraving) and Frosted glass (translucent: the cords seen through it)
   assert.deepEqual(SKINS.map(S => [S.id, S.label, S.font, !!S.glass]), [['charcoal', 'Charcoal', 'narrow', false], ['ivory', 'Ivory', 'narrow', false], ['glass', 'Frosted glass', 'narrow', true]]);
@@ -1695,10 +1760,13 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.equal(I['--sxd-bg'], I['--rig-screen'], 'ivory: the screen its frame\'s cream');
   // the chrome: every [data-cv-rig] rule outside the skins, colours only through custom properties (a #hex only as a var() fallback: the plain module's
   // look without a skin), declaring no skin variable (only its own gradient helpers, --rig-*-g)
+  // ((MOD1 §4.4) the screws and the jack row's jack are shared with the modulators' faces: the very rules, never a copy)
+  const SCREWS = `.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after, ${FACE} > .cv-body::after`, JACK = `.cv-mod[data-cv-rig] .cv-fjack, ${FACE} .cv-fjack`,
+    JACK_NO = `#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no, #world[data-cv-patching] ${FACE} .cv-fjack.cv-no`;
   const chrome = rules.filter(r => r.sel.includes('[data-cv-rig]') && !tail.includes(r));
   assert.deepEqual(chrome.map(r => r.sel), ['.cv-mod[data-cv-rig]', '.cv-mod[data-cv-rig] > .cv-bar', '.cv-mod[data-cv-rig][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-rig] .cv-title', '.cv-mod[data-cv-rig] > .cv-body',
-    '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', '.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after',
-    '.cv-mod[data-cv-rig] .cv-fjack', '#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no']);
+    '.cv-mod[data-cv-rig] .rig-face', '.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab', '.cv-mod[data-cv-rig] .rig-face .wk-knob .wk-lab', SCREWS,
+    JACK, JACK_NO]);
   for (const r of chrome) {
     assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
     assert.ok(decls(r.body).every(([k]) => !k.startsWith('--') || /^--rig-[a-z]+-g$/.test(k)), r.sel + ': no skin variable set here');
@@ -1708,12 +1776,12 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.match(body('.cv-mod[data-cv-rig] .rig-face .wk-knob, .cv-mod[data-cv-rig] .rig-face .wk-menu > .wk-lab'), /^font-family: var\(--rig-font, var\(--ui\)\);?$/, 'the knob and menu labels in the face font (values keep the mono)');
   // the screws: one pseudo-element (no DOM), never a press — its four images (head and slot in one SVG each) are the next test's pins
   // ((the FX look, 2026-10-26; moved by design) one rule for a rig module's body and every effect's face: their screws cannot drift)
-  const sc = body('.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after');
+  const sc = body(SCREWS);
   assert.match(sc, /content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;/);
   // the jack: a cream ring round a nut and its hole inside the 28 px jack (≤ 14 px radius); dimmed, not blacked out, while a cord cannot take it
-  const jk = body('.cv-mod[data-cv-rig] .cv-fjack');
+  const jk = body(JACK);
   assert.match(jk, /--rig-jack-g: radial-gradient\(circle, var\(--rig-jack-hole, #[0-9a-f]{6}\) 0 5\.5px, var\(--rig-jack-nut, #[0-9a-f]{6}\) 6px 8\.75px, var\(--rig-jack-ring, #[0-9a-f]{6}\) 9\.25px 13\.25px, transparent 13\.75px\); background: var\(--rig-jack-g\);?$/);
-  assert.match(body('#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no'), /^background: var\(--rig-jack-g\); opacity: 0\.4;?$/);
+  assert.match(body(JACK_NO), /^background: var\(--rig-jack-g\); opacity: 0\.4;?$/);
   // lane C's marked place, between the chrome and the skins
   const C0 = css.indexOf('(WC, lane C)'), K0 = css.indexOf('#world[data-cv-skin="charcoal"]');
   assert.ok(C0 > chrome[chrome.length - 1].at && C0 < K0, 'lane C\'s block goes between the chrome and the skins');
@@ -1721,7 +1789,7 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   // (the FX look, 2026-10-26) the FX modules' chrome: the case, the bar, the title in the face font, the body and its rack's ground, every
   // effect's face with the rig's four screws — colours only through the skin's variables, no skin variable set, before the skins
   const fxc = rules.filter(r => r.sel.includes('[data-cv-fx]') && !tail.includes(r));
-  assert.deepEqual(fxc.map(r => r.sel), ['.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after', '.cv-mod[data-cv-fx]', '.cv-mod[data-cv-fx] > .cv-bar', '.cv-mod[data-cv-fx][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-fx] .cv-title',
+  assert.deepEqual(fxc.map(r => r.sel), [SCREWS, '.cv-mod[data-cv-fx]', '.cv-mod[data-cv-fx] > .cv-bar', '.cv-mod[data-cv-fx][data-cv-fold] > .cv-bar', '.cv-mod[data-cv-fx] .cv-title',
     '.cv-mod[data-cv-fx] > .cv-body, .cv-mod[data-cv-fx] .cv-body > .fxtab']);
   for (const r of fxc) {
     assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
@@ -1731,6 +1799,25 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   assert.equal(body('.cv-mod[data-cv-rig] .cv-title'), fxc.find(r => r.sel === '.cv-mod[data-cv-fx] .cv-title').body, 'the FX module\'s title as a rig module\'s');
   // an effect's face: the rig's screws — the very rule (the SVG screw of ffb64fd, its slot centred at every display scale), never a copy
   assert.equal(fxc[0], chrome.find(r => r.sel.startsWith('.cv-mod[data-cv-rig] > .cv-body::after')), 'an effect\'s face: the rig\'s screws, the same rule');
+  // (MOD1 §4.4; the modulators' look) every modulator module marked [data-cv-face] wears the rig's chrome — the case, the bar, the title in the face
+  // font, the body, the face and its labels, the screws and the jack row's jack (those two are the rig's rules above, extended) — in the same
+  // skin, before the skins; each rule's body the rig's, colours only through the skin's variables, no skin variable set here
+  const fcs = rules.filter(r => r.sel.startsWith(FACE) && !tail.includes(r));
+  assert.deepEqual(fcs.map(r => r.sel), [FACE, `${FACE} > .cv-bar`, `${FACE}[data-cv-fold] > .cv-bar`, `${FACE} .cv-title`, `${FACE} > .cv-body`, `${FACE} .rig-face`,
+    `${FACE} .rig-face .wk-knob, ${FACE} .rig-face .wk-menu > .wk-lab`, `${FACE} .rig-face .wk-knob .wk-lab`]);
+  for (const r of fcs) {
+    assert.ok(!/#[0-9a-f]{3,8}\b/i.test(r.body.replace(/var\(--[a-z0-9-]+, #[0-9a-f]{6}\)/g, '')), r.sel + ': colours through the skin\'s variables');
+    assert.ok(decls(r.body).every(([k]) => !k.startsWith('--')), r.sel + ': no skin variable set here');
+    assert.ok(r.at < K0, r.sel + ': before the skins');
+    assert.ok(r.at > fxc.at(-1).at && r.at < C0, r.sel + ': after the FX look, before lane C\'s block');
+    assert.equal(r.body, chrome.find(q => q.sel === r.sel.split(FACE).join('.cv-mod[data-cv-rig]')).body, r.sel + ': the rig\'s rule, body for body');
+  }
+  // the H6 hook (an experiment's attribute on #world): the non-hardware bodies contain their paint — a modulator's face is one
+  const h6 = rules.find(r => r.sel === `#world[data-cv-h6="contain"] ${FACE} > .cv-body`);
+  assert.ok(h6 && h6.body === 'contain: content;', 'the modulators\' bodies contain their paint under the H6 hook (the bare :not([data-cv-face]) rule would skip them)');
+  // and nothing matches the bare attribute but cv-face.js's own GL rules and that hook: a hardware module's tier is not a modulator
+  for (const p of rules.flatMap(r => splitTop(r.sel)).filter(p => p.includes('data-cv-face')))
+    assert.ok(p.includes(FACE) || /^\.cv-mod\[data-cv-face="gl"\]( \.inst\.hw)?$/.test(p) || p === '#world[data-cv-h6="contain"] .cv-mod:not([data-cv-face]) > .cv-body', 'a selector on the bare attribute: ' + p);
   assert.equal(rules.filter(r => r.sel.includes('fxr-face') && r.sel.includes('::after')).length, 1, 'no other rule draws a face\'s screws');
 });
 
@@ -1748,7 +1835,7 @@ test('style.css (WC-2): the glass skin\'s own rules after the blocks — the pan
   const tail = rules.filter(r => r.sel.includes('[data-cv-skin=')), glass = tail.filter(r => !decls(r.body).every(([k]) => k.startsWith('--')));
   const G = SKINS.filter(S => S.glass).map(S => S.id);
   assert.deepEqual(G, ['glass']);
-  const W = '#world[data-cv-skin="glass"]', MODS = ':is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx])';
+  const W = '#world[data-cv-skin="glass"]', MODS = `:is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], ${FACE})`; // ((MOD1 §4.4) the modulators' panes too)
   assert.deepEqual(glass.map(r => r.sel), [
     `${W} ${MODS} :is(.cv-body, .inst.custom, .fxtab, .fxr-root)`,
     `${W} .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"]`,
@@ -1756,14 +1843,14 @@ test('style.css (WC-2): the glass skin\'s own rules after the blocks — the pan
   assert.deepEqual(glass.map(r => decls(r.body)), [[['background-color', 'transparent']], [['background-color', 'var(--sx-panel)']],
     [['-webkit-backdrop-filter', 'blur(12px) saturate(1.6)'], ['backdrop-filter', 'blur(12px) saturate(1.6)']]], 'the pane, the popovers, the frost (WebKit\'s prefix first)');
   for (const r of glass) {
-    for (const part of r.sel.split(/,(?![^(]*\))/)) {
+    for (const part of splitTop(r.sel)) {
       const ids = [...part.matchAll(/\[data-cv-skin="([a-z]+)"\]/g)].map(m => m[1]);
       assert.ok(ids.length === 1 && G.includes(ids[0]), part + ': a glass skin\'s, alone');
     }
     assert.ok(decls(r.body).every(([k, x]) => ['background-color', 'backdrop-filter', '-webkit-backdrop-filter'].includes(k) && !/#[0-9a-f]{3,8}\b/i.test(x)), r.sel + ': no box, no colour of its own');
   }
   // the Low preset: its own frost off, the translucency kept (the selector's :not) — the attribute is the world's (cv-world setPerf)
-  assert.ok(glass.filter(r => /backdrop-filter/.test(r.body)).every(r => r.sel.split(/,(?![^(]*\))/).every(p => p.startsWith('#viewport:not([data-cv-perf="low"]) '))), 'never on Low');
+  assert.ok(glass.filter(r => /backdrop-filter/.test(r.body)).every(r => splitTop(r.sel).every(p => p.startsWith('#viewport:not([data-cv-perf="low"]) '))), 'never on Low');
   assert.ok(glass.every(r => r.at > Math.max(...tail.filter(q => !glass.includes(q)).map(q => q.at))), 'after every block');
   assert.ok(!css.includes(RIG.NAME), 'the name is the constant\'s (G4)');
 });
@@ -1776,10 +1863,11 @@ test('style.css (WC, the user 2026-10-26): each corner screw is one SVG image �
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), plain = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length));
   const rules = [...plain.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ sel: m[1].trim().replace(/\s+/g, ' '), body: m[2].trim() }));
   const decls = body => body.split(/;(?![^(]*\))/).map(s => s.trim()).filter(Boolean).map(s => [s.slice(0, s.indexOf(':')).trim(), s.slice(s.indexOf(':') + 1).trim()]);
-  const sc = rules.filter(r => r.sel.split(',').map(x => x.trim()).includes('.cv-mod[data-cv-rig] > .cv-body::after'));
+  const sc = rules.filter(r => splitTop(r.sel).includes('.cv-mod[data-cv-rig] > .cv-body::after'));
   assert.equal(sc.length, 1, 'one rule, one pseudo-element');
   // ((the FX look, 2026-10-26; moved by design) every effect's face shares this rule: the FX faces get the same SVG screws)
-  assert.deepEqual(sc[0].sel.split(',').map(x => x.trim()), ['.cv-mod[data-cv-rig] > .cv-body::after', '.cv-mod[data-cv-fx] .fxr-face::after']);
+  // ((MOD1 §4.4) and every modulator's face: the same four screws)
+  assert.deepEqual(splitTop(sc[0].sel), ['.cv-mod[data-cv-rig] > .cv-body::after', '.cv-mod[data-cv-fx] .fxr-face::after', FACE + ' > .cv-body::after']);
   const D = Object.fromEntries(decls(sc[0].body));
   assert.deepEqual(Object.keys(D), ['content', 'position', 'inset', 'z-index', 'pointer-events', '--rig-screw-g', 'background'], 'one image helper, nothing else declared');
   // four layers, one per corner: the same image in an 8 px tile at 5 px from that corner (whole CSS px — no half-px offset to round)
@@ -1873,7 +1961,7 @@ test('sourcesTray (MM): the constants — MASTER_MODS (LFO, Macro, CC, Chaos: no
 });
 
 test('sourcesTray (MM): setMaster(true) — the view menu is hidden, every model tile / section and the Controllers row are hidden, the Modulators section shows only LFO, Macro, CC, Chaos with the master\'s note; from every view; master() says so', () => {
-  for (const view of ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']) {
+  for (const view of VIEW_IDS) {
     const R = mastRig({ view });
     assert.deepEqual([R.S.master(), R.list.hasAttribute('data-master'), R.tray.classList.contains('cv-mside')], [false, false, false], view + ': off at the start');
     R.S.setMaster(true);
@@ -1891,7 +1979,7 @@ test('sourcesTray (MM): setMaster(true) — the view menu is hidden, every model
 });
 
 test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was (the hidden flags of tiles, sections, the view menu, the view\'s note); the Modulators\' other tiles are back in the Serum view; calling it twice changes nothing', () => {
-  for (const view of ['hw', 'flow', 'serum', 'rig', 'drums', 'ctl', 'moog']) {
+  for (const view of VIEW_IDS) {
     const R = mastRig({ view }), before = trayShape(R);
     assert.equal(before.mnote, -1, view + ': no master note in the other canvases\' tray before the first visit (node for node as it was)');
     R.S.setMaster(true); R.S.setMaster(true);
@@ -1926,7 +2014,7 @@ test('sourcesTray (MM): while the master canvas shows, a view restore (setView �
   R.S.destroy();
 });
 
-test('sourcesTray (MM): the master\'s tiles work as the Modulators\' — a tap → modPick(id, mode); a drag onto the canvas → modDrag (info.mod, the world point, "+ Add Macro"); the other tiles stay hidden (no envelope, no performance source, no note source)', () => {
+test('sourcesTray (MM): the master\'s tiles work as the Modulators\' — a tap → modPick(id, mode); a drag onto the canvas → modDrag (info.mod, the world point, "+ Add Macros"); the other tiles stay hidden (no envelope, no performance source, no note source)', () => {
   const R = mastRig(), tp = { pointerType: 'touch' };
   R.S.setMaster(true);
   R.S.modTile('lfo').click();
@@ -1935,7 +2023,7 @@ test('sourcesTray (MM): the master\'s tiles work as the Modulators\' — a tap �
   assert.deepEqual(R.picks, ['mod lfo:replace', 'mod chaos:track']);
   const t = R.S.modTile('macro');
   ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 112, 302, at(tp)); ptr(t, 'pointermove', 400, 300, at(tp));
-  assert.equal(R.layer.children[0].children[1].textContent, '+ Add Macro');
+  assert.equal(R.layer.children[0].children[1].textContent, '+ Add Macros'); // ((MOD1 §2.2) the tile's name)
   TS += 150;
   ptr(t, 'pointermove', 402, 301, at(tp)); ptr(t, 'pointerup', 402, 301, at(tp));
   assert.deepEqual(R.log, ['begin macro mod', 'drop macro canvas mod @804,201']);
@@ -1982,9 +2070,9 @@ test('sourcesTray (MM): without a section element (a flat list) the heading "Mod
   const names = () => list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.tagName === 'P' ? 'p' : n.getAttribute('data-model') || n.getAttribute('data-mod') || n.getAttribute('data-ctl')) + (n.hidden ? '!' : ''));
   assert.equal(list.children.length, 2 + 1 + 10 + 1 + 1, 'before the first visit: the synths, the Modulators\' heading and ten tiles, the Controllers\' heading and tile — no note');
   S.setMaster(true);
-  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'wheel!', 'velo!', 'at!', 'bend!', 'note!', 'lfo', 'env!', 'macro', 'cc', 'chaos', 'p', '#Controllers!', 'pads!']);
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env!', 'macro', 'wheel!', 'velo!', 'at!', 'bend!', 'note!', 'cc', 'chaos', 'p', '#Controllers!', 'pads!']); // ((MOD1 §5) LFO · Envelope · Macros first)
   S.setMaster(false);
-  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'p!', '#Controllers!', 'pads!']);
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env', 'macro', 'wheel', 'velo', 'at', 'bend', 'note', 'cc', 'chaos', 'p!', '#Controllers!', 'pads!']);
   S.destroy();
   assert.equal(list.children.filter(n => n.tagName === 'P').length, 0, 'the note goes with the tray');
 });

@@ -33,7 +33,8 @@
 //                                  s.locks, the lay rename, the gate back); o = { held, shown, used, rig } (or `held` alone)
 //   partKeys(s, lay, dev, used, rig)   sx-edges' I1 / I2 + env1 by the amp-slot rule + I1' (a fed-but-off Filter: by a
 //                                  powered source or the other Filter carrying sound)
-//   nameOf(rig, key) / labelOf(part, rig) / ordinalOf / nextOrdinal   the bar titles from the fixed ordinals (dev.rig.n)
+//   nameOf(rig, key) / labelOf(part, rig) / ordinalOf / nextOrdinal   the bar titles from the fixed ordinals (dev.rig.n); (MOD1 §2.2)
+//                                  nextOrdinal's `taken`: the track's own device numbers of the kind (one numbering per canvas)
 //   pruneRig(rig, s, lay, dev)     the cc / n garbage collection (§2.1)
 import { defaultSerum, normalizeSerum, DESTS, DEST_INDEX, MODULE_FIELDS, swapModules, initModule, destBase, lawValue } from './serum-core.js?v=9';
 import { POWER, PARTS, SRC_PARTS, FILTERS, WHY, setEdge, serumEdges, slotsUsed, partKeys as sxPartKeys, jackOf, kindOf, splitKey, partOn } from './sx-edges.js?v=9';
@@ -139,7 +140,7 @@ export const MODULES = deepFreeze({
     jacks: { in: [], out: [J('out', 'OUT', { kind: 'mod' })] }, rows: ['head', 'screen', 'knobs', 'knobs', 'jacks'], cut: 1 },
   lfo: { label: 'LFO', labelN: i => 'LFO ' + i, cols: 5, max: 10, slots: SLOTS('lfo', 10), power: false,
     jacks: { in: [], out: [J('out', 'OUT', { kind: 'mod' })] }, rows: ['head', 'screen', 'knobs', 'switches', 'jacks'], cut: 1 },
-  macros: { label: 'Macros', cols: 4, max: 1, slots: ['macros'], power: false,
+  macros: { label: 'Macros', labelN: i => 'Macros ' + i, cols: 4, max: 1, slots: ['macros'], power: false, // ((MOD1 §2.2) numbered as a track's: "Macros 1")
     jacks: { in: [], out: SLOTS('k', 8).map((id, i) => J(id, 'Macro ' + (i + 1), { kind: 'mod', inline: true })) }, rows: ['head', 'knobs', 'knobs'], cut: 1 },
   arp: { label: 'Arpeggiator', cols: 8, max: 1, slots: ['arp'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note' })] }, rows: ['head', 'screen', 'jacks'], cut: 2 },
   clip: { label: 'Clip sequencer', cols: 8, max: 1, slots: ['clip'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note' })] }, rows: ['head', 'screen', 'jacks'], cut: 2 },
@@ -179,8 +180,8 @@ export function adopt(s) {
 const CC_KEY = /^[a-z][a-zA-Z0-9.#]{1,40}$/, PART_KEY = /^[a-z][a-zA-Z0-9]{0,15}$/, CC_MAX = 512, N_MAX = 64;
 /** The bounded record { v: 1, cc: { '<source end>': 0…7 }, n: { '<part>': 1…99 } }: cc the cord colours a user picked, keyed by the cord's
  * source end ('oscA.out', 'lfo3.out#2' a row's ordinal — a re-patch keeps the colour); n the fixed display ordinal of a module whose engine
- * slot can move (the Envelopes, §3.4), keyed by the part name of its lay key ('env2' of 'iN/env2'). ≤ 512 / ≤ 64 entries, integers in range,
- * anything else dropped; never throws; idempotent. */
+ * slot can move (the Envelopes, §3.4; MOD1 §2.2: a new LFO / Envelope / Macros, given at creation), keyed by the part name of its lay key
+ * ('env2' of 'iN/env2'). ≤ 512 / ≤ 64 entries, integers in range, anything else dropped; never throws; idempotent. */
 export function normRig(r) {
   const o = { v: 1, cc: {}, n: {} };
   if (!isObj(r)) return o;
@@ -635,7 +636,7 @@ export function ordinalOf(rig, part) {
   const n = isObj(rig) && isObj(rig.n) ? rig.n[part] : undefined;
   return Number.isInteger(n) && n >= 1 && n <= 99 ? n : SLOT_N(part);
 }
-/** The bar title of a part: 'Oscillator 1', 'Envelope 2' (the fixed ordinal), 'Sub oscillator', 'Macros'; 'voice' / 'amp' / nothing →
+/** The bar title of a part: 'Oscillator 1', 'Envelope 2' (the fixed ordinal), 'Sub oscillator', 'Macros 1'; 'voice' / 'amp' / nothing →
  * 'Amplifier'; 'fx' → 'Effects'. */
 export function labelOf(part, rig) {
   if (part == null || part === '' || part === 'voice' || part === 'amp') return MODULES.amp.label;
@@ -657,9 +658,11 @@ export function nameOf(rig, key) {
   if (q) return labelOf(q.part, rig);
   return typeof key === 'string' && /^[a-z][a-z0-9]*\/fx$/.test(key) ? labelOf('fx', rig) : MODULES.amp.label;
 }
-/** The ordinal a new module of `kind` gets: the lowest 1…99 none of `parts` (the rig's modules of that kind) shows. */
-export function nextOrdinal(rig, kind, parts) {
+/** The ordinal a new module of `kind` gets: the lowest 1…99 none of `parts` (the rig's modules of that kind) shows and `taken` (MOD1 §2.2:
+ * the track's own device numbers of that kind, cv-mods numsOf — one numbering on the canvas; an array or a Set, garbage ignored) holds. */
+export function nextOrdinal(rig, kind, parts, taken) {
   const used = new Set((Array.isArray(parts) ? parts : []).filter(p => kindOf(p) === kind).map(p => ordinalOf(rig, p)));
+  for (const n of Array.isArray(taken) || taken instanceof Set ? taken : []) if (Number.isInteger(n) && n >= 1 && n <= 99) used.add(n);
   for (let n = 1; n <= 99; n++) if (!used.has(n)) return n;
   return 99;
 }

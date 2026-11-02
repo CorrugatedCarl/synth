@@ -86,7 +86,8 @@ const PART = {
   arp: { w: 1100, title: 'ARP' },
 };
 const SLOTS = [ // the Serum-faithful modulators: [key, kind, the real 2b module that feeds it, title]
-  ['lfoA', 'lfo', 'l1', 'LFO 1'], ['lfoB', 'lfo', 'l2', 'LFO 2'], ['envA', 'env', 'e1', 'ENV 1'], ['envB', 'env', 'e2', 'ENV 2'], ['mac', 'macro', 'm1', 'Macros 1'], ['chaos', 'chaos', 'h1', 'Chaos 1'],
+  ['lfoA', 'lfo', 'l1', 'LFO 1'], ['lfoB', 'lfo', 'l2', 'LFO 2'], ['envA', 'env', 'e1', 'Envelope 1'], ['envB', 'env', 'e2', 'Envelope 2'], // ((MOD1 §2.2) the canvas words
+  ['mac', 'macro', 'm1', 'Macros 1'], ['chaos', 'chaos', 'h1', 'Chaos 1'],
 ];
 const SLOT_W = { lfo: 393, env: 314, macro: 236, chaos: 300 };
 const MOD_GAP = 80, VGAP = 64, HGAP = 96, BAR_H = 40;

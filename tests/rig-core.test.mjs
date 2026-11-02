@@ -508,7 +508,7 @@ test('partKeys (§3.4 I1 / I2 / I1\', the amp slot): sx-edges\' parts + env1 iff
 test('names (§3.4 fixed ordinals): labelOf / nameOf read dev.rig.n, else the engine slot; the Amplifier and the effects; nextOrdinal the lowest unused; ordinalOf bounds', () => {
   const rig = { v: 1, cc: {}, n: { env2: 5, lfo3: 1 } };
   assert.deepEqual(['oscA', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env1', 'env2', 'env4', 'lfo3', 'lfo10', 'macros', 'arp', 'clip', 'voice', null, 'fx', 'zzz'].map(p => R.labelOf(p, rig)),
-    ['Oscillator 1', 'Oscillator 3', 'Sub oscillator', 'Noise', 'Filter 1', 'Filter 2', 'Envelope 1', 'Envelope 5', 'Envelope 4', 'LFO 1', 'LFO 10', 'Macros', 'Arpeggiator', 'Clip sequencer', 'Amplifier', 'Amplifier', 'Effects', 'zzz']);
+    ['Oscillator 1', 'Oscillator 3', 'Sub oscillator', 'Noise', 'Filter 1', 'Filter 2', 'Envelope 1', 'Envelope 5', 'Envelope 4', 'LFO 1', 'LFO 10', 'Macros 1', 'Arpeggiator', 'Clip sequencer', 'Amplifier', 'Amplifier', 'Effects', 'zzz']); // ((MOD1 §2.2) "Macros 1")
   assert.deepEqual(['i1/env2', 'i1/oscB', 'i1', 'i1/fx', 'i7/lfo3', 'bogus'].map(k => R.nameOf(rig, k)), ['Envelope 5', 'Oscillator 2', 'Amplifier', 'Effects', 'LFO 1', 'Amplifier']);
   assert.deepEqual([R.ordinalOf(rig, 'env2'), R.ordinalOf(rig, 'env3'), R.ordinalOf(null, 'env3'), R.ordinalOf({ n: { env3: 0 } }, 'env3'), R.ordinalOf({ n: { env3: 100 } }, 'env3'), R.ordinalOf({ n: { env3: 2.5 } }, 'env3')], [5, 3, 3, 3, 3, 3]);
   assert.deepEqual([R.nextOrdinal(rig, 'env', ['env2']), R.nextOrdinal(rig, 'env', ['env2', 'env1']), R.nextOrdinal({ n: { env2: 1, env3: 2, env4: 3 } }, 'env', ['env2', 'env3', 'env4']), R.nextOrdinal(null, 'lfo', ['lfo1', 'lfo2', 'lfo5']), R.nextOrdinal(null, 'osc', [])], [1, 2, 4, 3, 1]);
@@ -617,7 +617,7 @@ test('review 2 (fixer B1) P3-6: every cord colour of the rule reads on the charc
 });
 
 test('review 2 (fixer B1) P3-2: barOf — a module bar\'s title: the full name where it fits ("Envelope 2" by its ordinal, "Noise", "Amplifier"), "Sub osc" on the Sub oscillator\'s 3-column bar; every other text keeps labelOf\'s full name', () => {
-  assert.deepEqual(['sub', 'noise', 'oscB', 'env3', 'lfo2', 'macros', 'voice', 'fx'].map(p => R.barOf(p, { n: { env3: 2 } })), ['Sub osc', 'Noise', 'Oscillator 2', 'Envelope 2', 'LFO 2', 'Macros', 'Amplifier', 'Effects']);
+  assert.deepEqual(['sub', 'noise', 'oscB', 'env3', 'lfo2', 'macros', 'voice', 'fx'].map(p => R.barOf(p, { n: { env3: 2 } })), ['Sub osc', 'Noise', 'Oscillator 2', 'Envelope 2', 'LFO 2', 'Macros 1', 'Amplifier', 'Effects']);
   assert.equal(R.labelOf('sub'), 'Sub oscillator');
   assert.ok(!/Serum|VOICE|Xfer/.test(R.MODULES.sub.bar));
 });

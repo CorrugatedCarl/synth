@@ -235,7 +235,7 @@ test('a macro module: its knob\'s move posts {t: \'mval\'} (the table index of t
   const K = M.bodies.get('m1').knobs()[0];
   K.dispatchEvent(ev('keydown', { key: 'ArrowUp', target: K })); sim.raf();
   const mv = posted(j, 'mval');
-  assert.deepEqual([mv.length, mv[0].k, mv[0].v > 0, posted(j, 'patch').length, hsteps(), cv.hist.undoLabel], [1, 0, true, 0, n1 + 1, 'Edit Macro 1'], 'mval, no patch, one step');
+  assert.deepEqual([mv.length, mv[0].k, mv[0].v > 0, posted(j, 'patch').length, hsteps(), cv.hist.undoLabel], [1, 0, true, 0, n1 + 1, 'Edit Macros 1'], 'mval, no patch, one step'); // ((MOD1 §2.2) "Macros n"
   assert.ok(Math.abs(j.dev.m1.v[0] - mv[0].v) < 1e-9, 'the state holds the value');
   // a controller: routed to the CC module of the channel's targets (cc 1, omni) → mval k 8 and the meter
   clearPosted(j);

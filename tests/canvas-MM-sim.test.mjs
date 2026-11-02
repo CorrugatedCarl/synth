@@ -82,7 +82,7 @@ TID.a = P().tracks[0].id; TID.b = P().tracks[1].id;
 const trkPosted = id => sim.nodeOf(id).posted.map(x => x.m);
 const clearTrk = () => { for (const t of P().tracks) sim.nodeOf(t.id).posted.length = 0; };
 
-test('the collision set-up (MM4): the selected track holds LFO 1, Macro 1 and CC 1 with rows r1…r3 on its Minimoog (as any track may)', async () => {
+test('the collision set-up (MM4): the selected track holds LFO 1, Macros 1 and CC 1 with rows r1…r3 on its Minimoog (as any track may)', async () => {
   const t = T();
   for (const k of ['lfo', 'macro', 'cc']) assert.equal(typeof X.add(k, null), 'string', k);
   await settle(2);
@@ -200,7 +200,7 @@ test('G5 a macro knob\'s move posts {t: mval} to MASTER and no chain; its table 
   const n1 = hsteps(), K = X.bodies.get('m1').knobs()[0];
   K.dispatchEvent(ev('keydown', { key: 'ArrowUp', target: K })); await settle(1);
   const mv = mgot('mval');
-  assert.deepEqual([mv.length, mv[0].k, mv[0].v > 0, mgot('chain').length, hsteps(), cv.hist.undoLabel], [1, 0, true, 0, n1 + 1, 'Edit Macro 1'], 'mval to MASTER, no chain, one step');
+  assert.deepEqual([mv.length, mv[0].k, mv[0].v > 0, mgot('chain').length, hsteps(), cv.hist.undoLabel], [1, 0, true, 0, n1 + 1, 'Edit Macros 1'], 'mval to MASTER, no chain, one step'); // ((MOD1 §2.2) "Macros n"
   assert.ok(Math.abs(P().master.mdev.m1.v[0] - mv[0].v) < 1e-9, 'the master\'s state holds it');
   assert.equal(P().tracks.map(t => trkPosted(t.id).length).join(), '0,0', 'no track message');
 });
@@ -286,7 +286,7 @@ test('G5 deleting the effect prunes its rows (the notice); deleting a module dro
   // a module deleted: its rows go
   MN().posted.length = 0;
   X.del('m1'); await settle(2);
-  assert.deepEqual([P().master.mods.length, 'm1' in R.dev, cv.hist.undoLabel], [0, false, 'Delete Macro 1']);
+  assert.deepEqual([P().master.mods.length, 'm1' in R.dev, cv.hist.undoLabel], [0, false, 'Delete Macros 1']);
   assert.deepEqual(mgot('mods').map(m => !!m.off).join(), 'true', '{t: mods, off: true} once');
   MN().posted.length = 0;
   api.queuePatch(R); await settle(1);

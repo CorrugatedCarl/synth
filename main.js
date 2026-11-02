@@ -32,7 +32,7 @@ import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale, reducedMotion as wkReduced } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
-import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
+import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf, numsOf as modNumsOf, modBarSub } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units; (MOD1 §2.2) a track's own device numbers of a kind; (review 2) a bar's sub-label by its face's columns)
 import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-modlayer.js?v=9';
 // milestone 3 (IMPL-3 §2.4–2.7, lane D): a Serum taken apart — its parts as modules of one host (sx-host / sx-ui-mod, loaded
 // with the panels), its internal cables as views of its state (sx-edges)
@@ -2620,6 +2620,7 @@ function setTrackModel(tr0, id, o = null) {
   if (!keep) sxModelLay(tr, dev); // ((3) the old Serum's part places go; (WC) Make it a <NAME> keeps them)
   if (rigM && o && o.module) rigFirst(tr, dev, o.module); // ((WC) the dropped module, its auto-plug, the group's first layout
   else if (keep && !Object.keys(tr.lay || {}).some(k => k.startsWith(dev + '/') && k !== dev + '/fx')) tr.lay = sxLayParts(tr, dev); // ((WC) no old places: Tidy's group
+  if (rigM) rigNumber(tr, dev); // ((MOD1 §2.2) its modulators numbered around the track's own
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
     renderPanel(tr, dev);
@@ -6522,7 +6523,11 @@ function srcModeUI(mode) {
   if (ms) return;
   // ((8, R2-F6) the Controllers view: a tap adds a Pads module to the project — no instrument is replaced, no track made — in either mode)
   if (v === 'ctl') p.append(document.createTextNode('Tap '), h('b', null, 'Pads'), document.createTextNode(' to add a pad grid to the canvas — it shows on every track — or drag it where you want it.'));
-  else if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
+  else if (v === 'mods') { // ((MOD1 §5, lane U's Modulators view) a tap ADDS a modulator — none replaces, none makes a track — in either mode; on a <NAME> its LFO / Envelope / Macros go into it
+    const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”');
+    if (isRigDev(trk(), curOf(trk()))) p.append(tx('Tap a modulator to add it to '), nm, tx(' — an LFO, Envelope or Macros goes into its '), h('b', null, RIG.NAME), tx(' — or drag it where you want it. Then drag its OUT onto a knob.')); // ((MOD1 review) not "plugged in": AUTOPLUG plugs none of them but an Envelope on a gate
+    else p.append(tx('Tap a modulator to add it to '), nm, tx(', or drag it where you want it. Then drag its OUT onto a knob to move it.'));
+  } else if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
   else if (v === 'moog') { // ((9, review 2 F4) the Moog modules view: what a tap really does here — a module tile adds it to a 900 Series, the Model 15 tile loads Classic bass; on another instrument a tile makes it a 900 Series; (9b) the set tiles named: System 35 / 55 load their set, laid out)
     const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”');
     if (ptShown()) p.append(tx('Tap a module to add it to '), nm, tx(', or drag it where you want it. '), h('b', null, 'Model 15'), tx(' loads Classic bass over the patch; '), h('b', null, 'System 35'), tx(', '), h('b', null, 'System 55'), tx(' and '), h('b', null, 'System IIIc'), tx(' bring their whole set, patched and laid out (tap to undo). Drag a tile onto the track list for a new track.'));
@@ -6669,7 +6674,7 @@ function initShell() {
     layoutEl: $('#srcLayout'), viewBtn: $('#srcView'), viewMenu: $('#srcViewMenu'), secEl: $('#srcScroll'), noteEl: $('#srcNote'),
     view: store.get(TRAY_LAYOUT, 'hw'), onView: v => { store.set(TRAY_LAYOUT, v); srcModeUI(shell.tiles.mode()); },
     // (stage 2a) the Modulators section: a tap adds one where Tidy would, a drop where it lands (modPick / modTileDrag)
-    mods: MOD_TILES, modsEl: $('#srcMods'), modsSec: $('#srcModSec'), modPick: id => modAdd(id, null), modDrag: modTileDrag,
+    mods: MOD_TILES, modsEl: $('#srcMods'), modsSec: $('#srcModSec'), modPick: id => modTile(id, null), modDrag: modTileDrag, // ((MOD1 §5) by the track: into a <NAME>, else the track's / the master's
     masterMods: S.MASTER_MOD_KINDS.slice(), // ((MM, §7.3) the master canvas's Modulators tiles (setMaster: the four the data model takes; the note cv-tray's MASTER_NOTE)
     modCanvasGhost: () => !!world && !$('#tab-inst').hidden, toWorld: (x, y) => { const W = cvW(); return W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : null; },
     // (8, §1.2) the Controllers view's tile row (Pads): a tap adds one where Tidy would, a drop where it lands (at its footprint)
@@ -7090,7 +7095,7 @@ function cvRender() {
     monitors.sync();
   }
   if (cvBodiesDue() && cvView) { cvView.sync(trk()); cvRoom(false); }
-  rigRects.clear(); rigMark(); fxMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again; (FX look) the FX modules: data-cv-fx
+  rigRects.clear(); rigMark(); fxMark(); faceMark(); rigSkin(); // ((WC) the rig's modules: data-cv-rig, the skin on the world; the anchors' heights measured again; (FX look) the FX modules: data-cv-fx; (MOD1) the modulators: data-cv-face
   rigCtls.clear(); rigDestC.clear(); rigBadgeC.clear();
   if (rigLaid && rigView() && !cvMaster && isRigDev(trk(), curOf(trk())) && typeof cvView.ports === 'function') cvView.cables.layout(cvView.ports()); // ((WC) the knob ends, rings and badges over the view as it now stands (its ports)
   cvModDecor();
@@ -7214,10 +7219,12 @@ function cvHost() {
   };
 }
 // (review 2 P1-2) a part module on screen again (or unfolded, or the CANVAS tab back): a Serum view a paint skipped while it
-// was hidden — mounted off screen, an edit or a load since — is painted fully once (the host's reshow; engine off too)
+// was hidden — mounted off screen, an edit or a load since — is painted fully once (the host's reshow; engine off too);
+// (MOD1 review 1 P1) so is a modulator's slot face (LFO / Envelope / Macros / Chaos: its slot host's views, shown: cvLive)
 function sxReshow() {
   const id = project && trk() ? trk().id : null;
   for (const rec of serumPanels.values()) if (rec.trackId === id && rec.mode === 'parts' && rec.ui && typeof rec.ui.reshow === 'function') rec.ui.reshow();
+  for (const B of modBodies.values()) { const H = typeof B.host === 'function' ? B.host() : null; if (H && typeof H.reshow === 'function') H.reshow(); } // (the shown canvas's bodies: a track's or the master's)
 }
 const cvDevName = (t, key) => { const d = t.dev && t.dev[key]; return d && d.kind === 'synth' ? d.name || modelById(d.model).name : cvTitle(key, t).title; }; // ((MM, §4.4) t's own titles: "Master FX" for MREC's rack, never "OUT"
 function cvTitle(key, t0) {
@@ -7229,7 +7236,7 @@ function cvTitle(key, t0) {
   if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; } // ((9) a 900 Series' controller: its chip the patch's name)
   if (kind === 'pm') { const q = pmOf(t, key); return PATCH.title(t, q.dev, q.mid); } // ((9) "921B 2", a driven one's "on 921A 1")
   if (kind === 'mod' && PC.PAD_ID.test(key)) { const M = padMod(key); return { title: M ? M.name : key, sub: 'every track', chip: cvPads.chipText(M) }; } // ((8) "Pads 1", its grid "4 × 4")
-  if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d) : key, sub: key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say)
+  if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d || { kind: mk }) : key, sub: !modBarSub(mk) ? '' : key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say; (MOD1 review 2) the project wheel (no device): "Mod Wheel"; a 3-column face's bar its title alone)
   if (kind === 'fx') {
     const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, fx = fxOfDev(t, own || key);
     if (own) { const s = t.dev[own]; return { title: isRigDev(t, own) ? RC.labelOf('fx') : 'Serum FX (own)', sub: cvCables.routeLabel(s && s.vals && s.vals.s, fx) || 'no effects' }; } // ((WC, G13) a rig's: "Effects")
@@ -7443,7 +7450,7 @@ const shownId = () => (cvMaster ? MASTER : project.selTrack);
 // (MM, §7.2) the master canvas's titles: the rack, the OUT, a modulator ("LFO 1" over "Master")
 function mTitle(key) {
   if (key === 'mfx') return { title: 'Master FX', sub: (n => (n ? n + (n === 1 ? ' effect' : ' effects') : 'empty'))(masterN()) };
-  if (key !== 'out' && kindOfKey(MREC, key) === 'mod') return { title: CMOD.modLabelOf(key, MREC.dev[key]), sub: MASTER_NAME };
+  if (key !== 'out' && kindOfKey(MREC, key) === 'mod') { const d = MREC.dev[key]; return { title: CMOD.modLabelOf(key, d), sub: modBarSub(d && d.kind) ? MASTER_NAME : '' }; } // ((MOD1 review 2) a 3-column face's bar: its title alone
   return { title: 'Master OUT', sub: 'the mix · what a bounce writes' };
 }
 function cvMasterHost() {
@@ -7485,7 +7492,7 @@ function masterOff() {
 }
 function cvRenderMaster() {
   const key = project.uid + '/' + MASTER, W = cvW(), R = masterRec();
-  if (cvView && cvViewKey === key) { cvView.sync(R); fxMark(); rigSkin(); fxHalos(MREC, 'mfx'); sxSettleSoon(); return; } // ((FX look) its FX module marked, the skin on the world — a boot straight into the master too; (MM) a new modulator settled; (MM UI fixer, review MM-2 P2-1) the rack's halos: the rows as they are now, after an undo too (renderFxTab's line)
+  if (cvView && cvViewKey === key) { cvView.sync(R); fxMark(); faceMark(); rigSkin(); fxHalos(MREC, 'mfx'); sxSettleSoon(); return; } // ((FX look) its FX module marked, the skin on the world — a boot straight into the master too; (MM) a new modulator settled; (MM UI fixer, review MM-2 P2-1) the rack's halos: the rows as they are now, after an undo too (renderFxTab's line)
   if (cvMount) { cvMountEnd(false); const vp = $('#viewport'); if (vp) vp.removeAttribute('data-cv-mounting'); } // (a track's bodies still mounting: dropped)
   cvCamFlush(); // the outgoing view's camera first
   if (cvView) { try { cvView.destroy(); } finally { cvView = null; } }
@@ -7493,7 +7500,7 @@ function cvRenderMaster() {
   cvViewKey = key;
   cvView = cvModule.createTrackView(W, R, cvMasterHost());
   modDrag = cvView.cableDrag(modDragOpts); // ((MM, §7.2) the modulators' jacks drag cables onto the rack's knobs
-  fxMark(); rigSkin();
+  fxMark(); faceMark(); rigSkin();
   cvCamRestore();
   monitors.sync();
   sxSettleSoon(); // ((MM) a modulator placed with a guessed height: clear of the column once its panel is up (sxFresh 'master\n' + key)
@@ -8644,8 +8651,8 @@ function rigNewTrack(kind) {
 }
 function sxPartDrop(kind, at) {
   if (cvMaster) { notice(MASTER_SRC, 4000); return null; } // ((M) refused on the master canvas
-  const t = trk(), dev = curOf(t);
-  return isRigDev(t, dev) ? sxAddPart(dev, kind, at) : rigReplace(kind, at);
+  const t = trk(), dev = curOf(t), mk = Object.keys(RIG_MOD).find(k => RIG_MOD[k] === kind);
+  return isRigDev(t, dev) ? sxAddPart(dev, kind, at) : mk ? modAdd(mk, at) : rigReplace(kind, at); // ((MOD1 §5) a modulator never replaces: the track's own
 }
 // a tile dragged out: its true-size outline under the pointer over the canvas, the drop where it lands; (integration fixer L — review WC-int
 // B4) over the track list a new track with it (rigNewTrack), as every other tile
@@ -8676,7 +8683,7 @@ function sxPartsDecor() {
   if (!T || typeof T.setPartPlaced !== 'function') return;
   const t = trk(), dev = curOf(t), rig = isRigDev(t, dev) && !(typeof T.mode === 'function' && T.mode() === 'track'), full = k => (typeof cvTray.rigFull === 'function' ? cvTray.rigFull(k) : null) || sxFullWhy(k);
   const O = rig ? { held: null, shown: sxPartList(t, dev), used: sxUsed(t, dev) } : null; // (the held slots only change what a drop picks, never whether one is free to say)
-  for (const k of ['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip']) {
+  for (const { id: k } of cvTray.RIG_TILES) { // ((MOD1 §5) the module tiles: the LFO / Envelope / Macros are the Modulators' (multi: never greyed)
     let why = null;
     if (rig) { const Q = rigSlot(t, dev, k, null, O); why = !Q.part || (Q.shown && Q.on && !Q.gate) ? full(k) : null; }
     T.setPartPlaced(k, why);
@@ -8744,11 +8751,12 @@ function rigSkinPick(v) {
   if (W && W.el) wkRescale(W.el);
   if (shell.skinSel && shell.skinSel.value !== id) shell.skinSel.value = id;
 }
-// (the skins on the kit's popups) a ⋯ / right-click menu or a dropdown list opened from a skinned module (a rig part, an FX module — the
-// world's attribute) or from the ⚙ drawer (its own) wears that skin: they live on <body>, style.css scopes each skin block to them too
+// (the skins on the kit's popups) a ⋯ / right-click menu or a dropdown list opened from a skinned module (a rig part, an FX module, (MOD1) a
+// modulator's face — its empty data-cv-face: cv-face's "gl" / "dom" / "svg" on an instrument is another word — the world's attribute) or from
+// the ⚙ drawer (its own) wears that skin: they live on <body>, style.css scopes each skin block to them too
 wkPopSkin(el => {
   if (!el || typeof el.closest !== 'function') return null;
-  const m = el.closest('.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]'), at = m ? m.closest('[data-cv-skin]') : el.closest('.rig-drawer[data-cv-skin]');
+  const m = el.closest('.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face=""]'), at = m ? m.closest('[data-cv-skin]') : el.closest('.rig-drawer[data-cv-skin]');
   return at ? at.getAttribute('data-cv-skin') : null;
 });
 // every rig module — the Amplifier and its parts; not its FX panel, nor OUT (§13) — carries data-cv-rig (the skin's chrome, the screws);
@@ -8772,6 +8780,19 @@ function fxMark() {
     if (!m.el || typeof m.el.setAttribute !== 'function') continue;
     const on = cvMaster ? k === 'mfx' : !!t && kindOfKey(t, k) === 'fx';
     if (on !== m.el.hasAttribute('data-cv-fx')) { if (on) m.el.setAttribute('data-cv-fx', ''); else m.el.removeAttribute('data-cv-fx'); }
+  }
+}
+// (MOD1 §4.3) every modulator module — a track's (the wheel, Velocity … Chaos) and the master's; never a Pads module, never a <NAME>'s own
+// LFO / Envelope / Macros (data-cv-rig) — carries data-cv-face="": the skin's chrome and colours on its face (style.css, lane U), as fxMark's FX
+// look. The empty value is this mark's: cv-face sets "gl" / "dom" / "svg" on a hardware module (its drawing mode) — never touched here
+function faceMark() {
+  if (!cvView) return;
+  const t = mOwn();
+  for (const [k, m] of cvView.modules) {
+    if (!m.el || typeof m.el.setAttribute !== 'function') continue;
+    const on = !!t && kindOfKey(t, k) === 'mod' && modKindOfKey(t, k) !== 'pads', v = m.el.getAttribute('data-cv-face');
+    if (on && v == null) m.el.setAttribute('data-cv-face', '');
+    else if (!on && v === '') m.el.removeAttribute('data-cv-face');
   }
 }
 // the slots canvas-modulator injections hold in rig dev (cv-graph injectMods' inj: { kind, k }) — envFromAmp / a new Envelope never take one
@@ -8930,11 +8951,35 @@ function rigPick(t, dev, kind, part0) {
       if (r.why === RC.WORDS.same) break;
     }
   }
-  const rig = RC.normRig(d.rig), ord = kind === 'env' && !shown.has(part) ? RC.nextOrdinal(rig, 'env', [...shown]) : null;
+  const rig = RC.normRig(d.rig), ord = RIG_NUM.has(kind) && !shown.has(part) ? RC.nextOrdinal(rig, kind, [...shown], modNumsOf(t, kind)) : null; // ((MOD1 §2.2) every new LFO / Envelope / Macros its number, around the track's own
   const label = RC.labelOf(part, ord ? Object.assign({}, rig, { n: Object.assign({}, rig.n, { [part]: ord }) }) : rig);
   return { part, f, label, ord, on, shown: shown.has(part), why: '' };
 }
 const rigSetOrd = (t, dev, part, ord) => { if (!ord) return; const d = t.dev[dev], rig = RC.normRig(d.rig); rig.n = Object.assign({}, rig.n, { [part]: ord }); d.rig = rig; };
+// (MOD1 §2.2) the numbered modulator kinds of a rig — numbered with the track's own devices of the kind: one numbering on the canvas
+const RIG_NUM = new Set(['env', 'lfo', 'macros']);
+// (MOD1 §2.2) a <NAME> made on a track that holds track modulators — the <NAME> tile over a Juno with an LFO and an Envelope, Make it a
+// <NAME>, its starter / Init loaded — numbers its LFOs / Envelopes / Macros around them: of a kind the track holds devices of, each module in
+// slot order the lowest number neither host shows (beside a track's "Envelope 1" the starter's amp Envelope reads "Envelope 2"); dev.rig.n
+// written in the caller's step, only where a number moves (a kind the track holds none of keeps its numbers: nothing written)
+function rigNumber(t, dev) {
+  const d = t && t.dev ? t.dev[dev] : null;
+  if (!d || !isRigDev(t, dev) || !d.vals || !d.vals.s) return;
+  const parts = sxPartList(t, dev), rig = RC.normRig(d.rig), n = Object.assign({}, rig.n);
+  let moved = false;
+  for (const kind of RIG_NUM) {
+    const used = new Set(modNumsOf(t, kind));
+    if (!used.size) continue;
+    for (const p of parts) {
+      if (SE.kindOf(p) !== kind) continue;
+      let k = 1;
+      while (used.has(k) && k < 99) k++;
+      used.add(k);
+      if (RC.ordinalOf(rig, p) !== k) { n[p] = k; moved = true; }
+    }
+  }
+  if (moved) d.rig = Object.assign({}, rig, { n });
+}
 // a module tile onto rig dev (its tap: the Tidy slot; its drop: where it lands): one step "Add <label>" with its ⏻ and its auto-plug's
 // writes (meta {trackId, dev, part, f}: sxBack), "Added <label> · tap to undo"; full → the count, no step; already a module → shown
 function rigAdd(dev, kind, at, part0, o) {
@@ -9023,6 +9068,7 @@ function rigLoad(dev, T, label) {
   t.lay = lay;
   sxApply(t, dev, f, label);
   rigPrune(t, dev);
+  rigNumber(t, dev); // ((MOD1 §2.2) the new modules numbered around the track's own
   persist(); cvRender(); updateUndoUI();
   cvUndoNotice(label + ' · tap to undo', step, () => null);
   return true;
@@ -10008,7 +10054,7 @@ function moogCost(type) { const c = COSTM.COST.patch ? COSTM.COST.patch[type] : 
 const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
 const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
 function modMount(key, b) {
-  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind), heardFrame: () => heardFrame(), sampleRate: () => fastSr() }; // ((MM, §7.1) the shown canvas's record: a track's or MREC; (FR Cut B §4.4) the slot hosts read their rings at the frame's heard frame, at the context's rate
+  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind), heardFrame: () => heardFrame(), sampleRate: () => fastSr(), shown: () => cvLive(key), devKey: key }; // ((MM, §7.1) the shown canvas's record: a track's or MREC; (FR Cut B §4.4) the slot hosts read their rings at the frame's heard frame, at the context's rate; (MOD1 §4.3, P2-10) shown: an off-screen / folded face stops its tick; devKey: every face's title number (CC n too)
   modUnmount(key);
   if (kind === 'pads') { // ((8, §1.1, §7) a Pads module's body: a view of the host — its grid on the cv-keys bed, its footer, Edit mode, the inspector)
     const B = cvPads.padsBody({ host: PADS, id: key, doc: document, track: () => trk().id }); // (its buttons: cv-pads tapOn — pressOrTap's rule, plus the keyboard's click)
@@ -10323,14 +10369,24 @@ function cvModDecor() {
 const modH = (kind, key) => { const m = key && cvView ? cvView.modules.get(key) : null, h = m ? m.rect().h : 0; return h > cvModule.BAR_H ? h : modHt(kind); };
 // (review 2 P1-4) a new module's height by kind: a Serum-faithful body (LFO / ENV / Macro / Chaos) is as tall as its panel —
 // a module of the kind on the canvas measured, else the last one measured, else Chrome's at 1200 px (MOD_H_SX; cv-module
-// MOD_H holds Tidy's guesses: LFO 256 for 451, which let a drop just above an OB-Xa cover its face)
+// MOD_H holds Tidy's guesses: LFO 256 for 451, which let a drop just above an OB-Xa cover its face); (MOD1 §4.3) every kind wears a face
+// as tall as its content: measured as before, else its face's on the RIG grid (modFaceH), else MOD_H_SX (a loader without rig-ui) or Tidy's
 const MOD_H_SX = { lfo: 451, env: 371, macro: 250, chaos: 135 }, modHSeen = new Map();
 function modHt(kind) {
-  if (!cvModule.SX_MODS.has(kind)) return cvModule.MOD_H[kind] || cvModule.MOD_H.at;
   let h = 0;
   if (cvView) for (const [k, m] of cvView.modules) if (m.kind === 'mod' && CMOD.kindOfId(k) === kind) { const r = m.rect(); if (r.h > cvModule.BAR_H) h = Math.max(h, r.h); }
   if (h) modHSeen.set(kind, h);
-  return h || modHSeen.get(kind) || MOD_H_SX[kind];
+  return h || modHSeen.get(kind) || modFaceH(kind) || MOD_H_SX[kind] || cvModule.MOD_H[kind] || cvModule.MOD_H.at;
+}
+// (MOD1 §4.3) a modulator face's height (world px, the bar included) before one was measured — the RIG grid's numbers: a slot face's rig-ui
+// sizeOf (its kind and slot: MOD_SLOT_FACE), a plain face's cv-mods-ui MOD_FACE recipe through rig-grid layoutOf; 0 before the panels load
+const MOD_SLOT_FACE = { lfo: ['lfo', 'lfo1'], env: ['env', 'env2'], macro: ['macros', 'macros'], chaos: ['chaos', 'chaos1'] };
+function modFaceH(kind) {
+  if (!RIGUI || !RIGUI.FACE) return 0;
+  try {
+    const F = MOD_SLOT_FACE[kind], R = cvModsUI.MOD_FACE ? cvModsUI.MOD_FACE[kind] : null;
+    return F && RIGUI.FACE[F[0]] ? RIGUI.sizeOf(F[0], F[1]).h + cvModule.BAR_H : R ? RIGUI.layoutOf(R).h + cvModule.BAR_H : 0;
+  } catch (err) { return 0; }
 }
 function modSpot(t, kind, F) { // ((8) F: a Pads module's footprint { w, h } — its kind has no modW / modHt (review #18); after every modulator, then the other Pads modules)
   const D = cvWorld.DOT, up = v => Math.ceil(v / D) * D, G = cvModule.VGAP, w = F ? F.w : cvModule.modW(kind), here = cvView && cvView.trackId === t.id;
@@ -10420,6 +10476,16 @@ function modAdd(kind, at) {
   });
   return key;
 }
+// (MOD1 §5) a Modulators tile's kind → the module a <NAME> holds of it (rig-core MODULES' kinds)
+const RIG_MOD = Object.freeze({ lfo: 'lfo', env: 'env', macro: 'macros' });
+// (MOD1 §5, G3) a Modulators tile's tap or drop: on a <NAME> track an LFO / Envelope / Macros goes INTO the <NAME> (rigAdd: a slot of its own,
+// its auto-plug — an Envelope on a gate-only one takes the LEVEL —, its number around the track's own modulators; one step, "Added Envelope 2 ·
+// tap to undo"; a full one says why — never the other host); anywhere else — a classic, a drum machine, a 900 Series, a Serum, the master —
+// the track's / the master's device (modAdd). Never a replace, never a new track (the "+ Add a track…" mode adds as the tile always did)
+function modTile(kind, at) {
+  const t = cvMaster ? null : trk(), dev = t && RIG_MOD[kind] ? curOf(t) : null;
+  return dev && isRigDev(t, dev) ? rigAdd(dev, RIG_MOD[kind], at || null) : modAdd(kind, at || null);
+}
 // ((8) a Controllers tile — Pads — the same way at its footprint: the new module's grid on the track it would follow)
 const tileW = id => (id === 'pads' ? padsNewF().w : cvModule.modW(id)), tileH = id => (id === 'pads' ? padsNewF().h : modHt(id));
 const modTileDrag = { // a Modulators tile dragged out: its true-size outline under the pointer over the canvas
@@ -10435,7 +10501,7 @@ const modTileDrag = { // a Modulators tile dragged out: its true-size outline un
     modTileDrag.w = modTileDrag.h = 0;
     srcDragEnd();
     if (i.over !== 'canvas') return false;
-    modAdd(id, r || (i.at ? { x: i.at.x - w / 2, y: i.at.y - h / 2 } : null));
+    modTile(id, r || (i.at ? { x: i.at.x - w / 2, y: i.at.y - h / 2 } : null)); // ((MOD1 §5) by the track: into a <NAME>, else the track's
     return true;
   },
   cancel() { modTileDrag.w = modTileDrag.h = 0; srcDragEnd(); },
@@ -11095,7 +11161,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     bounceSet: sr => bounceSet(sr), mix: () => mix(),
 
     // (stage 2a, tests/canvas-2a-sim)
-    mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
+    mod: { add: modAdd, tile: modTile, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
       bodies: modBodies, sel: modCableSel, act: modCableAct, cmenu: modCableMenu, list: modList, label: modLabel, descs: modDescs, decor: cvModDecor, cableDrag: () => modDrag },
   };
   // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers

@@ -19,6 +19,9 @@ import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import { fresh, all, byCls, one, ptr, fire, key, Ev, place, layout } from './wk-dom.mjs';
 import * as CB from '../cv-cables.js?v=9';
+import { MOD_COLS } from '../cv-mods.js?v=9';
+import { faceW } from '../rig-grid.js?v=9';
+import * as RCORE from '../rig-core.js?v=9';
 import * as core from '../serum-core.js?v=9';
 
 /* ---------------------------------------------------------------- helpers */
@@ -1130,12 +1133,13 @@ test('devicesOf / tidy / kindW / layOf (2a): a track\'s Velocity, Aftertouch, Be
     [240, [224, 192, 128, 128], ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]); // ((2b) the other kinds follow: the 2b test)
   const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
   const base = xy(M.tidy(v2t(), {}));
+  // ((MOD1 §4.3) each at modX of its face's width: Velocity, Aftertouch, Bend, the wheel 224 → −320 (MOD1 review: none narrower than 3 columns)
   assert.equal(xy(M.tidy(t, {})), base + ' ve@-320,0 at@-320,256 bd@-320,448', 'a column left of the instruments, VGAP apart, on the dots');
   const devs = [{ key: 'wheel', kind: 'mod', mod: 'wheel' }, ...M.devicesOf(t)];
   const L = M.tidy(t, {}, devs.reverse());
   assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-320,0 ve@-320,288 at@-320,544 bd@-320,736', 'the wheel first, whatever the list order');
   assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
-  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-320,672', 'a measured height counts');
+  assert.equal(xy(M.tidy(t, { ve: { w: 224, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-320,672', 'a measured height counts');
   assert.deepEqual([M.layOf({ lay: { wheel: { x: 64, y: -96, fold: 1 } } }, 'wheel', L), M.layOf({ lay: {} }, 'bd', L), M.layOf({}, 've', L), M.layOf({}, 'at', {})],
     [{ x: 64, y: -96, fold: 1 }, { x: -320, y: 736 }, { x: -320, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
 });
@@ -1158,14 +1162,16 @@ function mview(o = {}) {
 
 test('createTrackView (2a): modulator modules — kind \'mod\', W_MOD × MOD_H, one right mod-out jack (a patchable button), cost 40, the mod colour (else dev.color), placed by Tidy left of the instruments; ports() / jacks() carry them; the mod cables (track.mods + the preset rows) from cablesOf with the host\'s project', () => {
   const R = mview(), V = R.V, m = k => V.modules.get(k);
-  assert.deepEqual(['wheel', 've', 'bd'].map(k => [m(k).kind, m(k).el.getAttribute('data-cv-kind'), m(k).w, m(k).rect().h, m(k).cost, m(k).jackIds().join()]),
-    [['mod', 'mod', 240, 224, 40], ['mod', 'mod', 240, 192, 40], ['mod', 'mod', 240, 128, 40]].map(a => a.concat('out')));
+  // ((MOD1 §4.3) a face's width (MOD_COLS: the wheel / Bend / Velocity 224), its height its content's (measured: no fixed height)
+  layout(m('wheel').el, 224, 236); layout(m('ve').el, 224, 204); layout(m('bd').el, 224, 140);
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => [m(k).kind, m(k).el.getAttribute('data-cv-kind'), m(k).w, m(k).rect().h, m(k).cost, m(k).jackIds().join(), !!m(k).fixed && !!m(k).fixed.h]),
+    [['mod', 'mod', 224, 236, 40], ['mod', 'mod', 224, 204, 40], ['mod', 'mod', 224, 140, 40]].map(a => a.concat('out', false)));
   assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).el.style['--mc']), [CB.MOD_COLOR.wheel, CB.MOD_COLOR.velo, '#abcdef']);
   const j = m('wheel').jack('out');
-  assert.deepEqual([j.getAttribute('data-kind'), j.getAttribute('data-side'), j.getAttribute('role'), j.tabIndex, j.hasAttribute('data-ro'), j.getAttribute('aria-label')], ['mod', 'right', 'button', 0, false, 'WHEEL out']);
+  assert.deepEqual([j.getAttribute('data-kind'), j.getAttribute('data-side'), j.getAttribute('role'), j.tabIndex, j.hasAttribute('data-ro'), j.getAttribute('aria-label'), j.hasAttribute('data-inline')], ['mod', 'right', 'button', 0, false, 'WHEEL out', true], '(MOD1) inline: the face\'s OUT its anchor, this dot the fallback');
   assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-320,0', '-320,288', '-320,544'], 'the modulator column');
   assert.deepEqual([m('i1').x, m('i1').y], [0, 0], 'the instruments where they were');
-  assert.deepEqual(V.ports().get('wheel.out'), { x: -320 + 240, y: 68 });
+  assert.deepEqual(V.ports().get('wheel.out'), { x: -320 + 224, y: 68 }, 'no anchor: the right edge at JACK_Y');
   assert.deepEqual(V.jacks().filter(J => J.mod === 'wheel' || J.mod === 'i1').map(J => J.id + ':' + J.dir + ':' + J.kind), ['i1.out:out:audio', 'wheel.out:out:mod']);
   assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + (c.preset ? ' preset' : '')),
     ['r1 wheel.out i2:a.semi', 'r2 ve.out i2:fx.r1.mix', 'r3 bd.out i2:zz.none', 'p:i2:0 ve.out i2:a.pan preset']);
@@ -1336,11 +1342,12 @@ test('devicesOf / MOD_KINDS / mkOf / modJacks / modJackY / MOD_H (2b): every kin
   assert.deepEqual([M.MOD_H.lfo, M.MOD_H.env, M.MOD_H.macro, M.MOD_H.cc, M.MOD_H.chaos, M.MOD_H.note, M.MACRO_ROW, M.MACRO_Y0], [256, 224, 288, 160, 224, 160, 28, 52]);
   // (milestone 3) inline: each name tile of the Serum MACROS panel is its jack; the y is the fallback (a 2b body: the right edge)
   assert.deepEqual(M.modJacks('macro', 'Macro').map(j => j.id + '@' + j.y + ':' + j.side + ':' + j.kind + ':' + j.label), ['k1@66', 'k2@94', 'k3@122', 'k4@150', 'k5@178', 'k6@206', 'k7@234', 'k8@262'].map((s, i) => s + ':inline:mod:Macro knob ' + (i + 1)));
-  assert.deepEqual([M.modJacks('lfo', 'LFO 1').map(j => j.id + ':' + j.label + ':' + j.y), M.modJackY('macro', 7), M.modJackY('lfo', 0), M.modJackY('env', 3)], [['out:LFO 1 out:undefined'], 262, 68, 68]);
+  assert.deepEqual([M.modJacks('lfo', 'LFO 1').map(j => j.id + ':' + j.label + ':' + j.y + ':' + j.side), M.modJackY('macro', 7), M.modJackY('lfo', 0), M.modJackY('env', 3)], [['out:LFO 1 out:68:inline'], 262, 68, 68]); // ((MOD1 §4.3) inline: the face's OUT, the dot at y the fallback
   assert.ok(M.MOD_H.macro >= M.modJackY('macro', 7) + 14, 'the last jack inside the module');
   const xy = L => Object.entries(L).filter(([k]) => /^(bd|nt|l1|l2|l10|e1|m1|c1|h1)$/.test(k)).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
-  // (milestone 3 §2.2) the column grows leftwards: each x = −⌈(MOD_W + MOD_GAP) / 32⌉·32 (LFO / chaos 416, ENV 320, Macro 256)
-  assert.equal(xy(M.tidy(t, {})), 'bd@-320,0 nt@-320,192 l1@-512,416 l2@-512,736 l10@-512,1056 e1@-416,1376 m1@-352,1664 c1@-320,2016 h1@-512,2240', 'MOD_H + VGAP, on the dots, by MOD_ORDER then number');
+  // (milestone 3 §2.2) the column grows leftwards: each x = −⌈(MOD_W + MOD_GAP) / 32⌉·32 ((MOD1 §4.3) the faces' widths: LFO / ENV 352, Macros 288,
+  // Note / CC / Chaos / Bend 224)
+  assert.equal(xy(M.tidy(t, {})), 'bd@-320,0 nt@-320,192 l1@-448,416 l2@-448,736 l10@-448,1056 e1@-448,1376 m1@-384,1664 c1@-320,2016 h1@-320,2240', 'MOD_H + VGAP, on the dots, by MOD_ORDER then number');
 });
 
 test('createTrackView (2b): a macro module carries jacks k1…k8 at its knob rows (ports() and jacks() hold each; a cable from \'m1.k3\' leaves there), folded all at the bar\'s middle outside the edge; an LFO one out jack; the cables coloured by the source kind', () => {
@@ -1349,33 +1356,33 @@ test('createTrackView (2b): a macro module carries jacks k1…k8 at its knob row
   t.mods = [{ id: 'r9', src: 'm1.k3', dst: 'i2:a.semi', amt: 0.5 }, { id: 'r8', src: 'l1.out', dst: 'i2:a.pan', amt: 0.2 }];
   const R = dview(t, W, doc, { bodies: { mount: (k, b) => { if (k === 'i2') { const p = doc.createElement('div'); p.setAttribute('data-dev', 'i2'); const q = doc.createElement('div'); q.setAttribute('data-dest', 'a.semi'); p.append(q); b.append(p); } }, unmount() {} } });
   const V = R.V, m = V.modules.get('m1'), l = V.modules.get('l1');
-  // (milestone 3) a Serum-faithful modulator: MOD_W wide (Macro 256, LFO 416), its height its content's (measured)
-  layout(m.el, 256, 300); layout(l.el, 416, 330);
-  assert.deepEqual([m.kind, m.w, m.rect().h, m.jackIds().join(), l.jackIds().join(), l.rect().h], ['mod', 256, 300, 'k1,k2,k3,k4,k5,k6,k7,k8', 'out', 330]);
-  assert.deepEqual([m.port('k1'), m.port('k3'), m.port('k8'), l.port('out')], [{ x: 256, y: 66 }, { x: 256, y: 122 }, { x: 256, y: 262 }, { x: 416, y: 68 }], 'no tiles (a 2b body): the right edge at the knob rows');
+  // (milestone 3) a Serum-faithful modulator: MOD_W wide ((MOD1) its face's: Macros 288, LFO 352), its height its content's (measured)
+  layout(m.el, 288, 300); layout(l.el, 352, 330);
+  assert.deepEqual([m.kind, m.w, m.rect().h, m.jackIds().join(), l.jackIds().join(), l.rect().h], ['mod', 288, 300, 'k1,k2,k3,k4,k5,k6,k7,k8', 'out', 330]);
+  assert.deepEqual([m.port('k1'), m.port('k3'), m.port('k8'), l.port('out')], [{ x: 288, y: 66 }, { x: 288, y: 122 }, { x: 288, y: 262 }, { x: 352, y: 68 }], 'no tiles (a 2b body): the right edge at the knob rows');
   assert.deepEqual([m.jack('k3').style.top, m.jack('k3').getAttribute('data-cv-jack'), m.jack('k3').getAttribute('data-kind'), m.jack('k3').getAttribute('role'), m.jack('k3').getAttribute('aria-label')], ['122px', 'm1.k3', 'mod', 'button', 'M1 knob 3']);
   const P = V.ports();
-  assert.deepEqual([P.get('m1.k3'), P.get('m1.k8'), P.get('l1.out')], [{ x: m.x + 256, y: m.y + 122 }, { x: m.x + 256, y: m.y + 262 }, { x: l.x + 416, y: l.y + 68 }]);
+  assert.deepEqual([P.get('m1.k3'), P.get('m1.k8'), P.get('l1.out')], [{ x: m.x + 288, y: m.y + 122 }, { x: m.x + 288, y: m.y + 262 }, { x: l.x + 352, y: l.y + 68 }]);
   assert.deepEqual(V.jacks().filter(J => J.mod === 'm1').map(J => J.id + ':' + J.dir + ':' + J.kind).slice(0, 3), ['m1.k1:out:mod', 'm1.k2:out:mod', 'm1.k3:out:mod']);
   assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + ' ' + c.color), ['r9 m1.k3 i2:a.semi ' + CB.MOD_COLOR.macro, 'r8 l1.out i2:a.pan ' + CB.MOD_COLOR.lfo]);
   assert.deepEqual([m.el.style['--mc'], l.el.style['--mc']], [CB.MOD_COLOR.macro, CB.MOD_COLOR.lfo]);
   V.toggleFold('m1');
-  assert.deepEqual([m.port('k1'), m.port('k8'), m.jack('k8').style.top], [{ x: 256 + M.JACK_OUT, y: 20 }, { x: 256 + M.JACK_OUT, y: 20 }, '20px'], 'folded: the bar\'s middle, outside the edge');
+  assert.deepEqual([m.port('k1'), m.port('k8'), m.jack('k8').style.top], [{ x: 288 + M.JACK_OUT, y: 20 }, { x: 288 + M.JACK_OUT, y: 20 }, '20px'], 'folded: the bar\'s middle, outside the edge');
   V.toggleFold('m1');
-  assert.deepEqual(m.port('k8'), { x: 256, y: 262 });
+  assert.deepEqual(m.port('k8'), { x: 288, y: 262 });
   V.destroy();
 });
 
 /* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.1–2.2, §2.5, §2.7): Serum parts */
 test('milestone 3: MOD_W by kind (the Serum panels\' widths rounded to the dots), modX (right edges ≤ −MOD_GAP), PART_W_DEF, partJacks / voiceJacks', () => {
-  assert.deepEqual([M.MOD_W.lfo, M.MOD_W.env, M.MOD_W.macro, M.MOD_W.chaos, M.MOD_W.velo, M.MOD_W.cc], [416, 320, 256, 416, 240, 240]);
+  assert.deepEqual([M.MOD_W.lfo, M.MOD_W.env, M.MOD_W.macro, M.MOD_W.chaos, M.MOD_W.velo, M.MOD_W.cc], [352, 352, 288, 224, 224, 224]); // ((MOD1 §4.3) the faces' widths: faceW(MOD_COLS)
   assert.deepEqual([393, 314, 236, 388, 209, 257].map(M.roundW), [416, 320, 256, 416, 224, 288], 'PART_W (lane B, measured from the 1200 px panel) → the module widths');
-  assert.deepEqual([...M.SX_MODS], ['lfo', 'env', 'macro', 'chaos']);
+  assert.deepEqual([...M.SX_MODS], M.MOD_ORDER.slice(), '(MOD1 §4.3) every modulator kind: its height its face\'s content'); 
   for (const k of M.MOD_ORDER) {
     const x = M.modX(k);
     assert.ok(x % 32 === 0 && x + M.modW(k) <= -M.MOD_GAP && x + M.modW(k) > -M.MOD_GAP - 32, k + ' at ' + x + ': its right edge just left of −MOD_GAP');
   }
-  assert.deepEqual([M.modX('lfo'), M.modX('env'), M.modX('macro'), M.modX('velo'), M.modX('nope')], [-512, -416, -352, -320, -320]);
+  assert.deepEqual([M.modX('lfo'), M.modX('env'), M.modX('macro'), M.modX('velo'), M.modX('wheel'), M.modX('chaos'), M.modX('nope')], [-448, -448, -384, -320, -320, -320, -320]);
   const J = p => M.partJacks(p).map(j => j.id + ':' + j.side + ':' + j.kind).join(' ');
   assert.equal(J('oscB'), 'out:right:audio warp:left:warp');
   assert.equal(J('noise'), 'out:right:audio');
@@ -1388,13 +1395,38 @@ test('milestone 3: MOD_W by kind (the Serum panels\' widths rounded to the dots)
   assert.equal(M.partJacks('oscA')[0].label, 'OSC A out');
 });
 
+test('MOD1 §4.3 (lane H) one face for every modulator: MOD_W[kind] = rig-grid faceW(cv-mods MOD_COLS[kind]) for all ten kinds (the slot faces as wide as a Wavecraft\'s LFO / Envelope / Macros), modX follows; every kind\'s height its content\'s (no fixed height; MOD_H stays Tidy\'s guesses); every out jack INLINE — anchored on the face\'s [data-jack="out"], the right-edge dot at JACK_Y the fallback — kind \'mod\' (a line on every canvas), the ids as before', () => {
+  for (const k of M.MOD_ORDER) {
+    assert.equal(M.MOD_W[k], faceW(MOD_COLS[k]), k + ': its face\'s width');
+    assert.equal(M.modX(k), -M.roundW(M.MOD_W[k] + M.MOD_GAP), k + ': modX');
+    assert.ok(M.SX_MODS.has(k), k + ': height = content');
+    const J = M.modJacks(k, 'T');
+    assert.deepEqual(J.map(j => j.id + ':' + j.side + ':' + j.kind), k === 'macro' ? M.modJacks('macro').map(j => j.id + ':inline:mod') : ['out:inline:mod'], k + ': inline');
+    if (k !== 'macro') assert.deepEqual([J[0].y, J[0].label], [M.BAR_H + M.JACK_Y, 'T out'], k + ': the fallback dot at JACK_Y');
+  }
+  assert.ok(Object.isFrozen(M.MOD_W) && Object.keys(M.MOD_W).length === 10);
+  assert.deepEqual([M.MOD_W.lfo, M.MOD_W.env, M.MOD_W.macro], [RCORE.MODULES.lfo.cols, RCORE.MODULES.env.cols, RCORE.MODULES.macros.cols].map(faceW), 'a track LFO / Envelope / Macros as wide as a Wavecraft\'s');
+  assert.deepEqual(M.MOD_H, { wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224 }, 'Tidy\'s guesses, as they were (a migration reads them)');
+  // a module of every kind: its width the face\'s, no fixed height, the slot faces' cost 160 and the plain ones' 40 (as before)
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  Object.assign(t.dev, { ve: { kind: 'velo' }, at: { kind: 'at' }, bd: { kind: 'bend' }, nt: { kind: 'note' }, l1: { kind: 'lfo' }, e1: { kind: 'env' }, m1: { kind: 'macro', v: [], names: [] }, c1: { kind: 'cc' }, h1: { kind: 'chaos' } });
+  const R = dview(t, W, doc, { devices: tt => [...M.devicesOf(tt), { key: 'wheel', kind: 'mod', mod: 'wheel' }] });
+  const K = { wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l1', env: 'e1', macro: 'm1', cc: 'c1', chaos: 'h1' };
+  for (const [k, key] of Object.entries(K)) {
+    const m = R.V.modules.get(key);
+    assert.deepEqual([m.w, !!(m.fixed && m.fixed.h), m.cost, m.jack(k === 'macro' ? 'k1' : 'out').hasAttribute('data-inline'), m.jack(k === 'macro' ? 'k1' : 'out').getAttribute('data-kind')],
+      [M.MOD_W[k], false, ['lfo', 'env', 'macro', 'chaos'].includes(k) ? 160 : 40, true, 'mod'], k);
+  }
+  R.V.destroy();
+});
+
 test('milestone 3 tidy (§2.7): a Serum in parts view left to right — modulators (growing left) → note tools → sources → filters → VOICE (own ENV / LFO / MACROS stacked above it) → own FX → OUT, on the dots', () => {
   const P = (part) => ({ key: 'i1/' + part, kind: 'part', dev: 'i1', part, model: 'serum' });
   const devs = [{ key: 'i1', kind: 'inst', model: 'serum' }, P('oscB'), P('oscA'), P('filter'), P('lfo1'), P('macros'), P('arp'),
     { key: 'i1/fx', kind: 'fx', model: 'serum', own: 'i1' }, { key: 'out', kind: 'out' }, { key: 'l1', kind: 'mod', mod: 'lfo' }, { key: 've', kind: 'mod', mod: 'velo' }];
   const L = M.tidy({}, {}, devs), xy = k => L[k].x + ',' + L[k].y;
   assert.deepEqual(['i1/arp', 'i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/macros', 'i1/lfo1', 'i1/fx', 'out', 've', 'l1'].map(xy),
-    ['0,0', '640,0', '640,448', '1088,0', '1472,0', '1472,-288', '1472,-672', '2080,0', '3008,0', '-320,0', '-512,256']);
+    ['0,0', '640,0', '640,448', '1088,0', '1472,0', '1472,-288', '1472,-672', '2080,0', '3008,0', '-320,0', '-448,256']); // ((MOD1) the LFO face 352 wide
   assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
   // measured sizes count; a Serum with no note tools starts with its sources
   const L2 = M.tidy({}, { 'i1/oscA': { w: 300, h: 500 }, i1: { w: 480, h: 700 } }, devs.filter(d => d.key !== 'i1/arp'));

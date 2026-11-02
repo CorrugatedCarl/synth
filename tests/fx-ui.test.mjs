@@ -1828,7 +1828,7 @@ test('(2b fixer C, U5) FXRackUI.paintMods(rowsOf): a standalone rack (mod: false
   I.p.mix = 0.5; I.p.size = 0.4;
   rack.refresh();
   const rows = { 'fx.rev.mix': [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1, label: 'LFO 1' }, { id: 'r2', src: 'bend', amt: -0.2, bi: 0, byp: 0, out: 0.5, pol: 'bi' }, { id: 'r3', src: 'velo', amt: 0.3, byp: 1 }],
-    'fx.rev.size': [{ id: 'r4', src: 'env2', amt: 0.4, bi: 1, out: 1, label: 'ENV 1' }] };
+    'fx.rev.size': [{ id: 'r4', src: 'env2', amt: 0.4, bi: 1, out: 1, label: 'Envelope 1' }] }; // ((MOD1 §2.2) the host's words
   const mods = new Map();
   for (const [id, w] of rack.knobs) { const o = w.setMod; w.setMod = m => { mods.set(id, m ? m.arcs.map(a => [+a.from.toFixed(3), +a.to.toFixed(3), a.kind]) : null); return o.call(w, m); }; }
   rack.paintMods(id => rows[id] || []);

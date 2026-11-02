@@ -23,9 +23,15 @@
 // RIG_CUT, so WC-1's Note tools section is a placeholder), their headings written from the constant into the host's sections, rigFull's
 // "full" texts for setPartPlaced; the Serum view keeps its tile and the modulators.
 // Stage MM (IMPL-MM §7.3; lane U): the Sources tray on the master canvas (sourcesTray setMaster(on)): the master has no notes, so the tray shows
-// the Modulators section alone with the four tiles it takes (MASTER_MODS: LFO, Macro, CC, Chaos) and a short note (MASTER_NOTE); the view
+// the Modulators section alone with the four tiles it takes (MASTER_MODS: LFO, Macros, CC, Chaos) and a short note (MASTER_NOTE); the view
 // menu, every model / set / Moog / rig tile and the Controllers row hide, the view the user chose is kept underneath; MASTER_SRC is the
 // refusal text for an instrument dropped or picked there.
+// Stage MOD1 (IMPL-MOD1 §5; phase 0, the data): one tile per type — LFO · Envelope · Macros first in MOD_TILES (cv-mods MOD_LABEL's
+// words), and RIG_TILES without them (Oscillator, Sub oscillator, Noise, Filter; the Note tools as before).
+// Stage MOD1 (IMPL-MOD1 §5, Q5; lane U): the Modulators' home — a view of their own in the Sources menu (SRC_VIEWS 'mods', after the rig view;
+// its one section is the Modulators', which stay at the end of the rig view and of the Serum view until ROADMAP 28), Hardware / Simple's note
+// pointing to it, the rig view's note about its own modules only —, and the LFO / Envelope / Macros tiles wearing the rig's glyphs (an ADSR
+// trace and an LFO shape with the editor's square handles, four panes) in MOD_GLYPH, the part tiles' no more.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -555,7 +561,7 @@ export function sideTray(el, o) {
 // client px); its ghost hides over the canvas only while o.modCanvasGhost() says the world draws an outline for it.
 // setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
 // track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id). (2b) an item with
-// multi: true (LFO, ENV, Macro, CC, Chaos — MOD_TILES) carries data-multi and ignores setPlaced.
+// multi: true (LFO, Envelope, Macros, CC, Chaos — MOD_TILES) carries data-multi and ignores setPlaced.
 // (milestone 3, IMPL-3 §2.6; WC, IMPL-WC §7) o.parts: [{id, name, group: 'rigmods' | 'rignotes', cut}] (RIG_TILES: the rig's
 // module tiles — Oscillator … Macros — and its note tools, ARP and CLIP, the next cut's) — one button.cv-tile.cv-ptile[data-part]
 // [data-group] per live item (cut ≤ RIG_CUT: an original glyph, the name, span.cv-treason) in o.partsEl / o.notesEl (their sections
@@ -583,17 +589,23 @@ const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymba
   sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
 const DR_META = { sdsv: 'drum synth' };
 // ((9) CLASSIC: a classic keyboard synth — models.js classicOf, so a patch instrument (family 'patch') is never in Hardware / Simple)
-const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
+const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_MODS = 'Modulators: the Modulators view. Serum: the Serum view (the menu above).'; // ((MOD1 §5) Hardware / Simple's pointer)
 export const SRC_VIEWS = [
-  { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
-  { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
+  { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
+  { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'Drop a modulator on the canvas and cable its jack to any knob.',
     sections: [{ id: 'serum', models: isSerumModel }, { id: 'mods' }] }, // ((WC, IMPL-WC §6, §7) the Serum tile and the modulators: no Serum parts, no note tools (the part tiles are the rig's — its own view); the rig (custom too) is not here)
   // (WC, IMPL-WC §7) the rig: its tile, its module tiles (o.parts: RIG_TILES, group 'rigmods'), Note tools (group 'rignotes': the next
   // cut's — a placeholder until RIG_CUT reaches them), the modulators; no layout of its own (the classics' kept)
   { id: RIG.VIEW, label: RIG.NAME, tip: 'Our own modular synth, patched with cords', // (the menu shows the label above the tip: the name once)
-    note: `Drop a module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`,
+    note: `Drop a ${RIG.NAME} module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`, // ((MOD1 §5) its own modules only: the Modulators below it go on any instrument)
     sections: [{ id: 'rig', models: isRigModel }, { id: 'rigmods', head: RIG.NAME + ' modules' }, { id: 'rignotes', head: 'Note tools', note: `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.` }, { id: 'mods' }] }, // ((WC, integration fixer L — review WC-int P3-8) our words, not the plan's "next cut"
+  // (MOD1 §5, Q5 — the user: "Own Modulators menu") the Modulators' view: the one section (o.mods, every tile of MOD_TILES), no layout of its own (the
+  // classics' kept); the section also closes the rig view and the Serum view. A tap or a drop: on a rig track the module joins its rig, on any other
+  // instrument a track module, on the master a master module — never a replacement (the host's, main.js modAdd / rigAdd)
+  { id: 'mods', label: 'Modulators', tip: 'LFO, Envelope, Macros and the rest, cabled to any knob',
+    note: `Drop a modulator on the canvas and cable its jack to any knob. On a ${RIG.NAME} an LFO, Envelope or Macros goes into it; the others are modules of the track.`, // ((MOD1 review) only those three join a rig (main.js modTile)
+    sections: [{ id: 'mods' }] },
   { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
     note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
   { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
@@ -674,7 +686,7 @@ const ctlGlyph = id => CTL_GLYPH[id] || CTL_GLYPH.pads;
  * the cut that ships its face (1 = WC-1, 2 = WC-2). A tile is live while its cut ≤ RIG_CUT; a group with no live tile is a placeholder
  * (its heading and note). The host passes them as o.parts (or o.parts: true). */
 export const RIG_CUT = 1;
-export const RIG_TILES = Object.freeze(['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip'].map(id => Object.freeze({
+export const RIG_TILES = Object.freeze(['osc', 'sub', 'noise', 'filter', 'arp', 'clip'].map(id => Object.freeze({ // ((MOD1 §5) one tile per type: the LFO / Envelope / Macros are MOD_TILES')
   id, name: MODULES[id].label, group: id === 'arp' || id === 'clip' ? 'rignotes' : 'rigmods', cut: MODULES[id].cut })));
 /** (WC) A module tile's reason when the track's rig has no room for one more (setPartPlaced; the host decides when): "This <NAME>
  * already has 3 oscillators" (the counts are MODULES' max), "<label> is on the canvas" for a one-off, "<label> is on" for a note tool
@@ -686,49 +698,47 @@ export function rigFull(kind) {
   if (FULL_OF[kind]) return `This ${RIG.NAME} already has ${M.max} ${FULL_OF[kind]}`;
   return M.label + (kind === 'arp' || kind === 'clip' ? ' is on' : ' is on the canvas');
 }
-// original monochrome glyphs: a wave in a frame, a low sine, a scatter, a low-pass slope, (WC) an ADSR trace and an LFO's shape — each with
-// the editor's square handles at its points (so neither reads as the Modulators' ENV / LFO beside them) —, four dials, rising steps, a clip of notes
+// original monochrome glyphs: a wave in a frame, a low sine, a scatter, a low-pass slope, rising steps, a clip of notes ((MOD1 §5) the rig's
+// Envelope, LFO and Macros glyphs are the Modulators' tiles' now: MOD_GLYPH)
 const PART_GLYPH = {
   osc: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="3"/><path d="M8 14c3-7 6-7 8 0s5 7 8 0 5-7 8 0"/></svg>',
   sub: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c6-11 10-11 16 0s10 11 16 0"/><path d="M4 24.5h32"/></svg>',
   noise: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 15l3-6 2 11 3-14 2 12 3-8 2 9 3-12 2 13 3-9 2 7 3-10 2 6 2-2"/></svg>',
   filter: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 9h17c4 0 5-3 7-3 2 0 3 6 8 18"/><path d="M4 24.5h32"/></svg>',
-  env: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 24.5h32"/><path d="M6 24 12 5l6 9.5h10L34 24"/><rect x="10.5" y="3.5" width="3" height="3"/><rect x="16.5" y="13" width="3" height="3"/><rect x="26.5" y="13" width="3" height="3"/></svg>',
-  lfo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 21C9 21 9 6 14 6s7 15 12 15 5-8 9-8"/><rect x="12.5" y="4.5" width="3" height="3"/><rect x="24.5" y="19.5" width="3" height="3"/><rect x="33.5" y="11.5" width="3" height="3"/></svg>',
-  macros: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="5" y="4" width="13" height="9" rx="2"/><rect x="22" y="4" width="13" height="9" rx="2"/><rect x="5" y="16" width="13" height="9" rx="2"/><rect x="22" y="16" width="13" height="9" rx="2"/></svg>',
   arp: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 23h6v-5h6v-5h6v-5h6v-5h6"/><circle cx="8" cy="23" r="1.6"/><circle cx="14" cy="18" r="1.6"/><circle cx="20" cy="13" r="1.6"/><circle cx="26" cy="8" r="1.6"/></svg>',
   clip: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="2"/><path d="M9 9h7M19 14h9M12 19h6M24 9h6"/></svg>',
 };
 const partGlyph = id => PART_GLYPH[id] || PART_GLYPH.osc;
 // (WC) the rig tile's words: what the tile gives (RIG.STARTER: a starter rig that plays; null: an Amplifier alone), no maker
 const RIG_META = 'modular synth', RIG_GIVES = () => (RIG.STARTER ? 'a small starter rig that plays' : 'an Amplifier to add modules to');
-/** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles, in MOD_ORDER: id = the mod kind, scope 'project' (the wheel)
- * or 'track', multi = any number per track (its tile never greys out: setPlaced ignores it). The host passes them as
- * o.mods (with its own names if it likes). */
+/** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles: id = the mod kind, scope 'project' (the wheel) or 'track', multi = any
+ * number per track (its tile never greys out: setPlaced ignores it). The host passes them as o.mods (with its own names if it likes).
+ * (MOD1 §5, the user's answer 3) one tile per type, LFO · Envelope · Macros first, then MOD_ORDER's rest; the names cv-mods MOD_LABEL's. */
 export const MOD_TILES = Object.freeze([
+  { id: 'lfo', name: 'LFO', scope: 'track', multi: true }, { id: 'env', name: 'Envelope', scope: 'track', multi: true },
+  { id: 'macro', name: 'Macros', scope: 'track', multi: true },
   { id: 'wheel', name: 'Mod Wheel', scope: 'project' }, { id: 'velo', name: 'Velocity', scope: 'track' },
   { id: 'at', name: 'Aftertouch', scope: 'track' }, { id: 'bend', name: 'Bend', scope: 'track' }, { id: 'note', name: 'Note', scope: 'track' },
-  { id: 'lfo', name: 'LFO', scope: 'track', multi: true }, { id: 'env', name: 'ENV', scope: 'track', multi: true },
-  { id: 'macro', name: 'Macro', scope: 'track', multi: true }, { id: 'cc', name: 'CC', scope: 'track', multi: true },
-  { id: 'chaos', name: 'Chaos', scope: 'track', multi: true },
+  { id: 'cc', name: 'CC', scope: 'track', multi: true }, { id: 'chaos', name: 'Chaos', scope: 'track', multi: true },
 ].map(Object.freeze));
-/** (MM, IMPL-MM §7.3) The Modulators the master takes (no notes there: no ENV, Velocity, Aftertouch, Bend, Note, Mod Wheel — an LFO in ENV
+/** (MM, IMPL-MM §7.3) The Modulators the master takes (no notes there: no Envelope, Velocity, Aftertouch, Bend, Note, Mod Wheel — an LFO in ENV
  * mode already runs once from ▶; a CC module is the hardware wheel): ids of MOD_TILES; the host may pass its own as o.masterMods. */
 export const MASTER_MODS = Object.freeze(['lfo', 'macro', 'cc', 'chaos']);
 /** (MM) The note under the master's tiles (o.masterNote overrides): what the master has, in plain words. */
 export const MASTER_NOTE = 'The master has no notes: its modulators are LFOs, Macros, CC and Chaos. Drop one on the canvas and cable its jack to any knob of the master rack.';
 /** (MM) The master canvas's refusal of an instrument (a drop or a pick) and of a modulator it does not take: the one line it says. */
 export const MASTER_SRC = 'The master takes effects (the rack’s +) and modulators (Sources ▸ Modulators)';
-// original monochrome glyphs (stroked with currentColor): a wheel, velocity bars, an aftertouch pad, a bend curve, (2b) a
-// sine with a point, an ADSR, four macro dials, a CC fader, a scribble, a key
+// original monochrome glyphs (stroked with currentColor): a wheel, velocity bars, an aftertouch pad, a bend curve, (2b) a CC fader, a scribble,
+// a key, ((MOD1 §5) the rig's own three for the LFO, Envelope and Macros: an LFO shape and an ADSR trace on a baseline, each with the editor's
+// square handles at its points (three each), four panes)
 const MOD_GLYPH = {
   wheel: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="14" y="2.5" width="12" height="23" rx="3"/><path d="M15.5 9.5h9M15.5 12h9M15.5 14.5h9"/></svg>',
   velo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 24.5h30"/><path d="M8 24.5v-4M14 24.5v-8M20 24.5v-12M26 24.5v-16M32 24.5v-20"/></svg>',
   at: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="7" y="13.5" width="26" height="11" rx="2"/><path d="M20 3.5v7M16.5 7.5 20 11l3.5-3.5"/></svg>',
   bend: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14h8c4 0 5-9 8-9s4 18 8 18 4-9 8-9"/></svg>',
-  lfo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c4-9 8-9 12 0s8 9 12 0 6-7 8-4"/><circle cx="20" cy="14" r="2"/></svg>',
-  env: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 24.5 10 4l5 10h8l3 4h4l4 6.5"/><path d="M4 24.5h32"/></svg>',
-  macro: '<svg viewBox="0 0 40 28" aria-hidden="true"><circle cx="11" cy="9" r="5"/><circle cx="29" cy="9" r="5"/><circle cx="11" cy="21" r="5"/><circle cx="29" cy="21" r="5"/><path d="M11 9v-3.5M29 9l2.5-2.5M11 21l-2.5 2.5M29 21h3.5"/></svg>',
+  lfo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 21C9 21 9 6 14 6s7 15 12 15 5-8 9-8"/><rect x="12.5" y="4.5" width="3" height="3"/><rect x="24.5" y="19.5" width="3" height="3"/><rect x="33.5" y="11.5" width="3" height="3"/></svg>',
+  env: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 24.5h32"/><path d="M6 24 12 5l6 9.5h10L34 24"/><rect x="10.5" y="3.5" width="3" height="3"/><rect x="16.5" y="13" width="3" height="3"/><rect x="26.5" y="13" width="3" height="3"/></svg>',
+  macro: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="5" y="4" width="13" height="9" rx="2"/><rect x="22" y="4" width="13" height="9" rx="2"/><rect x="5" y="16" width="13" height="9" rx="2"/><rect x="22" y="16" width="13" height="9" rx="2"/></svg>',
   cc: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M8 4v20M20 4v20M32 4v20"/><rect x="4" y="15" width="8" height="4" rx="1"/><rect x="16" y="7" width="8" height="4" rx="1"/><rect x="28" y="11" width="8" height="4" rx="1"/></svg>',
   chaos: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 16c3-10 5 4 8-4s4 14 7 2 4-10 7 0 3 12 6-2 3-8 4-4"/></svg>',
   note: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="6" y="3.5" width="28" height="21" rx="2"/><path d="M13 3.5v21M20 3.5v21M27 3.5v21"/><path d="M11 3.5v12h4v-12M18 3.5v12h4v-12M25 3.5v12h4v-12"/></svg>',
@@ -1081,7 +1091,11 @@ export function sourcesTray(el, o) {
       if (CLASSIC(m)) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
     }
     const mods = master ? [...mtiles.keys()].some(id => MM.has(id)) : has('mods') && mtiles.size > 0;
-    if (o.modsSec) o.modsSec.hidden = !mods;
+    if (o.modsSec) {
+      o.modsSec.hidden = !mods;
+      const hd = Array.from(o.modsSec.children || []).find(c => c && c.classList && c.classList.contains('cv-tgrp')); // ((MOD1 review 2) its own heading (index.html's):
+      if (hd) hd.hidden = !master && view === 'mods'; // the Modulators view names itself once; the rig / Serum views and the master keep it
+    }
     if (mhead) mhead.hidden = !mods;
     if (master) for (const [id, T] of mtiles) T.b.hidden = !MM.has(id); // (MM) the master's four
     else if (mhead || modsMasterHid) { for (const T of mtiles.values()) T.b.hidden = mhead ? !mods : false; modsMasterHid = false; }
@@ -1147,7 +1161,7 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'rig' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'rig' | 'mods' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */

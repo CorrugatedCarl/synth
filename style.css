@@ -1376,6 +1376,7 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 /* (H6) the compositing policy S0 selects, one rule: none until it does — a variant switched on by its attribute on #world
    (ui-bench M2 / the lead), e.g. contain: the non-hardware bodies contain their paint */
 #world[data-cv-h6="contain"] .cv-mod:not([data-cv-face]) > .cv-body { contain: content; }
+#world[data-cv-h6="contain"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) > .cv-body { contain: content; } /* (MOD1) a modulator's face is a non-hardware body too */
 /* the Sources tray's Serum parts and note tools (cv-tray o.parts) */
 .cv-ptiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
 /* (9, IMPL-9 §4.1–§4.6; lane U9 — part of this section, which stays the last) patch modules.
@@ -1575,15 +1576,17 @@ button.mo-n:hover { border-color: #3a3c42; }
    the camera's zoom. The SVG: the old head's stops (#9c978a to 1.5, #55524a at 3.3, black .55 at 3.6, clear at 4) and the old slot's
    shape (the 1.7 px 45° band cut by the 5 px square: a hexagon), in the charcoal skin's --rig-screw / --rig-screw-lo / --rig-jack-hole (an
    image cannot read a custom property; the tray test pins them equal for every skin — a skin with other screws brings its own image).
-   (The FX look, 2026-10-26) every effect's face on an FX module wears the same four screws: this rule, never a copy (no drift) */
-.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+   (The FX look, 2026-10-26) every effect's face on an FX module wears the same four screws: this rule, never a copy (no drift);
+   (MOD1 §4.4) so does a modulator's face (its body) */
+.cv-mod[data-cv-rig] > .cv-body::after, .cv-mod[data-cv-fx] .fxr-face::after, .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) > .cv-body::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
   --rig-screw-g: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3CradialGradient id='h' cx='4' cy='4' r='4' gradientUnits='userSpaceOnUse'%3E%3Cstop offset='.375' stop-color='%239c978a'/%3E%3Cstop offset='.825' stop-color='%2355524a'/%3E%3Cstop offset='.9' stop-opacity='.55'/%3E%3Cstop offset='1' stop-opacity='0'/%3E%3C/radialGradient%3E%3Ccircle cx='4' cy='4' r='4' fill='url(%23h)'/%3E%3Cpath d='M1.5 1.5H2.7L6.5 5.3V6.5H5.3L1.5 2.7Z' fill='%230b0b0c'/%3E%3C/svg%3E");
   background: var(--rig-screw-g) left 5px top 5px / 8px 8px no-repeat, var(--rig-screw-g) left 5px bottom 5px / 8px 8px no-repeat,
     var(--rig-screw-g) right 5px top 5px / 8px 8px no-repeat, var(--rig-screw-g) right 5px bottom 5px / 8px 8px no-repeat; }
 /* the jack row's jack (span.cv-jack.cv-fjack, 28 px, §3.2): the cord lab's — a cream ring round a dark nut and its hole; the rings while
-   patching are the face jack's (box-shadow, above); a jack a cord cannot take dims (not the 900 Series' dark disc over a drawn nut) */
-.cv-mod[data-cv-rig] .cv-fjack { --rig-jack-g: radial-gradient(circle, var(--rig-jack-hole, #07080a) 0 5.5px, var(--rig-jack-nut, #2e333b) 6px 8.75px, var(--rig-jack-ring, #8d8b86) 9.25px 13.25px, transparent 13.75px); background: var(--rig-jack-g); }
-#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no { background: var(--rig-jack-g); opacity: 0.4; }
+   patching are the face jack's (box-shadow, above); a jack a cord cannot take dims (not the 900 Series' dark disc over a drawn nut);
+   (MOD1 §4.4) a modulator's out jack, the same rule */
+.cv-mod[data-cv-rig] .cv-fjack, .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .cv-fjack { --rig-jack-g: radial-gradient(circle, var(--rig-jack-hole, #07080a) 0 5.5px, var(--rig-jack-nut, #2e333b) 6px 8.75px, var(--rig-jack-ring, #8d8b86) 9.25px 13.25px, transparent 13.75px); background: var(--rig-jack-g); }
+#world[data-cv-patching] .cv-mod[data-cv-rig] .cv-fjack.cv-no, #world[data-cv-patching] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .cv-fjack.cv-no { background: var(--rig-jack-g); opacity: 0.4; }
 /* ---------------------------------------------------------- the FX look (the user, 2026-10-26: "can we make this effects panel in the
    style of wavecraft as well" — on every track). Every FX module on the canvas (an instrument's Effects, a shared FX panel, a Serum's own
    FX, the master's) is a .cv-mod marked [data-cv-fx] by the host; its rack is fx-ui's .fxr-rig — every effect one face on the RIG grid
@@ -1596,6 +1599,21 @@ button.mo-n:hover { border-color: #3a3c42; }
 .cv-mod[data-cv-fx][data-cv-fold] > .cv-bar { box-shadow: none; }
 .cv-mod[data-cv-fx] .cv-title { color: var(--rig-title, var(--text)); font: 600 13px/1.2 var(--rig-font, var(--ui)); letter-spacing: 0.06em; }
 .cv-mod[data-cv-fx] > .cv-body, .cv-mod[data-cv-fx] .cv-body > .fxtab { background: var(--rig-case, #101216); }
+/* ---------------------------------------------------------- the modulators' look (IMPL-MOD1 §4.4; the user, 2026-11-01: "yes give them all the
+   wavecraft look"). Every modulator module on every canvas — LFO, Envelope, Macros, Chaos, Mod Wheel, Velocity, Aftertouch, Bend, Note, CC — is
+   a .cv-mod marked [data-cv-face] by the host, its body one face on the RIG grid (rig-ui, rig-grid): the rig's chrome, in the same skin (its
+   blocks at the end of the file scope the module, its host's root and the face), rule for rule — the screws and the jack row's jack are the
+   rig's own rules above. NOT the bare attribute: cv-face.js already puts data-cv-face on a hardware module — its tier, gl | dom | svg (main.js
+   reads 'gl') —, so a rule on [data-cv-face] alone would skin every instrument; a modulator's mark is the attribute with any other value (the
+   host sets ''), and :where keeps the rig's specificity. Colours only through the skin's custom properties; no layout number. */
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) { background: var(--rig-case, #101216); }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) > .cv-bar { background: var(--rig-bar, #191c21); box-shadow: inset 0 -1px 0 var(--rig-line, #262a31); }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))[data-cv-fold] > .cv-bar { box-shadow: none; }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .cv-title { color: var(--rig-title, var(--text)); font: 600 13px/1.2 var(--rig-font, var(--ui)); letter-spacing: 0.06em; }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) > .cv-body { background: var(--rig-case, #101216); }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face { background: var(--rig-face, #101216); color: var(--sx-ink, #dfe6ee); }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face .wk-knob, .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face .wk-menu > .wk-lab { font-family: var(--rig-font, var(--ui)); }
+.cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face .wk-knob .wk-lab { color: var(--sx-ink, #dfe6ee); }
 
 /* ---------------------------------------------------------- (WC, lane C) the cords renderer's rules — the × on a cord, the badge drag's
    cursor — go here, from lane C's notes (IMPL-WC §11.0: lane U applies them), between the rig's chrome and the skins (which stay last) */
@@ -1650,7 +1668,8 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    switch changes no box, only colour and font pixels), every block the same variables in the same order. Scoped by rig-ui applySkin's
    attribute on #world to a rig module (its bar inherits), and again to the two elements that declare tokens of their own: .sx-root
    (the kit declares its --sx-* there, so a value on an ancestor would lose) and .rig-face; (the FX look, 2026-10-26) to every FX module
-   (its bar inherits) and its rack's root (.fxr-root declares the kit's tokens itself: wk.js); outside #world the ⚙ drawer, a stacked
+   (its bar inherits) and its rack's root (.fxr-root declares the kit's tokens itself: wk.js), and (MOD1 §4.4) to every modulator's face — the module,
+   its host's root and the .rig-face, as a rig module's; outside #world the ⚙ drawer, a stacked
    jack's count (.cv-jn, the cord layer's top) and the kit's popups opened from a skinned module (.wk-ctx menus, .wk-pop lists — main.js
    wkPopSkin) carry the attribute themselves. A new skin: a SKINS entry + one block. (WC-2) A glass skin (SKINS glass: true) may give its
    pane an alpha (#rrggbbaa: the case, the face's and the bar's sheens, the hairlines — nothing else) and has its own rules after the
@@ -1662,6 +1681,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-rig] .rig-face,
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-fx],
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-fx] .fxr-root,
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])),
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
+#world[data-cv-skin="charcoal"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="charcoal"],
 .cv-jn[data-cv-skin="charcoal"],
 .wk-ctx[data-cv-skin="charcoal"],
@@ -1683,6 +1705,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-rig] .rig-face,
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-fx],
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-fx] .fxr-root,
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])),
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
+#world[data-cv-skin="ivory"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="ivory"],
 .cv-jn[data-cv-skin="ivory"],
 .wk-ctx[data-cv-skin="ivory"],
@@ -1704,6 +1729,9 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="glass"] .cv-mod[data-cv-rig] .rig-face,
 #world[data-cv-skin="glass"] .cv-mod[data-cv-fx],
 #world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-root,
+#world[data-cv-skin="glass"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])),
+#world[data-cv-skin="glass"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
+#world[data-cv-skin="glass"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="glass"],
 .cv-jn[data-cv-skin="glass"],
 .wk-ctx[data-cv-skin="glass"],
@@ -1719,10 +1747,10 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 /* the glass skin's own rules (WC-2) — after the blocks, scoped to the glass skin alone, no box changed (the gate's one exception: a block
    sets custom properties only). (1) The pane is the module: the layers inside it that paint the case or the kit's ground again — a rig's
    body and its .inst (a fixed #0f1216), an FX module's body, its tab and its rack's root — lose their colour (else the tint compounds:
-   twice in a rig's body, four times in an FX rack's). (2) The two popovers over a face — the X-Shaper's, the ⚙ drawer in the top layer —
+   twice in a rig's body, four times in an FX rack's; (MOD1) a modulator's module is a pane the same). (2) The two popovers over a face — the X-Shaper's, the ⚙ drawer in the top layer —
    take the opaque --sx-panel (see-through over the knobs they cover, they would be unreadable). (3) The frost: backdrop-filter (the
    expensive part — one blur a pane, each frame the canvas moves) on every preset but Low (#viewport[data-cv-perf], cv-world's): Low keeps
    the translucency alone. With the cables behind, the world draws the ropes under the panes (cv-cords behind(fn, true)): seen frosted */
-#world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]) :is(.cv-body, .inst.custom, .fxtab, .fxr-root) { background-color: transparent; }
+#world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) :is(.cv-body, .inst.custom, .fxtab, .fxr-root) { background-color: transparent; }
 #world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"] { background-color: var(--sx-panel); }
-#viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx]) { -webkit-backdrop-filter: blur(12px) saturate(1.6); backdrop-filter: blur(12px) saturate(1.6); }
+#viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) { -webkit-backdrop-filter: blur(12px) saturate(1.6); backdrop-filter: blur(12px) saturate(1.6); }

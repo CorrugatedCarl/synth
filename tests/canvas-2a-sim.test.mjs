@@ -95,7 +95,7 @@ test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"),
   const n0 = hsteps();
   tiles().modTile('wheel').dispatchEvent({ type: 'click' }); sim.raf();
   assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note(), P().perf.wheel ? 1 : 0], ['i1,i1/fx,out,ve,wheel', n0 + 1, 'Place Mod Wheel', 'Added Mod Wheel · tap to undo', 1]);
-  assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -320]);
+  assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -320]); // ((MOD1 §4.3) the wheel's face: 224 wide (MOD1 review: 3 columns) → modX −320
   const b = fresh('serum');
   ID.b = b.id;
   assert.equal(T().id, b.id);
@@ -521,15 +521,17 @@ test('(U8, U9) a tapped modulator: Tidy\'s column at x −320, in its MOD_ORDER 
   try {
     W.setCamera({ tx: 1000, ty: 0, k: 1 }); // (the column in view)
     tiles().modTile('at').dispatchEvent({ type: 'click' }); sim.raf();
-    assert.deepEqual([T().lay.at, V().modules.get('wheel').x, foc], [{ x: -320, y: 288 }, -320, []], 'below the wheel (its slot), in view: no camera move');
+    // ((MOD1 §4.3) every modulator a face: its x modX of its width (the wheel / Aftertouch / Bend / Velocity 224 → −320; MOD1 review: none under
+    // 3 columns), its height its content's — measured: the stub DOM's 100 for each here, so each slot is 100 + VGAP below the one before, on the dots)
+    assert.deepEqual([T().lay.at, V().modules.get('wheel').x, foc], [{ x: -320, y: 192 }, -320, []], 'below the wheel (its slot), in view: no camera move');
     W.setCamera({ tx: 0, ty: 0, k: 1 }); // (x −320 left of the band)
     tiles().modTile('bend').dispatchEvent({ type: 'click' }); sim.raf();
-    assert.deepEqual([T().lay.bd, foc], [{ x: -320, y: 480 }, ['bd {"k":1,"edit":false}']], 'its slot after the wheel and Aftertouch; brought in');
+    assert.deepEqual([T().lay.bd, foc], [{ x: -320, y: 384 }, ['bd {"k":1,"edit":false}']], 'its slot after the wheel and Aftertouch; brought in');
     M.del('at'); sim.raf();
     tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
-    assert.deepEqual(T().lay.ve, { x: -320, y: 288 }, 'Velocity\'s slot (after the wheel) is free: there, not below Bend');
+    assert.deepEqual(T().lay.ve, { x: -320, y: 192 }, 'Velocity\'s slot (after the wheel) is free: there, not below Bend');
     tiles().modTile('at').dispatchEvent({ type: 'click' }); sim.raf();
-    assert.deepEqual(T().lay.at, { x: -320, y: 672 }, 'Aftertouch\'s slot (544) is taken by Bend: below the column');
+    assert.deepEqual(T().lay.at, { x: -320, y: 576 }, 'Aftertouch\'s slot (384) is taken by Bend: below the column');
     assert.equal(cvTidyX(), -320, 'Tidy agrees');
   } finally { W.focusItem = f0; }
 });

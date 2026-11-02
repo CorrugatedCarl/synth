@@ -43,6 +43,7 @@
 import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxModel / isSxId: the Serum-engine models — the Serum and the rig — take the Serum's destinations and link sources)
 import { DESTS, FXP_TAB } from './serum-core.js?v=9';
 import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS, PAD_ID } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
+import { RIG, labelOf as rigLabelOf, partKeys as rigPartKeys } from './rig-core.js?v=9'; // ((MOD1 §2.2) a rig's own LFOs / Envelopes by its own numbering (dev.rig.n); (review 1 P2) the ones standing
 
 export const CLASSES = ['none', 'sm', 'apply', 'proc', 'chunk', 'struct'];
 export const RANK = { none: 0, sm: 1, apply: 2, proc: 2, chunk: 3, struct: 4 };
@@ -407,11 +408,20 @@ export function descs(dev) {
 // ModCore rows.
 //   MOD_SRC / SRC_MOD        canvas source ↔ the native Serum source a row compiles to as it is (wheel / velo / at / bend / note)
 //   MOD_DEV                  the per-track singletons: kind → device id (velo 've', at 'at', bend 'bd', note 'nt')
-//   MOD_LABEL                kind → label; MOD_PREFIX kind → id prefix ('l', 'e', 'm', 'c', 'h' numbered; the singletons'
+//   MOD_LABEL                kind → label (MOD1 §2.2: one word per module in both hosts — 'Envelope', 'Macros'; a macro's knobs
+//                            keep "Macro 1" … "Macro 8"); MOD_PREFIX kind → id prefix ('l', 'e', 'm', 'c', 'h' numbered; the singletons'
 //                            ids); MOD_MULTI the kinds a track may hold several of; MOD_ORDER the Tidy order of kinds
+//   MOD_COLS                 (MOD1 §2.3) kind → its face's RIG-grid columns (rig-grid faceW: 64·cols + 32 → lfo / env 352, macro 288,
+//                            every other kind 224 — (review 2) the wheel / at / bend 160 no more: their bar held no "AFTERTOUCH"): the
+//                            faces are laid to it, cv-module's MOD_W reads it
+//   modBarSub(kind)          (MOD1 review 2) a modulator's bar shows its sub-label (the track's name) on a face of 4 or more columns only:
+//                            a 3-column bar holds its title alone ("AFTERTOUCH" is 97 of its 116 px in Inter)
 //   kindOfId(id)             the kind an id spells ('l3' → 'lfo', 'nt' → 'note'); null for anything else
-//   modLabelOf(id, dev)      'LFO 3', 'Macro 1', 'Velocity' (dev: the device, its kind; no kind: the id)
+//   modLabelOf(id, dev)      'LFO 3', 'Envelope 2', 'Macros 1', 'Velocity' (dev: the device, its kind; no kind: the id)
 //   modDevs(track)           [{ id, dev, kind }] the modulator devices of a track in Tidy order (by kind, then by number)
+//   numsOf(track, kind)      (MOD1 §2.2) the numbers the track's own devices of a numbered kind show, ascending ('l1', 'l3' → [1, 3]);
+//                            'macros' (the rig's kind) reads the macro devices; [] for a singleton or anything else — rig-core
+//                            nextOrdinal's `taken`: a new rig module numbers around them (one numbering per canvas)
 //   srcOf(src)               'wheel' → { dev: 'wheel', port: '', link: '' }; '<dev>.<port>' → { dev, port, link: '' };
 //                            '<serum>/lfo3.out' → { dev: serum, port: 'out', link: 'lfo3' }; null for anything else
 //   srcDev(track, src)       { q: srcOf(src), dev, kind } the device the source names on this track (kind 'wheel' / 'link'
@@ -431,7 +441,13 @@ export function descs(dev) {
 //   padTracks(p, src)        the tracks holding at least one row of mod pad src while its module holds it with mod on (§5.3:
 //                            the live value goes to each, modVal(t, 'pd1', 'p12', v) — the wheelTracks pattern)
 //   linkSources(track)       the linked sources: every Serum's LFO 1–10 and ENV 1–4 ({ id, label, scope: 'track', kind:
-//                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it)
+//                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it); (MOD1 §2.2) a
+//                            rig's (a <NAME>) labelled as its modules are ("LFO 3", "Envelope 2": rig-core labelOf over dev.rig.n — one
+//                            numbering on the canvas), a Serum's "<name> LFO n" / "<name> ENV n" by engine slot; (MOD1 review 1 P2) a rig
+//                            lists only the LFOs / Envelopes whose module stands on its canvas (rig-core partKeys: laid, powered, a slot a
+//                            matrix row or a track row reads — nothing a cable uses goes; an empty slot read its slot number and repeated a
+//                            renumbered module's), and a title a track module shows already (an old project's clash, §13) reads
+//                            "LFO 1 · <name>": no name twice in the "Connect to…" list
 //   destOk(dev, paramId, keep) { ok, why, stage }: (3) a modulator device (any MOD_LABEL kind): never (NOMOD_MOD) — its
 //                            panel's knobs carry Serum ids on a slot host; a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
 //                            f.route<X> / f2.route<X> are plain switches: refused unless `keep`, a row that exists); a classic sm / apply / proc knob
@@ -445,10 +461,12 @@ export function descs(dev) {
 export const MOD_SRC = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend', 'nt.out': 'note' });
 export const SRC_MOD = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out', note: 'nt.out' });
 export const MOD_DEV = Object.freeze({ velo: 've', at: 'at', bend: 'bd', note: 'nt' });
-export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'ENV', macro: 'Macro', cc: 'CC', chaos: 'Chaos' });
+export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos' });
 export const MOD_PREFIX = Object.freeze({ lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', velo: 've', at: 'at', bend: 'bd', note: 'nt' });
 export const MOD_MULTI = Object.freeze(['lfo', 'env', 'macro', 'cc', 'chaos']);
 export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
+export const MOD_COLS = Object.freeze({ lfo: 5, env: 5, macro: 4, chaos: 3, wheel: 3, velo: 3, at: 3, bend: 3, note: 3, cc: 3 }); // (MOD1 §2.3: data; a lane needing another count asks the lead; (review 2) the wheel, Aftertouch, Bend 2 → 3: a 2-column bar left its title 52 px)
+export const modBarSub = kind => (MOD_COLS[kind] || 0) >= 4;
 const ID_KIND = { l: 'lfo', e: 'env', m: 'macro', c: 'cc', h: 'chaos' };
 export function kindOfId(id) {
   if (typeof id !== 'string') return null;
@@ -467,6 +485,10 @@ export function modDevs(t) {
   const D = isObj(t) && isObj(t.dev) ? t.dev : {}, out = [];
   for (const id of Object.keys(D)) { const d = D[id]; if (isObj(d) && MOD_LABEL[d.kind] && d.kind !== 'wheel' && kindOfId(id) === d.kind) out.push({ id, dev: d, kind: d.kind }); }
   return out.sort((a, b) => MOD_ORDER.indexOf(a.kind) - MOD_ORDER.indexOf(b.kind) || numOf(a.id) - numOf(b.id));
+}
+export function numsOf(t, kind) {
+  const k = kind === 'macros' ? 'macro' : kind;
+  return MOD_MULTI.includes(k) ? modDevs(t).filter(x => x.kind === k).map(x => numOf(x.id)) : [];
 }
 export function srcOf(src) {
   if (src === 'wheel') return { dev: 'wheel', port: '', link: '' };
@@ -525,13 +547,22 @@ export function sourcesOf(t, p) {
 }
 export function linkSources(t) {
   const D = isObj(t) && isObj(t.dev) ? t.dev : {}, out = [];
+  let taken = null; // ((MOD1 review 1 P2) the titles shown already: the track's own sources', then each rig module's as listed
   for (const id of Object.keys(D)) {
     const d = D[id];
     if (!isObj(d) || d.kind !== 'synth' || !isSxId(d.model)) continue;
     const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || (MODELS.find(m => m.id === d.model) || { name: 'Serum' }).name; // ((WC, G13) the model's own name: a rig's not 'Serum'
     const used = x => M.some(r => isObj(r) && r.dst && (r.src === x || r.src === x + 'y' || r.aux === x));
-    for (let l = 1; l <= 10; l++) out.push({ id: `${id}/lfo${l}.out`, label: `${name} LFO ${l}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'lfo' + l, perNote: !!perNoteOf(t, `${id}/lfo${l}.out`), used: used('lfo' + l) });
-    for (let e = 1; e <= 4; e++) out.push({ id: `${id}/env${e}.out`, label: `${name} ENV ${e}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'env' + e, perNote: true, used: e === 1 || used('env' + e) });
+    const rig = d.model === RIG.ID;
+    let lab = p => name + ' ' + p.replace(/\d+$/, '').toUpperCase() + ' ' + p.replace(/^\D+/, ''), on = null;
+    if (rig) { // ((MOD1) a rig's: its modules' titles; (review 1 P2) the modules standing on its canvas only, each title once
+      const rows = Array.isArray(t.mods) ? t.mods.map(r => (isObj(r) ? r.src : null)).filter(x => typeof x === 'string' && x.startsWith(id + '/')) : [];
+      on = new Set(rigPartKeys(s, t.lay, id, rows, d.rig));
+      if (!taken) taken = new Set(sourcesOf(t, {}).map(x => x.label));
+      lab = p => { const L = rigLabelOf(p, d.rig); let u = L, k = 1; while (taken.has(u)) u = L + ' · ' + name + (++k > 2 ? ' ' + k : ''); taken.add(u); return u; };
+    }
+    for (let l = 1; l <= 10; l++) if (!on || on.has('lfo' + l)) out.push({ id: `${id}/lfo${l}.out`, label: lab('lfo' + l), scope: 'track', kind: 'link', dev: id, port: 'out', link: 'lfo' + l, perNote: !!perNoteOf(t, `${id}/lfo${l}.out`), used: used('lfo' + l) });
+    for (let e = 1; e <= 4; e++) if (!on || on.has('env' + e)) out.push({ id: `${id}/env${e}.out`, label: lab('env' + e), scope: 'track', kind: 'link', dev: id, port: 'out', link: 'env' + e, perNote: true, used: e === 1 || used('env' + e) });
   }
   return out;
 }

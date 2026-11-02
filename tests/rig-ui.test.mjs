@@ -25,6 +25,8 @@ const RC = await import('../rig-core.js?v=9');
 const H = await import('../sx-host.js?v=9');
 const M = await import('../sx-ui-mod.js?v=9');
 const core = await import('../serum-core.js?v=9');
+const song = await import('../song.js?v=9');
+const { MOD_COLS } = await import('../cv-mods.js?v=9');
 const D = await import('./serum-ui-stubs/dom.js');
 const assert = D.safeAssert(assertBase);
 const { GRID, FACE, layoutOf } = RU;
@@ -75,13 +77,15 @@ test('GRID: the §3.8 numbers — unit 8, column 64, padding 16 (12 top, 16 bott
   assert.equal(RU.faceW(3), 224); assert.equal(RU.faceW(4), 288); assert.equal(RU.faceW(5), 352); assert.equal(RU.faceW(8), 544);
 });
 
-test('FACE: the eight WC-1 kinds and the variants; columns = MODULES\'; a head first, the jack row last (Macros: its tiles are its jacks); every height GRID\'s; no pixel in a recipe (items are names, ids, spans)', () => {
+test('FACE: the eight WC-1 kinds and the variants, (MOD1 §4.1) and the Chaos; columns = MODULES\' (the Chaos: cv-mods MOD_COLS); a head first (the Chaos: its scope screen), the jack row last (Macros: its tiles are its jacks); every height GRID\'s; no pixel in a recipe (items are names, ids, spans)', () => {
   assert.deepEqual(RU.KINDS, KINDS);
-  assert.deepEqual(Object.keys(FACE).sort(), ['amp', 'env', 'env.amp', 'filter', 'lfo', 'macros', 'noise', 'osc', 'osc.kit', 'osc.sample', 'sub'].sort());
+  assert.deepEqual(Object.keys(FACE).sort(), ['amp', 'chaos', 'env', 'env.amp', 'filter', 'lfo', 'macros', 'noise', 'osc', 'osc.kit', 'osc.sample', 'sub'].sort());
+  assert.deepEqual(FACE.chaos.rows.map(r => r.t + ':' + r.items.join(' ')), ['screen:#scope', 'knobs:@.bpm @.rate #mono', 'jacks:>out']);
+  assert.equal(FACE.chaos.rows[0].h, GRID.rows.screenL);
   for (const [k, F] of Object.entries(FACE)) {
     const kind = k.split('.')[0];
-    assert.equal(F.cols, RC.MODULES[kind].cols, k + ': columns = MODULES');
-    assert.equal(F.rows[0].t, 'head', k + ': the head first');
+    assert.equal(F.cols, kind === 'chaos' ? MOD_COLS.chaos : RC.MODULES[kind].cols, k + ': columns = MODULES');
+    if (kind !== 'chaos') assert.equal(F.rows[0].t, 'head', k + ': the head first');
     if (kind === 'macros') assert.ok(!F.rows.some(r => r.t === 'jacks'), 'macros: no jack row');
     else assert.equal(F.rows[F.rows.length - 1].t, 'jacks', k + ': the jack row last');
     for (const r of F.rows) {
@@ -113,6 +117,7 @@ test('layoutOf: widths 64·n + 32 on the dots; row tops cumulative (12 + rows + 
         assert.deepEqual(ins, ins.map((_, j) => j), k + ': inputs from the left');
         assert.deepEqual(outs, outs.map((_, j) => F.cols - outs.length + j), k + ': outputs at the right');
         for (const c of r.cells) {
+          if (k === 'chaos') { assert.deepEqual([c.jack.port, c.jack.dir], ['out', 'out'], 'chaos: OUT'); continue; }
           const M = RC.MODULES[k.split('.')[0]], all = M.jacks.in.concat(M.jacks.out);
           assert.ok(all.some(j => j.id === c.jack.port && (c.jack.dir === 'in') === M.jacks.in.includes(j)), k + ': jack ' + c.jack.port + ' is a MODULES jack of its side');
         }
@@ -121,7 +126,8 @@ test('layoutOf: widths 64·n + 32 on the dots; row tops cumulative (12 + rows + 
     assert.equal(L.h, y + GRID.bottom, k + ': height');
   }
   const h = k => layoutOf(FACE[k]).h;
-  assert.deepEqual([h('osc'), h('osc.sample'), h('filter'), h('amp'), h('sub'), h('noise'), h('env'), h('env.amp'), h('lfo'), h('macros')], [532, 620, 472, 348, 392, 392, 428, 428, 400, 236]);
+  assert.deepEqual([h('osc'), h('osc.sample'), h('filter'), h('amp'), h('sub'), h('noise'), h('env'), h('env.amp'), h('lfo'), h('macros'), h('chaos')], [532, 620, 472, 348, 392, 392, 428, 428, 400, 236, 312]);
+  assert.deepEqual(RU.sizeOf('chaos', 'chaos1'), { w: 224, h: 312 });
   assert.equal(h('env') - h('lfo'), GRID.rows.knobs - GRID.rows.switches + GRID.rows.screen - GRID.rows.screenL, 'Envelope vs LFO: one row kind and the screen differ');
   assert.equal(h('sub'), h('noise'), 'the same rows: the same height');
   // the Amplifier: its four inputs fill its four columns (its OUT is cv-module's edge jack: the line to the FX panel)
@@ -330,6 +336,103 @@ test('rigHost.face refuses without a host or for an unknown kind; the Macros\' t
   assert.deepEqual(V.el.querySelectorAll('[data-jack]').map(e => e.getAttribute('data-jack')), ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']);
   assert.equal(V.el.querySelectorAll('.rig-jack').length, 0, 'no jack row');
   V.destroy();
+});
+
+test('(MOD1 §2.2) a rig\'s Macros face reads "Macros 1"; (MOD1 §4.1) a Macros rename (a tile\'s double-click) edits in the face — its field in the tile\'s cell, not in the donor\'s detached box', async () => {
+  const R = rig(), box = R.doc.createElement('div');
+  R.doc.body.appendChild(box);
+  const V = RU.rigHost({}).face('macros', box, { host: R.X, part: 'macros', dev: 'i1' });
+  await D.flush(R.doc);
+  assert.equal(V.el.getAttribute('aria-label'), 'Macros 1');
+  const tile = V.el.querySelectorAll('.sx-tile')[1];
+  D.fire(tile, 'dblclick');
+  const inp = V.el.querySelector('input');
+  assert.ok(inp && inp.parentNode === tile.parentNode && inp.parentNode.classList.contains('rig-cell'), 'the field where the tile is');
+  inp.value = 'Bright';
+  D.fire(inp, 'keydown', { key: 'Enter' });
+  assert.deepEqual([R.s().macros[1].name, V.el.querySelectorAll('input').length], ['Bright', 0]);
+  V.destroy();
+});
+
+/* ================================================================ (MOD1 §4.1) the slot faces: a canvas modulator's slot host */
+// a modulator device on its slot host (sx-host slotHost, as cv-mods-ui slotBody makes it) and a face with slot: true; the old body's panel
+// beside it (the registered view of the kind on a second slot host: what the body mounted before MOD1)
+const SLOT = { lfo: ['lfo', 'lfo1'], env: ['env', 'env2'], macro: ['macros', 'macros'], chaos: ['chaos', 'chaos1'] };
+async function slotFace(kind, dev, o) {
+  const doc = D.fresh(), box = doc.createElement('div'), log = [];
+  doc.body.appendChild(box);
+  const st = song.normModDev({ kind });
+  const mk = () => H.slotHost(kind, Object.assign({ doc, get: () => st, edit: f => log.push(['edit', Object.keys(f).join()]), live() {}, cancel() {}, devKey: dev,
+    rows: { count: () => 1, bypassed: () => false, bypass: on => log.push(['bypass', on]), remove: () => log.push(['remove']) } }, o));
+  const X = mk(), [face, part] = SLOT[kind];
+  const V = RU.rigHost({}).face(face, box, { host: X, part, slot: true, dev });
+  const b3 = doc.createElement('div');
+  doc.body.appendChild(b3);
+  const X3 = mk(), V3 = X3.mount(face, b3, { k: X3.slot, bare: true, dev });
+  await D.flush(doc);
+  return { doc, X, V, X3, V3, b3, st, log, done: () => { V.destroy(); X.destroy(); X3.destroy(); } };
+}
+const elCount = el => { let n = 1; const w = x => { for (const c of x.children) { n++; w(c); } }; w(el); return n; };
+
+test('(MOD1 §4.1) slot faces: the face of each kind on its slot host — titled by the module id\'s number (l3 → LFO 3, e2 → Envelope 2, m2 → Macros 2, h3 → Chaos 3), every control data-nomod, ⊇ the old panel\'s data-dest ids, ≤ 1.2 × its element count (G5: the panel\'s view — its container, root and panel), no empty drawer on it', async () => {
+  for (const [kind, dev, title] of [['lfo', 'l3', 'LFO 3'], ['env', 'e2', 'Envelope 2'], ['macro', 'm2', 'Macros 2'], ['chaos', 'h3', 'Chaos 3']]) {
+    const R = await slotFace(kind, dev), el = R.V.el;
+    assert.deepEqual([el.getAttribute('data-rig-kind'), el.getAttribute('aria-label'), R.V.face.w], [SLOT[kind][0], title, RU.faceW(MOD_COLS[kind])], kind);
+    assert.equal(el.parentNode.getAttribute('data-nomod'), '1', kind + ': the root data-nomod');
+    const ctl = el.querySelectorAll('[data-dest]');
+    assert.ok(ctl.length && ctl.every(e => e.getAttribute('data-nomod') === '1'), kind + ': every control data-nomod');
+    const mine = ids(el);
+    assert.deepEqual(Array.from(ids(R.b3)).filter(x => !mine.has(x)), [], kind + ': the old panel\'s data-dest ids on the face');
+    const n = elCount(el), n3 = elCount(R.b3);
+    assert.ok(n <= 1.2 * n3, kind + ': ' + n + ' elements vs ' + n3);
+    if (!R.V.drawer || !R.V.drawer.el.firstChild) assert.equal(el.querySelectorAll('.rig-drawer').length, 0, kind + ': no empty drawer');
+    assert.equal(el.querySelectorAll('.rig-park').length, 1);
+    if (kind !== 'macro') assert.equal(R.V.jacks.get('out').getAttribute('aria-label'), title + ' · OUT');
+    R.done();
+  }
+  // a rig face keeps its ordinal rule (args.n), the slot's number without one
+  const S = await slotFace('env', 'e7');
+  assert.equal(S.V.el.getAttribute('aria-label'), 'Envelope 7');
+  S.done();
+});
+
+test('(MOD1 §4.1) slot faces\' ⋯: the old panel\'s items, item for item (the LFO\'s Init / Copy / Paste then Bypass All / Remove All Destinations; the Envelope\'s own three then those two; the Chaos the two; the Macros none) — never Swap with ▸, Lock, MIDI learn', async () => {
+  const lab = L => L.map(i => (i.sep ? '|' : i.label));
+  for (const kind of ['lfo', 'env', 'macro', 'chaos']) {
+    const R = await slotFace(kind, 'x1'), mine = lab(R.V.menuItems()), old = lab(R.V3.menuItems());
+    assert.deepEqual(mine, old, kind + ': ' + mine.join(' '));
+    assert.equal(mine.some(x => /^(Swap with|Lock Module|MIDI)/.test(x)), false, kind);
+    if (kind !== 'macro') {
+      const rm = R.V.menuItems().find(i => i.label === 'Remove All Destinations');
+      rm.action();
+      assert.deepEqual(R.log.at(-1), ['remove'], kind + ': the host\'s rows');
+    }
+    R.done();
+  }
+  const E = await slotFace('env', 'e2');
+  assert.deepEqual(lab(E.V.menuItems()), ['Legato Inverted', 'Grid', 'Voice Steal Retrigger', '|', 'Bypass All Destinations', 'Remove All Destinations']);
+  E.V.menuItems()[0].action();
+  assert.deepEqual(E.log.at(-1), ['edit', 'env'], 'Legato Inverted: one edit of the env object');
+  E.done();
+});
+
+test('(MOD1 §4.1) the Chaos face (slot): its scope screen (a display canvas, S&H on it), BPM · RATE · MONO in the knob row (centres on the columns), OUT a mod jack; the MONO lock (the master) through the host\'s opts', async () => {
+  const R = await slotFace('chaos', 'h1'), el = R.V.el, rows = el.children.filter(e => e.classList.contains('rig-row'));
+  assert.deepEqual(rows.map(r => r.className.replace('rig-row rig-', '')), ['screen', 'knobs', 'jacks']);
+  assert.equal(rows[0].getAttribute('data-h'), 'L');
+  const disp = rows[0].querySelector('.rig-disp');
+  assert.ok(disp && disp.querySelector('canvas.sx-disp'), 'the scope: a kit display canvas in the screen frame');
+  assert.deepEqual(disp.querySelectorAll('.wk-tog').map(b => b.textContent.trim()), ['S&H']);
+  assert.deepEqual(rows[1].children.map(c => c.style.gridColumn), ['1 / span 1', '2 / span 1', '3 / span 1']);
+  assert.deepEqual([rows[1].children[0].children[0].getAttribute('data-dest'), rows[1].children[1].children[0].getAttribute('data-dest'), rows[1].children[2].children[0].textContent.trim()], ['c1.bpm', 'c1.rate', 'MONO']);
+  assert.deepEqual([R.V.jacks.get('out').getAttribute('data-rig-sig'), rows[2].children[0].style.gridColumn], ['mod', '3 / span 1']);
+  D.fire(disp.querySelectorAll('.wk-tog')[0], 'click');
+  assert.deepEqual(R.log.at(-1), ['edit', 'chaos'], 'S&H: one edit');
+  R.done();
+  const M = await slotFace('chaos', 'h1', { lock: { mono: 1 } });
+  const mono = M.V.el.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'MONO');
+  assert.deepEqual([mono.getAttribute('aria-pressed'), mono.getAttribute('aria-disabled')], ['true', 'true']);
+  M.done();
 });
 
 /* ================================================================ the jack row's tap menu (the drag is cv-cables', lane C) */

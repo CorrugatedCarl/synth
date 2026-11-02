@@ -14,10 +14,11 @@ import './v8-guard.mjs';
 //      FILTER → FILTER (and the loop rule), FX in / out (VOICE → own FX read-only, a source to DIRECT, VOICE's outputs).
 //      States compared without s.ui (a page shown is a view edit), patches canonically (keys sorted, typed arrays by
 //      value), renders bit for bit (Float32 words), each against the unedited render too (the edit is audible).
-//   2. Panels: a canvas LFO / ENV / Macro / Chaos module edited through its body (cv-mods-ui slotBody: sx-host slotHost +
-//      sx-ui-mod mountSlot — LfoPanel / EnvPanel / MacrosPanel / ChaosRow) compiles (compileMods payload + the Serum's
-//      instPatch) and renders as the same fields written into the device record directly. Bundled → parts → bundled
-//      leaves vals.s, fx and the compiled patch byte-identical (N2).
+//   2. Panels: a canvas LFO / Envelope / Macros / Chaos module edited through its body (cv-mods-ui slotBody: sx-host slotHost +
+//      (MOD1 §4.1, G1's parity half) rig-ui's slot face over the donors LfoPanel / EnvPanel / MacrosPanel / ChaosRow — every
+//      control found on the .rig-face) compiles (compileMods payload + the Serum's instPatch) and renders as the same fields
+//      written into the device record directly: the same gesture, the same record. Bundled → parts → bundled leaves vals.s,
+//      fx and the compiled patch byte-identical (N2).
 // Accessor-free: tracks are read through their devices (t.dev.i1), never through v1 fields. Fake-DOM nodes never reach
 // assert (D.safeAssert; only strings, numbers and plain data are compared).
 // Run alone: node --max-old-space-size=2048 --test tests/m3-fixture.test.mjs
@@ -410,19 +411,22 @@ function posts(t) {
   const live = pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? pay : null;
   return { pay: live, patch: G.instPatch(t.dev.i1, PO, G.modRowsFor(t, 'i1'), live ? live.ext : [], t) };
 }
-// a module body (cv-mods-ui slotBody → sx-host slotHost + sx-ui-mod mountSlot) wired as §2.3 / main.js modMount: live
-// writes the record per move, edit at the end (one History step), cancel restores the start, set = a macro move's mval
+// a module body (cv-mods-ui slotBody → sx-host slotHost + (MOD1) rig-ui's slot face) wired as §2.3 / main.js modMount: live
+// writes the record per move, edit at the end (one History step), cancel restores the start, set = a macro move's mval;
+// root: the face (.rig-face[data-rig-kind]) — every control below is found there
+const FACE_KIND = { lfo: 'lfo', env: 'env', macro: 'macros', chaos: 'chaos' };
 function bodyOf(t, key, kind) {
   const doc = D.fresh(), log = [];
   let start = null;
-  const o = { doc, get: () => t.dev[key], bpm: () => 120,
+  const o = { doc, get: () => t.dev[key], bpm: () => 120, devKey: key,
     live: f => { if (!start) start = clone(t.dev[key]); log.push(['live', Object.keys(f).join()]); assert.ok(CMOD.setModState(t, key, f).ok); },
     edit: f => { start = null; log.push(['edit', clone(f)]); assert.ok(CMOD.setModState(t, key, f).ok); },
     cancel: () => { if (start) Object.assign(t.dev[key], start); start = null; log.push(['cancel']); },
     set: (k, v) => log.push(['set', k, v]) };
   const body = CMU.slotBody(kind, o);
   doc.body.appendChild(body.el);
-  return { doc, body, log, root: body.el };
+  const B = { doc, body, log, get root() { return body.el.querySelector('.rig-face[data-rig-kind="' + FACE_KIND[kind] + '"]'); } };
+  return B;
 }
 const knobDrag = (el, dy) => { D.ptr(el, 'pointerdown', 10, 100); D.ptr(el, 'pointermove', 10, 100 - dy / 2); D.ptr(el, 'pointermove', 10, 100 - dy); D.ptr(el, 'pointerup', 10, 100 - dy); };
 const lastEdit = (log, k) => { const e = log.filter(x => x[0] === 'edit' && k in x[1]).pop(); assert.ok(e, 'an edit of ' + k + ': ' + JSON.stringify(log)); return e[1][k]; };
@@ -440,11 +444,12 @@ function samePosts(name, tp, td, t0) {
   return A;
 }
 
-test('a canvas LFO edited through Serum\'s LfoPanel (RATE drag, RISE End, mode ENV) posts the payload and renders the bytes of the same fields written into the device directly', async () => {
+test('a canvas LFO edited through its face (MOD1 §4.1: the LfoPanel donor\'s RATE drag, RISE End, mode ENV) posts the payload and renders the bytes of the same fields written into the device directly', async () => {
   const rec = { lfo: { mono: 1, mode: 'free', bpm: 0, anchor: 0 }, rate: n('l1.rate', 3) };
   const { t, id } = modTrack('lfo', rec), t0 = clone(t), td = clone(t);
   const Bo = bodyOf(t, id, 'lfo');
   await D.flush(Bo.doc);
+  assert.ok(Bo.root, 'the LFO face');
   knobDrag(byDest(Bo.root, 'l1.rate'), 40);
   D.fire(byDest(Bo.root, 'l1.rise'), 'keydown', { key: 'End' });
   const mode = Bo.root.querySelectorAll('[aria-label="LFO mode"]')[0];
@@ -458,10 +463,11 @@ test('a canvas LFO edited through Serum\'s LfoPanel (RATE drag, RISE End, mode E
   Bo.body.destroy();
 });
 
-test('a canvas ENV edited through Serum\'s EnvPanel (ATTACK drag, A CURVE Home, Legato Inverted from its ⋯) = the same fields written directly (a PER NOTE source: injected into the Serum\'s ENV slot)', async () => {
+test('a canvas Envelope edited through its face (the EnvPanel donor\'s ATTACK drag, A CURVE Home, Legato Inverted from its ⋯) = the same fields written directly (a PER NOTE source: injected into the Serum\'s ENV slot)', async () => {
   const { t, id } = modTrack('env', { att: 0.3, dec: 0.4, sus: 0.2 }), t0 = clone(t), td = clone(t);
   const Bo = bodyOf(t, id, 'env');
   await D.flush(Bo.doc);
+  assert.ok(Bo.root, 'the Envelope face');
   knobDrag(byDest(Bo.root, 'e2.att'), -30);
   D.fire(byDest(Bo.root, 'e2.ca'), 'keydown', { key: 'Home' });
   const it = Bo.body.menuItems().find(x => x.label === 'Legato Inverted');
@@ -475,10 +481,11 @@ test('a canvas ENV edited through Serum\'s EnvPanel (ATTACK drag, A CURVE Home, 
   Bo.body.destroy();
 });
 
-test('a canvas Macro edited through Serum\'s MacrosPanel (MACRO 1 drag: set per move, one {v} edit; rename MACRO 2) = the same values written directly; the payload\'s value table carries it', async () => {
+test('a canvas Macros edited through its face (the MacrosPanel donor\'s MACRO 1 drag: set per move, one {v} edit; rename MACRO 2 in its cell) = the same values written directly; the payload\'s value table carries it', async () => {
   const { t, id } = modTrack('macro', { v: [0.2, 0, 0, 0, 0, 0, 0, 0] }), t0 = clone(t), td = clone(t);
   const Bo = bodyOf(t, id, 'macro');
   await D.flush(Bo.doc);
+  assert.ok(Bo.root, 'the Macros face');
   knobDrag(byDest(Bo.root, 'm1'), 60);
   const v = lastEdit(Bo.log, 'v');
   assert.ok(Bo.log.some(x => x[0] === 'set' && x[1] === 0) && !Bo.log.some(x => x[0] === 'live'), 'macro moves through set, no live');
@@ -494,10 +501,11 @@ test('a canvas Macro edited through Serum\'s MacrosPanel (MACRO 1 drag: set per 
   Bo.body.destroy();
 });
 
-test('a canvas Chaos edited through Serum\'s ChaosRow (S&H on, RATE PageUp) = the same fields written directly', async () => {
+test('a canvas Chaos edited through its face (the ChaosRow donor\'s S&H on the scope, RATE PageUp) = the same fields written directly', async () => {
   const { t, id } = modTrack('chaos', { rate: 0.4 }), t0 = clone(t), td = clone(t);
   const Bo = bodyOf(t, id, 'chaos');
   await D.flush(Bo.doc);
+  assert.ok(Bo.root, 'the Chaos face');
   D.fire(Bo.root.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'S&H'), 'click');
   D.fire(byDest(Bo.root, 'c1.rate'), 'keydown', { key: 'PageUp' });
   const rate = lastEdit(Bo.log, 'rate');

@@ -12,18 +12,23 @@
 //                   the kind's builder, 'x|y' alternates sharing one cell (a cell whose every member is hidden shows its first one
 //                   dimmed: never a hole), ':n' a span of n columns, a trailing '*' a head item that grows, '<port' / '>port' a
 //                   jack (input / output). Variants: 'osc.sample', 'osc.kit' (multi / granular / spectral: the kit's type view in
-//                   the screen frame until WC-2), 'env.amp' (Envelope 1: no START / END)
+//                   the screen frame until WC-2), 'env.amp' (Envelope 1: no START / END); (MOD1 §4.1) 'chaos' — a canvas Chaos
+//                   module's: its scope screen (S&H on it), BPM · RATE · MONO, OUT (no MODULES kind: cv-mods MOD_COLS' 3 columns)
 //   layoutOf(recipe) → { w, h, rows: [{ t, top, h, cells: [{ items, col, span, cx }] }] }     the geometry, pure (the tests' and G11's)
 //   rigHost(deps)   → { face(kind, root, args) → View, jackMenu(jack, el, x, y) → handle | null (cv-cables' createCableDrag option),
 //                       press(e, el) → false (declines: the drag is cv-cables'), applySkin(worldEl, id), FACE, GRID, sizeOf(kind, part)
 //                       → { w, h }, layoutOf, endOf / jackKey }
 //     face args     { host: the rig's SerumHost (main.js's record), part ('voice' | 'oscB' | 'filter2' | 'env3' | 'lfo7' | 'sub' |
-//                   'noise' | 'macros'), shown: () => on screen (cv-module's plan), dev ('i1'), opts (kit options; the Macros' tiles
-//                   are 'jack' always), levelPlugged?: () => an Envelope holds the Amplifier's LEVEL (default: ENV 1 is not the gate) }
+//                   'noise' | 'macros' | 'chaos1'), shown: () => on screen (cv-module's plan), dev ('i1'), opts (kit options; the Macros' tiles
+//                   are 'jack' always), levelPlugged?: () => an Envelope holds the Amplifier's LEVEL (default: ENV 1 is not the gate),
+//                   (MOD1 §4.1) slot?: true — a canvas modulator's face on its slot host (sx-host slotHost: kind 'lfo' | 'env' | 'macros'
+//                   | 'chaos', part 'lfo1' | 'env2' | 'macros' | 'chaos1', dev its module id): titled by the id's number ('l3' → LFO 3,
+//                   'h2' → Chaos 2), its ⋯ the old body's (the panel's own + the host's Bypass All / Remove All Destinations: no Swap,
+//                   Lock or MIDI learn — the host's opts), data-nomod and the master's MONO lock from the host's opts as well }
 //     View          the host's View (sx-host mount) + { el: the face, face: { kind, variant, cols, w, h }, jacks: Map(port → el),
-//                   dests(): the face's data-dest ids, drawer: { open(), close(), el } | null }
+//                   dests(): the face's data-dest ids, drawer: { open(), close(), el } | null, donor: the kit panel it is built over }
 //   The widgets come from the kit's panel classes, built as donors on the face's page (OscPanel, SubPanel, NoisePanel, FilterPanel,
-//   EnvPanel, LfoPanel, MacrosPanel, VoicingPanel, OutputsPanel): the same bindings (data-dest, halos, knob menus, MIDI learn,
+//   EnvPanel, LfoPanel, MacrosPanel, ChaosRow, VoicingPanel, OutputsPanel): the same bindings (data-dest, halos, knob menus, MIDI learn,
 //   locks, panel undo), the same extra menus, alternates and label functions; every data-dest the stage-3 panel shows is on the face
 //   (G11's parity) — the panels' own compositions (rows, sizes, heads, panes) are discarded. A control the grid has no place for goes
 //   into the head's ⚙ drawer (built with the face, inside it and hidden until opened: never dropped). A few knobs are made fresh where a
@@ -75,6 +80,9 @@ const RECIPES = {
   lfo: { cols: 5, rows: [R('head', ['#type', '#dir', '#grid', '#shapes', '#gear']), R('screen', ['#editor'], 'L'), R('knobs', ['@.rate', '@.rise', '@.delay', '@.smooth', '@.phase']),
     R('switches', ['#mode:3', '#bpm', '#mono']), R('jacks', ['>out'])] },
   macros: { cols: 4, rows: [R('head', ['#hint*']), R('knobs', ['#m1', '#m2', '#m3', '#m4']), R('knobs', ['#m5', '#m6', '#m7', '#m8'])] },
+  // ((MOD1 §4.1) a canvas Chaos: four controls on three columns fill the grid's band only with a screen — its scope, S&H on it (the switch
+  // that shapes what it draws); no head: the face stays ≤ 1.2 × the old panel's elements (G5)
+  chaos: { cols: 3, rows: [R('screen', ['#scope'], 'L'), R('knobs', ['@.bpm', '@.rate', '#mono']), R('jacks', ['>out'])] },
 };
 /** The recipes with their row heights (data; frozen): FACE[kind] = { cols, rows: [{ t, h, items }] }. */
 export const FACE = deepFreeze(Object.fromEntries(Object.entries(RECIPES).map(([k, r]) => [k, { cols: r.cols, rows: r.rows.map(x => ({ t: x.t, h: x.h === 'K' ? null : rowH(x.t, x.h), items: x.items.slice() })) }])));
@@ -92,6 +100,15 @@ export function sizeOf(kind, part) {
   const v = variantOf(kind, { k: part === 'env1' ? 0 : 1 }), L = layoutOf(FACE[v]);
   return { w: L.w, h: L.h };
 }
+// a part's slot k ('oscB' → 1, 'filter2' → 1, 'env3' → 2, 'lfo7' → 6, 'chaos1' → 0; 'voice', 'sub', 'noise', 'macros' → 0) — the engine
+// part names (serum-core MODULE_FIELDS', sx-host's slots)
+function partOf(part) {
+  const p = String(part || ''), m = /^osc([ABC])$/.exec(p), n = /^(?:env|lfo|chaos)([1-9]\d?)$/.exec(p);
+  return { k: m ? 'ABC'.indexOf(m[1]) : p === 'filter2' ? 1 : n ? +n[1] - 1 : 0 };
+}
+// (MOD1 §4.1) the face kinds no rig holds (MODULES has none): a canvas Chaos module — its title and its jack row's OUT (a mod)
+const OWN = deepFreeze({ chaos: { label: 'Chaos', labelN: i => 'Chaos ' + i, jacks: { in: [], out: [{ id: 'out', label: 'OUT', kind: 'mod' }] } } });
+const moduleOf = kind => RC.MODULES[kind] || OWN[kind] || null;
 
 /* ================================================================ the face builder */
 const mk = (d, tag, cls, text) => { const e = d.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -143,7 +160,7 @@ function relabel(el, text) {
 // The face of one module, built into the view's page (K the host's kit): the builder makes its donor(s) and names its pieces, then
 // the recipe is laid; an oscillator re-lays on a type switch. → the panel object the host's View holds.
 function buildFace(kind, K, A, V, host) {
-  const d = K.doc, part = String(A.part || ''), pv = MOD.partView(kind === 'amp' ? 'voice' : part) || { k: 0 }, k = pv.k | 0;
+  const d = K.doc, part = String(A.part || ''), k = partOf(part).k | 0;
   ensureRigCSS(d);
   const B = BUILDERS[kind];
   const ctx = { kind, part, k, K, A, V, host, d, roots: [], pieces: {}, fresh: {}, own: {}, menuItems: () => [], destroyers: [], donors: [],
@@ -166,7 +183,7 @@ function buildFace(kind, K, A, V, host) {
   lay(ctx, B.variant ? B.variant(ctx) : variantOf(kind, { k }));
   if (B.variant) K.custom(() => { const v = B.variant(ctx); if (v !== ctx.variant) lay(ctx, v); });
   return {
-    el, power: ctx.power, module: ctx.module, ctx,
+    el, power: ctx.power, module: ctx.module, ctx, donor: ctx.donors[0] || null,
     get face() { return ctx.meta; },
     menuItems: () => arr(call(ctx.menuItems)),
     destroy: () => {
@@ -224,9 +241,11 @@ function lay(ctx, v) {
     if (el.contains(e) || on.has(id) || (e.parentNode && e.parentNode.closest && e.parentNode.closest('[data-dest]'))) continue;
     ctx.park.appendChild(e); ctx.managed.push(e); on.add(id);
   }
-  // the drawer's controls live in the face, hidden, until ⚙ opens it (never dropped: their data-dest stays on the face)
+  // the drawer's controls live in the face, hidden, until ⚙ opens it (never dropped: their data-dest stays on the face); ((MOD1) an empty
+  // drawer stays off it: one element less on every face without one — the slot faces' G5 count)
   fillDrawer(ctx, recipe.cols);
-  el.append(ctx.drawerEl, ctx.park);
+  if (ctx.drawerEl.firstChild) el.appendChild(ctx.drawerEl);
+  el.appendChild(ctx.park);
   ctx.meta = Object.freeze({ kind: ctx.kind, variant: v, cols: recipe.cols, w: L.w, h: L.h });
   if (ctx.V) ctx.V.face = ctx.meta;
   // the dim policy, after the kit's own visibility binds (registered later: it runs after them in every paint)
@@ -261,7 +280,7 @@ function freshKnob(ctx, key, id) {
 // a jack of the jack row: span.rig-jack.cv-jack.cv-fjack[data-jack] (cv-module's inline anchor: measured, its attributes moved onto
 // it) + its label line → [jack, label]
 function jackOf(ctx, J, rowEl) {
-  const d = ctx.d, M = RC.MODULES[ctx.kind] || {}, all = arr(M.jacks && M.jacks.in).concat(arr(M.jacks && M.jacks.out));
+  const d = ctx.d, M = moduleOf(ctx.kind) || {}, all = arr(M.jacks && M.jacks.in).concat(arr(M.jacks && M.jacks.out));
   const spec = all.find(j => j.id === J.port) || { id: J.port, label: J.port.toUpperCase(), kind: 'audio' };
   const je = mk(d, 'span', 'rig-jack cv-jack cv-fjack'), name = ctx.title + ' · ' + spec.label;
   je.setAttribute('data-jack', J.port);
@@ -350,8 +369,9 @@ function closeDrawer(ctx, focus) {
 
 /* ================================================================ the builders, per kind */
 const OSC_P = ['a', 'b', 'c'];
-// the bar title of a numbered kind: its fixed display ordinal (args.n: dev.rig.n, §3.4), else the slot's number
-const nameOf = (A, kind, k) => { const M = RC.MODULES[kind]; if (!M) return ''; const n = fin(A.n) && A.n > 0 ? A.n : k + 1; return M.labelN ? M.labelN(n) : M.label; };
+// the bar title of a numbered kind: its fixed display ordinal (args.n: dev.rig.n, §3.4; a slot face: its module id's number), else the
+// slot's number
+const nameOf = (A, kind, k) => { const M = moduleOf(kind); if (!M) return ''; const n = fin(A.n) && A.n > 0 ? A.n : k + 1; return M.labelN ? M.labelN(n) : M.label; };
 // a donor's route pane / button: the pane's BALANCE / BUS knobs are found there (by data-dest); its button anchors the donor's own
 // popovers (Edit Note Ranges…) at the face's ⚙. The routing itself is the cords' (W3): the ROUTE seg and the AMP ENV switch never
 // reach a face (adopt normalises the switch on, §2.5)
@@ -549,10 +569,11 @@ const BUILDERS = {
       Object.assign(ctx.pieces, { bpm: tg[0] || null, lock: tg[1] || null, zoom, editor: wrapDisp(d, kids(body).find(e => hasCls(e, 'sx-edbox')) || null),
         start: st[3] || null, end: st[4] || null });
       // ⋯: the kit's module items (Lock · Init · Copy · Paste · Swap with ▸, §8.2 — EnvPanel's shell has no module of its own, so the
-      // face had none: review 1 P3-1's "⋯ → Init" on the amp Envelope is the host's envFromAmp), then its own and the destinations
+      // face had none: review 1 P3-1's "⋯ → Init" on the amp Envelope is the host's envFromAmp), then its own and the destinations;
+      // ((MOD1 §4.1) a slot face: the panel's own, as the old body — a rig host's only)
       ctx.menuItems = () => {
         const H = K.sx, own = P.menuItems().filter(i => i.label !== 'Lock Module');
-        if (!H || typeof H.moduleMenuActs !== 'function') return P.menuItems();
+        if (ctx.A.slot || !H || typeof H.moduleMenuActs !== 'function') return P.menuItems();
         return H.moduleMenuActs('env' + (k + 1), null, () => own.filter((x, i) => !(x.sep && (!i || own[i - 1].sep || i === own.length - 1))));
       };
       // (Envelope 1: START / END are ENV 2's, hidden by the kit — kept on the face, parked, as the kit keeps them)
@@ -583,9 +604,12 @@ const BUILDERS = {
   },
   /* ---- Macros: a knob over its name tile — the tile is the macro's jack (k1…k8: cv-module's inline anchors) */
   macros: {
-    title: () => RC.MODULES.macros.label,
+    title: ctx => nameOf(ctx.A, 'macros', 0), // ((MOD1 §2.2) "Macros 1", a slot face its id's number)
     build(ctx) {
       const { K, d } = ctx, P = new MOD.MacrosPanel(null, K, { bare: true });
+      // ((MOD1 §4.1) a rename's field goes where the tile is now — the face's cell, never the donor's box the face emptied)
+      const rn = P.rename;
+      P.rename = (m, box, tile) => rn.call(P, m, tile && tile.parentNode ? tile.parentNode : box, tile);
       ctx.donors.push(P);
       ctx.shell = P.shell;
       ctx.roots.push(P.shell.body);
@@ -598,7 +622,43 @@ const BUILDERS = {
       ctx.pieces.hint = mk(d, 'span', 'rig-hint', 'Drag a name onto a knob to modulate it');
     },
   },
+  /* ---- (MOD1 §4.1) a canvas Chaos (its slot host's chaos 1): the ChaosRow's RATE, BPM, MONO, S&H; the scope — the monitor's value
+     (host.liveV, 0…1: ModCore's (x + 1) / 2), one sample per snapshot while shown, the kit's display canvas (the skin's display tokens) */
+  chaos: {
+    title: ctx => nameOf(ctx.A, 'chaos', ctx.k),
+    build(ctx) {
+      const { K, d, k, host: H } = ctx, P = new MOD.ChaosRow(null, K, k, { bare: true, label: false }), body = P.shell.body;
+      ctx.prefix = 'c' + (k + 1);
+      ctx.donors.push(P);
+      ctx.shell = P.shell;
+      ctx.roots.push(body);
+      ctx.inline = [body];
+      const tg = t => qa(body, '.wk-tog').find(e => e.textContent.trim() === t) || null, S = ctx.scope = { v: new Float32Array(SCOPE_N), n: 0, seq: -1 };
+      // (the key takes the sample: a paint of a shown page reads it once per new snapshot — the canvas draws it in the same paint)
+      const key = () => { const q = K.snapSeq(), v = H.liveV; if (q !== S.seq) { S.seq = q; if (fin(v)) { S.v[S.n % SCOPE_N] = v < 0 ? 0 : v > 1 ? 1 : v; S.n++; } } return S.n; };
+      const scr = wrapDisp(d, K.canvas('rig-scope', key, (g, w, h, q, pal) => drawScope(g, w, h, q, pal, S)).el), sh = tg('S&H');
+      if (sh) { sh.style.position = 'absolute'; sh.style.top = sh.style.right = 'var(--rig-margin)'; scr.appendChild(sh); }
+      Object.assign(ctx.pieces, { scope: scr, mono: tg('MONO') });
+      ctx.menuItems = () => P.menuItems();
+    },
+  },
 };
+// (MOD1 §4.1) the Chaos scope: the last SCOPE_N samples, the newest at the right edge, over the centre line
+const SCOPE_N = 96;
+function drawScope(g, w, h, q, pal, S) {
+  g.strokeStyle = pal.grid; g.lineWidth = q;
+  g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+  const n = Math.min(S.n, SCOPE_N);
+  if (n < 2) return;
+  const pad = 6 * q, dx = w / (SCOPE_N - 1);
+  g.strokeStyle = pal.wave; g.lineWidth = 1.5 * q; g.lineJoin = 'round';
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const v = S.v[(S.n - n + i) % SCOPE_N], x = w - (n - 1 - i) * dx, y = pad + (1 - v) * (h - 2 * pad);
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.stroke();
+}
 
 /* ================================================================ skins (§5.1) */
 /** The skin of the world (one attribute: data-cv-skin on #world; a skin is a CSS block of colours and the face font, never a
@@ -613,11 +673,13 @@ export function applySkin(worldEl, id) {
 export function rigHost(deps) {
   const P = deps || {};
   /** A face: the module of `kind` for the rig's SerumHost args.host, mounted into root as a view of that host (its page, its paint, its
-   * panel undo). → the host's View + { el, face, jacks, dests(), drawer }. */
+   * panel undo). → the host's View + { el, face, jacks, dests(), drawer, donor }. (MOD1 §4.1) args.slot: a canvas modulator's slot host —
+   * numbered by its module id (args.dev 'l3' → 3). */
   function face(kind, root, args) {
     const A = Object.assign({}, args), H = A.host;
     if (!BUILDERS[kind]) throw new Error('rig-ui: no face for ' + kind);
     if (!H || typeof H.mount !== 'function') throw new Error('rig-ui: a face needs its rig\'s SerumHost (args.host)');
+    if (A.slot && !(fin(A.n) && A.n > 0)) { const m = /(\d+)$/.exec(String(A.dev || '')); if (m) A.n = +m[1]; }
     const part = A.part || (kind === 'amp' ? 'voice' : kind);
     const opts = Object.assign({}, A.opts, kind === 'macros' ? { tiles: 'jack' } : null);
     const L = layoutOf(FACE[variantOf(kind, { k: part === 'env1' ? 0 : 1 })]);
@@ -629,6 +691,7 @@ export function rigHost(deps) {
     V.jacks = C ? C.jacks : new Map();
     V.dests = () => (V.el ? Array.from(new Set(qa(V.el, '[data-dest]').map(e => e.getAttribute('data-dest')))) : []);
     V.drawer = C ? { el: C.drawerEl, open: () => openDrawer(C), close: () => closeDrawer(C), isOpen: () => !!C.open } : null;
+    V.donor = pn.donor || null;
     return V;
   }
   const G = makeMenu(P);

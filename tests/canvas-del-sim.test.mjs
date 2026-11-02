@@ -100,7 +100,7 @@ test('the harness: the CANVAS view shows (ROLL hidden), a Serum on track 1, the 
   W().selectMany([]);
 });
 
-test('Delete on a selected LFO deletes it (its menu\'s Delete: one step "Delete LFO 1"), "Deleted LFO 1 · tap to undo"; one undo brings it back; Backspace deletes a selected Macro the same way', async () => {
+test('Delete on a selected LFO deletes it (its menu\'s Delete: one step "Delete LFO 1"), "Deleted LFO 1 · tap to undo"; one undo brings it back; Backspace deletes a selected Macros the same way', async () => {
   const l = M.add('lfo'); await settle();
   assert.equal(l, 'l1');
   const n0 = hsteps();
@@ -117,7 +117,7 @@ test('Delete on a selected LFO deletes it (its menu\'s Delete: one step "Delete 
   sel('m1');
   assert.equal(press('Backspace'), true, 'the page\'s Backspace (no browser back)');
   await settle();
-  assert.deepEqual([has('m1'), hsteps(), cv.hist.undoLabel], [false, n1 + 1, 'Delete Macro 1']);
+  assert.deepEqual([has('m1'), hsteps(), cv.hist.undoLabel], [false, n1 + 1, 'Delete Macros 1']); // ((MOD1 §2.2) "Macros n"
   cv.undo(); await settle();
   assert.equal(has('m1'), true);
 });
@@ -134,7 +134,7 @@ test('the instrument / OUT alone: nothing deleted, no step — a notice says why
   sel('i1/fx');
   press('Delete'); await settle();
   assert.deepEqual([keys(), hsteps(), note()], [k0, n0, 'The FX panel can’t be deleted']);
-  // mixed: the instrument, OUT, LFO 1 and Macro 1 — the two modulators go in one step
+  // mixed: the instrument, OUT, LFO 1 and Macros 1 — the two modulators go in one step
   sel('i1', 'l1', 'out', 'm1');
   press('Delete'); await settle();
   assert.deepEqual([has('l1'), has('m1'), has('i1'), has('out'), hsteps(), cv.hist.undoLabel], [false, false, true, true, n0 + 1, 'Delete 2 modules']);
