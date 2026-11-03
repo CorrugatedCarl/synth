@@ -336,21 +336,21 @@ test('§2.2 assets: the master rack is a state (users name "Master"); an IR on i
 });
 
 test('schema 17 (§2.3; 14 at stage M, 15 since SC, 16 since WC, 17 since MM): a save says 17 and carries project.master; an untouched master writes no key; a load reads it back; Save as classic names the master effects it loses', async () => {
-  assert.equal(CM.SCHEMA, 18);
+  assert.equal(CM.SCHEMA, 19);
   delete P().master;
   const t0 = JSON.parse(await cv.projectFile());
-  assert.deepEqual([t0.schema, 'master' in t0], [18, false], 'no master key');
+  assert.deepEqual([t0.schema, 'master' in t0], [19, false], 'no master key');
   M.edit(fx => { FC.newInstance(fx, 'eq', { rack: 0 }); FC.newInstance(fx, 'cmp', { rack: 0 }); }); await settle(1);
   const o = JSON.parse(await cv.projectFile());
-  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [18, 2]);
+  assert.deepEqual([o.schema, o.master.fx.racks[0].mods.length], [19, 2]);
   const p = cv.loadProject(JSON.stringify(o), { file: true });
   assert.equal(JSON.stringify(p.master.fx.racks[0].mods.map(I => I.type)), JSON.stringify(['eq', 'cmp']));
   const r = CM.toV1(o);
   assert.equal(r.lost.includes('the master effects (2)'), true, JSON.stringify(r.lost));
   assert.equal('master' in r.p, false);
   assert.equal(S.normMaster({ fx: 3, lay: { mfx: { x: 'a' } } }), undefined, 'nothing valid: no key');
-  const n = JSON.parse(JSON.stringify(o)); n.schema = 19;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 19, 'a schema-19 file: read-only');
+  const n = JSON.parse(JSON.stringify(o)); n.schema = 20;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 20, 'a schema-20 file: read-only');
   M.edit(fx => { fx.racks[0].mods.length = 0; }); await settle(1);
 });
 

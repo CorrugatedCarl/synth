@@ -32,7 +32,7 @@ import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale, reducedMotion as wkReduced } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
-import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf, numsOf as modNumsOf, modBarSub, NOMOD_KIT } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units; (MOD1 §2.2) a track's own device numbers of a kind; (review 2) a bar's sub-label by its face's columns)
+import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf, numsOf as modNumsOf, modBarSub, NOMOD_KIT, classOf as modClassOf, plainSwitch as modPlainSw } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units; (MOD1 §2.2) a track's own device numbers of a kind; (review 2) a bar's sub-label by its face's columns)
 import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-modlayer.js?v=9';
 // milestone 3 (IMPL-3 §2.4–2.7, lane D): a Serum taken apart — its parts as modules of one host (sx-host / sx-ui-mod, loaded
 // with the panels), its internal cables as views of its state (sx-edges)
@@ -59,7 +59,8 @@ import * as cvPatch from './cv-patch.js?v=9';
 // stage DM (IMPL-DM §4.6, §5; lane H): our drum machine — kit-core's record and rules (KC: starter, reconcile, names), kit-ui's faces
 // (kitHost: the Sequencer, the voices as 'pm' modules, their sizes and Tidy's rack)
 import * as KC from './kit-core.js?v=9';
-import { kitHost } from './kit-ui.js?v=9';
+import { kitHost, fmtKnob as kitFmtKnob, fmtLevel as kitFmtLevel } from './kit-ui.js?v=9'; // ((AUTO §5.2) a voice knob's readout: an automation lane's
+import { fmtCore as lawFmt } from './laws.js?v=9'; // ((AUTO §5.2) the mixer's readouts in the app's formats: dB, L / C / R
 // stage M (IMPL-M §3, §5.1, §5.3; lane U): the master OUT (scope, loudness, true peak, correlation, A/B, Mono) and the Master row
 import * as MUI from './master-ui.js?v=9';
 import * as MOTION from './motion.js?v=9'; // ((FR Cut B, IMPL-FR-B §3) the heard-time anchor ring: the fast lane's consumers (§5.3)
@@ -139,6 +140,7 @@ const adopt = p => CMOD.adopt(p, { guard: GUARDS });
 const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0, safe: true }, store.get('synth.settings', {}));
 settings.lat = clamp(Math.round(+settings.lat) || 0, -50, 400);
 settings.safe = settings.safe !== false;
+settings.autoArm = settings.autoArm !== false; // ((AUTO §6.3) the automation arm: lit by default
 let ctx = null, an = null, master = null, metroBus = null, powering = null;
 // (IMPL-M §1.1, §2.1) the master: mnode MASTER's record (beside `nodes`, never in it); mono the Mono stage; master (above) the
 // Volume — the listening level; mSplit / anL / anR the stereo image scope's analysers (O1); safeN the safety limiter's node (the
@@ -550,7 +552,8 @@ function modVals(tr, id, vals, m) {
   if (inj.placed.some(x => /^ext\d+$/.test(x.src))) Object.defineProperty(v, 'ext', { value: true });
   return v;
 }
-function buildPatch(tr, sr, offline = false) {
+let autoMoved = false; // ((AUTO fix round) set by the automation tick around its own sendPatch: a value it moved (no dedupe hash / compare)
+function buildPatch(tr, sr, offline = false, nokey = false) { // (nokey: sendPatch hands on autoMoved — buildPatch reads no live flag: smpgen §10.1 evals its source)
   fxOfDev(tr, null); // (a v1 rack reaching the primary's FX device is migrated in place first, as before)
   const c = CG.compileTrack(tr), v1 = c.canonical ? c.v1 : CM.primV1(tr); // (the compile's plain v1 view of the primary)
   const m = modelById(v1.model), s = isSxModel(m) && v1.vals.s ? v1.vals.s : null;
@@ -560,6 +563,7 @@ function buildPatch(tr, sr, offline = false) {
     // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
     // deadline); live: the device defaults and the safeguard's step
     qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id),
+    nokey: nokey && !offline, // ((AUTO fix round) the tick's send: the value moved — no CP content hash (cpKeyOf)
   });
   if (s) {
     patch.osCap = offline ? 0 : sxCap;
@@ -744,7 +748,7 @@ function sendPatch(tr = trk()) {
   scSync(tr); // ((SC §1.1) every FX state reaches the node here: its key edges first — an edge exists before the FXP naming its source lands
   const c = CG.compileTrack(tr);
   if (!legacyOk(tr, c) || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: not one instrument, or a node that is graphed)
-  const p = buildPatch(tr);
+  const p = buildPatch(tr, undefined, false, autoMoved);
   seedPend.delete(tr.id);
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
   // variant of an asset (trim / fade, Convolve shaping) waits for the new variant, so the old one keeps playing
@@ -781,7 +785,7 @@ function postPatch(N, p, C = N, i) {
   if (p.serumT) { ct = ctDelta(C, p.serumT); if (ct) p.serumT = ct; else delete p.serumT; }
   if (p.seqT) { sq = partDelta(C.sqParts, p.seqT); if (sq) p.seqT = sq; else delete p.seqT; }
   if (p.fxrT) { if (C.xsKey === p.fxrT.key) delete p.fxrT; else C.xsKey = p.fxrT.key; }
-  if (C.last && !p.fxrT && sameVal(p, C.last, SKIP_TOP)) { // only tables changed
+  if (C.last && !p.fxrT && !autoMoved && sameVal(p, C.last, SKIP_TOP)) { // only tables changed ((AUTO fix round) the tick's send moved a value: no compare)
     if (ct && Object.keys(ct.parts).length) N.node.port.postMessage(i === undefined ? { t: 'ct', key: ct.key, parts: ct.parts } : { t: 'ct', i, key: ct.key, parts: ct.parts });
     if (sq) N.node.port.postMessage(i === undefined ? { t: 'sqt', parts: sq.parts } : { t: 'sqt', i, parts: sq.parts });
     return;
@@ -1280,12 +1284,575 @@ function audible(t) {
 function mix() {
   ptDim(); // ((9, §4.3) the shown 900 Series' cords dim with its track's mute / solo — the engine or not)
   if (!ctx) return;
-  for (const t of project.tracks) {
-    const N = nodes.get(t.id); if (!N) continue;
-    N.gain.gain.setTargetAtTime(audible(t) ? t.vol : 0, ctx.currentTime, 0.015);
-    N.pan.pan.setTargetAtTime(t.pan, ctx.currentTime, 0.015);
-  }
+  for (const t of project.tracks) mixOne(t);
   ptHeardSync();
+}
+// one track's gain and pan (mix()'s per-track lines) — (AUTO §4.4) automation's mixer writer: its nodes only, no dim / heard sync (mute and
+// solo did not move)
+function mixOne(t) {
+  const N = ctx ? nodes.get(t.id) : null;
+  if (!N) return;
+  N.gain.gain.setTargetAtTime(audible(t) ? t.vol : 0, ctx.currentTime, 0.015);
+  N.pan.pan.setTargetAtTime(t.pan, ctx.currentTime, 0.015);
+}
+
+/* ------------------------------------------------------------- automation (stage AUTO, IMPL-AUTO §2.2, §4.1, §5.2) */
+// A curve's key (track.auto[key]): '<dev>:<dest>' — a control's address, the modulation id (dev iN / fxN, never the master's mfx) — or
+// 'mix:vol' / 'mix:pan' (the track's fader and pan). The pure host functions by family, as cv-mods destOk dispatches: an FX row
+// (fx.<inst>.<pid>) on a panel or a rig, a kit voice's knob, a rig's DESTS id, a classic control. Values in the control's own domain
+// (classic: panel units; rig / FX: n 0…1; kit: vals 0…10; vol 0…1.25; pan −1…1). Playback writes the MODEL (autoApply): never a panel's
+// writer (unmounted panels, sx-host's own undo per call, fxPrune, the kit's throttle), never preset / persist / History / sxDirty /
+// fxPrune / modsHold — one queuePatch (one frame's patch per track, coalesced) or, for the mixer, mixOne
+const AUTO_MIX = Object.freeze({ 'mix:vol': { lo: 0, hi: 1.25, label: 'Volume' }, 'mix:pan': { lo: -1, hi: 1, label: 'Pan' } });
+const AUTO_KIT = /^k[a-p][udl1-4]$/; // (§2.2: TUNE, DECAY, LEVEL, k1–k4 — not TYPE, not CHOKE)
+const AUTO_LAW_NO = new Set(['bool', 'enum', 'int']), AUTO_CLS = new Set(['sm', 'apply', 'proc', 'chunk']);
+const AUTO_RIG_NO = /^(?:arp|clip)\.|^(?:bus(?:1[0-6]|[1-9])|g\.wheel|g\.bend)$/; // (the virtual arp / clip ids; the placeholders normalizeSerum always resets: no base)
+let autoDests = null; // DESTS id → its row (lazy)
+const autoDest = id => (autoDests || (autoDests = new Map(core.DESTS.map(x => [x.id, x])))).get(id) || null;
+const autoCtls = new Map(); // classic model id → Map(control id → its models.js control)
+function autoCtl(d, id) {
+  let M = autoCtls.get(d.model);
+  if (!M) autoCtls.set(d.model, M = new Map((modelById(d.model).controls || []).map(c => [c.id, c])));
+  return M.get(id) || null;
+}
+// key → { fam: 'mix' | 'fx' | 'kit' | 'rig' | 'classic', dev, id, d (the device record) } on track t, or null (no such device; a modulator,
+// a 900 Series, the master's)
+function autoOf(t, key) {
+  if (!t || typeof key !== 'string') return null;
+  if (AUTO_MIX[key]) return { fam: 'mix', dev: 'mix', id: key.slice(4), d: null };
+  const q = modSplit(key), d = q && q.dev !== 'mfx' && t.dev ? t.dev[q.dev] : null;
+  if (!d || typeof d !== 'object') return null;
+  if (/^fx\./.test(q.pid)) return d.kind === 'panel' || isSxRec(d) ? { fam: 'fx', dev: q.dev, id: q.pid, d } : null;
+  if (d.kind !== 'synth' || isPatchDev(t, q.dev)) return null;
+  return { fam: isKitDev(t, q.dev) ? 'kit' : isSxRec(d) ? 'rig' : 'classic', dev: q.dev, id: q.pid, d };
+}
+// (§2.2) may key be automated on t: the mixer's two; an FX row that exists, not nomod, not bool / enum / int; a present kit voice's
+// u d l 1–4; a rig DESTS id — not a plain switch, not virtual (arp / clip), no placeholder, not bool / enum / int; a classic knob of
+// class sm / apply / proc / chunk. A key whose control is gone answers false (kept, inert: §2.2)
+function autoOk(t, key) {
+  const r = autoOf(t, key);
+  if (!r) return false;
+  if (r.fam === 'mix') return true;
+  if (r.fam === 'fx') { const x = core.fxDest(r.id, fxOfDev(t, r.dev)); return !!x && !x.nomod && !AUTO_LAW_NO.has(x.row.law); }
+  if (r.fam === 'kit') return AUTO_KIT.test(r.id) && kitPresent(r.d, KC.KIT.CODES.indexOf(r.id.slice(0, 2)));
+  if (r.fam === 'rig') { const x = autoDest(r.id); return !!x && !AUTO_RIG_NO.test(r.id) && !modPlainSw(r.id) && !AUTO_LAW_NO.has(x.law); }
+  const c = autoCtl(r.d, r.id);
+  return !!c && c.t === 'k' && AUTO_CLS.has(modClassOf(r.d.model, r.id));
+}
+// the DOM side (§3.1): the control under el — its closest [data-dest], the device by cv-cables' devAt rule (the closest [data-dev], else
+// the module's data-cv-mod) — → its key when t may automate it, else null ([data-nomod]: the 900 Series, the modulators' knobs; [data-twin])
+function autoOkEl(el, t = trk()) {
+  const up = (n, a) => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (n.getAttribute(a) != null) return n; return null; };
+  const de = up(el, 'data-dest'), nm = de ? de.getAttribute('data-nomod') : null;
+  if (!de || (nm != null && nm !== '0') || up(de, 'data-twin')) return null;
+  const dv = up(de, 'data-dev'), mm = dv ? null : up(de, 'data-cv-mod');
+  const dev = dv ? dv.getAttribute('data-dev') : mm ? String(mm.getAttribute('data-cv-mod')).split('/')[0] : null, key = dev ? dev + ':' + de.getAttribute('data-dest') : null;
+  return key && autoOk(t, key) ? key : null;
+}
+// the key's base now (pure: the value playback compares and recording polls) — undefined when it resolves to nothing
+function autoGet(t, key) {
+  const r = autoOf(t, key);
+  if (!r) return undefined;
+  if (r.fam === 'mix') return r.id === 'vol' ? t.vol : t.pan;
+  if (r.fam === 'fx') { const fx = fxOfDev(t, r.dev); return core.fxDest(r.id, fx) ? core.destBase(null, fx, r.id) : undefined; }
+  if (r.fam === 'rig') return autoDest(r.id) ? core.destBase(r.d.vals.s, r.d.fx, r.id) : undefined;
+  const v = r.d.vals ? +r.d.vals[r.id] : NaN;
+  if (Number.isFinite(v)) return v;
+  const c = r.fam === 'classic' ? autoCtl(r.d, r.id) : null;
+  return c ? c.def : undefined;
+}
+// (§4.1) playback's writer: v (clamped to autoRange) into the model by the family's pure path (autoPut), then the track's patch
+// (queuePatch: one per frame per track; q false: the caller sends it — the tick, the stopped rest, an edit: no rAF armed for nothing)
+// — the mixer through mixOne (no patch). → true when written
+function autoApply(t, key, v, q = true) {
+  const r = autoPut(t, key, v);
+  if (!r) return false;
+  if (r.fam === 'mix') { mixOne(t); return true; }
+  if (r.fam === 'classic') { const k = t.id + '/' + r.dev; cpVer.set(k, (cpVer.get(k) || 0) + 1); } // ((C4) the halo transfers' key: the values moved
+  if (q) queuePatch(t);
+  return true;
+}
+// autoApply's model write alone — no patch, no mixOne, no halo version (§7.1: the bounce writes, builds its offline patch and restores
+// in one go; the live node never hears it) → the key's autoOf when written, else null
+function autoPut(t, key, v) {
+  const r = autoOf(t, key), g = r ? autoRange(t, key) : null;
+  if (!g || typeof v !== 'number' || !Number.isFinite(v)) return null;
+  v = clamp(v, g.lo, g.hi);
+  if (r.fam === 'mix') { if (r.id === 'vol') t.vol = v; else t.pan = v; return r; }
+  if (r.fam === 'fx') { if (!core.fxDest(r.id, fxOfDev(t, r.dev))) return null; fxSet(t, r.id, v, r.dev); }
+  else if (r.fam === 'rig') { const s = r.d.vals.s; if (core.setDestBase(s, r.d.fx, r.id, v) === null) return null; core.syncS1(s, r.id); }
+  else if (r.fam === 'kit') { if (!AUTO_KIT.test(r.id)) return null; r.d.vals[r.id] = v; }
+  else r.d.vals[r.id] = v;
+  return r;
+}
+// (§5.2) the lane's y mapping: classic the control's min…max; rig / FX n 0…1; the kit's 0…10; vol 0…1.25; pan −1…1 — null: no such
+// control (an inert key, a classic selector)
+function autoRange(t, key) {
+  const r = autoOf(t, key);
+  if (!r) return null;
+  if (r.fam === 'mix') return { lo: AUTO_MIX[key].lo, hi: AUTO_MIX[key].hi };
+  if (r.fam === 'kit') return AUTO_KIT.test(r.id) ? { lo: 0, hi: 10 } : null;
+  if (r.fam === 'classic') { const c = autoCtl(r.d, r.id); return c && c.t === 'k' ? { lo: c.min, hi: c.max } : null; }
+  return { lo: 0, hi: 1 };
+}
+// (§5.2) v as the family's own readout: classic its control's fmt, a rig serum-core's (the DESTS fmt), an FX row fx-core's (through
+// serum-core's fmtParam, as fx-ui's), a kit voice kit-ui's fmtKnob / fmtLevel, the fader in dB, the pan L / C / R — '' for nothing
+function autoFmt(t, key, v) {
+  const r = autoOf(t, key);
+  if (!r || typeof v !== 'number' || !Number.isFinite(v)) return '';
+  if (r.fam === 'mix') return lawFmt(r.id === 'vol' ? 'db' : 'pan', v, v, {});
+  if (r.fam === 'fx') { const fx = fxOfDev(t, r.dev); return core.fxDest(r.id, fx) ? core.fmtParam(r.id, v, { fx, bpm: project.bpm }) : ''; }
+  if (r.fam === 'rig') return autoDest(r.id) ? core.fmtParam(r.id, v, { s: r.d.vals.s, fx: r.d.fx, bpm: project.bpm }) : '';
+  if (r.fam === 'kit') { const L = autoKitLaw(r.d, r.id); return !L ? '' : r.id.charAt(2) === 'l' ? kitFmtLevel(v / 10) : kitFmtKnob(L, v / 10); }
+  const c = autoCtl(r.d, r.id);
+  return c ? fmt(c, v) : '';
+}
+// a kit voice knob's law (kit-core KIT.TYPES of its TYPE; LEVEL's label) — null: no voice there, not a knob
+function autoKitLaw(d, id) {
+  const T0 = AUTO_KIT.test(id) ? KC.KIT.TYPES[Math.round(+d.vals[id.slice(0, 2) + 't'])] : null, f = id.charAt(2);
+  return !T0 ? null : f === 'l' ? { label: 'Level' } : f === 'u' ? T0.u : f === 'd' ? T0.d : T0.k[+f - 1] || null;
+}
+// (§5.1) the chooser's names: { short: the control's label, long: the module's name the user sees · the label } — 'Minimoog · Cutoff',
+// 'Filter 1 · Cutoff' (the rig's bar title), 'Reverb · Size' (the effect's instance label), 'Kick · Decay' (the voice's name), 'Volume' —
+// null for nothing
+function autoLabel(t, key) {
+  const r = autoOf(t, key), two = (m, s) => ({ short: s, long: m ? m + ' · ' + s : s });
+  if (!r) return null;
+  if (r.fam === 'mix') return two('', AUTO_MIX[key].label);
+  if (r.fam === 'fx') {
+    const fx = fxOfDev(t, r.dev), x = core.fxDest(r.id, fx);
+    if (!x) return null;
+    const m = core.instLabel(fx, x.inst.id) || x.inst.id, lab = core.destLabel(r.id, isSxRec(r.d) ? r.d.vals.s : null, fx);
+    return two(m, lab.indexOf(m + ' ') === 0 ? lab.slice(m.length + 1) : x.row.label);
+  }
+  if (r.fam === 'rig') {
+    const x = autoDest(r.id);
+    if (!x) return null;
+    const lab = core.destLabel(r.id, r.d.vals.s, r.d.fx), g = x.group ? x.group + ' ' : '', m = RC.labelOf(RC.destPart(r.id), r.d.rig);
+    return two(m, lab.indexOf(m + ' ') === 0 ? lab.slice(m.length + 1) : g && lab.indexOf(g) === 0 ? lab.slice(g.length).replace(/^\d+ /, '') : lab); // ((fix round) "Filter 1 Level" → "Level", never "1 Level"
+  }
+  if (r.fam === 'kit') {
+    const L = autoKitLaw(r.d, r.id), j = KC.KIT.CODES.indexOf(r.id.slice(0, 2));
+    return L ? two(kitNames(t, r.dev)[j] || KC.KIT.TYPES[Math.round(+r.d.vals[r.id.slice(0, 2) + 't'])].label, L.label) : null;
+  }
+  const c = autoCtl(r.d, r.id);
+  return c ? two(cvDevName(t, r.dev), autoSec(r.d, r.id) + c.label) : null;
+}
+// a classic control whose label another of its model shares (the Minimoog's two Attacks) is named by its panel section: "Loudness Contour Attack"
+const autoSecs = new Map();
+function autoSec(d, id) {
+  let M = autoSecs.get(d.model);
+  if (!M) {
+    M = new Map(); const n = new Map(), m = modelById(d.model);
+    for (const c of m.controls || []) n.set(c.label, (n.get(c.label) || 0) + 1);
+    for (const s of m.sections || []) for (const c of s.c || []) if (n.get(c.label) > 1 && s.title) M.set(c.id, s.title.split(' · ').pop() + ' '); // (the title's last part: "Modifiers · Filter" → "Filter Attack")
+    autoSecs.set(d.model, M);
+  }
+  return M.get(id) || '';
+}
+
+/* ---- (AUTO lane H1, IMPL-AUTO §3, §4, §6) the recorder, playback, override, the faces' follow and dots — session state, never saved.
+   A grab (§3.1): pointerId → { tid, key, pid, v0 (the base at the press), last (the last polled), t0 / p0 (the press's heard tick and
+   pass, a take's), tk / tp (the last poll's), fol (the face's followed value at the press: a wk drag's 'start' writes it — no move),
+   moved, ov (it made an override), dead (ended by undo / redo / seek / stop: the user's until the release) }. A span (§3.2–3.3): a take's
+   write of one key in one pass, 'tid\nkey' → { tid, key, t0, base (the key's points before it), pts (the gesture's), rel ([tick, v]:
+   released — the latch), g (the grab still writing it) }. A change seen at a poll is stamped at the poll before (the frame the finger
+   moved in: a move lands between two frames' polls). Overrides (§4.3): track id → Set(key); AW: track id → Map(key → the base playback
+   last wrote) — a base that moved since is an override; none (deleted: a release, an edit, ↺, play) accepts the base as it is */
+const AG = new Map(), AS = new Map(), AO = new Map(), AW = new Map();
+const akid = (tid, key) => tid + '\n' + key;
+// (ms) the 60 Hz deadline: a frame up to AUTO_SLACK early ticks; a late one keeps the grid (catch-up capped at one period), an early one
+// restarts it from now — every display (60 / 90 / 120 / 144 / 240 Hz) ticks at 60 on average; the sim's 62.5 Hz frames every frame
+const AUTO_P = 1000 / 60, AUTO_SLACK = 2;
+let autoNext = -Infinity, autoN = 0, autoDirty = true, autoDotN = 0, autoRoll = false, autoWk = null; // (autoWk: the key a take's write is for — recStep's join)
+const autoArm = () => settings.autoArm !== false;
+const autoPtsOf = (t, key) => (t && t.auto && t.auto[key] && Array.isArray(t.auto[key].pts) && t.auto[key].pts.length ? t.auto[key].pts : null);
+const autoEps = (t, key) => { const g = autoRange(t, key); return g ? (g.hi - g.lo) * 1e-3 : 1e-3; }; // (§3.2: thinning at 1e-3 of the range)
+function autoRound(t, key, v) { // (§2.1) to 1e-4 of the control's range
+  const g = autoRange(t, key), q = g ? (g.hi - g.lo) * 1e-4 : 1e-4;
+  return q > 0 ? Math.round(Math.round(v / q) * q * 1e6) / 1e6 + 0 : v;
+}
+// key's points written (a fresh auto object each time: a clip or History may hold the old one); none: the key goes, no key: auto goes;
+// past the cap thinned harder (S.autoCap from 1e-3 of the range: a save → load then loses nothing)
+function autoStore(t, key, pts) {
+  if (Array.isArray(pts) && pts.length > S.AUTO_MAX) pts = S.autoCap(pts, autoEps(t, key));
+  const a = Object.assign({}, t.auto && typeof t.auto === 'object' ? t.auto : {});
+  if (Array.isArray(pts) && pts.length) a[key] = autoRec(t, key, pts, a[key]); else delete a[key];
+  if (Object.keys(a).length) t.auto = a; else delete t.auto;
+}
+// (fix round, R2 P2-2) the curve record: its points and the label / range the user sees now (n, r: read back once the control is gone)
+function autoRec(t, key, pts, was) {
+  const L = autoLabel(t, key), g = autoRange(t, key), o = { pts };
+  if (L) o.n = L.long.slice(0, 64); else if (was && typeof was.n === 'string') o.n = was.n;
+  if (g) o.r = [g.lo, g.hi]; else if (was && Array.isArray(was.r)) o.r = was.r;
+  return o;
+}
+function autoChanged(t, key, dots = true) { if (dots) autoDirty = true; if (t && t === trk() && roll && autoLaneOf(t) === key) autoRoll = true; }
+function autoBars(tick) { const need = Math.ceil((tick + 1) / S.barTicks(project)); if (need > project.bars) { project.bars = need; $('#tBars').value = project.bars; } } // (as fitBars: a take past the end)
+const autoBusy = (tid, key) => { const k = akid(tid, key); if (AS.has(k)) return true; for (const g of AG.values()) if (g.tid === tid && g.key === key) return true; return false; };
+const autoOv = (tid, key) => { const o = AO.get(tid); return !!o && o.has(key); };
+const autoWOf = tid => { let W = AW.get(tid); if (!W) AW.set(tid, W = new Map()); return W; };
+// a span's points written up to t1 (exclusive: autoWrite's jump pair back to the old curve at t1), in the pass's step — never short of
+// what it wrote already (sp.w: a close at a tick of the next pass, before its recAdv, keeps the span to its last write, never wipes it)
+function autoSpanWrite(sp, t1) {
+  const t = trackById(sp.tid);
+  if (!t) return;
+  if (sp.w > t1) t1 = sp.w; else sp.w = t1;
+  let np = sp.pts;
+  if (sp.rel && (!np.length || sp.rel[0] > np[np.length - 1][0])) np = np.concat([sp.rel]);
+  const w = autoWk, had = !!autoPtsOf(t, sp.key); autoWk = akid(sp.tid, sp.key); recStep(); autoWk = w;
+  autoStore(t, sp.key, t1 > sp.t0 ? S.autoWrite(sp.base, sp.t0, t1, np) : sp.base);
+  if (!sp.rel) autoBars(t1 - 1); // (a gesture grows the song, a latch never: §3.3)
+  autoChanged(t, sp.key, had !== !!autoPtsOf(t, sp.key)); // (the dots only when the key came or went)
+}
+// (§3.1) a finger on key of track tid (the document's capture pointerdown: the shown track's faces; the mixer's inputs their own)
+function autoGrab(tid, key, pid) {
+  if (AG.has(pid)) return;
+  for (const g of AG.values()) if (g.tid === tid && g.key === key) return; // (one finger a key)
+  const t = trackById(tid), v0 = t ? autoGet(t, key) : undefined;
+  if (v0 === undefined) return;
+  const g = { tid, key, pid, v0, last: v0, t0: NaN, p0: -1, tk: NaN, tp: -1, fol: autoFolV.get(akid(tid, key)), moved: false, ov: false, dead: false };
+  if (T.rec && T.playing && T.a) { const x = Math.round(recTick()); recAdv(recP); g.t0 = g.tk = x; g.p0 = g.tp = T.pass; }
+  const sp = AS.get(akid(tid, key));
+  if (sp && !sp.g) { sp.g = g; sp.end = undefined; if (sp.rel) { if (sp.rel[0] > sp.pts[sp.pts.length - 1][0]) sp.pts.push(sp.rel); sp.rel = null; } g.moved = true; g.fol = undefined; } // (§3.3: a grab inside the latch continues it)
+  AG.set(pid, g);
+}
+// (§3.1) the finger lifted: a gesture is thinned and latched (record on), dropped (gesture.js's two-finger cancel: the points as before
+// it, its step gone when it held nothing else); the base is accepted at the next tick either way (a press without a move, wk's own
+// rollback after this capture listener) — an override made by a grab stays (record off), unless a drop
+function autoRelease(pid, two) {
+  const g = AG.get(pid);
+  if (!g) return;
+  AG.delete(pid);
+  const t = trackById(g.tid), kid = akid(g.tid, g.key), sp = AS.get(kid);
+  if (T.playing) autoWOf(g.tid).delete(g.key); // ((fix round) stopped: the rest's AW stays — a knob moved now is an override at ▶
+  if (sp && sp.g === g) {
+    if (two) {
+      AS.delete(kid);
+      if (t) { autoStore(t, g.key, sp.base); autoChanged(t, g.key); }
+      const top = hist.u[hist.u.length - 1];
+      if (top && top === T.stepE && T.stepK && T.stepK.size === 1 && T.stepK.has(kid)) { hist._drop(hist.u.pop()); T.step = -1; T.stepE = null; T.stepK = null; updateUndoUI(); } // (its pass step held nothing else)
+    } else {
+      sp.g = null;
+      if (t) sp.pts = S.autoThin(sp.pts, autoEps(t, g.key));
+      let x = NaN;
+      if (T.rec && T.playing && T.a) { x = Math.round(recTick()); recAdv(recP); }
+      if (AS.get(kid) === sp && t) { sp.rel = [Math.max(sp.t0, Number.isFinite(x) ? x : sp.pts[sp.pts.length - 1][0]), autoRound(t, g.key, g.last)]; sp.end = T.a && !T.a.wrap ? S.songEnd(project) + S.barTicks(project) : undefined; } // (§3.3: the loop off, the latch closes at the song's end + 1 bar)
+      persist();
+    }
+  } else if (two && g.ov) { const o = AO.get(g.tid); if (o && o.delete(g.key)) { if (!o.size) AO.delete(g.tid); autoReUI(); } }
+}
+// (§3.2) one held key polled at the automation tick: its base against the last polled value; a change makes the gesture — while record
+// is on (●, AUTO lit, past the count-in) a point at the poll before's heard tick, the span written up to now —; with record off a change
+// of a key with a curve overrides it; during a take with AUTO off nothing
+function autoPoll(g, tk, rec) {
+  const t = trackById(g.tid);
+  if (!t) { AG.delete(g.pid); return; }
+  if (g.dead) return;
+  const v = autoGet(t, g.key);
+  if (v === undefined) return;
+  if (g.fol !== undefined) { const f = g.fol; g.fol = undefined; if (!g.moved && Math.abs(v - f) <= 1e-6) { g.v0 = g.last = v; if (T.rec) { g.tk = tk; g.tp = T.pass; } return; } } // (a wk drag's 'start' wrote the followed value: no move)
+  if (v === g.last) { if (T.rec) { g.tk = tk; g.tp = T.pass; } return; }
+  const a = T.a, st = Number.isFinite(g.tk) && g.tp === T.pass ? g.tk : g.tp >= 0 && g.tp < T.pass && a && a.wrap ? a.ls : tk;
+  g.last = v; g.moved = true;
+  if (T.rec) { if (rec) autoRecPt(t, g, Math.max(0, st), v, tk); g.tk = tk; g.tp = T.pass; }
+  else if (autoPtsOf(t, g.key) && !autoOv(g.tid, g.key)) { g.ov = true; autoOverride(t, g.key); }
+}
+function autoRecPt(t, g, st, v, tk) {
+  const kid = akid(g.tid, g.key);
+  let sp = AS.get(kid);
+  if (!sp) {
+    const t0 = Math.max(0, g.p0 === T.pass && g.t0 >= 0 ? Math.min(g.t0, st) : st);
+    sp = { tid: g.tid, key: g.key, t0, base: autoPtsOf(t, g.key) || [], pts: [[t0, autoRound(t, g.key, g.v0)]], rel: null, g };
+    AS.set(kid, sp);
+  }
+  const P = sp.pts, l = P[P.length - 1], s = Math.max(st, sp.t0), r = autoRound(t, g.key, v);
+  if (s > l[0]) P.push([s, r]); else P[P.length - 1] = [l[0], r];
+  autoSpanWrite(sp, Math.max(tk, s) + 1);
+}
+// (§3.3, §3.4) every span closed at tick x (stop, seek, record off, undo / redo, AUTO off): the latch's jump pair back to the old curve
+// there; the grabs end (dead: still the user's until the release, never written again) — tid: that track's alone
+function autoEndAll(x, all, tid) {
+  for (const sp of [...AS.values()]) {
+    if (tid !== undefined && sp.tid !== tid) continue;
+    const t = trackById(sp.tid);
+    if (sp.g) { sp.g.dead = true; if (t) sp.pts = S.autoThin(sp.pts, autoEps(t, sp.key)); }
+    AS.delete(akid(sp.tid, sp.key));
+    autoSpanWrite(sp, x);
+    autoWOf(sp.tid).delete(sp.key);
+  }
+  if (all) for (const g of AG.values()) g.dead = true;
+}
+// (fix round, R1 P2-1) an edit of the curves (a lane edit, a range op) while a take writes them: the spans (of track tid, or all) closed
+// at the heard tick first — their base is the curve before the edit, the next tick would write it back
+function autoEndNow(tid) { if (!AS.size || !(T.rec && T.playing && T.a)) return; const x = Math.round(recTick()); recAdv(recP); autoEndAll(x, false, tid); }
+// (§3.3) the pass heard moved on (recAdv): every span committed up to the loop end in the old pass's step (autoWrapEnd, before T.pass
+// moves); a held one continues from the loop start in the new pass's (autoWrapGo); a latch ends at the loop end
+function autoWrapEnd(le) {
+  const go = [];
+  for (const sp of [...AS.values()]) {
+    const t = trackById(sp.tid);
+    if (sp.g && t) sp.pts = S.autoThin(sp.pts, autoEps(t, sp.key));
+    AS.delete(akid(sp.tid, sp.key));
+    autoSpanWrite(sp, le);
+    if (sp.g && !sp.g.dead) go.push(sp); else autoWOf(sp.tid).delete(sp.key);
+  }
+  return go;
+}
+function autoWrapGo(go, ls) {
+  for (const sp0 of go) {
+    const t = trackById(sp0.tid), g = sp0.g;
+    if (!t) continue;
+    const sp = { tid: sp0.tid, key: sp0.key, t0: ls, base: autoPtsOf(t, sp0.key) || [], pts: [[ls, autoRound(t, sp0.key, g.last)]], rel: null, g };
+    g.tk = ls; g.tp = T.pass;
+    AS.set(akid(sp.tid, sp.key), sp);
+    autoSpanWrite(sp, ls + 1);
+  }
+}
+// (§4.3) key of t overridden: playback skips it, its face shows the base, its dot a hollow ring, ↺ lit
+function autoOverride(t, key) {
+  let o = AO.get(t.id);
+  if (!o) AO.set(t.id, o = new Set());
+  o.add(key); autoWOf(t.id).delete(key);
+  autoReUI(); autoDirty = true;
+}
+function autoReenable() {
+  if (!AO.size) return;
+  for (const [tid, o] of AO) { const W = autoWOf(tid); for (const k of o) W.delete(k); }
+  AO.clear(); autoReUI(); autoDirty = true;
+  if (!T.playing) autoRest();
+}
+const autoOvN = () => { let n = 0; for (const o of AO.values()) n += o.size; return n; };
+function autoReUI() {
+  const b = $('#tAutoRe'), n = autoOvN(), s = n ? `Re-enable automation · ${n} control${n === 1 ? '' : 's'}` : 'Re-enable automation (lights when a knob you moved stops following its curve)';
+  b.disabled = !n; b.classList.toggle('on', n > 0); b.title = s; b.setAttribute('aria-label', s);
+}
+function autoArmUI() {
+  const b = $('#tAuto'), on = autoArm();
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on ? 'Automation arm on: while recording, a knob you move writes its curve (tap: off)' : 'Automation arm off: recording leaves the curves alone (tap: on)';
+}
+// (§4.3) a load, a new project: no override, no take state; (a device Replace) its keys' overrides go
+function autoSession() { AO.clear(); AW.clear(); AS.clear(); for (const g of AG.values()) g.dead = true; autoReUI(); autoDirty = true; }
+function autoGone(tid) {
+  AO.delete(tid); AW.delete(tid);
+  for (const [k, sp] of [...AS]) if (sp.tid === tid) AS.delete(k);
+  for (const [pid, g] of [...AG]) if (g.tid === tid) AG.delete(pid);
+  autoReUI(); autoDirty = true;
+}
+function autoDevGone(t, dev) {
+  const o = AO.get(t.id), W = AW.get(t.id), p = dev + ':';
+  if (o) { for (const k of [...o]) if (k.startsWith(p)) o.delete(k); if (!o.size) AO.delete(t.id); }
+  if (W) for (const k of [...W.keys()]) if (k.startsWith(p)) W.delete(k);
+  autoReUI(); autoDirty = true;
+}
+// (§4.1) the automation tick (frameTick, 60 Hz): the take's held keys polled and its latches written (the heard line), then playback:
+// every free key's curve at the RENDER tick into the model when it moved (autoApply), a base moved since the last write an override,
+// one patch a written track (sent now: the model and the posted patch agree within the tick); tracks staggered over two ticks when
+// more than 4 have curves
+function autoTick(ts) {
+  if (!(T.playing && T.a && ctx)) return;
+  const now = Number.isFinite(ts) ? ts : performance.now();
+  if (now < autoNext - AUTO_SLACK) return;
+  autoNext = (now >= autoNext && now - autoNext < AUTO_P ? autoNext : now) + AUTO_P; autoN++;
+  let tk = NaN;
+  if (T.rec) { tk = Math.round(recTick()); recAdv(recP); }
+  const rec = T.rec && autoArm() && tk >= 0;
+  for (const g of [...AG.values()]) autoPoll(g, tk, rec);
+  if (rec) for (const sp of [...AS.values()]) if (!sp.g) { // (the latches, flat to now — closed at sp.end, the loop off)
+    const x = Math.max(tk, sp.rel ? sp.rel[0] : sp.t0) + 1;
+    if (sp.end > 0 && x >= sp.end) { AS.delete(akid(sp.tid, sp.key)); autoSpanWrite(sp, sp.end); autoWOf(sp.tid).delete(sp.key); } else autoSpanWrite(sp, x);
+  }
+  const rt = renderTick(), L = project.tracks.filter(t => t.auto), many = L.length > 4;
+  L.forEach((t, n) => { if (!(many && (n + autoN) & 1) && autoPlay(t, rt)) { patchQ.delete(t); autoMoved = true; try { sendPatch(t); } finally { autoMoved = false; } } }); // (autoMoved: the dedupe hash / compare skipped)
+  if (autoRoll) { autoRoll = false; roll && roll.render(); }
+}
+function autoPlay(t, rt) {
+  const W = autoWOf(t.id);
+  let patch = false;
+  for (const key of Object.keys(t.auto)) {
+    const pts = autoPtsOf(t, key);
+    if (!pts || autoOv(t.id, key) || autoBusy(t.id, key) || !autoOk(t, key)) continue;
+    const b = autoGet(t, key), w = W.get(key);
+    if (b === undefined) continue;
+    if (w !== undefined && Math.abs(b - w) > 1e-9) { autoOverride(t, key); continue; } // (a wheel, a typed value, a MIDI CC, a reset …)
+    const v = S.autoAt(pts, rt);
+    if (Math.abs(v - b) > 1e-12 && autoApply(t, key, v, false) && !AUTO_MIX[key]) patch = true;
+    W.set(key, autoGet(t, key));
+  }
+  return patch;
+}
+// (§4.1) stopped: the knobs rest where the curves are at the playhead (after stop, on a seek; never at load)
+function autoRest() {
+  for (const t of project.tracks) {
+    if (!t.auto) continue;
+    let patch = false;
+    for (const key of Object.keys(t.auto)) {
+      const pts = autoPtsOf(t, key), b = pts && !autoOv(t.id, key) && !autoBusy(t.id, key) && autoOk(t, key) ? autoGet(t, key) : undefined;
+      if (b === undefined) continue;
+      const v = S.autoAt(pts, T.pos);
+      if (Math.abs(v - b) > 1e-12 && autoApply(t, key, v, false) && !AUTO_MIX[key]) { patch = true; autoRedraw(t, key); }
+      autoWOf(t.id).set(key, autoGet(t, key)); // ((fix round) the rest is playback's write: a base changed since is an override at ▶
+    }
+    if (patch) { patchQ.delete(t); sendPatch(t); }
+  }
+  autoMixShow();
+}
+// (§6.1) the faces of key on t (the shown track's mounted controls): { P, id } a classic / hardware panel (follow in model units), { w, n }
+// a wk widget and its n of the key's value — an effect's (fx-ui's knobs map), a rig's (its SerumHost's bound widgets by data-dest), a kit
+// voice's (kit-ui's face widgets)
+const autoRigIx = new WeakMap(); // a rig's SerumHost → { sig, map: dest → [W] }
+function autoRigWs(H) {
+  if (!H || H.dead || !Array.isArray(H.views)) return null;
+  const pages = [H.headPage, ...H.views.filter(V => !V.dead).map(V => V.page)].filter(Boolean);
+  const sig = pages.length + '/' + pages.reduce((n, p) => n + (p.binds ? p.binds.length : 0), 0);
+  let c = autoRigIx.get(H);
+  if (!c || c.sig !== sig) {
+    const map = new Map();
+    for (const p of pages) for (const w of p.binds || []) { const id = w && w.el && typeof w.el.getAttribute === 'function' ? w.el.getAttribute('data-dest') : null; if (id) { const L = map.get(id); if (L) L.push(w); else map.set(id, [w]); } }
+    autoRigIx.set(H, c = { sig, map });
+  }
+  return c.map;
+}
+const nId = v => v, nKit = v => v / 10;
+function autoFaces(t, key) {
+  const r = autoOf(t, key), out = [];
+  if (!r || r.fam === 'mix' || !autoOk(t, key)) return out; // (an inert key, a selector: no face follows, no dot)
+  if (r.fam === 'classic') { const P = classicPanels.get(t.id + '/' + r.dev); if (P && !P.dead && typeof P.follow === 'function') out.push({ P, id: r.id }); return out; }
+  if (r.fam === 'fx') { const rec = fxRecOf(t.id, isSxRec(r.d) ? r.dev + '/fx' : r.dev), w = rec && rec.trackId === t.id && rec.ui && rec.ui.knobs ? rec.ui.knobs.get(r.id) : null; if (w) out.push({ w, n: nId }); return out; }
+  if (r.fam === 'kit') {
+    const F = kitVox.get(r.dev + '/' + r.id.slice(0, 2));
+    if (F && F.tid === t.id && F.V && Array.isArray(F.V.widgets)) for (const w of F.V.widgets) if (w && w.el && w.el.getAttribute('data-dest') === r.id) out.push({ w, n: nKit });
+    return out;
+  }
+  const R = serumPanels.get(t.id + '/' + r.dev), M = R && R.trackId === t.id ? autoRigWs(R.ui) : null, L = M ? M.get(r.id) : null;
+  if (L) for (const w of L) out.push({ w, n: nId });
+  return out;
+}
+const autoFolV = new Map(); // 'tid\nkey' → the value the faces were last told to draw (a grab's fol)
+const autoFolW = new Map(), autoFolP = new Map(); // the followed wk widgets (→ n); the panels (→ Set of ids)
+function autoFollow(t, key, v) {
+  const k = akid(t.id, key);
+  if (v == null) autoFolV.delete(k); else autoFolV.set(k, v);
+  for (const f of autoFaces(t, key)) {
+    try {
+      if (f.P) {
+        let s = autoFolP.get(f.P);
+        if (v == null) { if (s && s.delete(f.id)) f.P.follow(f.id, null); continue; }
+        if (!s) autoFolP.set(f.P, s = new Set());
+        s.add(f.id); f.P.follow(f.id, v);
+      } else if (typeof f.w.follow === 'function') {
+        if (v == null) { if (autoFolW.delete(f.w)) f.w.follow(null); continue; }
+        const n = f.n(v);
+        if (autoFolW.get(f.w) !== n) { autoFolW.set(f.w, n); f.w.follow(n); }
+      }
+    } catch (err) { console.warn(err); }
+  }
+}
+// a stopped write's faces drawn again from the base (follow(null) is a no-op once nothing is followed: the redraw is explicit)
+function autoRedraw(t, key) { for (const f of autoFaces(t, key)) { try { if (f.P) f.P.update(f.id); else if (typeof f.w.update === 'function') f.w.update(); } catch (err) { /* gone */ } } }
+function autoFollowOff() {
+  for (const w of autoFolW.keys()) { try { w.follow(null); } catch (err) { /* gone */ } }
+  for (const [P, s] of autoFolP) for (const id of s) { try { P.follow(id, null); } catch (err) { /* gone */ } }
+  autoFolW.clear(); autoFolP.clear(); autoFolV.clear();
+}
+// (§6.1, §4.4) the display-rate half (frameTick, playing): the shown track's faces draw the HEARD value of each free key's curve, a held /
+// overridden / latched key its base (follow null); every track's fader and pan input shows its heard value when not held
+const headIn = new Map(); // track id → { vol, pan }: the head's inputs (renderHeads)
+const autoFree = (tid, key) => !autoOv(tid, key) && !autoBusy(tid, key);
+function autoFace(tk) {
+  const t = trk(), seen = new Set();
+  if (t && t.auto) for (const key of Object.keys(t.auto)) { const pts = autoPtsOf(t, key); if (!AUTO_MIX[key]) { seen.add(akid(t.id, key)); autoFollow(t, key, pts && autoFree(t.id, key) && autoOk(t, key) ? S.autoAt(pts, tk) : null); } }
+  for (const k of [...autoFolV.keys()]) if (!seen.has(k)) { const i = k.indexOf('\n'), x = trackById(k.slice(0, i)); if (x) autoFollow(x, k.slice(i + 1), null); else autoFolV.delete(k); } // (a curve gone, another track shown)
+  for (const x of project.tracks) {
+    if (!x.auto) continue;
+    const I = headIn.get(x.id);
+    for (const key of ['mix:vol', 'mix:pan']) { const pts = autoPtsOf(x, key), el = I && I[key.slice(4)]; if (pts && el && autoFree(x.id, key)) { const s = String(Math.round(S.autoAt(pts, tk) * 1e3) / 1e3); if (el.value !== s) el.value = s; } }
+  }
+}
+function autoMixShow() { for (const x of project.tracks) { const I = headIn.get(x.id); if (I && x.auto) { const a = String(x.vol), b = String(x.pan); if (I.vol.value !== a) I.vol.value = a; if (I.pan.value !== b) I.pan.value = b; } } }
+// (§6.2) the dots: data-auto 'on' (a curve) / 'off' (overridden) / none on the shown track's mounted controls — on every automation
+// change (autoDirty) and every 30th frame while any shows (a face mounted since: a track switch, a rebuilt panel)
+const autoDotW = new Map(), autoDotP = new Map();
+function autoDots(full = true) { // (full: every state written again — a rebuilt control; else the changes only)
+  const t = trk(), nW = new Map(), nP = new Map();
+  if (t && t.auto) for (const key of Object.keys(t.auto)) {
+    if (!autoPtsOf(t, key) || AUTO_MIX[key]) continue;
+    const st = autoOv(t.id, key) ? 'off' : 'on';
+    for (const f of autoFaces(t, key)) { if (f.P) { let m = nP.get(f.P); if (!m) nP.set(f.P, m = new Map()); m.set(f.id, st); } else if (typeof f.w.setAuto === 'function') nW.set(f.w, st); }
+  }
+  const put = (f, ...a) => { try { f(...a); } catch (err) { /* gone */ } };
+  for (const w of autoDotW.keys()) if (!nW.has(w)) put(s => w.setAuto(s), null);
+  for (const [w, s] of nW) if (full || autoDotW.get(w) !== s) put(x => w.setAuto(x), s);
+  for (const [P, m] of autoDotP) { const n = nP.get(P); for (const id of m.keys()) if (!n || !n.has(id)) put((i, s) => P.setAuto(i, s), id, null); }
+  for (const [P, m] of nP) { const o = autoDotP.get(P); for (const [id, s] of m) if (full || !o || o.get(id) !== s) put((i, x) => P.setAuto(i, x), id, s); }
+  autoDotW.clear(); autoDotP.clear();
+  for (const [w, s] of nW) autoDotW.set(w, s);
+  for (const [P, m] of nP) autoDotP.set(P, m);
+}
+// frameTick's automation share: the tick and the faces while playing; the dots when something changed (or every 30th frame)
+function autoFrame(ts, tk) {
+  if (T.playing && T.a && ctx) { autoTick(ts); autoFace(tk); }
+  const full = ++autoDotN >= 30 && (autoDotW.size || autoDotP.size || (trk() && trk().auto));
+  if (autoDirty || full) { autoDots(full); autoDirty = false; if (full) autoDotN = 0; }
+}
+/* ---- (§5.2) the roll's automation host (lane L's shapes): the lanes, the points, one History step an edit, the chosen lane per track */
+const autoLaneSel = new Map(); // track id → key | 'vel' (the session's)
+function autoLaneOf(t) { const k = t ? autoLaneSel.get(t.id) : null; return typeof k === 'string' && k !== 'vel' ? k : 'vel'; }
+function autoNames(t, key) {
+  const L = autoLabel(t, key); if (L) return L;
+  const c = t && t.auto ? t.auto[key] : null, n = c && typeof c.n === 'string' && c.n ? c.n : ''; // ((fix round) an inert key: its last-known label
+  if (n) { const j = n.lastIndexOf(' · '); return { short: j >= 0 ? n.slice(j + 3) : n, long: n }; }
+  const i = key.indexOf(':'), s = i >= 0 ? key.slice(i + 1) : key; return { short: s, long: key };
+}
+// the lane's y range: the control's, else (an inert key) the curve's last-known r, else 0…1
+function autoRangeOr(t, key) { const g = autoRange(t, key); if (g) return g; const c = t && t.auto ? t.auto[key] : null, r = c && Array.isArray(c.r) ? c.r : null; return r && r[0] < r[1] ? { lo: r[0], hi: r[1] } : { lo: 0, hi: 1 }; }
+function autoLanes(t) {
+  const out = [];
+  for (const key of S.autoKeys(t)) { const L = autoNames(t, key); out.push({ key, short: L.short, long: L.long, inert: !autoOk(t, key) }); }
+  return out;
+}
+function autoEdit(t0, key, label, fn) {
+  const t = trackById(t0 && t0.id) || t0;
+  if (!t || typeof key !== 'string' || typeof fn !== 'function') return;
+  autoEndNow(t.id);
+  const cur = autoPtsOf(t, key) || [], out = fn(cur.map(p => [p[0], p[1]]));
+  hist.record(project, label || 'Automation: ' + autoNames(t, key).short);
+  const a = Object.assign({}, t.auto && typeof t.auto === 'object' ? t.auto : {});
+  if (Array.isArray(out) && out.length) a[key] = autoRec(t, key, out.map(p => [p[0], autoRound(t, key, +p[1])]), a[key]); else delete a[key];
+  const n = S.normAuto(a);
+  if (n) t.auto = n; else delete t.auto;
+  const P = autoPtsOf(t, key);
+  if (P) autoBars(P[P.length - 1][0]);
+  autoWOf(t.id).delete(key);
+  if (!T.playing && P && !autoOv(t.id, key) && autoOk(t, key)) { // (stopped: the knob where the curve is — playback's write, AW)
+    if (autoApply(t, key, S.autoAt(P, T.pos), false) && !AUTO_MIX[key]) { patchQ.delete(t); sendPatch(t); autoRedraw(t, key); }
+    autoWOf(t.id).set(key, autoGet(t, key));
+  }
+  if (!T.playing) autoMixShow();
+  autoDirty = true; persist(); updateUndoUI();
+  roll && roll.render();
+}
+// (§5.1 Add…) every automatable control of t, module by module (the device order), the mixer last: { key, short, long, group }
+function autoOkList(t) {
+  const out = [];
+  if (!t) return out;
+  const put = key => { if (!autoOk(t, key)) return; const L = autoLabel(t, key); if (!L) return; const i = L.long.indexOf(' · '); out.push({ key, short: L.short, long: L.long, group: i > 0 ? L.long.slice(0, i) : 'Mixer' }); };
+  for (const dev of Object.keys(t.dev || {})) {
+    const d = t.dev[dev];
+    if (!d || typeof d !== 'object' || dev === 'mfx') continue;
+    if (d.kind === 'panel') { for (const x of modDescsOf(d)) if (/^fx\./.test(x.id)) put(dev + ':' + x.id); continue; }
+    if (d.kind !== 'synth' || isPatchDev(t, dev)) continue;
+    if (isKitDev(t, dev)) { for (const c of KC.KIT.CODES) for (const f of ['u', 'd', 'l', '1', '2', '3', '4']) put(dev + ':' + c + f); continue; }
+    if (isSxRec(d)) {
+      const parts = new Set(sxPartList(t, dev)); parts.add('voice'); parts.add('fx');
+      for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) if (parts.has(RC.destPart(it.id))) put(dev + ':' + it.id);
+      continue;
+    }
+    for (const c of modelById(d.model).controls || []) put(dev + ':' + c.id);
+  }
+  put('mix:vol'); put('mix:pan');
+  return out;
 }
 // ((9) P-1: a track's 900 Series off / on with its mute / solo (ptPower), next frame — (SC §1.3) a sidechain source stays on: heard =
 // audible or keyed (the ghost kick: a muted 900 Series keying a heard track, or the master, keeps sounding at gain 0). ptPower reads
@@ -1973,6 +2540,8 @@ function keepDevs(t, cur) {
     if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; if (c.drum && d.model !== KC.KIT.ID) d.drum = c.drum; } if (c.seq) d.seq = c.seq; } // ((7a §6) a drum machine's pattern memory as the 303's; (DM §5.5) never a kit's: ↶ / ↷ move its pattern — its knobs kept)
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
+  if (autoPtsOf(t, 'mix:vol')) t.vol = cur.vol; // ((AUTO §3.4 / §4.3) an automated fader's base is playback's, kept as a knob's: no override after ↶
+  if (autoPtsOf(t, 'mix:pan')) t.pan = cur.pan;
   const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
   if (fa && fb && fb.dev.fx && fa.id !== fb.id && CMOD.primId(t) === CMOD.primId(cur) && (fa.own ? !(fb.id in t.dev) : fb.own && !(fa.id in cur.dev))) fa.dev.fx = fb.dev.fx;
 }
@@ -1987,7 +2556,7 @@ function applyRestore(p, keepSound = false) {
   // (1f review: track ids repeat across projects; its sound is its own)
   const ptSeq = keepSound && p.uid === project.uid && ptBack && Array.isArray(ptBack.mv.seq) && ptBack.mv.seq.length ? ptBack.mv : null; // ((9b, review 2 F1) a preset step's sequencers)
   if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); keepMaster(p, project); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); if (kitBack) kitBackApply(p, kitBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5; (M) the master rack, §2.3)
-  else { for (const t of p.tracks) seedPend.add(t.id); seedPend.add(MASTER); if (p !== project) abEnd(); } // a loaded project re-seeds the racks' LFO phases (the master's too); (M, R1-3) and ends the A/B (its match belongs to the old master)
+  else { for (const t of p.tracks) seedPend.add(t.id); seedPend.add(MASTER); if (p !== project) abEnd(); autoSession(); } // a loaded project re-seeds the racks' LFO phases (the master's too); (M, R1-3) and ends the A/B (its match belongs to the old master)
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
   for (const t of p.tracks) for (const k of kitDevs(t)) kitRec(t, k); // ((DM §5.4) every kit's record from its vals (its voices): after the knobs kept, kitBack
   recCutMark(p); // ((R review R-1) the notes of keys still down, found again in the restored tracks: kept out of the songs sent below)
@@ -2010,10 +2579,12 @@ function applyRestore(p, keepSound = false) {
   roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
   persist();
   cvModSync(); // (stage 2a: the open inspector / Mod list re-read the project)
+  autoDirty = true; if (!T.playing) autoMixShow(); // ((AUTO §6.2) the dots of the restored curves; the faders as the bases
 }
 // own true: a "tap to undo" undoing its own step (the newest), never the held notes of the pass in progress (R-2)
 function undo(own) {
   PATCH.cancel();
+  if (T.rec && T.playing) { const x = Math.round(recTick()); recAdv(recP); autoEndAll(x, true); } // ((AUTO §3.4) every gesture and latch ends first (a wrap heard since the frame: committed first)
   if (own !== true && T.rec && T.step !== T.pass && recDropPass()) { updateUndoUI(); return; } // ((R review R-2) the pass in progress held its only content)
   const p = hist.undo(project), rec = !!p && recHold(); // ((R-5) an undo that finds nothing changes nothing)
   modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false); kitBack = p && kitBackOf(hist.r[hist.r.length - 1], false);
@@ -2022,6 +2593,7 @@ function undo(own) {
 }
 function redo() {
   PATCH.cancel();
+  if (T.rec && T.playing) { const x = Math.round(recTick()); recAdv(recP); autoEndAll(x, true); }
   const p = hist.redo(project), rec = !!p && recHold();
   modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true); kitBack = p && kitBackOf(hist.u[hist.u.length - 1], true);
   try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; kitBack = null; if (rec) recResume(); }
@@ -2037,7 +2609,7 @@ function recHold() { if (!T.rec) return false; recLive.clear(); recIdle = true; 
 function recResume() {
   recIdle = false;
   const e = hist.u[hist.u.length - 1], s = e ? passStep.get(e) : null;
-  if (s && s.take === T.take) { T.stepE = e; T.step = s.pass; } else T.step = -1;
+  if (s && s.take === T.take) { T.stepE = e; T.step = s.pass; T.stepK = new Set(['']); } else T.step = -1; // ((AUTO) a resumed step's content unknown: never dropped
 }
 // (R review R-2) Ctrl+Z while the pass in progress has no step yet: the notes held from it are its whole content — they are
 // dropped (its boundary state); an empty pass with nothing held undoes the pass before (false). Undo follows what happened:
@@ -2070,7 +2642,7 @@ function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce 
 // of the speakers); seekA: the latest seek's anchor (recTick)
 // ((R, IMPL-R §2) pass: the take's loop pass heard (passAt), pass0 its first, step: the pass whose undo step the take's changes
 // join — −1 none yet —, stepE that step's History entry)
-const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0, padRec: new Set(), pass: 0, pass0: 0, step: -1, stepE: null }; // ((8, §4.3) padRec: the take's pad-recorded track ids
+const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0, padRec: new Set(), pass: 0, pass0: 0, step: -1, stepE: null, stepK: null }; // ((AUTO) stepK: what joined that step (recJoin); (8, §4.3) padRec: the take's pad-recorded track ids
 // ((R review R-8) every pass step's History entry → { take, pass }: whichever of a take's steps is the newest again resumes)
 const passStep = new WeakMap();
 const fpt = () => ctx.sampleRate * 60 / (project.bpm * S.PPQ);
@@ -2105,6 +2677,15 @@ function outLatency() { return ctx ? clamp(ctx.currentTime - outFrame() / ctx.sa
 // the heard song position: on the latest anchor heard (T.as) — before a seek / tempo change is heard the audio before it,
 // at a start the start tick (never ticks before it: no backwards jump of the playhead once the output delay is allowed for)
 function curTick(perfTs) { return T.playing && T.a ? AC.heardTick(outFrame(perfTs), T.as) : T.pos; }
+// (AUTO §0, §4.1) the RENDER tick: the song position of the frame the engine renders now (ctx.currentTime × sr on the anchors — curTick
+// is the heard one, an output path later): automation writes here, so what is heard is on the curve. Read once a frame (memoised on the
+// frame clock's frame and the newest anchor: a start / seek inside a frame reads afresh); stopped: the position
+let rtN = -1, rtA = null, rtV = 0;
+function renderTick() {
+  if (!(T.playing && T.a && ctx)) return T.pos;
+  if (rtN !== frameN || rtA !== T.a) { rtN = frameN; rtA = T.a; rtV = AC.heardTick(ctx.currentTime * ctx.sampleRate, T.as); }
+  return rtV;
+}
 // the recorded position: after a seek the take reads the seek's line from the jump on (extrapolated back while the old
 // audio is still heard: a key pressed after the jump belongs to it, its start and end on one line); else curTick
 // ((R) recP: the loop pass of that position — its anchor's, as the tick). (R review R-7) A seek line that loops is never
@@ -2130,7 +2711,7 @@ async function play(from = T.pos, countBars = 0) {
   for (const t of project.tracks) if (songQ.has(t.id)) sendSong(t, true);
   const F = mAlign(Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate));
   T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null; chase.set(T.a, [0, T.a.tick]);
-  T.playing = true; T.startPos = from; T.lastClr = from; runP = 0; runT = T.a.tick; // ((LC review R1-5) the run's ▶ tick: a count-in's bars before `from`
+  T.playing = true; T.startPos = from; T.lastClr = from; runP = 0; runT = T.a.tick; autoNext = -Infinity; // ((AUTO §4.3, fix round) AW kept from the stopped rest: a knob turned while stopped is an override at ▶ // ((LC review R1-5) the run's ▶ tick: a count-in's bars before `from`
   cmbSoon(); // ((LC) the Combiner faces: a new run
   postTransport(true);
   DRUM.transport(true); // ((7a) the synced drum machines' START state and LEDs follow the song)
@@ -2141,7 +2722,7 @@ async function play(from = T.pos, countBars = 0) {
 function stop() {
   if (!T.playing) { if (T.pos !== 0) { T.pos = 0; posUI(); cmbSoon(); } return; }
   const t = recTick();
-  if (T.rec) { recAdv(recP); finishRec(t); }
+  if (T.rec) { recAdv(recP); finishRec(t); autoEndAll(Math.round(t)); } // ((AUTO §3.3) the latches closed at the stop
   postAll({ t: 'transport', play: false });
   T.playing = false; T.rec = false; T.a = T.seekA = null; T.as = [];
   recCutEnd(); // ((R review R-1) the song stopped: the notes of keys still down join it)
@@ -2151,6 +2732,7 @@ function stop() {
   for (const [k, P] of classicPanels) if (!seqRun.has(k) && !P.dead) P.seqStep(-1); // synced 303s stopped with the song
   DRUM.transport(false); // ((7a) and the synced drum machines: their LEDs back to the flashing key)
   PADS.transport(false);
+  autoFollowOff(); AW.clear(); autoRest(); // ((AUTO §4.1) the faces show the bases; the knobs rest where the curves are at the start
   transportUI(); posUI();
 }
 // ((LC §7.2, lane F) the pass this run began in (▶: 0; a seek: its anchor's) — a Combiner face's song().pass counts from it; the faces
@@ -2175,16 +2757,16 @@ function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, ap
 function seek(tick) {
   tick = Math.max(0, Math.round(tick));
   cmbSoon(); // ((LC) stopped: the cursor moved (playing: reanchor's)
-  if (T.playing) { if (T.rec) finishRec(recTick()); reanchor(tick); T.startPos = tick; DRUM.transport(true); } // ((7b review 1 #1) a seek ends a synced 606's D.S. / heard key, as ▶ / ■)
-  else T.pos = tick;
+  if (T.playing) { if (T.rec) { const x = recTick(); recAdv(recP); finishRec(x); autoEndAll(Math.round(x)); } reanchor(tick); T.startPos = tick; DRUM.transport(true); } // ((7b review 1 #1) a seek ends a synced 606's D.S. / heard key, as ▶ / ■; (AUTO §3.3) and the take's latches
+  else { T.pos = tick; autoRest(); } // ((AUTO §4.1) stopped: the knobs where the curves are there
   posUI();
 }
 // (R, IMPL-R §2) no History step here: each loop pass records its own before its first change (recStep)
 function toggleRec() {
-  if (T.rec) { const t = recTick(); recAdv(recP); finishRec(t); T.rec = false; transportUI(); return; }
+  if (T.rec) { const t = recTick(); recAdv(recP); finishRec(t); autoEndAll(Math.round(t)); T.rec = false; transportUI(); return; }
   if (!project.tracks.some(t => t.arm)) { trk().arm = true; renderHeads(); }
   T.take = S.newId(); T.padRec.clear(); // ((8) a new take: no pad-recorded track yet)
-  T.step = -1; T.stepE = null; // (no step of an earlier take is ever resumed, R-8)
+  T.step = -1; T.stepE = null; T.stepK = null; // (no step of an earlier take is ever resumed, R-8)
   if (T.playing) { T.lastClr = curTick(); recTick(); T.pass = T.pass0 = recP; T.rec = true; transportUI(); return; }
   T.pass = T.pass0 = 0; // (play()'s anchor: pass 0)
   T.rec = true;
@@ -2391,10 +2973,10 @@ function finishRec(t) { for (const [k, r] of recLive) commitNote(r, t, k); recLi
 function recStep() {
   if (gesture) { T.step = -1; return; }
   if (recIdle) return;
-  if (T.step === T.pass && hist.u[hist.u.length - 1] === T.stepE) { if (hist.r.length) { hist.dropRedo(); updateUndoUI(); } return; }
+  if (T.step === T.pass && hist.u[hist.u.length - 1] === T.stepE) { if (hist.r.length) { hist.dropRedo(); updateUndoUI(); } recJoin(); return; }
   T.step = T.pass;
   hist.record(project, T.pass > T.pass0 || (T.a && T.a.wrap) ? 'Record pass ' + (T.pass - T.pass0 + 1) : 'Record', true);
-  T.stepE = hist.u[hist.u.length - 1];
+  T.stepE = hist.u[hist.u.length - 1]; T.stepK = null; recJoin();
   passStep.set(T.stepE, { take: T.take, pass: T.pass });
   updateUndoUI();
 }
@@ -2408,8 +2990,13 @@ function recAdv(p) {
   const a = T.a, le = a ? a.le : 0;
   if (project.rec.mode === 'replace' && a && a.wrap && !seekPass(p) && T.lastClr > a.ls) { sweep([[T.lastClr, a.le]]); T.lastClr = a.ls; }
   for (const [k, r] of recLive) if (r.p < p) { recLive.delete(k); commitNote(r, le, k); }
+  const go = AS.size ? autoWrapEnd(le) : null; // ((AUTO §3.3) the take's curves up to the loop end in the old pass's step
   T.pass = p;
+  if (go && go.length) autoWrapGo(go, a ? a.ls : 0); // (a held knob continues from the loop start in the new pass's)
 }
+// ((AUTO §3.1) what joined the pass's step: '' notes / cc / pads, else the automation keys (autoWk) — a two-finger drop removes the step
+// when it holds its own key alone
+function recJoin() { if (!T.stepK) T.stepK = new Set(); T.stepK.add(autoWk || ''); }
 function recCC(trs, k, v, ts) {
   if (!T.rec || !T.playing) return;
   const t = Math.round(recTick(ts));
@@ -2621,6 +3208,7 @@ function setTrackModel(tr0, id, o = null) {
   const rigM = isRigModel(m), keep = rigM && !!o && !!o.keepLay && !!o.vals;
   const sm = CMOD.setModel(tr, dev, id, keep ? { vals: o.vals, preset: o.preset == null ? null : o.preset } : { vals: rigM && o && o.module ? { s: RC.rigBlank() } : loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   if (sm && sm.ok === false) { tr.name = name0; hist.prune(project); notice(sm.why, 4000); updateUndoUI(); renderHeads(); return sm.why; } // ((P) refused: nothing changed, no step)
+  autoDevGone(tr, dev); // ((AUTO §4.3) a Replace: its keys' overrides go
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
   // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
   // too: a switch away and to, the new machine's own record (normDrum(·, id)), its payload forced after the patch below (the
@@ -3904,6 +4492,7 @@ async function renderOffline(sr, frames, items, at, o = null) {
     });
     const g = oc.createGain(), pn = oc.createStereoPanner();
     g.gain.value = it.gain === undefined ? 1 : it.gain; pn.pan.value = it.pan || 0;
+    if (it.ramp) for (const [A, R] of [[g.gain, it.ramp.vol], [pn.pan, it.ramp.pan]]) if (R) { A.setValueAtTime(R[0][0], 0); for (let j = 1; j < R.length; j++) A.linearRampToValueAtTime(R[j][0], R[j][1]); } // ((AUTO §7.1) the mixer's curves)
     node.connect(g); g.connect(pn); pn.connect(bus);
     made.push(node); if (it.tr) byId.set(it.tr.id, node);
   });
@@ -3917,6 +4506,8 @@ async function renderOffline(sr, frames, items, at, o = null) {
       kg.gain.value = gv; s.connect(kg); kg.connect(made[n], 0, 0);
     }
   });
+  // ((AUTO §7.1) o.sus [[s, fn(byId)], …]: the bake's suspends — fn posts the patches, resume() follows; none without curves)
+  if (o && Array.isArray(o.sus)) for (const [s, fn] of o.sus) oc.suspend(s).then(() => { try { fn(byId); } catch (err) { console.warn('automation bake', err); } return oc.resume(); }).catch(err => console.warn('automation bake', err));
   if (!mo) { bus.connect(oc.destination); return oc.startRendering(); }
   const rep = { lat: null, fin: null, wake: null };
   const mn = new AudioWorkletNode(oc, 'synth-master', {
@@ -4960,7 +5551,7 @@ function drumsErr(t) { // (engine: dr-808.js or dr-seq.js missing in the worklet
 function renderHeads() {
   link303Chk(); // ((7b) the project's TB-303s may have changed — a track added, deleted, replaced, an undo, a load: SYNC 303s)
   const el = $('#heads');
-  el.innerHTML = ''; voiceOpt.clear(); hmRec.clear(); // ((IMPL-FR) the head meters' memo: rebuilt with the rows)
+  el.innerHTML = ''; voiceOpt.clear(); hmRec.clear(); headIn.clear(); // ((IMPL-FR) the head meters' memo: rebuilt with the rows; (AUTO) the faders
   el.append(h('div', 'hruler', `${project.tracks.length} track${project.tracks.length === 1 ? '' : 's'}`));
   project.tracks.forEach((t, i) => {
     const row = h('div', 'head' + (t.id === project.selTrack ? ' sel' : ''));
@@ -5001,6 +5592,8 @@ function renderHeads() {
     const pan = h('input', 'hpan'); pan.type = 'range'; pan.min = -1; pan.max = 1; pan.step = 0.01; pan.value = t.pan; pan.title = 'Pan (double-click to centre)'; pan.setAttribute('aria-label', 'Pan');
     pan.oninput = () => { t.pan = +pan.value; mix(); persist(); };
     pan.ondblclick = () => { t.pan = 0; pan.value = 0; mix(); persist(); };
+    headIn.set(t.id, { vol, pan }); // ((AUTO §3.1, §4.4) their own grab (no data-dest); they follow the heard curve when not held
+    vol.addEventListener('pointerdown', e => autoGrab(t.id, 'mix:vol', e.pointerId)); pan.addEventListener('pointerdown', e => autoGrab(t.id, 'mix:pan', e.pointerId));
     const dup = h('button', 'hb', '⧉'); dup.type = 'button'; dup.title = 'Duplicate track';
     dup.onclick = () => duplicateTrack(t);
     const del = h('button', 'hb', '✕'); del.type = 'button'; del.title = 'Delete track';
@@ -5048,6 +5641,7 @@ function duplicateTrack(t) {
   if (t.mods) c.mods = clone(t.mods);
   if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
+  if (t.auto) c.auto = clone(t.auto); // ((AUTO §2.1) the curves: the copy keeps the device ids, so every key holds)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
   adopt(project); // (the copy's devices keep their ids: they are per track)
   syncNodes(); sendSong(c, true);
@@ -5064,6 +5658,7 @@ function deleteTrack(t) {
   PADS.endTrack(t.id); // ((8, D9) every pad's notes on it end — the targets stay (an undo brings the track back)
   project.tracks.splice(i, 1);
   seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id); recCutDrop(t.id);
+  autoGone(t.id); // ((AUTO fix round) its overrides, playback's writes, spans and grabs: ↺'s count right
   if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); ptShow(); }
   syncNodes();
   padsRefresh(); // ((8) its pads warn, their lights and "+N" follow)
@@ -5154,6 +5749,11 @@ function initEditors() {
     // "Drum rows" choice (compact rows: on by default)
     drumRows: t => drumRowsOf(instOf(t)), drumRowsOn: store.get(ROLL_DRUM, true) !== false,
     heldNotes: () => heldOn(project.selTrack), // ((R) its key strip's held notes on a track switch)
+    // ((AUTO §5, lane L's shapes) the automation lane's host: the chooser, the points, one History step an edit, the readouts
+    autoLane: t => autoLaneOf(t), setAutoLane: (t, key) => { if (t) autoLaneSel.set(t.id, typeof key === 'string' ? key : 'vel'); roll.render(); },
+    autoLanes: t => autoLanes(t), autoPts: (t, key) => autoPtsOf(t, key) || [], autoEdit,
+    autoLabel: (t, key) => autoNames(t, key), autoFmt: (t, key, v) => autoFmt(t, key, v) || (Number.isFinite(v) ? String(Math.round(v * 1e3) / 1e3) : ''),
+    autoRange: (t, key) => autoRangeOr(t, key), autoOkList: t => autoOkList(t), menu: (items, x, y) => cvTray.popupMenu(x, y, items),
   });
   $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; cvArea = false; }, true);
   $('#rollwrap').addEventListener('pointerdown', () => { lastArea = 'roll'; }, true);
@@ -5164,6 +5764,7 @@ function initEditors() {
 
 /* arrangement range operations */
 function rangeOp(name) {
+  if (name !== 'copy' && name !== 'loop') autoEndNow(); // ((AUTO fix round) the take's curves closed before the bars move under them
   if (name === 'paste') {
     if (!rangeClip) return;
     edit('Paste bars', () => S.pasteRange(project, rangeClip, S.snapTick(T.playing ? curTick() : T.pos, S.beatTicks(project), 'round'), { insert: false }), project.tracks);
@@ -5376,6 +5977,15 @@ function initTransport() {
   $('#tPlay').onclick = () => (T.playing ? stop() : play());
   $('#tStart').onclick = () => seek(project.loop.on && T.playing ? project.loop.start : 0);
   $('#tRec').onclick = toggleRec;
+  // ((AUTO §6.3) the automation arm (off mid-take: the take's latches close) and ↺ re-enable; (§3.1) the grab — a capture-phase press on a
+  // control of the shown track's faces (the mixer's inputs grab their own, renderHeads) — and its release by pointerId on the window
+  // (gesture.js's two-finger cancel bubbles from the target: the drop)
+  $('#tAuto').onclick = () => { settings.autoArm = !autoArm(); if (!settings.autoArm && T.rec && T.playing) { const x = Math.round(recTick()); recAdv(recP); autoEndAll(x); } persist(); autoArmUI(); };
+  $('#tAutoRe').onclick = autoReenable;
+  autoArmUI(); autoReUI();
+  document.addEventListener('pointerdown', e => { const t = cvMaster ? null : trk(), k = t ? autoOkEl(e.target, t) : null; if (k) autoGrab(t.id, k, e.pointerId); }, true);
+  for (const ty of ['pointerup', 'pointercancel', 'lostpointercapture']) window.addEventListener(ty, e => autoRelease(e.pointerId, e.gesture === 'two-finger'), true);
+  document.addEventListener('visibilitychange', () => { autoNext = -Infinity; }); // ((§4.1) a hidden page has no frames: the next one chases
   $('#tLoop').onclick = () => { project.loop.on = !project.loop.on; transportUI(); reanchor(false); arr.render(); roll.render(); persist(); };
   $('#tMetro').onclick = () => { project.metronome.on = !project.metronome.on; transportUI(); persist(); };
   $('#tInQ').onclick = () => { project.rec.inputQuantize = !project.rec.inputQuantize; transportUI(); persist(); };
@@ -5693,6 +6303,120 @@ function bounceSet(sr) {
     return Object.assign({ tr, gain: want.get(tr) }, sc.length ? { sc } : null, partsOf(tr));
   });
 }
+/* (AUTO §7.1) the bounce bakes the curves: the instruments' keys as patches posted inside oc.suspend(t) at their change ticks (§7.0's
+   probe: a message posted before resume() applies in the quantum at t), the mixer's as linearRampToValueAtTime on the item's gain / pan
+   at the breakpoints. Every write is autoPut → the offline build → the exact restore, synchronous: the user's values, the live nodes,
+   AW / AO and the follow state never see a bounce. A track without curves: no suspend, no event, no message (canvas-M-bounce) */
+const autoBakeKeys = t => S.autoKeys(t).filter(k => !AUTO_MIX[k] && autoOk(t, k) && autoRange(t, k)); // (inert keys bake nothing)
+// the storage autoPut touches for t's keys (classic / kit vals; a rig's s.p, its macros, its oscillators (phMem: syncS1); an effect's
+// instance params) and the track's last mods payload (buildMods memoises it for the live readers) → a restore that puts every field
+// back as it was: no law round trip, so the bases are bit-exact and H1's override never fires
+function autoSnap(t, keys) {
+  const objs = new Set(), obj = o => o && typeof o === 'object' && objs.add(o);
+  for (const key of keys) {
+    const r = autoOf(t, key);
+    if (!r) continue;
+    if (r.fam === 'fx') { const q = core.fxDest(r.id, fxOfDev(t, r.dev)); if (q && q.inst) obj(q.inst.p); }
+    else if (r.fam === 'rig') { const s = r.d.vals.s; obj(s.p); for (const m of s.macros || []) obj(m); for (const O of s.osc || []) obj(O); }
+    else obj(r.d.vals);
+  }
+  const keep = [...objs].map(o => [o, Object.assign({}, o)]), had = modsLast.has(t.id), ml = modsLast.get(t.id);
+  return () => {
+    for (const [o, c] of keep) { for (const k of Object.keys(o)) if (!(k in c)) delete o[k]; Object.assign(o, c); }
+    if (had) modsLast.set(t.id, ml); else modsLast.delete(t.id);
+  };
+}
+// every curve of the project's tracks at `tick` written (autoPut), fn() run, everything restored → fn's result
+function autoAtTick(tick, fn) {
+  const rs = [];
+  try {
+    for (const t of project.tracks) {
+      const keys = autoBakeKeys(t);
+      if (!keys.length) continue;
+      rs.push(autoSnap(t, keys));
+      for (const k of keys) autoPut(t, k, S.autoAt(autoPtsOf(t, k), tick));
+    }
+    return fn();
+  } finally { for (const r of rs.reverse()) r(); }
+}
+// the ticks in (start, end) where t's keys change: every breakpoint, and inside a moving segment a 512-frame grid (f frames a tick: ≈ live's
+// 60 Hz tick, every tempo) wherever the value has moved ≥ 1/512 of autoRange since the last tick kept (a flat curve: its breakpoints only)
+function autoTicks(t, keys, start, end, f) {
+  const out = [], q = 512 / f;
+  for (const key of keys) {
+    const pts = autoPtsOf(t, key), g = autoRange(t, key), eps = (g.hi - g.lo) / 512;
+    let last = S.autoAt(pts, start);
+    for (let i = 0; i < pts.length; i++) {
+      const b = pts[i][0];
+      if (i > 0 && pts[i - 1][1] !== pts[i][1]) {
+        for (let x = (Math.floor(Math.max(pts[i - 1][0], start) / q) + 1) * q; x < b && x < end; x += q) {
+          const v = S.autoAt(pts, x);
+          if (Math.abs(v - last) >= eps) { out.push(x); last = v; }
+        }
+      }
+      if (b >= end) break;
+      if (b > start) { out.push(b); last = S.autoAt(pts, b); }
+    }
+  }
+  return out;
+}
+// (§7.1) a mixer key of an audible item → [[v, s], …]: the value at the range's start at 0 s (a setValueAtTime), then a ramp to each
+// breakpoint inside the range (s from the start) and to the range's end when the curve goes on past it — null without the curve
+function autoRamp(t, key, start, end, spf) {
+  const pts = autoPtsOf(t, key), g = pts ? autoRange(t, key) : null;
+  if (!g) return null;
+  const at = x => clamp(S.autoAt(pts, x), g.lo, g.hi), out = [[at(start), 0]];
+  for (const [b] of pts) { if (b >= end) { out.push([at(end), (end - start) * spf]); break; } if (b > start) out.push([at(b), (b - start) * spf]); }
+  return out;
+}
+// the offline node's part caches, as the live node's start from its options (partCache / the graph's insts, chains, mods key)
+function autoCache(it) {
+  if (!it.graph) return partCache({ node: null }, it.patch);
+  return { node: null, gkey: it.graph.key, modsKey: it.mods ? it.mods.key : undefined,
+    insts: new Map(Object.keys(it.patches).map(id => [id, partCache({}, it.patches[id])])),
+    chains: new Map(Object.keys(it.chains).map(id => [id, { xsKey: it.chains[id].fxrT ? it.chains[id].fxrT.key : '', last: it.chains[id].fxr }])) };
+}
+// one item's values v (its keys') in the model → its offline patch(es) through its node's caches, as sendPatch / sendGraph post them
+// (fxrT and unchanged tables stripped; a graph: {t: 'patch', i, p} per Inst, the chains, the mods payload when its key moved) → restored
+function autoPost(P, v, byId, sr) {
+  const it = P.it, t = it.tr, node = byId.get(t.id);
+  if (!node) return;
+  const C = P.C, rs = autoSnap(t, P.keys), sd = seedPend.delete(t.id); // (a suspend never re-seeds the offline rack's LFO phases: the live flag stays)
+  C.node = node;
+  try {
+    P.keys.forEach((k, j) => autoPut(t, k, v[j]));
+    if (!it.graph) { postPatch(C, buildPatch(t, sr, true)); return; }
+    const G = graphParts(t, sr, true), post = m => node.port.postMessage(m);
+    if (G.graph.key !== C.gkey) { C.gkey = G.graph.key; post(Object.assign({ t: 'graph' }, G.graph)); }
+    for (const id of Object.keys(G.patches)) postPatch(C, G.patches[id], instCache(C, id), id);
+    for (const id of Object.keys(G.chains)) postChain(C, id, G.chains[id]);
+    const pay = buildMods(t), was = C.modsKey;
+    if (pay.key !== was) { C.modsKey = pay.key; if (!(pay.off && (was === undefined || was === 'off'))) post(pay); }
+  } finally { rs(); if (sd) seedPend.add(t.id); }
+}
+// the bake of a bounce's items over [start, end) at f frames a tick (len: the song's frames) → the suspends [[s, fn(byId)], …] for
+// renderOffline (on quantum boundaries, s = (F + 0.25) / sr: a change tick's next one — never closer than 128 frames; only where an
+// item's values moved since its last post) and each audible item's `ramp` { vol, pan }
+function autoBake(items, start, end, f, sr, len) {
+  const tps = project.bpm * S.PPQ / 60, plan = [], Fs = new Set();
+  for (const it of items) {
+    const t = it.tr;
+    if (!t || !S.autoKeys(t).length) continue;
+    if (audible(t)) { const vol = autoRamp(t, 'mix:vol', start, end, f / sr), pan = autoRamp(t, 'mix:pan', start, end, f / sr); if (vol || pan) it.ramp = { vol, pan }; }
+    const keys = autoBakeKeys(t);
+    if (!keys.length || (!it.graph && !it.patch)) continue;
+    for (const c of autoTicks(t, keys, start, end, f)) { const F = Math.ceil((c - start) * f / 128) * 128; if (F > 0 && F < len) Fs.add(F); }
+    const val = tick => keys.map(k => { const g = autoRange(t, k); return clamp(S.autoAt(autoPtsOf(t, k), tick), g.lo, g.hi); });
+    plan.push({ it, keys, val, last: val(start), C: autoCache(it) });
+  }
+  const sus = [];
+  for (const F of [...Fs].sort((a, b) => a - b)) {
+    const s = (F + 0.25) / sr, tick = start + s * tps, go = [];
+    for (const P of plan) { const v = P.val(tick); if (v.some((x, j) => x !== P.last[j])) { P.last = v; go.push([P, v]); } }
+    if (go.length) sus.push([s, byId => { for (const [P, v] of go) autoPost(P, v, byId, sr); }]);
+  }
+  return sus;
+}
 // (F3) the main thread's copy of the meters (master-dsp.js: wk.loadDSP injects it once, as the panels' DSP; null when it is not there)
 async function meterDSP() {
   if (!globalThis.MASTERDSP) {
@@ -5725,7 +6449,7 @@ async function bounce() {
   try {
     const f = sr * 60 / (project.bpm * S.PPQ);
     const items = [];
-    for (const x of bounceSet(sr)) {
+    autoAtTick(start, () => { for (const x of bounceSet(sr)) { // ((AUTO §7.1) built with every curve at `start`, the user's values restored after)
       const { tr, patch, gain } = x, d = instOf(tr), synced = d.model === 'tb303' && d.seq && d.seq.sync, pd = CMOD.primId(tr), dr = patch && isDrumDev(tr, pd); // ((7a) a drum machine: its payload — synced or not: the notes play through its map, mutes and slots, as live —, its slots)
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
@@ -5733,11 +6457,12 @@ async function bounce() {
         transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : dr ? drumPayload(tr, pd, true) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
       x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null,
       x.sc ? { sc: x.sc } : null)); // ((SC §7.2) its key edges: renderOffline builds them as live)
-    }
+    } });
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
     // (IMPL-M §4) always through the master — empty or not, one path (an empty one copies: the same bytes as before)
     const frames = Math.ceil(secs * sr), mc = hasMasterFx() ? masterChain(sr) : null, lmax = mc ? latBound(project.master.fx, sr) : 0;
-    const buf = await renderOffline(sr, frames, items, undefined, { master: { fxr: mc && mc.fxr, fxrT: mc && mc.fxrT, transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, frames, lmax, needs: (mc && mc.fxr.needs) || [], mods: modsFor(MREC) } }); // ((MM, §4.3) the master's payload (+ bpm) — null without one
+    const sus = autoBake(items, start, end, f, sr, Math.max(128, Math.ceil(frames))); // ((AUTO §7.1) [] without curves
+    const buf = await renderOffline(sr, frames, items, undefined, { sus, master: { fxr: mc && mc.fxr, fxrT: mc && mc.fxrT, transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, frames, lmax, needs: (mc && mc.fxr.needs) || [], mods: modsFor(MREC) } }); // ((MM, §4.3) the master's payload (+ bpm) — null without one
     const rep = buf.master || {};
     if (rep.lat === null || rep.lat === undefined) throw new Error('the master did not report its latency — nothing was written');
     const len = Math.max(128, frames), all = [buf.getChannelData(0), buf.getChannelData(1)];
@@ -6095,7 +6820,7 @@ function initKeys() {
       if (cvShellEscape() || cvWorldEscape()) return; // stage 1b: a popover / tray / sheet, then a canvas drag / edit state / selection
       if (cancelLearn(true)) return; // a pending MIDI Learn, not a panic
       if (textEntry(t) || (t && t.tagName === 'SELECT')) t.blur();
-      if (inRoll && roll.getSelection().length) roll.selectNone(); else panic();
+      if (inRoll && (roll.getSelection().length || roll.autoSelected() != null)) roll.selectNone(); else panic(); // ((AUTO §5.2) a lane point selected: a selection
       return;
     }
     if (textEntry(t) || !$('#modal').hidden || (app && app.sheetOpen())) return; // only real text entry keeps the keys
@@ -6340,8 +7065,10 @@ function frameTick(t, dt) {
     roll && roll.setPlayhead(tk, true, audible(trk()), heardFloor(F)); arr && arr.setPlayhead(tk, true); // drawn in this frame, not the next; ((R) the roll's notes lit while heard, (review R-11) from the chase floor)
     replaceSweep(tk);
     cvModPlay(); // (stage 2a: the modulator modules show the selected track's lanes)
+    autoFrame(t, tk); // ((AUTO §4.1, §6) the automation tick (60 Hz) and the faces at the heard tick
     if (!project.loop.on && !T.rec && tk > S.songEnd(project) + S.barTicks(project)) stop();
   }
+  else autoFrame(t, NaN); // ((AUTO §6.2) the dots, stopped
   headMeters(dt);
   drawScope();
   if (mRing.size) mHeardRead(); // ((FR Cut B §5.3) the master's heard peaks first: the OUT draws them in this frame
@@ -11692,6 +12419,32 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     load: (id, name) => { const K = kitAt(id), p = K ? presetList(modelById(KC.KIT.ID)).find(x => x.name === name) : null; return !!p && kitLoad(K.t, K.dev, p); },
     play: () => { if (!T.playing) play(); }, stop: () => { if (T.playing) stop(); },
     drag: kitDrag, pick: kitPick, host: KITUI, faces: () => ({ seqs: kitSeqs, voices: kitVox }), heavy: () => ({ kind: heavyOf(trk()), line: PT_HEAVY, done: kitHeavyDone }),
+  };
+  // (AUTO, IMPL-AUTO §10.0: tests/auto-host, canvas-AUTO-sim, ui-bench-fps auto8 / auto8r) automation's host by track id: the pure functions
+  // (ok / get / apply / range / fmt / label, okEl(el) on the shown track, renderTick); set(tid, key, pts) writes track.auto[key] (through
+  // song.js normAuto once it is in; pts empty / null: the key removed; no History, no persist — a test's or a scene's curve) → the stored
+  // pts | null; held() / override(): [[trackId, key] …] — empty until lane H1's recorder and override land
+  globalThis.__synthTest.cv.auto = {
+    ok: (tid, key) => autoOk(trackById(tid), key), get: (tid, key) => autoGet(trackById(tid), key), apply: (tid, key, v) => autoApply(trackById(tid), key, v),
+    range: (tid, key) => autoRange(trackById(tid), key), fmt: (tid, key, v) => autoFmt(trackById(tid), key, v), label: (tid, key) => autoLabel(trackById(tid), key),
+    okEl: el => autoOkEl(el), renderTick: () => renderTick(), mixOne: tid => { const t = trackById(tid); if (t) mixOne(t); },
+    set: (tid, key, pts) => {
+      const t = trackById(tid);
+      if (!t || typeof key !== 'string') return null;
+      const a = Object.assign({}, t.auto && typeof t.auto === 'object' ? t.auto : {});
+      if (Array.isArray(pts) && pts.length) a[key] = { pts: pts.map(p => [p[0], p[1]]).sort((x, y) => x[0] - y[0]) }; else delete a[key];
+      const n = typeof S.normAuto === 'function' ? S.normAuto(a) : Object.keys(a).length ? a : undefined; // ((P0M) the one normaliser; a plain copy before it lands
+      if (n && typeof n === 'object') t.auto = n; else delete t.auto;
+      autoDirty = true; autoWOf(t.id).delete(key); // ((H1) the dots; playback takes the new curve without an override
+      return t.auto && t.auto[key] ? t.auto[key].pts : null;
+    },
+    held: () => [...AG.values()].filter(g => !g.dead).map(g => [g.tid, g.key]),
+    override: () => [...AO].flatMap(([tid, o]) => [...o].map(k => [tid, k])),
+    // ((H1) the session's take state for tests/auto-host: the spans ('tid\nkey' → t0 / pts / rel / held), the roll host's members, the dots
+    spans: () => [...AS.values()].map(sp => ({ tid: sp.tid, key: sp.key, t0: sp.t0, pts: sp.pts.map(p => p.slice()), rel: sp.rel ? sp.rel.slice() : null, held: !!sp.g })),
+    lanes: tid => autoLanes(trackById(tid)), okList: tid => autoOkList(trackById(tid)), edit: (tid, key, label, fn) => autoEdit(trackById(tid), key, label, fn),
+    lane: tid => autoLaneOf(trackById(tid)), dots: () => { autoDots(); return { w: [...autoDotW.values()], p: [...autoDotP.values()].map(m => [...m]) }; },
+    faces: (tid, key) => autoFaces(trackById(tid), key).length, grab: (tid, key, pid) => autoGrab(tid, key, pid), release: (pid, two) => autoRelease(pid, two),
   };
   // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers
   globalThis.__synthTest.master = {

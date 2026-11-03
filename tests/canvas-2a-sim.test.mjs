@@ -489,6 +489,17 @@ test('H8: a preset of 64 rows loaded over a canvas cable — the badge says "1 n
   M.layer().close();
 });
 
+test('(AUTO §2.1) Duplicate track copies the curves (track.auto) — a copy, never the same objects; a track without curves gets none', () => {
+  pick(fresh());
+  cv.duplicateTrack(T()); sim.raf();
+  assert.equal('auto' in P().tracks[P().tracks.indexOf(T()) + 1], false, 'no curves: no key');
+  T().auto = { 'i1:f.cutoff': { pts: [[0, 0.25], [960, 0.75]] }, 'mix:vol': { pts: [[0, 1]] } };
+  cv.duplicateTrack(T()); sim.raf();
+  const c = P().tracks[P().tracks.indexOf(T()) + 1];
+  assert.deepEqual(c.auto, T().auto);
+  assert.equal(c.auto === T().auto || c.auto['mix:vol'].pts === T().auto['mix:vol'].pts, false, 'a copy');
+});
+
 test('H6: Duplicate track copies the row-id counter (mid) — a deleted row\'s id is never reused on the copy', () => {
   wheelOn();
   pick(fresh());

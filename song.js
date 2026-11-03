@@ -118,7 +118,10 @@ export function snapTick(t, grid, mode = 'round') {
 export function sortNotes(notes) { return notes.sort((a, b) => a.t - b.t || a.n - b.n); }
 export function songEnd(project) {
   let e = project.bars * barTicks(project);
-  for (const tr of project.tracks) for (const x of tr.notes) if (x.t + x.d > e) e = x.t + x.d;
+  for (const tr of project.tracks) {
+    for (const x of tr.notes) if (x.t + x.d > e) e = x.t + x.d;
+    if (tr.auto) { const a = autoEnd(tr); if (a > e) e = a; } // (AUTO §2.1: the last point counts)
+  }
   return e;
 }
 function contentEnd(project) {
@@ -126,6 +129,7 @@ function contentEnd(project) {
   for (const tr of project.tracks) {
     for (const x of tr.notes) if (x.t + x.d > e) e = x.t + x.d;
     for (const c of tr.cc) if (c.t + 1 > e) e = c.t + 1;
+    if (tr.auto) { const a = autoEnd(tr); if (a > e) e = a; }
   }
   return e;
 }
@@ -323,6 +327,11 @@ export function copyRange(project, start, end, trackIds = null) {
       notes: tr.notes.filter(x => x.t >= start && x.t < end).map(x => ({ t: x.t - start, d: Math.min(x.d, end - x.t), n: x.n, v: x.v })),
       cc,
     };
+    if (tr.auto && end > start) { // (AUTO §2.1: per key the clip's own curve over [0, len]; a track without curves: no key, the clip as at ⟨B⟩)
+      const a = {};
+      for (const k of autoKeys(tr)) a[k] = autoMeta(tr.auto[k], { pts: autoCopy(ptsIn(tr.auto[k].pts, k), start, end) });
+      if (Object.keys(a).length) clip.tracks[tr.id].auto = a;
+    }
   }
   return clip;
 }
@@ -331,6 +340,11 @@ export function copyRange(project, start, end, trackIds = null) {
 export function clearRange(project, start, end, trackIds = null) {
   [start, end] = span(start, end);
   if (!(end > start)) return 0;
+  let n = clearEv(project, start, end, trackIds);
+  for (const tr of pickTracks(project, trackIds)) if (tr.auto) n += autoEach(tr, (k, a) => autoClear(a, start, end));
+  return n;
+}
+function clearEv(project, start, end, trackIds) { // (the notes and controller events; deleteTime moves the curves its own way)
   let n = 0;
   for (const tr of pickTracks(project, trackIds)) {
     n += keep(tr.notes, x => x.t < start || x.t >= end);
@@ -345,8 +359,9 @@ export function deleteTime(project, start, end, trackIds = null) {
   [start, end] = span(start, end);
   const len = end - start;
   if (!(len > 0)) return 0;
-  const n = clearRange(project, start, end, trackIds);
+  const n = clearEv(project, start, end, trackIds);
   for (const tr of pickTracks(project, trackIds)) {
+    if (tr.auto) autoEach(tr, (k, a) => autoDel(a, start, end));
     for (const x of tr.notes) {
       if (x.t >= end) x.t -= len;
       else if (x.t + x.d > start) x.d = Math.max(1, x.d - (Math.min(x.t + x.d, end) - start));   // straddles start: remove the deleted part
@@ -369,6 +384,7 @@ export function insertTime(project, at, len, trackIds = null) {
   for (const tr of pickTracks(project, trackIds)) {
     for (const x of tr.notes) if (x.t >= at) { x.t = Math.min(MAXT, x.t + len); n++; }
     for (const c of tr.cc) if (c.t >= at) { c.t = Math.min(MAXT, c.t + len); n++; }
+    if (tr.auto) n += autoEach(tr, (k, a) => autoIns(a, at, len));
     sortNotes(tr.notes); sortCC(tr.cc);
   }
   project.bars = clamp(project.bars + Math.ceil(len / barTicks(project)), 1, MAXBARS);
@@ -404,6 +420,11 @@ export function pasteRange(project, clip, at, { insert = false, to = null } = {}
       const after = ccAt(tr.cc, e); let add = false;
       CC_KINDS.forEach((k, i) => { if (after[i] !== before[i] && !ccHas(tr.cc, k, e)) { tr.cc.push({ t: e, k, v: before[i] }); add = true; } });
       if (add) sortCC(tr.cc);
+    }
+    const ca = e > at ? normAuto(c.auto) : undefined; // (AUTO §2.1: per key the clip's curve over [at, e), the jump pair back to the target's own; a key the target lacks arrives as it is)
+    if (ca) for (const k of Object.keys(ca)) {
+      const old = tr.auto && isObj(tr.auto[k]) ? ptsIn(tr.auto[k].pts, k) : [];
+      autoPut(tr, k, autoPaste(old, ca[k].pts, at, e - at), ca[k]); count++; end = Math.max(end, e);
     }
   }
   project.bars = clamp(Math.max(project.bars, Math.ceil(end / barTicks(project))), 1, MAXBARS);
@@ -733,6 +754,192 @@ export function normMaster(m) {
   return Object.keys(o).length ? o : undefined;
 }
 
+// Stage AUTO (IMPL-AUTO §2, schema 19): a track's automation — track.auto = { [key]: { pts: [[tick, v], …] } }, key '<dev>:<dest>' (MDST)
+// or mix:vol / mix:pan; any mfx: key (the master's racks: not in cut 1) and any other mix: key dropped. pts sorted, integer ticks 0…MAXT,
+// no two at one tick (a jump is two points one tick apart), linear between, flat before the first and after the last. v finite in the
+// control's own domain — known here only for the mixer (mix:vol 0…1.25 as t.vol, mix:pan −1…1); everything else is bounded to ±1e6
+// and rounded to 1e-6 absolute: the contract's 1e-4 of the range is the host's (song.js knows no control's range). A key holds at most
+// AUTO_MAX points (past it thinned harder, autoCap: never cut — the host thins a take the same way), a track at most AUTO_KEYS keys (a safety
+// bound against a hostile file, as DEV_MAX); a key with no points goes; nothing valid → undefined (absent: a track without automation
+// serialises as at ⟨B⟩). Points are pairs never written in place: every op below makes new arrays (a clip, History and the track
+// may share pairs).
+export const AUTO_MAX = 20000, AUTO_KEYS = 4096;
+const AUTO_READ = 1 << 20, AUTO_V = 1e6; // (the most points read from one key of a file; the value bound)
+const r6 = x => Math.round(x * 1e6) / 1e6 + 0;
+export const autoKeyOk = k => typeof k === 'string' && (k === 'mix:vol' || k === 'mix:pan' || (MDST.test(k) && !k.startsWith('mfx:') && !k.startsWith('mix:')));
+const vDom = k => (k === 'mix:vol' ? [0, 1.25] : k === 'mix:pan' ? [-1, 1] : [-AUTO_V, AUTO_V]);
+const okPts = a => { // already normal (the host's live curves): skip the sort
+  if (!Array.isArray(a)) return false;
+  let p = -1;
+  for (const q of a) { if (!Array.isArray(q) || !Number.isInteger(q[0]) || q[0] <= p || q[0] > MAXT || !finN(q[1])) return false; p = q[0]; }
+  return true;
+};
+function autoPts(raw, key, cap) {
+  if (!Array.isArray(raw)) return [];
+  const [lo, hi] = vDom(key);
+  let out = [], sorted = true;
+  for (let i = 0, n = Math.min(raw.length, AUTO_READ); i < n; i++) {
+    const q = raw[i];
+    if (!Array.isArray(q) || !finN(q[0]) || !finN(q[1])) continue;
+    const t = clamp(R(q[0]), 0, MAXT) + 0;
+    if (out.length && t <= out[out.length - 1][0]) sorted = false;
+    out.push([t, r6(clamp(q[1], lo, hi))]);
+  }
+  if (!sorted) { // stable: at one tick the last wins
+    out.sort((a, b) => a[0] - b[0]);
+    let j = 0;
+    for (let i = 0; i < out.length; i++) { if (j && out[j - 1][0] === out[i][0]) out[j - 1] = out[i]; else out[j++] = out[i]; }
+    out.length = j;
+  }
+  if (cap && out.length > cap) out = autoCap(out, key === 'mix:vol' || key === 'mix:pan' ? (hi - lo) * 1e-3 : 0);
+  return out;
+}
+// (fix round, R1 P2-2) a key past AUTO_MAX points thinned harder rather than cut (its end is never lost): RDP at eps (none: 1e-3 of its
+// values' span), doubled until it fits — balanced splits (bounded on a hostile zigzag); past 4 × AUTO_MAX (a hand-made file: the
+// recorder and the range ops stay below) every k-th point first, the last kept
+export function autoCap(pts, eps) {
+  if (!Array.isArray(pts) || pts.length <= AUTO_MAX) return pts;
+  let out = pts;
+  if (out.length > 4 * AUTO_MAX) { const k = Math.ceil(out.length / (4 * AUTO_MAX)), n = out.length; out = out.filter((_, i) => i % k === 0 || i === n - 1); }
+  let e = finN(eps) && eps > 0 ? eps : 0;
+  if (!e) { let lo = Infinity, hi = -Infinity; for (const q of out) { if (q[1] < lo) lo = q[1]; if (q[1] > hi) hi = q[1]; } e = (hi - lo) * 1e-3 || 1e-9; }
+  const src = out;
+  out = autoThin(src, e, true);
+  while (out.length > AUTO_MAX) { e *= 2; out = autoThin(src, e, true); } // (from the source each time: every point within e)
+  return out;
+}
+const ptsIn = (a, key = '') => (okPts(a) ? a : autoPts(a, key, 0));
+// (fix round, R2 P2-2) a curve's last-known label n (the host's long name, ≤ 64 chars) and range r ([lo, hi], finite, lo < hi): read
+// back when its control is gone (an inert key) — e's valid ones onto o; absent when unknown
+const autoMeta = (e, o) => {
+  if (!isObj(e)) return o;
+  if (typeof e.n === 'string' && e.n) o.n = e.n.slice(0, 64);
+  const r = e.r;
+  if (Array.isArray(r) && r.length === 2 && finN(r[0]) && finN(r[1]) && r[0] < r[1]) o.r = [r[0] + 0, r[1] + 0];
+  return o;
+};
+export function normAuto(a) {
+  if (!isObj(a)) return undefined;
+  const o = {};
+  let n = 0;
+  for (const k of Object.keys(a)) {
+    if (n >= AUTO_KEYS) break;
+    const e = a[k];
+    if (!autoKeyOk(k) || !isObj(e)) continue;
+    const pts = autoPts(e.pts, k, AUTO_MAX);
+    if (pts.length) { o[k] = autoMeta(e, { pts }); n++; }
+  }
+  return n ? o : undefined;
+}
+export function autoKeys(t) {
+  const a = isObj(t) && isObj(t.auto) ? t.auto : null;
+  return a ? Object.keys(a).filter(k => isObj(a[k]) && Array.isArray(a[k].pts) && a[k].pts.length > 0) : [];
+}
+export function autoAt(pts, tick) {
+  const n = Array.isArray(pts) ? pts.length : 0;
+  if (!n) return undefined;
+  if (!(tick > pts[0][0])) return pts[0][1];
+  if (tick >= pts[n - 1][0]) return pts[n - 1][1];
+  let lo = 0, hi = n - 1; // pts[lo] ≤ tick < pts[hi]
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] <= tick) lo = m; else hi = m; }
+  const a = pts[lo], b = pts[hi];
+  return a[1] + (b[1] - a[1]) * (tick - a[0]) / (b[0] - a[0]);
+}
+const lb = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m][0] < x) lo = m + 1; else hi = m; } return lo; }; // the first point at ≥ x
+// [t0, t1) of `old` replaced by np's points in it. The old curve is kept outside: a lead point [t0 − 1, its value there] unless np
+// starts at t0 on the old curve (§2.3 names only the pair at t1; without the lead the segment into t0 would bend the values before
+// it — §2.1's "values outside unchanged"), and the jump pair at t1 ([t1 − 1, the last new value], [t1, the old value]) — past the
+// last old point too (fix round, R1 P2-5: a latch over a flat / short curve gives it back from the close; only an empty curve skips it)
+function autoWr(old, t0, t1, np) {
+  const nw = np.slice(lb(np, t0), lb(np, t1));
+  if (!old.length) return nw;
+  const i0 = lb(old, t0), i1 = lb(old, t1);
+  if (!nw.length && i0 === i1) return old.slice();
+  const out = old.slice(0, i0), f = nw[0];
+  if (t0 >= 1 && !(i0 && old[i0 - 1][0] === t0 - 1) && !(f && f[0] === t0 && f[1] === r6(autoAt(old, t0)))) out.push([t0 - 1, r6(autoAt(old, t0 - 1))]);
+  for (const q of nw) out.push(q);
+  if (t1 <= MAXT) {
+    const b = r6(autoAt(old, t1)), l = nw[nw.length - 1];
+    if (l && l[0] < t1 - 1 && l[1] !== b) out.push([t1 - 1, l[1]]);
+    if (!(i1 < old.length && old[i1][0] === t1)) out.push([t1, b]);
+  }
+  for (let i = i1; i < old.length; i++) out.push(old[i]);
+  return out;
+}
+export function autoWrite(pts, t0, t1, newPts) {
+  const old = ptsIn(pts);
+  t0 = clamp(R(num(t0, 0)), 0, MAXT); t1 = R(num(t1, 0));
+  return t1 > t0 ? autoWr(old, t0, t1, ptsIn(newPts)) : old.slice();
+}
+// Ramer–Douglas–Peucker on the value error (the curve's own measure: |autoAt(thinned, t) − v| ≤ eps at every dropped point, and so at
+// every tick between); the ends kept; iterative (a 3-minute take is ~43 k points a key)
+export function autoThin(pts, eps, cap = false) { // (cap: autoCap's — past a work budget of 32 n, a segment whose worst point lies outside
+  // its middle half splits at its middle instead: still within eps, the depth O(log n) on a hostile zigzag)
+  const n = Array.isArray(pts) ? pts.length : 0;
+  if (n <= 2) return n ? pts.slice() : [];
+  const e = finN(eps) && eps > 0 ? eps : 0, keep = new Uint8Array(n), st = [0, n - 1], budget = cap ? 32 * n : Infinity;
+  let work = 0;
+  keep[0] = keep[n - 1] = 1;
+  while (st.length) {
+    const j = st.pop(), i = st.pop(), a = pts[i], b = pts[j], dv = b[1] - a[1], dt = b[0] - a[0];
+    let m = -1, dm = e;
+    for (let x = i + 1; x < j; x++) { const d = Math.abs(pts[x][1] - (a[1] + dv * (pts[x][0] - a[0]) / dt)); if (d > dm) { dm = d; m = x; } }
+    if (m > 0 && (work += j - i) > budget && Math.abs(m - (i + j) / 2) > (j - i) / 4) m = (i + j) >> 1;
+    if (m > 0) { keep[m] = 1; st.push(i, m, m, j); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+// the range ops' per-key rules (§2.1); every one keeps the values outside the range as they were, shifted where time moves
+function autoClear(pts, s, e) { // the inner points out, points at s and e with the old values there (nothing inside (s, e): as it was)
+  const i = lb(pts, s), j = lb(pts, e);
+  if (lb(pts, s + 1) >= j) return pts;
+  const out = pts.slice(0, i);
+  out.push([s, r6(autoAt(pts, s))]);
+  if (e <= MAXT && !(j < pts.length && pts[j][0] === e)) out.push([e, r6(autoAt(pts, e))]);
+  for (let k = j; k < pts.length; k++) out.push(pts[k]);
+  return out;
+}
+function autoIns(pts, at, len) { // points at `at` and at + len with autoAt(at), then the shift (a flat gap); past MAXT a point goes
+  const i = lb(pts, at);
+  if (i >= pts.length) return pts;
+  const out = pts.slice(0, i);
+  if (i) { const v = r6(autoAt(pts, at)); out.push([at, v]); if (pts[i][0] !== at && at + len <= MAXT) out.push([at + len, v]); }
+  for (let k = i; k < pts.length && pts[k][0] + len <= MAXT; k++) out.push([pts[k][0] + len, pts[k][1]]);
+  return out;
+}
+function autoDel(pts, s, e) { // clear, shift, a jump pair at s (autoAt(s−) → autoAt(e))
+  const len = e - s, i = lb(pts, s), j = lb(pts, e), out = pts.slice(0, i), post = [];
+  for (let k = j; k < pts.length; k++) post.push([pts[k][0] - len, pts[k][1]]);
+  if (i === j && (!i || !post.length)) return out.concat(post); // nothing removed, one side empty: the shift alone keeps every value
+  const b = r6(autoAt(pts, e)), a = s >= 1 ? r6(autoAt(pts, s - 1)) : b;
+  if (s >= 1 && !(i && pts[i - 1][0] === s - 1) && !(!i && a === b)) out.push([s - 1, a]);
+  if (!(post.length && post[0][0] === s)) out.push([s, b]);
+  return out.concat(post);
+}
+function autoCopy(pts, s, e) { // [0, autoAt(s)], the inner points − s, [e − s, autoAt(e)]
+  const out = [[0, r6(autoAt(pts, s))]];
+  for (let k = lb(pts, s + 1); k < pts.length && pts[k][0] < e; k++) out.push([pts[k][0] - s, pts[k][1]]);
+  out.push([e - s, r6(autoAt(pts, e))]);
+  return out;
+}
+function autoPaste(old, cp, at, len) { // the clip's points in [0, len) at `at` (its value at len − 1 kept: its last point sits at len), the jump pair back
+  const np = [];
+  for (const q of cp) if (q[0] < len) np.push([q[0] + at, q[1]]);
+  if (!np.length || np[np.length - 1][0] !== at + len - 1) np.push([at + len - 1, r6(autoAt(cp, len - 1))]);
+  return autoWr(old, at, at + len, np);
+}
+function autoPut(tr, k, pts, m) { // (m: the n / r a key the track lacks arrives with — a paste's clip)
+  if (pts.length > AUTO_MAX) pts = autoCap(pts, k === 'mix:vol' || k === 'mix:pan' ? (vDom(k)[1] - vDom(k)[0]) * 1e-3 : 0);
+  if (pts.length) { if (!isObj(tr.auto)) tr.auto = {}; tr.auto[k] = autoMeta(isObj(tr.auto[k]) ? tr.auto[k] : m, { pts }); }
+  else if (isObj(tr.auto)) { delete tr.auto[k]; if (!Object.keys(tr.auto).length) delete tr.auto; }
+}
+function autoEach(tr, f) { // f(key, its points) → the new points; returns the keys changed
+  let n = 0;
+  for (const k of autoKeys(tr)) { const a = ptsIn(tr.auto[k].pts, k), b = f(k, a); if (b !== a) { n++; autoPut(tr, k, b); } }
+  return n;
+}
+const autoEnd = tr => { let e = 0; for (const k of autoKeys(tr)) { const p = tr.auto[k].pts, q = p[p.length - 1]; if (Array.isArray(q) && q[0] + 1 > e) e = q[0] + 1; } return e; }; // (the last point counts, as a cc event's t + 1)
+
 export function deserialize(json) {
   let o = json;
   if (typeof json === 'string') {
@@ -785,6 +992,8 @@ export function deserialize(json) {
     const lay = normLay(r.lay); // (canvas stage 1b; absent = Tidy)
     if (lay) tr.lay = lay;
     if (v2) Object.assign(tr, v2);
+    const au = normAuto(r.auto); // (stage AUTO, schema 19: last, where the host adds it to a live track; absent: no key, a track without curves reads as before)
+    if (au) tr.auto = au;
     p.tracks.push(tr);
   });
   if (!p.tracks.length) p.tracks.push(newTrack(p));

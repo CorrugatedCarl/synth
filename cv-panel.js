@@ -1521,8 +1521,10 @@ export function render(root, L, model, api) {
   };
   // a binding over the valid positions (index in V) for dragB: a drag, the keys and the wheel step through them
   // (dragB's y axis runs up = more; `invert` makes up = fewer: for a rotary / slide pot the layout's, for a switch the art's)
+  // (IMPL-AUTO §6.1) the value a control DRAWS: api.draw (the followed one, else the base; a host without it: api.get)
+  const draw = id => (typeof api.draw === 'function' ? api.draw(id) : api.get(id));
   const posBinding = (c, mc, stp, axis, invert = !!c.invert) => Object.assign({}, api.bind(mc), {
-    label: mc.label, get: () => stp.kOf(api.get(mc.id)), min: 0, max: Math.max(1, stp.V.length - 1), step: 1, def: stp.kOf(mc.def), axis, invert,
+    label: mc.label, get: () => stp.kOf(api.get(mc.id)), draw: () => stp.kOf(draw(mc.id)), min: 0, max: Math.max(1, stp.V.length - 1), step: 1, def: stp.kOf(mc.def), axis, invert,
     set: k => { k = Math.max(0, Math.min(stp.V.length - 1, Math.round(k))); const v = stp.P[stp.V[k]]; if (v !== api.get(mc.id)) api.set(mc.id, v); },
     fmt: k => txtOf(c, mc, stp.P, stp.V[Math.max(0, Math.min(stp.V.length - 1, Math.round(k)))]),
   });
@@ -1583,7 +1585,7 @@ export function render(root, L, model, api) {
     skinVars(el, c);
     const turn = litePtr(el, skinOf(c));
     const upd = () => {
-      const v = api.get(mc.id);
+      const v = draw(mc.id);
       turn(-sw / 2 + sw * Math.max(0, Math.min(1, (v - mc.min) / span)));
       el.setAttribute('aria-valuenow', String(v)); el.setAttribute('aria-valuetext', api.fmt(mc, v));
     };
@@ -1601,7 +1603,7 @@ export function render(root, L, model, api) {
     if (LITE) turn = litePtr(el, skinOf(c)); // ((9b) the pointer alone)
     else { const { svg, rot } = knobSvg(skinOf(c)); el.append(svg); turn = a => rot.setAttribute('transform', `rotate(${n3(a)} 32 32)`); }
     const upd = () => {
-      const i = stp.posOf(api.get(mc.id));
+      const i = stp.posOf(draw(mc.id));
       turn(r0 + (N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0));
       el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i));
     };
@@ -1619,7 +1621,7 @@ export function render(root, L, model, api) {
     if (named(c.color)) cap.style.background = named(c.color);
     el.append(mk('div', 'groove'), cap);
     const upd = () => {
-      const i = stp.posOf(api.get(mc.id));
+      const i = stp.posOf(draw(mc.id));
       let f = N > 1 ? i / (N - 1) : 0;
       if (c.invert) f = 1 - f;
       const p = `calc(${n3(f)} * (100% - var(--cap-h, 14px)))`;
@@ -1643,7 +1645,7 @@ export function render(root, L, model, api) {
       el.append(mk('i', 'hw-sw-a'), mk('i', 'hw-sw-b'), fill);
       let last = mc.max;
       const upd = () => {
-        const v = api.get(mc.id), f = (v - mc.min) / ((mc.max - mc.min) || 1);
+        const v = draw(mc.id), f = (v - mc.min) / ((mc.max - mc.min) || 1);
         if (v !== mc.min) last = v;
         fill.style[orient === 'v' ? 'height' : 'width'] = n3(Math.max(0, Math.min(1, f)) * 100) + '%';
         el.setAttribute('data-pos', v !== mc.min ? '1' : '0');
@@ -1660,7 +1662,7 @@ export function render(root, L, model, api) {
     else { knob = mk('b', 'hw-sw-k'); if (LITE) el.append(knob); else el.append(mk('i', 'hw-sw-t'), knob); } // ((9b) a lite face: no slot line)
     if (N > 2) { el.setAttribute('role', 'slider'); el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1)); }
     const upd = () => {
-      const i = stp.posOf(api.get(mc.id));
+      const i = stp.posOf(draw(mc.id));
       el.setAttribute('data-pos', String(i));
       if (knob) prop(knob, '--f', n3(N > 1 ? i / (N - 1) : 0));
       if (N > 2) { el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i)); }
@@ -1681,7 +1683,7 @@ export function render(root, L, model, api) {
     el.append(led);
     if (c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(c.onCap); el.append(t); }
     const upd = () => {
-      const k = stp.kOf(api.get(mc.id)), i = stp.V[k];
+      const k = stp.kOf(draw(mc.id)), i = stp.V[k];
       el.setAttribute('aria-pressed', k > 0 ? 'true' : 'false');
       el.setAttribute('data-lit', Array.isArray(c.ledLevels) ? String(c.ledLevels[i] || 'off') : k > 0 ? 'on' : 'off');
       if (stp.V.length > 2) el.setAttribute('aria-valuetext', txtOf(c, mc, P, i)); else el.removeAttribute('aria-valuetext');
@@ -1715,7 +1717,7 @@ export function render(root, L, model, api) {
       if (nv !== cur) api.set(mc.id, nv);
     }
     const upd = () => {
-      const lit = litOf(api.get(mc.id));
+      const lit = litOf(draw(mc.id));
       btns.forEach((b, i) => { const on = lit.includes(es[i].v); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.setAttribute('data-lit', on ? 'on' : 'off'); b.tabIndex = on && lit[0] === es[i].v ? 0 : -1; });
     };
     api.watch(mc.id, upd); upd();
@@ -1856,16 +1858,16 @@ export function render(root, L, model, api) {
       if (named(c.color)) cap.style.background = named(c.color);
       el.append(mk('div', 'groove'), cap);
       const cur = () => { const a = addr(), mc = a && M.get(a); return mc ? api.bind(mc) : null; };
-      const NONE = { label: 'Data entry', min: 0, max: 1, step: 0, def: 0, get: () => 0, set: () => {}, fmt: () => '—', snap: () => null, restore: () => {} };
+      const NONE = { label: 'Data entry', min: 0, max: 1, step: 0, def: 0, get: () => 0, draw: () => 0, set: () => {}, fmt: () => '—', snap: () => null, restore: () => {} };
       const b = {
         get label() { return (cur() || NONE).label; }, get min() { return (cur() || NONE).min; }, get max() { return (cur() || NONE).max; },
         get step() { return (cur() || NONE).step; }, get def() { return (cur() || NONE).def; }, axis: c.orient === 'h' ? 'x' : 'y',
-        get: () => (cur() || NONE).get(), set: v => (cur() || NONE).set(v), fmt: v => (cur() || NONE).fmt(v),
+        get: () => (cur() || NONE).get(), draw: () => { const k = cur() || NONE; return (k.draw || k.get)(); }, set: v => (cur() || NONE).set(v), fmt: v => (cur() || NONE).fmt(v),
         snap: () => { const k = cur(); return k ? { k, t: k.snap() } : null; }, restore: s0 => { if (s0) s0.k.restore(s0.t); },
       };
       api.dragB(el, b);
       const upd = () => {
-        const k = cur(), f = k ? (k.get() - k.min) / ((k.max - k.min) || 1) : 0, p = `calc(${n3(Math.max(0, Math.min(1, f)))} * (100% - var(--cap-h, 14px)))`;
+        const k = cur(), f = k ? ((k.draw || k.get)() - k.min) / ((k.max - k.min) || 1) : 0, p = `calc(${n3(Math.max(0, Math.min(1, f)))} * (100% - var(--cap-h, 14px)))`;
         if (c.orient === 'h') cap.style.left = p; else cap.style.bottom = p;
         el.setAttribute('aria-valuetext', k ? k.label + ' ' + k.fmt(k.get()) : '—');
       };
@@ -1893,7 +1895,7 @@ export function render(root, L, model, api) {
       const upd = () => {
         const a = st.mode === 'play' ? null : dxAddr(st.mode === 'function' ? 17 : st.param, st), mc = a && M.get(a);
         const n = typeof api.presetNo === 'function' ? api.presetNo() : null;
-        const [x, y] = dxLcd(st, Math.round(api.get('alg')), a, mc ? api.fmt(mc, api.get(a)) : '', n, DX.presetName ? DX.presetName() : '');
+        const [x, y] = dxLcd(st, Math.round(draw('alg')), a, mc ? api.fmt(mc, draw(a)) : '', n, DX.presetName ? DX.presetName() : '');
         l1.textContent = x; l2.textContent = y;
       };
       dxB.push({ n: 0, el, upd });
@@ -1918,7 +1920,7 @@ export function render(root, L, model, api) {
       }
       el.append(svg);
       let on = -1;
-      const upd = () => { const a = Math.max(1, Math.min(32, Math.round(api.get('alg')))) - 1; if (a === on) return; if (cells[on]) cells[on].removeAttribute('data-on'); if (cells[a]) cells[a].setAttribute('data-on', ''); on = a; };
+      const upd = () => { const a = Math.max(1, Math.min(32, Math.round(draw('alg')))) - 1; if (a === on) return; if (cells[on]) cells[on].removeAttribute('data-on'); if (cells[a]) cells[a].setAttribute('data-on', ''); on = a; };
       upd();
       post.push(() => api.watch('alg', upd));
       return el;
@@ -2093,7 +2095,7 @@ export function render(root, L, model, api) {
       const el = mk('span', 'hw-led hw-show'), r = o.own || o.box;
       place(el, r);
       prop(el, '--led-c', named(c.color) || c.color);
-      const upd = () => el.setAttribute('data-lit', ledOn(c.when, api.get(c.of)) ? 'on' : 'off');
+      const upd = () => el.setAttribute('data-lit', ledOn(c.when, draw(c.of)) ? 'on' : 'off');
       api.watch(c.of, upd); upd();
       return el;
     }

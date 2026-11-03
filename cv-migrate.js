@@ -130,7 +130,7 @@ import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (sta
 import { RIG, adopt, WORDS as RIG_WORDS } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it; (SX0) adopt, mpeLater)
 
 export { schemaOf };
-export const SCHEMA = 18;
+export const SCHEMA = 19;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -197,6 +197,9 @@ export const STEPS = Object.freeze([
   // 17 → 18: stage DM (IMPL-DM §5.6): a 'kit' device and its `drum` record (kit-core normKit) — additive, the identity; the bump keeps a
   // schema-17 build from reading the kit as a Minimoog, dropping its patterns and autosaving the loss
   p => Object.assign({}, p, { schema: 18 }),
+  // 18 → 19: stage AUTO (IMPL-AUTO §2.4): track.auto, a track's automation curves (song.normAuto) — additive, the identity; the bump keeps a
+  // schema-18 build from dropping the curves (its deserialize whitelists the track's fields) and autosaving the loss
+  p => Object.assign({}, p, { schema: 19 }),
 ]);
 
 export function upgrade(o) {
@@ -370,6 +373,10 @@ export function toV1(p0) {
   delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads; delete p.master;
   // (WC, IMPL-WC §2.4) a rig becomes a Serum device with the same vals.s / fx / preset — main opens it as a bundled Serum, the same
   // sound (W2); its `rig` record (cord colours, module ordinals) and its modules' lay entries 'iN/<part>' go ('iN/fx' is a Serum's too: kept)
+  for (const t of p.tracks) { // ((AUTO, the fix round) the live site has no automation: a track's curves are named (the file keeps them, unread)
+    const na = isObj(t) && isObj(t.auto) ? Object.keys(t.auto).length : 0;
+    if (na) lost.push(`“${t.name}”: ${na} automation curve${na === 1 ? '' : 's'}`);
+  }
   for (const t of p.tracks) {
     if (!isObj(t) || !isObj(t.dev)) continue;
     for (const k of Object.keys(t.dev)) {
@@ -480,6 +487,19 @@ function rowsTo(t, id, as) {
   }
   return { R, devs };
 }
+// (AUTO §2.1) a split track's curves: the mixer's (mix:*) on every track; its instrument's and its panel's under their new ids (`map`: dev →
+// its id here, null = gone — a Serum's panel's only when the panel's FX became its own); the keeper (i 0) keeps the rest (modulators, a
+// removed control's inert key), never another instrument's or another panel's. Copies; nothing → undefined (no key)
+function autoTo(t, R, i, map) {
+  if (!isObj(t.auto)) return undefined;
+  const taken = new Set(), o = {};
+  for (const r of R) { taken.add(r.id); if (r.via) taken.add(r.via); }
+  for (const k of Object.keys(t.auto)) {
+    const c = k.indexOf(':'), d = k.slice(0, c), to = d === 'mix' ? d : map.has(d) ? map.get(d) : i === 0 && !taken.has(d) ? d : null;
+    if (c > 0 && to) o[to + k.slice(c)] = plainCopy(t.auto[k]);
+  }
+  return Object.keys(o).length ? o : undefined;
+}
 const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => isObj(r) && Array.isArray(r.mods) && r.mods.length > 0); // (= cv-model's)
 const maxTrk = ids => { let n = 0; for (const id of ids) { const m = /^trk_(\d{1,9})$/.exec(id); if (m) n = Math.max(n, +m[1]); } return n; };
 const NAME_MAX = 100; // (song.js: a track name's length)
@@ -505,6 +525,7 @@ export function splitTracks(p, o = {}) {
     let kept = 0;
     R.forEach(({ id, d, v, to, via, end, heard }, i) => {
       const tr = coreOf(t), dv = Object.assign({}, d), sx = isSxId(d.model), lost = [];
+      let took = false; // ((AUTO) a Serum's panel's FX became its own: its curves go with them)
       for (const k of ['on', 'solo', 'zone', 'fx']) delete dv[k];
       if (!heard) {
         tr.mute = true; // (it did not sound: it stays quiet until unmuted)
@@ -515,7 +536,7 @@ export function splitTracks(p, o = {}) {
       if ((to && lvl(to.g)) || (via && end && lvl(end.g))) lost.push('its cable level was dropped');
       if (sx) { // a Serum heard through a panel: with no effects of its own, the panel's become its own (reshape's 'moved': the same sound)
         const pfx = via && isObj(t.dev[via]) ? t.dev[via].fx : undefined;
-        if (via && !hasFx(v.fx) && pfx !== undefined) dv.fx = plainCopy(pfx);
+        if (via && !hasFx(v.fx) && pfx !== undefined) { dv.fx = plainCopy(pfx); took = true; }
         else { dv.fx = plainCopy(v.fx); if (via && hasFx(pfx)) lost.push('the panel after it was not kept'); }
       } else delete dv.fxId;
       if (lost.length) why.push((many ? (d.name || name(d.model)) + ': ' : '') + lost.join('; '));
@@ -544,6 +565,8 @@ export function splitTracks(p, o = {}) {
         else { tr.dev.fx1 = P; tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }]; }
         tr.notes = plainCopy(t.notes); tr.cc = plainCopy(t.cc);
       }
+      const as = i === 0 ? id : 'i1', au = autoTo(t, R, i, new Map([[id, as]].concat(via ? [[via, sx ? (took ? as : null) : i === 0 ? via : 'fx1']] : []))); // (the keeper's panel keeps its id)
+      if (au) tr.auto = au; else delete tr.auto; // ((AUTO) coreOf carried the source's object)
       const { R: rows, devs } = rowsTo(t, id, i === 0 ? id : 'i1'); // (2a: its mod rows go with it)
       if (rows.length) { kept += rows.length; tr.mods = rows; tr.mid = Math.max(t.mid | 0, 1); if (i) Object.assign(tr.dev, devs); }
       out.push(tr);

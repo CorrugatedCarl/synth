@@ -128,9 +128,32 @@ export class ClassicPanel {
     // their nodes, the live snapshot, the wraps index (built on demand)
     this.els = new Map(); this.ctls = new Map((this.model && this.model.controls || []).map(c0 => [c0.id, c0]));
     this.halos = new Map(); this.hnodes = new Map(); this.eff = null; this.wraps = null;
+    this.fol = new Map(); this.drg = new Set(); // (IMPL-AUTO §6.1) the followed values by id; the ids under a drag (drawn from the base)
     this.render();
   }
   get vals() { return this.track.vals; }
+  // (IMPL-AUTO §6.1) the value a control DRAWS: the followed one (P.follow), else the base; a control under a drag draws the base (the drag writes it)
+  dv(id) { return this.fol.has(id) && !this.drg.has(id) ? this.fol.get(id) : this.vals[id]; }
+  // follow(id, v | null): the control draws at v (model units) instead of its base — no set, no host.changed, no History; null: the base.
+  // The hardware panels (cv-panel) draw through api.draw = dv, so they follow too.
+  follow(id, v) {
+    if (this.dead) return;
+    const f = v == null || !isFinite(+v) ? null : +v;
+    if (f == null ? !this.fol.delete(id) : this.fol.get(id) === f) return;
+    if (f != null) this.fol.set(id, f);
+    const u = this.ui.get(id); if (u) u();
+  }
+  dragDone(id) { // a drag over: the control draws the followed value again (if any) until the host clears it
+    if (!id || !this.drg.delete(id) || !this.fol.has(id)) return;
+    const u = this.ui.get(id); if (u) u();
+  }
+  // setAuto(id, 'on' | 'off' | null): data-auto on the control's [data-dest] wrap (an attribute only — style.css draws the dot as an ::after)
+  setAuto(id, state) {
+    if (this.dead) return;
+    const w = this.wrapOf(id);
+    if (!w || !w.hasAttribute('data-dest')) return;
+    if (state === 'on' || state === 'off') w.setAttribute('data-auto', state); else if (w.hasAttribute('data-auto')) w.removeAttribute('data-auto');
+  }
   h(tag, cls, txt) { const e = this.doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
   // a value write: the widget(s) of id, then the page (the preset becomes Custom, the patch, autosave); ph (2b U2): 'move'
   // during a drag, 'end' at its lift (gestureEnd: once, after a move), nothing for a key / wheel / typed / reset write —
@@ -200,7 +223,7 @@ export class ClassicPanel {
     return wrap;
   }
   ariaVal(el, c) {
-    const v = this.vals[c.id];
+    const v = this.dv(c.id);
     el.setAttribute('aria-valuemin', c.min); el.setAttribute('aria-valuemax', c.max);
     el.setAttribute('aria-valuenow', v); el.setAttribute('aria-valuetext', fmt(c, v));
   }
@@ -213,7 +236,7 @@ export class ClassicPanel {
       : `<svg viewBox="0 0 64 64"><g class="ticks">${TICKS}</g><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><circle class="shine" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>`;
     const rot = typeof el.querySelector === 'function' ? el.querySelector('.rot') : null; // (null in a node test DOM)
     const upd = () => {
-      if (rot) rot.setAttribute('transform', `rotate(${(-sw / 2 + sw * toPos(c, this.vals[c.id])).toFixed(2)} 32 32)`);
+      if (rot) rot.setAttribute('transform', `rotate(${(-sw / 2 + sw * toPos(c, this.dv(c.id))).toFixed(2)} 32 32)`);
       this.ariaVal(el, c);
     };
     this.ui.set(c.id, upd); upd();
@@ -236,7 +259,7 @@ export class ClassicPanel {
       el.append(this.h('div', 'groove'), ticks, cap);
     }
     const upd = () => { // the cap's travel: the slot less the cap (--cap-h on a hardware panel, 14 px here)
-      const p = toPos(c, this.vals[c.id]), q = (c.invert ? 1 - p : p).toFixed(4);
+      const p = toPos(c, this.dv(c.id)), q = (c.invert ? 1 - p : p).toFixed(4);
       if (c.orient === 'h') cap.style.left = `calc(${q} * (100% - var(--cap-h, 14px)))`; else cap.style.bottom = `calc(${q} * (100% - var(--cap-h, 14px)))`;
       this.ariaVal(el, c);
     };
@@ -248,7 +271,7 @@ export class ClassicPanel {
   numBox(c) {
     const el = this.h('div', 'num');
     el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
-    const upd = () => { el.textContent = fmt(c, this.vals[c.id]); this.ariaVal(el, c); };
+    const upd = () => { el.textContent = fmt(c, this.dv(c.id)); this.ariaVal(el, c); };
     this.ui.set(c.id, upd); upd();
     this.els.set(c.id, el);
     this.drag(el, c);
@@ -264,7 +287,7 @@ export class ClassicPanel {
       el.append(b);
       return b;
     });
-    const upd = () => bs.forEach((b, i) => { const on = this.vals[c.id] === i; b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1; });
+    const upd = () => bs.forEach((b, i) => { const on = this.dv(c.id) === i; b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1; });
     el.addEventListener('keydown', e => { // radio group: one tab stop, arrows move the selection
       const d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
       if (!d) return;
@@ -281,7 +304,7 @@ export class ClassicPanel {
     const b = this.h('button', 'tog'); b.type = 'button'; b.setAttribute('aria-label', c.label);
     b.append(this.h('span', 'led'));
     b.onclick = () => this.set(c.id, this.vals[c.id] ? 0 : 1);
-    const upd = () => { b.classList.toggle('on', !!this.vals[c.id]); b.setAttribute('aria-pressed', this.vals[c.id] ? 'true' : 'false'); };
+    const upd = () => { const on = !!this.dv(c.id); b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); };
     this.ui.set(c.id, upd); upd();
     this.els.set(c.id, b);
     this.menuOn(b, c.id);
@@ -293,7 +316,7 @@ export class ClassicPanel {
   binding(c) {
     return {
       id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, axis: c.orient === 'h' ? 'x' : 'y', invert: !!c.invert,
-      get: () => this.vals[c.id], set: (v, ph) => this.set(c.id, v, ph), end: () => this.gestureEnd(c.id), fmt: v => fmt(c, v),
+      get: () => this.vals[c.id], draw: () => this.dv(c.id), set: (v, ph) => this.set(c.id, v, ph), end: () => this.gestureEnd(c.id), fmt: v => fmt(c, v),
       snap: () => ({ iv: this.track, v0: this.vals[c.id], pre0: this.track.preset }),
       restore: k => {
         if (this.dead || this.track !== k.iv) return;
@@ -326,7 +349,8 @@ export class ClassicPanel {
       e.preventDefault(); el.focus({ preventScroll: true });
       dragging = true; cancelled = false; menued = false;
       const X = b.axis === 'x', at = ev => (X ? ev.clientX : -ev.clientY) * (b.invert ? -1 : 1);
-      let p = posB(b, b.get()), prev = at(e); // accumulate per move, so pressing Shift mid-drag doesn't rescale what was already dragged
+      let p = posB(b, (b.draw || b.get)()), prev = at(e); // (IMPL-AUTO §6.1) a followed control: the drag starts from the drawn value
+      if (b.id) this.drg.add(b.id); // ...and draws the base it writes until the lift // accumulate per move, so pressing Shift mid-drag doesn't rescale what was already dragged
       const range = b.step ? (b.max - b.min) / b.step : 100;
       const base = range > 40 ? 0.0045 : Math.max(0.0045, 1 / (range * 22));
       this.tipB(el, b);
@@ -341,10 +365,10 @@ export class ClassicPanel {
         if (v !== b.get()) { moved = true; b.set(v, 'move'); } // ((2b U2) a move's write: the host coalesces its reposts)
         this.tipB(el, b);
       }, () => {
-        dragging = false; this.untip(400);
+        dragging = false; this.untip(400); this.dragDone(b.id);
         if (moved && typeof b.end === 'function') b.end(); // (the gesture's end: the host posts what the moves held back)
         if (o.tap && !far && !cancelled && b.get() === v0) o.tap();
-      }, () => { b.restore(k); if (moved && typeof b.end === 'function') b.end(); });
+      }, () => { this.dragDone(b.id); b.restore(k); if (moved && typeof b.end === 'function') b.end(); });
     });
     if (o.tap) el.addEventListener('pointercancel', () => { cancelled = true; }, true); // (a cancelled press is never a tap)
     el.addEventListener('dblclick', () => { b.set(b.def); this.tipB(el, b); this.untip(800); });
@@ -543,7 +567,7 @@ export class ClassicPanel {
     const K = this.kit, H = this.host, tr = this.track, m = this.model;
     return {
       doc: this.doc, model: m,
-      get: id => this.vals[id], set: (id, v) => this.set(id, v),
+      get: id => this.vals[id], draw: id => this.dv(id), set: (id, v) => this.set(id, v),
       watch: (id, fn) => { const prev = this.ui.get(id); this.ui.set(id, prev ? () => { prev(); fn(); } : fn); }, // (set, refresh, presets, undo)
       bind: c => this.binding(c), knob: c => this.knob(c), slider: (c, si) => this.slider(c, si), selector: c => this.selector(c), toggle: c => this.toggle(c),
       dragB: (el, b, o) => this.dragB(el, b, o), track: K.track, noMenu: K.noMenu, hoverable: K.hoverable, wheelIn: K.wheelIn, wheelStep: K.wheelStep,

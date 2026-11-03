@@ -885,7 +885,7 @@ const rig = {
   // without it those rows are inactive); qr = quality-reduction caps, the rest app preferences. (SX0) the call the bundled model's map
   // made, here since that model left canvas: the same patch (tests/ref-SX0)
   map(P, v, G) {
-    return compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi, ext: G.ext });
+    return compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi, ext: G.ext, nokey: G.nokey });
   },
   presets: FACTORY_PRESETS, // (serum-core's factory presets: program change and the preset preview read them, main.js SXM)
 };
@@ -963,7 +963,7 @@ export function patchFor(model, vals, fx, opts) {
   for (const c of m.controls) P[c.id] = c.conv ? c.conv(v[c.id]) : v[c.id];
   const rack = fx || SC.defaultFx();
   const patch = m.map(P, v, { drift: o.drift || 0, hiss: o.hiss || 0, sr, bpm, smooth, fx: rack, qr: o.qr || null,
-    ultra: pr.ultra ? 1 : 0, mpeBendX: pr.mpeBendX ? 1 : 0, mpeYBi: pr.mpeYBi ? 1 : 0, ext: o.ext ? true : undefined });
+    ultra: pr.ultra ? 1 : 0, mpeBendX: pr.mpeBendX ? 1 : 0, mpeYBi: pr.mpeYBi ? 1 : 0, ext: o.ext ? true : undefined, nokey: o.nokey ? true : undefined });
   // Serum's master volume, Bypass and output levels belong to the rack's output stage (FX-context [0…4], §4.2)
   const s = isSxModel(m) && v.s ? v.s : null, sp = s && s.p ? s.p : null;
   patch.fxr = SC.compileFx(rack, {

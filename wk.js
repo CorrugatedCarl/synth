@@ -27,6 +27,9 @@
 //     marker shows only while |live − base| > 0.002 (base = the control's own n, or an optional `base` field);
 //     `setLive(n)` (IMPL-FR-B §4.5, every frame of the fast lane) moves that marker alone — the arcs as setMod drew them, no array,
 //     no string but the marker's own position; a repaint (update) keeps it; on the knob, the ring toggle, every modBar widget;
+//   · automation (IMPL-AUTO §6): `follow(v | null)` (knob, numBox, slider, fader) makes the control DRAW at v instead of get() — no set, no
+//     History, no event; update() keeps it until follow(null); a drag that starts while followed starts from v (keys / wheel / reset still
+//     act on the base). `setAuto('on' | 'off' | null)` sets / clears `data-auto` on the widget's root (also menu, toggle, seg);
 //   · ContextMenu / Shift+F10 and a 500 ms touch long-press dispatch a `contextmenu` MouseEvent on the
 //     focusable element (bubbles), so one `contextmenu` listener serves mouse, keyboard and touch.
 import { jumpy } from './gesture.js?v=9';
@@ -78,6 +81,13 @@ function setDest(el, dest) {
   if (dest != null && dest !== '') attr(el, 'data-dest', dest);
   else if (el.hasAttribute('data-dest')) el.removeAttribute('data-dest');
 }
+// IMPL-AUTO §6.2: the automation dot's state on the [data-dest] root: 'on' | 'off' | none (an attribute only — never a child element).
+function setAutoAttr(el, s) {
+  if (s === 'on' || s === 'off') attr(el, 'data-auto', s);
+  else if (el.hasAttribute('data-auto')) el.removeAttribute('data-auto');
+}
+// §6.1: a followed value (the control draws at it instead of get()): a finite number clamped to 0..1, else null.
+const fol = v => (v == null || !isFinite(+v) ? null : num01(v));
 function setDis(el, dis) {
   el.classList.toggle('wk-dis', dis);
   if (dis) attr(el, 'aria-disabled', 'true'); else if (el.hasAttribute('aria-disabled')) el.removeAttribute('aria-disabled');
@@ -341,15 +351,18 @@ export function knob(o) {
   el.append(svg, lab, out, dh);
   const paint = haloPainter(halo, 29, 32);
   const fmt = o.fmt || (n => Math.round(n * 100) + '%');
-  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy, follow, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   ctxGuard(el);
 
+  let fv = null; // the followed value (§6.1)
+  const vn = () => (fv == null ? num01(o.get()) : g ? g.n : fv);
+  function follow(v) { const f = fol(v); if (f === fv) return; fv = f; update(); }
   let cur = NaN, curBip = null, text = null, dis = false, mod = null, lv = null, g = null, inp = null, lastTap = null, lastType = 'mouse', hoverT = -1e9;
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
-    const n = num01(o.get()), bip = !!call(o.bipolar);
+    const n = vn(), bip = !!call(o.bipolar);
     setDest(el, call(o.dest));
     const L = String(o.labelToggle && o.labelToggle.get() ? call(o.labelToggle.alt) : call(o.label));
     if (lab.textContent !== L) lab.textContent = L;
@@ -394,7 +407,7 @@ export function knob(o) {
     e.preventDefault();
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; } // Cmd/Ctrl-click = reset to def
-    const n0 = num01(o.get()), steps = stepsOf();
+    const n0 = fv != null ? fv : num01(o.get()), steps = stepsOf();
     g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, n: n0, n0, k0: 0, p: n0, moved: false, touch: lastType === 'touch', lp: null, steps };
     if (steps) g.p = g.k0 = Math.round(n0 * steps);
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
@@ -602,7 +615,7 @@ export function menu(o) {
   if (lab) el.append(lab);
   el.append(row);
   const bar = modBar(el);
-  const W = { el, update, setMod, setLive, focus, open, close, destroy };
+  const W = { el, update, setMod, setLive, focus, open, close, destroy, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   ctxGuard(btn);
   let P = null, hoverT = -1e9, lp = null, noClick = false, mod = null, lv = null;
@@ -827,7 +840,7 @@ export function toggle(o) {
   const ring = sv('svg', { class: 'wk-ring', viewBox: '0 0 40 40', preserveAspectRatio: 'none', 'aria-hidden': 'true', focusable: 'false' });
   const paint = haloPainter(ring, 18, 20, { 'vector-effect': 'non-scaling-stroke' });
   el.append(ring);
-  const W = { el, update, setMod, setLive, focus, destroy };
+  const W = { el, update, setMod, setLive, focus, destroy, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   ctxGuard(el);
   let dis = false, lp = null, noClick = false, mod = null, lv = null;
@@ -943,9 +956,12 @@ export function numBox(o) {
   box.append(txt);
   el.append(lab, box);
   const bar = modBar(box);
-  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy, follow, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   ctxGuard(el);
+  let fv = null; // the followed value (§6.1)
+  const vn = () => (fv == null ? num01(o.get()) : g ? g.k / g.st : fv);
+  function follow(v) { const f = fol(v); if (f === fv) return; fv = f; update(); }
   const stepsOf = () => { const s = call(o.steps); return s > 0 ? Math.round(s) : 100; };
   const kLims = st => [Math.ceil((o.min != null ? num01(call(o.min)) : 0) * st - 1e-9), Math.floor((o.max != null ? num01(call(o.max)) : 1) * st + 1e-9)];
   const fmt = n => String(o.fmt ? o.fmt(n) : Math.round(n * stepsOf()));
@@ -953,7 +969,7 @@ export function numBox(o) {
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
-    const st = stepsOf(), n = num01(o.get()), L = String(call(o.label) || ''), lim = kLims(st);
+    const st = stepsOf(), n = vn(), L = String(call(o.label) || ''), lim = kLims(st);
     setDest(el, call(o.dest));
     if (lab.textContent !== L) lab.textContent = L;
     lab.style.display = L ? '' : 'none';
@@ -968,8 +984,8 @@ export function numBox(o) {
     refreshTip(el);
   }
   function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
-  function modPaint() { el.classList.toggle('wk-modded', bar(mod, num01(o.get()), lv) > 0); }
-  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, num01(o.get())); }
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, vn(), lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, vn()); }
   function put(k, ph) { // k = grid index
     const st = stepsOf(), lim = kLims(st), n = clamp(Math.round(k), lim[0], lim[1]) / st + 0; // + 0: never -0
     if (ph === 'set' && n === num01(o.get())) { update(); return; }
@@ -988,7 +1004,7 @@ export function numBox(o) {
     e.preventDefault();
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; }
-    const st = stepsOf(), n0 = num01(o.get()), k0 = Math.round(n0 * st);
+    const st = stepsOf(), n0 = fv != null ? fv : num01(o.get()), k0 = Math.round(n0 * st);
     g = { id: e.pointerId, y: e.clientY, x0: e.clientX, y0: e.clientY, st, k0, p: k0, k: k0, n0, px: st > 100 ? 800 / st : 8, moved: false, touch: lastType === 'touch', lp: null };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     el.classList.add('wk-drag');
@@ -1105,7 +1121,7 @@ function segCore(o, icons) {
   const lab = h('span', 'wk-lab'), row = h('div', 'wk-segs');
   el.append(lab, row);
   const bar = modBar(row);
-  const W = { el, update, setMod, setLive, focus, destroy };
+  const W = { el, update, setMod, setLive, focus, destroy, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   let btns = [], key = null, dis = false, lp = null, noClick = false, mod = null, lv = null;
 
@@ -1198,9 +1214,12 @@ function sliderCore(o) {
   trk.append(fill, thumb);
   el.append(lab, trk, out);
   const bar = modBar(trk, vert);
-  const W = { el, update, setMod, setLive, focus, edit, reset, destroy };
+  const W = { el, update, setMod, setLive, focus, edit, reset, destroy, follow, setAuto: s => setAutoAttr(el, s) };
   el.wk = W;
   ctxGuard(el);
+  let fv = null; // the followed value (§6.1)
+  const vn = () => (fv == null ? num01(o.get()) : g ? g.n : fv);
+  function follow(v) { const f = fol(v); if (f === fv) return; fv = f; update(); }
   const stepsOf = () => { const s = call(o.steps); return s > 0 ? Math.round(s) : 0; };
   const fmt = n => String(o.fmt ? o.fmt(n) : Math.round(n * 100) + '%');
   const P0 = vert ? 'bottom' : 'left', P1 = vert ? 'height' : 'width';
@@ -1208,7 +1227,7 @@ function sliderCore(o) {
   const wacc = { v: 0, t: -1e9 };
 
   function update() {
-    const n = num01(o.get()), L = String(call(o.label) || '');
+    const n = vn(), L = String(call(o.label) || '');
     setDest(el, call(o.dest));
     if (lab.textContent !== L) lab.textContent = L;
     lab.style.display = L ? '' : 'none';
@@ -1229,8 +1248,8 @@ function sliderCore(o) {
     refreshTip(el);
   }
   function setMod(m) { mod = m || null; lv = mod ? mod.live : null; modPaint(); }
-  function modPaint() { el.classList.toggle('wk-modded', bar(mod, num01(o.get()), lv) > 0); }
-  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, num01(o.get())); }
+  function modPaint() { el.classList.toggle('wk-modded', bar(mod, vn(), lv) > 0); }
+  function setLive(n) { lv = n; if (mod) bar.dot(n, mod, vn()); }
   function put(n, ph) {
     n = snap(n, stepsOf());
     if (ph === 'set' && n === num01(o.get())) { update(); return; }
@@ -1252,7 +1271,7 @@ function sliderCore(o) {
     e.preventDefault();
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; }
-    const n0 = num01(o.get()), pos = posOf(e);
+    const n0 = fv != null ? fv : num01(o.get()), pos = posOf(e);
     g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, len: pos.len, p: n0, n: n0, n0, moved: false, touch: lastType === 'touch', lp: null };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     el.classList.add('wk-drag');

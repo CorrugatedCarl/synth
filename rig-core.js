@@ -607,9 +607,10 @@ export function partKeys(s, lay, dev, used, rig) { // eslint-disable-line no-unu
 
 /* ---------------------------------------------------------------- Tidy's targets (review 2 P2-5, the user's rule) */
 // a matrix destination's module: the id's prefix ('a.wt' → oscA, 'f2.res' → filter2, 'e3.att' → env3, 'l7.rate' → lfo7, 'm2' → macros, 'fx.…'
-// → the Effects), anything else of the instrument ('g.amp', 'vc.…', 'c1.rate', 'bus3') the Amplifier
+// → the Effects), anything else of the instrument ('g.amp', 'vc.…', 'c1.rate', 'bus3') the Amplifier — ((AUTO §5.1) exported: an automated knob's
+// module name, main.js autoLabel)
 const DEST_PART = { a: 'oscA', b: 'oscB', c: 'oscC', s: 'sub', n: 'noise', f: 'filter', f2: 'filter2', fx: 'fx', arp: 'arp', clip: 'clip' };
-const destPart = id => { const p = String(id || '').split('.')[0], m = /^([el])(\d+)$/.exec(p); return DEST_PART[p] || (m ? (m[1] === 'e' ? 'env' : 'lfo') + m[2] : /^m[1-8]$/.test(p) ? 'macros' : 'voice'); };
+export const destPart = id => { const p = String(id || '').split('.')[0], m = /^([el])(\d+)$/.exec(p); return DEST_PART[p] || (m ? (m[1] === 'e' ? 'env' : 'lfo') + m[2] : /^m[1-8]$/.test(p) ? 'macros' : 'voice'); };
 const SRC_PART = src => (/^macro[1-8]$/.test(src || '') ? 'macros' : /^(?:env[1-4]|lfo(?:10|[1-9]))$/.test(src || '') ? src : null);
 /** What each standing modulator of the rig drives, for Tidy's band (cv-module tidy's opts.targets through the host): modulator part →
  * the parts its cords end on — Envelope 1 the Amplifier ('voice') first (the amp slot: its cord, by definition of its module), then

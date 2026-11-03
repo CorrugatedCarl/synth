@@ -2425,7 +2425,7 @@ function compileCore(s, ctx) {
     mSlot,
     cpKey: '',
   };
-  CP.cpKey = cpKeyOf(CP);
+  CP.cpKey = c.nokey ? '' : cpKeyOf(CP); // ((AUTO fix round) ctx.nokey: playback's tick moved a base — no host dedupes that patch, the hash is skipped
   return {
     engine: 'serum',
     mode: vo.mono ? 'mono' : 'poly',

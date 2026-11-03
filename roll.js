@@ -9,6 +9,8 @@
 // normal (100) and accent (127) lines. drumRowsOf(dev) builds the rows from a drum machine's device record (drum-core).
 import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=9';
 import { drumRows, PERS } from './drum-core.js?v=9';
+// (AUTO, IMPL-AUTO §5) the strip's automation lane: the corner's chooser chip, one curve in place of the velocity lane (host.autoLane)
+import * as A from './roll-auto.js?v=9';
 
 const GUT_P = 64, GUT_D = 120, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
 const BG = '#0c0d0f', ACC = '#f2a33a', TEXT = '#e9e7e2', MUTE = '#8d8b86', LINE = '#24262b';
@@ -18,7 +20,7 @@ const LIT = 'rgba(242,163,58,0.85)', LIT_N = 'rgba(255,255,255,0.42)', LIT_K = '
 const FONT = "'JetBrains Mono', ui-monospace, Menlo, monospace";
 const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLK = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
-const AUTO_X = new Set(['marquee', 'move', 'resizeR', 'resizeL', 'create', 'erase', 'ruler', 'loopEdge', 'velpaint']);
+const AUTO_X = new Set(['marquee', 'move', 'resizeR', 'resizeL', 'create', 'erase', 'ruler', 'loopEdge', 'velpaint', 'apt']);
 const DBL = 6, HOLD = 90;   // double-click slop (px); touch delay (ms) before Draw/Erase act, so a pinch can start first
 // row heights (px): pinch / Alt-wheel / Keys −/+ range; Fit's cap (mouse, touch); automatic sizing never goes below
 // ROW_AUTO_T on touch (the roll scrolls instead); the default (mouse, touch); the Keys −/+ steps
@@ -112,6 +114,7 @@ export class PianoRoll {
     this.g = null; this.hover = null; this.keys = new Set(); this.touches = new Map(); this.lastTap = null;
     this.pals = new Map(); this.raf = 0; this.autoRaf = 0; this.dirty = true; this.cur = ''; this.focused = false;
     this.want = { type: 'center', lo: 48, hi: 72 };
+    this.al = null; this.asel = null; // (AUTO) the shown automation lane (roll-auto lane(); null: velocity), the selected point's tick
     // (R) the lights: hk the held notes (setHeld), play whether the song plays the track (setPlayhead), fl the chase floor
     // (setPlayhead: _keyOn), the sounding notes (_sound: sAct[0…sCnt) — sAI their indices —, the cursor sI, the index sN /
     // sLen / sV of render's version nv, sMax / sLong (sLI) / sOk, sNx / sPit / sOwn a pitch's takeover), lrow / lst a row lit
@@ -137,6 +140,7 @@ export class PianoRoll {
   get gw() { return Math.max(0, this.W - this.gut); }
   get gb() { return this.H - VEL - 1; }
   get gh() { return Math.max(0, this.gb - RUL); }
+  get vt() { return this.H - VEL; } // (the strip's top)
   t2x(t) { return this.gut + (t - this.sx) * this.ppt; }
   x2t(x) { return this.sx + (x - this.gut) / this.ppt; }
   n2y(n) { return this.r2y(this._row(n)); }
@@ -197,7 +201,7 @@ export class PianoRoll {
   _pos(e) { const r = this.el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
   _region(x, y) {
     if (y < RUL) return x < this.gut ? 'corner' : 'ruler';
-    if (y >= this.H - VEL) return x < this.gut ? 'velg' : 'vel';
+    if (y >= this.H - VEL) return x < this.gut ? 'velg' : A.key(this) !== 'vel' ? 'auto' : 'vel'; // ((AUTO) a curve in the strip: 'auto')
     if (y >= this.gb) return 'div';
     return x < this.gut ? 'keys' : 'grid';
   }
@@ -220,7 +224,7 @@ export class PianoRoll {
   _req() { if (!this.raf && !this.dead) this.raf = requestAnimationFrame(this._frame); }
   setTrack() {
     if (this.g) this._finish(false);
-    this.sel.clear(); this.ins = null; this.lastTap = null; this.hover = null; this._notify();
+    this.sel.clear(); this.ins = null; this.lastTap = null; this.hover = null; this.asel = null; this._notify();
     if (this.host.heldNotes) this.setHeld(this.host.heldNotes()); // ((R) the new track's held notes)
     this._syncRows(true); this._centre(); this.render();
   }
@@ -357,6 +361,19 @@ export class PianoRoll {
     this._frame();
   }
   getInsertPoint() { return this.ins; }
+  // (AUTO, IMPL-AUTO §5) the strip: the shown lane ('vel' or a key), the selected point's tick (null: none), the chooser (host.menu;
+  // false: no automation host), the readout's text (the value under the finger / heard at the playhead), the chip ({ x, y, w,
+  // h } roll px, its label, the fitted text and its width; null without an automation host)
+  autoLane() { return A.key(this); }
+  autoSelected() { return this.asel; }
+  openAutoMenu() { return A.menu(this); }
+  autoReadout() { this.al = A.lane(this); return A.readout(this); }
+  autoChip() {
+    if (!A.on(this)) return null;
+    this.al = A.lane(this);
+    const C = A.chip(this), T = A.chipText(this, this.ctx);
+    return { x: C.x, y: C.y, w: C.w, h: C.h, label: '▾ ' + (this.al ? this.al.short : 'Vel'), text: T.text, tw: T.tw };
+  }
   // bring tick t into view (the arrangement's double-tapped bar): scrolled to just before it unless it already shows
   reveal(t) {
     t = Math.max(0, +t || 0);
@@ -368,13 +385,15 @@ export class PianoRoll {
   _notes() { const tr = this.host.getTrack(); return tr ? tr.notes : []; }
   _setSel(ids) { this.sel = new Set(ids); this._notify(); this.render(); }
   selectAll() { this._setSel(this._notes().map(x => x.id)); }
-  selectNone() { this._setSel([]); }
+  selectNone() { this.asel = null; this._setSel([]); }
   invertSelection() { this._setSel(this._notes().filter(x => !this.sel.has(x.id)).map(x => x.id)); }
   selectPitch(n) { this._setSel(this._notes().filter(x => x.n === n).map(x => x.id)); }
   _selRow(r) { this._setSel(this._notes().filter(x => this._row(x.n) === r).map(x => x.id)); } // ((7a) a drum row: "Other" holds many notes)
   getSelection() { return this.sel.size ? this._notes().filter(x => this.sel.has(x.id)) : []; }
   getTargetNotes() { const s = this.getSelection(); return s.length ? s : this._notes().slice(); }
+  // (AUTO) a selected automation point (no note selected: the two exclude each other) → removed, one host.autoEdit
   deleteSelected(label = 'Delete notes') {
+    if (!this.sel.size && this.asel != null) return A.delSel(this);
     if (!this.host.getTrack() || !this.sel.size) return 0;
     const ids = new Set(this.sel); let k = 0;
     this.host.edit(label, () => { const tr = this.host.getTrack(); if (tr) k = removeIds(tr.notes, ids); });
@@ -445,7 +464,10 @@ export class PianoRoll {
   }
 
   /* ------------------------------------------------------- internals */
-  _notify() { if (this.host.onSelect) this.host.onSelect(this.sel.size); }
+  _notify() {
+    if (this.sel.size && this.asel != null) { this.asel = null; this._view(); } // ((AUTO) notes selected: no point)
+    if (this.host.onSelect) this.host.onSelect(this.sel.size);
+  }
   _aud(n, v) { this.host.audition(n, clamp(Math.round(v) || 100, 1, 127)); this.keys.add(n); this._req(); }
   _audOff(n) { if (n == null) return; this.host.auditionOff(n); this.keys.delete(n); this._req(); }
   _blip(n, v) { this._aud(n, v); setTimeout(() => { if (!this.dead) this._audOff(n); }, 170); }
@@ -549,6 +571,8 @@ export class PianoRoll {
     } else if (reg === 'keys') { this._hrow(hv, y); cur = 'pointer'; }
     else if (reg === 'ruler') { hv.t = Math.max(0, this.x2t(x)); cur = this._loopEdge(x, pen ? PLOOP : 5) ? 'ew-resize' : 'pointer'; }
     else if (reg === 'vel') { hv.t = Math.max(0, this.x2t(x)); hv.stem = this._stemAt(x, y, pen ? PSTEM : 5); cur = hv.stem ? 'ns-resize' : 'crosshair'; }
+    else if (reg === 'auto') cur = A.hover(this, hv, x, y, pk);
+    else if (reg === 'velg' && A.on(this)) cur = 'pointer'; // ((AUTO) the chip)
     this.hover = hv; this._cursor(cur);
     if (!quiet) this._req();
   }
@@ -590,7 +614,7 @@ export class PianoRoll {
     // deletes it; dn: the note a double-tap deletes
     const hit = reg === 'grid' && tr && tool !== 'erase' ? this._hit(x, y, z) : null, near = !!hit && (!z || hit.k >= 2);
     const ih = z && hit ? this._hitZ(x, y, { ...z, outR: 0, outL: 0, outU: 0, slopY: 0, slopU: 0 }) : near ? hit : null;
-    const tgt = reg === 'grid' ? (ih ? ih.note.id : 'empty') : reg === 'keys' ? 'k' + (this.rows ? 'r' + clamp(this.y2r(y), 0, this._nRows() - 1) : clamp(this.y2n(y), 0, 127)) : reg;
+    const tgt = reg === 'grid' ? (ih ? ih.note.id : 'empty') : reg === 'keys' ? 'k' + (this.rows ? 'r' + clamp(this.y2r(y), 0, this._nRows() - 1) : clamp(this.y2n(y), 0, 127)) : reg === 'auto' ? A.tgt(this, x, y, pk || 'mouse') : reg;
     const t2 = reg === 'grid' && !ih && near ? hit.note.id : tgt;
     const dz = pk === 'touch' ? TDBL : pk === 'pen' ? PDBL : DBL;
     const dbl = !!lt && btn === 0 && ts - lt.ts < 350 && Math.abs(x - lt.x) < dz && Math.abs(y - lt.y) < dz && lt.reg === reg && (lt.tgt === tgt || lt.tgt === t2);
@@ -607,6 +631,8 @@ export class PianoRoll {
     if (reg === 'ruler') return this._rulerDown(g, x);
     if (reg === 'keys') return this._keysDown(g, x, y, dbl);
     if (!tr) { if (g.touch && reg === 'grid') this._panStart(g); return; }
+    if (reg === 'velg' && A.on(this)) { g.type = 'chip'; return; } // ((AUTO) the chooser opens at the release: a tap)
+    if (reg === 'auto') return A.down(this, g, x, y, dbl);
     if (reg === 'vel') return this._velDown(g, x, y, g.alt);
     if (reg !== 'grid') return;
     if (g.touch && (tool === 'erase' || (tool === 'draw' && !hit))) {
@@ -771,7 +797,7 @@ export class PianoRoll {
     if (!g) return;
     switch (g.type) {
       case 'pan': // a finger scrolls once past its drag threshold (a still finger may yet become a select box)
-        if (!g.touch || g.moved) { this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this._view(); }
+        if (!g.touch || g.moved) { this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.xonly ? g.sy0 : g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this._view(); } // ((AUTO) xonly: the lane's — time only)
         break;
       case 'marquee': if (g.moved) this._marquee(); break;
       case 'move': if (g.moved) this._moveApply(); break;
@@ -783,6 +809,7 @@ export class PianoRoll {
       case 'keys': this._keysApply(); break;
       case 'ruler': if (g.moved) this._loopApply(); break;
       case 'loopEdge': if (g.moved) this._edgeApply(); break;
+      case 'apt': case 'aseg': case 'apend': A.apply(this); break;
     }
   }
   // click: ended by pointerup; abort: cut short (pinch / pointercancel) so a touch gesture's edits are rolled back; keep: leave pointer capture alone
@@ -798,6 +825,9 @@ export class PianoRoll {
     if (g.began || g.lp || g.dmax >= (g.touch ? TTAP : DBL)) this.lastTap = null; // a drag (or a hold) isn't the first half of a double-click
     // a latched (not locked) modifier served this gesture; a scroll or the key strip reads none: kept for the next edit
     if (!abort && this.host.consumeMods && !(g.type === 'pan' && g.moved) && g.type !== 'keys') this.host.consumeMods();
+    // (AUTO) a lane gesture commits (one host.autoEdit) or, aborted, drops its preview; a tap on the chip opens the chooser
+    if (A.TYPES.has(g.type)) A.finish(this, g, click, abort);
+    else if (g.type === 'chip' && click && g.dmax < (g.touch ? TTAP : DBL)) A.menu(this);
     switch (g.type) {
       case 'move': case 'resizeR': case 'resizeL':
         if (!g.began && click) {
@@ -814,7 +844,7 @@ export class PianoRoll {
       }
       case 'keys': this._audOff(g.key); break;
       case 'pan':
-        if (g.tap && !g.moved && click) { if (!g.sh && !g.add && this.sel.size) { this.sel.clear(); this._notify(); } this._setIns(g.x0); }
+        if (g.tap && !g.moved && click) { if (!g.sh && !g.add && this.sel.size) { this.sel.clear(); this._notify(); } this.asel = null; this._setIns(g.x0); }
         break;
       case 'ruler': case 'loopEdge':
         // a press that never changed the loop and barely moved is a click: set the playhead where it was pressed
@@ -862,7 +892,7 @@ export class PianoRoll {
   _pinchStart(prev) {
     const ids = [...this.touches.keys()].slice(0, 2), [a, b] = ids.map(i => this.touches.get(i)), r = a.reg;
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ang = Math.atan2(Math.abs(a.y - b.y), Math.abs(a.x - b.x)) * 180 / Math.PI;
-    const zone = mx < this.gut + 16 && ang >= 45 ? 'keys' : r === 'ruler' || r === 'corner' || r === 'vel' || r === 'velg' ? 'time' : 'grid';
+    const zone = mx < this.gut + 16 && ang >= 45 ? 'keys' : r === 'ruler' || r === 'corner' || r === 'vel' || r === 'velg' || r === 'auto' ? 'time' : 'grid';
     this.lastTap = null; // its first finger is no first half of a double-tap
     this.g = { type: 'pinch', ids, zone, ax: zone === 'keys' || (zone === 'grid' && ang > 60) ? 'y' : 'x', on: false, pend: false,
       d0: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)), mx0: mx, my0: my, ppt0: this.ppt, rowHf0: this.rowHf, sx0: this.sx,
@@ -1137,6 +1167,7 @@ export class PianoRoll {
   }
   _scene(c) {
     const { W, H, dpr, ppt, rowH } = this, gb = this.gb, gw = this.gw, p = this.host.getProject(), tr = this.host.getTrack();
+    this.al = A.lane(this); // ((AUTO) the strip's lane, read once a scene)
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.fillStyle = BG; c.fillRect(0, 0, W, H);
     if (!p) return;
@@ -1260,6 +1291,8 @@ export class PianoRoll {
     c.save(); c.beginPath(); c.rect(GUT, vt, gw, VEL); c.clip();
     if (loopOk && lp.on) { c.fillStyle = 'rgba(242,163,58,0.035)'; c.fillRect(lx0, vt, lx1 - lx0, VEL); }
     this._vlines(c, vt, H, bar, beat, snap, 0.7);
+    if (this.al) A.drawLane(this, c, this.al, this._pal(tr.color)); // ((AUTO) a curve instead of the stems
+    else {
     c.fillStyle = 'rgba(255,255,255,0.045)';
     for (const v of [32, 64, 96, 127]) c.fillRect(GUT, Math.round(this.v2y(v)), gw, 1);
     if (dn) { c.fillStyle = 'rgba(242,163,58,0.3)'; for (const v of [100, 127]) c.fillRect(GUT, Math.round(this.v2y(v)), gw, 1); } // ((7a) normal, accent)
@@ -1280,6 +1313,7 @@ export class PianoRoll {
       if (tr.mute) c.globalAlpha = 0.5;
       stems(us, pal.stem, pal.head); stems(ss, 'rgba(255,255,255,0.7)', '#ffffff');
       c.globalAlpha = 1;
+    }
     }
     c.restore();
     c.fillStyle = LINE; c.fillRect(0, gb, W, 1);
@@ -1377,6 +1411,13 @@ export class PianoRoll {
     // corners
     c.fillStyle = '#111215'; c.fillRect(0, 0, GUT, RUL - 1); c.fillRect(0, vt, GUT, VEL);
     c.fillStyle = LINE; c.fillRect(GUT - 1, 0, 1, RUL); c.fillRect(GUT - 1, vt, 1, VEL);
+    if (A.on(this)) { // ((AUTO) the chooser chip in the corner; the velocity lane's values only where they clear it)
+      A.drawChip(this, c, tr ? this._pal(tr.color).head : ACC);
+      const C = A.chip(this), cb = C.y + C.h + 6;
+      c.font = `9px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'right'; c.fillStyle = '#4d4b47';
+      if (!this.al) for (const v of [127, dn ? 100 : 64]) { const y = this.v2y(v); if (y >= cb) c.fillText(String(v), GUT - 6, y); }
+      return;
+    }
     c.font = `9px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = MUTE; c.fillText('VEL', 8, vt + 12);
     c.textAlign = 'right'; c.fillStyle = '#4d4b47';
     c.fillText('127', GUT - 6, this.v2y(127) + 1);
@@ -1512,13 +1553,15 @@ export class PianoRoll {
       if (g.note && (g.type === 'move' || g.type === 'resizeL' || g.type === 'create')) return [this._lab(g.note.n), bbt(g.note.t)];
       if (g.type === 'keys') return [g.key == null ? 'Other' : this._lab(g.key), ''];
       if (g.type === 'ruler' || g.type === 'loopEdge') return ['', bbt(this.x2t(g.x))];
+      if (g.type === 'apt' && g.apts) return [A.fmt(this, g.lane, g.av), bbt(g.apts[g.i][0])]; // ((AUTO) a point's value and place
       return null;
     }
     if (!hv) return null;
     if (hv.hit) return [this._lab(hv.hit.note.n) + ' ' + hv.hit.note.v, bbt(hv.hit.note.t)];
     if (hv.reg === 'grid') return [this._lab(hv.n), bbt(hv.t)];
     if (hv.reg === 'keys') return [this._lab(hv.n), ''];
-    if (hv.reg === 'ruler' || hv.reg === 'vel') return ['', bbt(hv.t)];
+    if (hv.reg === 'auto' && hv.ahit && hv.ahit.kind === 'pt' && this.al) { const pt = this.al.pts[hv.ahit.i]; if (pt) return [A.fmt(this, this.al, pt[1]), bbt(pt[0])]; }
+    if (hv.reg === 'ruler' || hv.reg === 'vel' || hv.reg === 'auto') return ['', bbt(hv.t)];
     return null;
   }
   _overlay(c) {
@@ -1590,6 +1633,7 @@ export class PianoRoll {
     if (g && g.type === 'velpaint') {
       c.strokeStyle = ACC; c.lineWidth = 1.5; c.beginPath(); c.moveTo(this.t2x(g.pt0), g.py0); c.lineTo(g.x, clamp(g.y, vt, H)); c.stroke();
     }
+    if (this.al) A.overlay(this, c, this.al, pal); // ((AUTO) the heard dot, the readout)
     c.restore();
     if (stem) { c.font = `600 12px ${FONT}`; c.textAlign = 'left'; c.textBaseline = 'middle'; c.fillStyle = TEXT; c.fillText(String(stem.v), 8, H - 16); }
 

@@ -395,7 +395,7 @@ test('§5.6 save → load (schema 18): the record, the vals and every iN/k* plac
   const t = T();
   t.lay = Object.assign({}, t.lay, { 'i1/kb': { x: 900, y: 1400 } });
   const json = JSON.stringify(P()), p2 = cv.loadProject(json), t2 = p2.tracks.find(x => x.id === ID.t);
-  assert.deepEqual([p2.schema, CM.SCHEMA], [18, 18]);
+  assert.deepEqual([p2.schema, CM.SCHEMA], [19, 19]); // ((AUTO) 19 since the curves)
   assert.equal(JSON.stringify(cv.drumOf(t2, 'i1')), JSON.stringify(D(t)), 'the record');
   assert.deepEqual([t2.lay['i1/kb'].x, t2.lay['i1/kb'].y], [900, 1400], 'a voice\'s place');
   const o = JSON.parse(json), r = o.tracks.find(x => x.id === ID.t);

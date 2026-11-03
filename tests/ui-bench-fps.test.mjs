@@ -323,11 +323,11 @@ test('matrix: sizes × scenes × throttles × caps (throttle outer, the display 
   const x = B.matrix({ caps: [60, 120], throttles: [1, 4], scenes: ['idle'] });
   assert.deepEqual(x.map(c => c.throttle + '/' + c.cap + '/' + c.display), ['1/60/60', '1/120/120', '1/120/240', '1/60/240', '4/60/60', '4/120/120'], 'the cross cells (a 240 Hz display under the caps 120 and 60) follow the 1 × group, never under throttle');
   assert.equal(B.matrix({ throttles: [4, 6], scenes: ['idle'] }).length, 6, 'no 1 × in the throttles: no cross cells');
-  assert.equal(B.matrix().length, 1 * 10 * (3 * 3 + 2), 'the defaults: the Mac window, 10 scenes (review 2: + clip; MOD1: + mods; SX0: − serum; LC: + comb; DM: + kit), 3 throttles × 3 caps + 2 cross cells');
+  assert.equal(B.matrix().length, 1 * 12 * (3 * 3 + 2), 'the defaults: the Mac window, 12 scenes (review 2: + clip; MOD1: + mods; SX0: − serum; LC: + comb; DM: + kit; AUTO: + auto8, auto8r), 3 throttles × 3 caps + 2 cross cells');
   const o = B.parseArgs(['--scenes', 'idle,master', '--sizes', 'd,p', '--caps', '60,144', '--throttle', '1,6', '--display', '240', '--warm', '1000', '--measure', '2500', '--out', 'r.json', '--no-gate', '--no-cross', '--layout-gate', 'all', '--list', '--quiet']);
   assert.deepEqual([o.scenes, o.sizes, o.caps, o.throttles, o.display, o.warm, o.measure, o.out, o.gate, o.cross, o.layoutGate, o.list, o.quiet, o.errors], [['idle', 'master'], ['d', 'p'], [60, 144], [1, 6], 240, 1000, 2500, 'r.json', false, false, 'all', true, true, []]);
   const d = B.parseArgs([]);
-  assert.deepEqual([d.sizes, d.caps, d.throttles, d.scenes.length, d.gate, d.cross, d.layoutGate, d.warm >= 3000, d.measure >= 3000], [['d'], [60, 120, 240], [1, 4, 6], 10, true, true, 'idle', true, true]); // ((SX0) 8 scenes; (LC G6) + comb: 9; (DM G9) + kit: 10
+  assert.deepEqual([d.sizes, d.caps, d.throttles, d.scenes.length, d.gate, d.cross, d.layoutGate, d.warm >= 3000, d.measure >= 3000], [['d'], [60, 120, 240], [1, 4, 6], 12, true, true, 'idle', true, true]); // ((SX0) 8 scenes; (LC G6) + comb: 9; (DM G9) + kit: 10; (AUTO G7) + auto8, auto8r: 12
   assert.equal(B.parseArgs(['--scenes', 'nope']).errors.length, 1);
   assert.equal(B.parseArgs(['--sizes', 'x']).errors.length, 1);
   assert.equal(B.parseArgs(['--caps', '5']).errors.length, 1);
@@ -336,7 +336,7 @@ test('matrix: sizes × scenes × throttles × caps (throttle outer, the display 
 });
 
 test('the expected-live lists: every scene has one, entries are well formed (kind, selector, a known rate class, a name once), the sizes / caps / scenes are the contract\'s', () => {
-  assert.deepEqual(B.SCENE_IDS.slice(), ['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb', 'kit']); // ((DM G9) + kit: a kit track; (MOD1 G6) + mods: a Juno's modulators; (SX0) the serum scene went with Serum complete (ROADMAP 28); (LC G6) + comb: two Combiners
+  assert.deepEqual(B.SCENE_IDS.slice(), ['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb', 'kit', 'auto8', 'auto8r']); // ((AUTO G7) + auto8, auto8r: 16 curves playing, the roll open on them; (DM G9) + kit: a kit track; (MOD1 G6) + mods: a Juno's modulators; (SX0) the serum scene went with Serum complete (ROADMAP 28); (LC G6) + comb: two Combiners
   assert.deepEqual([B.CAPS.slice(), B.THROTTLES.slice(), Object.keys(B.SIZES)], [[60, 120, 240], [1, 4, 6], ['d', 'l', 'p']]);
   assert.deepEqual(['d', 'l', 'p'].map(k => [B.SIZES[k].w, B.SIZES[k].h, B.SIZES[k].dpr, B.SIZES[k].touch]), [[1440, 900, 2, false], [1366, 1024, 2, true], [1024, 1366, 2, true]]);
   for (const id of B.SCENE_IDS) {
@@ -344,8 +344,9 @@ test('the expected-live lists: every scene has one, entries are well formed (kin
     assert.ok(Array.isArray(list), id + ': a list');
     assert.equal(new Set(list.map(e => e.name)).size, list.length, id + ': names are unique');
     for (const e of list) {
-      assert.ok(['canvas', 'attr'].includes(e.kind), id + ' / ' + e.name + ': kind');
-      assert.ok(typeof e.sel === 'string' && e.sel.length > 3, id + ' / ' + e.name + ': a selector');
+      assert.ok(['canvas', 'attr', 'post'].includes(e.kind), id + ' / ' + e.name + ': kind'); // ((AUTO G7) + post: the page's {t} posts to the worklets, one rate per port)
+      if (e.kind === 'post') assert.ok(e.sel == null && typeof e.t === 'string', id + ' / ' + e.name + ': a post entry names the message type, no selector');
+      else assert.ok(typeof e.sel === 'string' && e.sel.length > 3, id + ' / ' + e.name + ': a selector');
       assert.ok(['eff', 'snap', 'gr', 'heavy', 'curve'].includes(e.rate) || e.rate > 0, id + ' / ' + e.name + ': a rate class'); // ((FR Cut B §5.6) + curve: the filter display's curve
       if (e.kind === 'attr') assert.ok(typeof e.attr === 'string', id + ' / ' + e.name + ': the attribute whose writes count');
       assert.ok(e.tol == null || (e.tol > 0 && e.tol <= 1), id + ' / ' + e.name + ': tol');
@@ -360,6 +361,56 @@ test('the expected-live lists: every scene has one, entries are well formed (kin
   assert.ok(['tutorial', 'master'].every(id => B.EXPECT[id].some(e => e.kind === 'attr' && e.attr === 'cx' && e.box === '[data-dest]')), 'the knob dots are judged by their knob\'s box (a dot is hidden between notes)');
   assert.equal(B.EXPECT.busy.find(e => e.name === 'OUT scope').min, 0, 'busy: the portrait fit leaves the OUT module off screen: not asked for when it is');
   assert.deepEqual(B.EXPECT.idle.slice(), [], 'idle: the floor — nothing to animate');
+});
+
+test('(AUTO G7) the auto8 / auto8r scenes: 7 tracks (the project\'s Minimoog + 4 classics + 2 rigs), 16 moving curves through cv.auto.set, the Minimoog shown last, the roll open on its cutoff lane for auto8r; the expected-live lists: the shown knob follows (aria-valuenow, absolute 60 Hz), the patch stream per port (7 ports at the staggered 30 a second); the driver\'s checks and their pure judges', () => {
+  assert.ok(B.SCENE_IDS.includes('auto8') && B.SCENE_IDS.includes('auto8r'));
+  const kn = B.EXPECT.auto8.find(e => e.attr === 'aria-valuenow'), po = B.EXPECT.auto8.find(e => e.kind === 'post');
+  assert.deepEqual([kn.kind, kn.rate, /data-dest="fc"/.test(kn.sel), po.t, po.rate, po.min], ['attr', 60, true, 'patch', 30, 7], 'the Minimoog\'s cutoff knob follows at the tick budget; 7 tracks > 4 are staggered over two ticks: 30 a track a second');
+  assert.deepEqual(B.EXPECT.auto8r.map(e => e.name).filter(n => /^(roll|arrangement)/.test(n)), ['arrangement playhead', 'roll playhead'], 'auto8r: the roll open too');
+  assert.ok(B.EXPECT.auto8r.some(e => e.kind === 'post' && e.min === 7) && B.EXPECT.auto8.some(e => /head meters/.test(e.name) && e.min === 7));
+  const src = readFileSync(new URL('./ui-bench-fps.mjs', import.meta.url), 'utf8'), at = src.indexOf('async auto8(A)'), body = src.slice(at, src.indexOf('\n  async auto8r', at)), r = src.slice(src.indexOf('async auto8r(A)'), src.indexOf('async master(A)'));
+  assert.ok(at > 0 && /juno60', 'prophet5', 'obxa', 'jupiter8'/.test(body) && /srcPick\('rig', 'track'\)/.test(body) && /addEffect\(A\.trk\(\)\.prim \+ '\/fx', 'rev'\)/.test(body), '5 classics, 2 rigs, a Reverb on the first rig');
+  assert.ok(/au\.set\(tid, key, tri\(lo, hi, ph\)\)/.test(body) && /curves\.length !== 16/.test(body) && /selectTrack\(P\.tracks\[0\]\.id\)/.test(body) && /startPlay/.test(body), 'cv.auto.set, 16 curves, the Minimoog shown, playing');
+  assert.ok(/openTab\('roll'\)/.test(r) && /host\.setAutoLane\(t, L\.key\)/.test(r) && /A\.cv\.auto\.lane\(t\.id\) !== L\.key/.test(r), 'auto8r: the roll host\'s lane set and checked');
+  const drv = src.slice(src.indexOf("if (scene === 'auto8' || scene === 'auto8r')"), src.indexOf("if (scene === 'tutorial' || scene === 'mods') { // ((FR Cut B"));
+  assert.ok(/id: 'auto patch posts'/.test(drv) && /autoCapCheck\(/.test(drv) && /id: 'auto faces '/.test(drv) && /autoFaces\(window/.test(drv) && /autoFaceGates\(/.test(drv) && /for \(const cap of \[60, 120\]\)/.test(drv), 'the cap pin and the faces check');
+  // postsOf: per second, fastest port first
+  assert.deepEqual(B.postsOf({ n: 600, byT: { patch: 420, smon: 180 }, ports: [{ n: 60, eng: 'analog' }, { n: 120, eng: 'serum' }] }, 2), { perS: 300, patchPerS: 210, byT: { patch: 210, smon: 90 }, ports: [{ perS: 60, eng: 'serum' }, { perS: 30, eng: 'analog' }] });
+  assert.deepEqual(B.postsOf(null, 4), { perS: 0, patchPerS: 0, byT: {}, ports: [] });
+  // autoCapCheck: a 120 Hz cap (and a 240 display under 120 / 60) posts as the 60 cap; a 240 cap above it fails; no patches at all = not live
+  const pc = (cap, display, per, n = 7) => ({ throttle: 1, cap, display, posts: { patchPerS: per * n, ports: Array.from({ length: n }, () => ({ perS: per, eng: 'analog' })) } });
+  const ok = B.autoCapCheck([pc(60, 60, 30), pc(120, 120, 30.2), pc(120, 240, 30), pc(60, 240, 30)]);
+  assert.deepEqual([ok.pass, ok.rows.length], [true, 3]);
+  const hi = B.autoCapCheck([pc(60, 60, 30), pc(120, 120, 30), pc(240, 240, 40)]);
+  assert.deepEqual([hi.pass, hi.rows.map(r => r.pass)], [false, [true, false]]);
+  assert.match(hi.note, /cap 240: 280 \(> 233/);
+  assert.equal(B.autoCapCheck([pc(60, 60, 0), pc(120, 120, 0)]).pass, false, 'no patch posted: the automation is not live');
+  assert.equal(B.autoCapCheck([pc(120, 120, 30)]).pass, false, 'no 60 Hz cell to compare with');
+  assert.equal(B.autoCapCheck([pc(60, 60, 30), Object.assign(pc(120, 120, 30), { throttle: 6 })]).rows.length, 0, 'the 1 × cells only');
+  assert.equal(B.autoCapCheck([pc(60, 60, 30), Object.assign(pc(120, 120, 30), { posts: { patchPerS: 210, ports: [{ perS: 90, eng: 'serum' }, ...Array.from({ length: 6 }, () => ({ perS: 20, eng: 'analog' }))] } })]).pass, false, 'one port above its peer fails although the total is equal');
+  // autoFaceGates: every probe found, the slowest element at the tick, the frame cost within the 1 × budget
+  const fp = (o = {}) => Object.assign({ name: 'knob', found: 1, rates: [60, 59.6], cost: { med: 1.3, p95: 1.6 } }, o);
+  const fails = r => B.autoFaceGates(r).filter(([, v, lim]) => !(v <= lim)).map(g => g[0]);
+  assert.deepEqual(fails({ per: [fp()] }), []);
+  assert.deepEqual(fails({ per: [fp({ found: 0, rates: [] })] }), ['knob: found on screen', 'knob: slowest element ≥ 48 Hz']);
+  assert.deepEqual(fails({ per: [fp({ rates: [60, 20] })] }), ['knob: slowest element ≥ 48 Hz']);
+  assert.deepEqual(fails({ per: [fp({ cost: { med: 2.015, p95: 4.5 } })] }), ['knob: frame cost med ≤ 2 ms', 'knob: frame cost p95 ≤ 4 ms']);
+});
+
+test('(AUTO G7) the hooks count the page\'s posts while recording: per message type, and the {t: patch} ones per port with the engine (one port = one track\'s node)', () => {
+  const sent = [], proto = { postMessage(m) { sent.push(m); } }, w = { performance: { now: () => 5, timeOrigin: 0 }, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, console: { error() {} }, addEventListener() {}, document: {}, MutationObserver: class { observe() {} disconnect() {} },
+    MessagePort: function () {}, CanvasRenderingContext2D: function () {}, Worker: undefined, SharedArrayBuffer: undefined, WeakRef };
+  w.MessagePort.prototype = proto; w.CanvasRenderingContext2D.prototype.clearRect = function () {};
+  const F = B.installHooks(w, {}), a = new w.MessagePort(), b = new w.MessagePort();
+  a.postMessage({ t: 'patch', p: { engine: 'analog' } });
+  assert.equal(F.end().posts.n, 0, 'not recording: not counted');
+  F.begin();
+  a.postMessage({ t: 'patch', p: { engine: 'analog' } }); a.postMessage({ t: 'patch', p: { engine: 'analog' } }); b.postMessage({ t: 'patch', i: 'i1', p: { engine: 'serum' } }); b.postMessage({ t: 'seq', s: 1 }); b.postMessage('plain'); a.postMessage(null);
+  const d = F.end();
+  assert.deepEqual(d.posts, { n: 4, byT: { patch: 3, seq: 1 }, ports: [{ n: 2, eng: 'analog' }, { n: 1, eng: 'serum' }] });
+  assert.equal(sent.length, 7, 'every post still reaches the port');
+  F.begin(); assert.deepEqual(F.end().posts, { n: 0, byT: {}, ports: [] }, 'a new recording starts from zero');
 });
 
 test('(MOD1 G6, lane H) the mods scene: a Juno with 4 LFOs, 2 Envelopes, 1 Macros, a CC, a Chaos and the wheel (two rows, framed) — every LFO cabled onto a Juno knob, the Envelopes too — playing; its expected-live list: the six LFO / Envelope faces\' playheads (the donors\' .gx-lfo / .gx-env overlays) at the snapshot rate; the smooth probe (the arc hook on the first LFO overlay) at 120 and 240 as the tutorial\'s', () => {

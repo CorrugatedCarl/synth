@@ -402,7 +402,7 @@ test('nothing left sounding (D9, review #7): Undo, the pad cleared / the module 
 
 test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical — project.pads, its places, its rows on every track; a row of a missing module and its place dropped at load (review #28); a schema-17 file opens read-only (WC: schema 16; SC: 15; M: 14; P: 13); a track without pad rows compiles byte-identically with or without the project\'s Pads modules (D5)', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [18, 18, true], 'project.pads through the file');
+  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [19, 19, true], 'project.pads through the file');
   const padRows = t => JSON.stringify((t.mods || []).filter(r => /^pd/.test(r.src)));
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id);
@@ -414,8 +414,8 @@ test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical 
   const u3 = cv.loadProject(JSON.stringify(o)).tracks.find(x => x.id === ID.t2);
   assert.deepEqual([u3.mods.some(r => r.src === 'pd5.p0'), !!u3.lay.pd5, u3.mods.some(r => r.src === 'pd1.p2')], [false, false, true], 'pruned: pd5 is not in the file');
   const n = JSON.parse(json);
-  n.schema = 19;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 19, 'a schema-19 file: read-only');
+  n.schema = 20;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 20, 'a schema-20 file: read-only');
   const opts = { smooth: api.prefs().smooth, qr: null, ultra: 0 };
   for (const id of [ID.t1, ID.t3]) {
     const t = byId(id);

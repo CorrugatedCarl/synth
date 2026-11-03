@@ -85,6 +85,13 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .tb.rec svg { fill: #b33a2a; }
 .tb.rec[aria-pressed="true"] { background: #3a1410; border-color: #ff4a2a; animation: recpulse 1s infinite; }
 .tb.rec[aria-pressed="true"] svg { fill: #ff4a2a; }
+/* (AUTO §6.3) the automation arm (AUTO: lit by default) and ↺ re-enable (lit amber while any knob overrides its curve) */
+.tb.cv-auto { width: 40px; font: 700 9.5px/1 var(--mono); letter-spacing: 0.04em; color: var(--mute); }
+.tb.cv-auto[aria-pressed="true"] { color: var(--hot); border-color: #5a4320; background: #1d1810; }
+.tb.cv-autore svg { fill: none; stroke: var(--mute); stroke-width: 1.8; stroke-linecap: round; }
+.tb.cv-autore svg .i-fill { fill: var(--mute); stroke: none; }
+.tb.cv-autore.on { border-color: #e0a030; background: #2a1e0c; }
+.tb.cv-autore.on svg { stroke: #f2b04a; } .tb.cv-autore.on svg .i-fill { fill: #f2b04a; }
 .tb.cv-panic:active { background: #3a1410; border-color: #ff4a2a; } /* (P) Panic: never folds away (no narrow-window rule hides it) */
 .tb.cv-panic:active svg { fill: #ff4a2a; }
 @keyframes recpulse { 50% { box-shadow: 0 0 0 3px rgba(255,74,42,0.25); } }
@@ -679,6 +686,11 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 @media (pointer: coarse) {
   .cv-ib::after, .tb::after, .cv-dot::after, .cv-tabs button::after, .power::after, .tt::after { content: ''; position: absolute; inset: -5px -2px; }
   .tb, .tt, .cv-tabs button, .power, .cv-dot { position: relative; } /* (each ::after inside its own box: never a sibling's) */
+  /* ((AUTO fix round, R2 P2-3) the two automation buttons reach 44 × 44 (45 × 45): the ::after spans the padding box (30 px tall), so 7.5 px
+     over it, and across the 4 px gaps to the neighbours' own ::after — never a neighbour's box; ↺ is 40 wide on touch, as AUTO, for the
+     width. ● keeps the transport's idiom) */
+  .tb.cv-autore { width: 40px; }
+  .tb.cv-auto::after { inset: -7.5px -3px -7.5px -4px; } .tb.cv-autore::after { inset: -7.5px -4px -7.5px -3px; }
   .cv-tap::after { inset: -12px -3px -6px 0; } /* (TAP: 24 px tall — its finger's height over the empty label row, never the number) */
   .cv-menupop > button, .cv-tpi { min-height: 44px; }
   .latf > button::after { content: ''; position: absolute; inset: -9px -10px; }
@@ -1656,6 +1668,17 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 .wk-knob[data-rig-ring]::after { content: ''; position: absolute; left: var(--rig-rx, 50%); top: var(--rig-ry, 50%); width: calc(var(--rig-rd, 40px) + 4px);
   height: calc(var(--rig-rd, 40px) + 4px); transform: translate(-50%, -50%); border-radius: 50%; background: var(--rig-ring, var(--rig-cc)); pointer-events: none;
   -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); }
+/* (AUTO, IMPL-AUTO §6.2) the automation dot: a control with a curve wears data-auto="on" on its [data-dest] element (a wk widget's root, a classic /
+   hardware control's wrap), overridden data-auto="off" (a hollow ring); a 6 px ::after at the control's top-right corner in the track's tint (the module's
+   --mc, else the track chip's --tc, else the kit's accent). An attribute and a pseudo-element only — never a child (indexOf walks children, rig-grid's
+   JSON is pinned). A ringed rig knob (data-rig-ring) already owns its ::after: its dot is the ::before (the kit's knobs have none). Positioned: every wk
+   widget root and a hardware .hw-c already are; the Simple layout's .ctl is not (a flex column) */
+.ctl[data-auto] { position: relative; }
+[data-auto]:not([data-rig-ring])::after, .wk-knob[data-auto][data-rig-ring]::before { content: ''; position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; border-radius: 50%; pointer-events: none; z-index: 2;
+  background: var(--mc, var(--tc, var(--sx-accent, #4fb3ff))); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
+/* (fix round, R2 P2-1) overridden: a hollow ring in the tint — a shape, never a colour (the amber was track 1's own tint) */
+[data-auto="off"]:not([data-rig-ring])::after, .wk-knob[data-auto="off"][data-rig-ring]::before { background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--mc, var(--tc, var(--sx-accent, #4fb3ff))), 0 0 0 1px rgba(0, 0, 0, 0.55); }
 /* (WC, fixer B2; review 2 P2-4: the regret path) lines mode: a rig jack a line arrives at or leaves wears a ring in the line's colour per
    line (main.js --rig-lines): which jack a line uses reads where the line runs under the faces */
 .cv-jack.cv-fjack[data-rig-line]:not(.cv-ok):not(.cv-from):not(.cv-hot):not(:focus-visible) { box-shadow: var(--rig-lines); }

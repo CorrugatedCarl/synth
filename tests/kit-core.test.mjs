@@ -294,12 +294,12 @@ test('cv-mods: noClassic skips the kit (no class table row, no descriptors, no t
 
 /* ------------------------------------------------------------------ schema 18 (§5.6) */
 
-test('cv-migrate 18: SCHEMA 18, STEPS[17] the identity; a 17 opens as before, an 18 kit project round-trips byte for byte, a 19 opens read-only', () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [18, 18]);
+test('cv-migrate 18: SCHEMA 18, STEPS[17] the identity; a 17 opens as before, an 18 kit project round-trips byte for byte, a 20 opens read-only (AUTO: 19 is this build\'s)', () => {
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [19, 19]);
   const p17 = { name: 'K', schema: 17, uid: 'p_kitkit0001', perf: { wheel: null }, tracks: [] };
   assert.deepEqual(M.STEPS[17](p17, []), Object.assign(clone(p17), { schema: 18 }), 'nothing converted');
   const up = M.upgrade(p17);
-  assert.deepEqual([up.p.schema, up.readOnly, up.notes], [18, false, []]);
+  assert.deepEqual([up.p.schema, up.readOnly, up.notes], [19, false, []]); // ((AUTO) through STEPS[18] too
   const t = drumTrackK(); t.dev.i1.drum = K.normKit({ pat: [GROOVE], ty: [1, 2, 4, 3, 3, 5, 5, 6], map: { ka: [36], kb: [38] }, nm: ['', '', '', 'Closed hat'] });
   const p18 = { name: 'K', bpm: 120, sig: [4, 4], bars: 4, schema: 18, uid: 'p_kitkit0001', tracks: [t] };
   const u18 = M.upgrade(clone(p18));
@@ -308,8 +308,8 @@ test('cv-migrate 18: SCHEMA 18, STEPS[17] the identity; a 17 opens as before, an
   const back = S.deserialize(S.serialize(u18.p));
   assert.equal(J(back.tracks[0].dev.i1.drum), J(t.dev.i1.drum), 'serialize → deserialize keeps the kit byte for byte');
   assert.equal(back.tracks[0].dev.i1.model, 'kit');
-  const n = M.upgrade({ name: 'newer', schema: 19, tracks: [] });
-  assert.deepEqual([n.readOnly, n.p.schema], [true, 19], 'a newer file: read-only');
+  const n = M.upgrade({ name: 'newer', schema: 20, tracks: [] });
+  assert.deepEqual([n.readOnly, n.p.schema], [true, 20], 'a newer file: read-only');
   assert.match(read('cv-migrate.js'), /17 → 18/);
 });
 

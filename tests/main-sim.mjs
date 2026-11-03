@@ -128,11 +128,76 @@ function workletScope(sr, o = {}) {
   };
   return { D, ctx: D.ctx, outs, make, procs };
 }
+// An AudioParam. On a live context: instant, as ever (every setter just sets the value; no events kept). On an OfflineAudioContext
+// (IMPL-AUTO §7.2): the Web Audio timeline — setValueAtTime / linearRampToValueAtTime / exponentialRampToValueAtTime /
+// setTargetAtTime / cancelScheduledValues, events kept in time order (a tie in call order) and published as `events`:
+// [kind, value, time] with kind 'set' | 'ramp' (linear) | 'exp' | 'target' (a 4th member: its time constant); at(T) is the value at
+// T seconds; the route gains are read at each quantum's start (a ramp is stepped per quantum, Chrome's a-rate ramps per sample); a ramp
+// with nothing before it starts from the value at currentTime, as the spec has it (a hidden anchor, not in events); `value` reads the
+// timeline at currentTime, and assigning it with events present is a setValueAtTime(v, currentTime). Not modelled: setValueCurveAtTime,
+// cancelAndHoldAtTime, two ramps ending at one time replacing one another.
+const fail = (E, m) => { throw new E(m); };
 class Param {
-  constructor(v) { this.value = v; }
-  setTargetAtTime(v) { this.value = v; return this; } setValueAtTime(v) { this.value = v; return this; }
-  linearRampToValueAtTime(v) { this.value = v; return this; } exponentialRampToValueAtTime(v) { this.value = v; return this; }
-  cancelScheduledValues() { return this; }
+  constructor(v, ctx) { this._v = v; this._ctx = ctx || null; this._ev = []; }
+  get _tl() { return this._ctx !== null && this._ctx.live === false; }
+  get value() { return this._tl && this._ev.length ? this.at(this._ctx.currentTime) : this._v; }
+  set value(v) { if (this._tl && this._ev.length) this._add('set', v, this._ctx.currentTime); else this._v = v; }
+  get events() { return this._ev.filter(e => !e.hid).map(e => (e.k === 'target' ? [e.k, e.v, e.t, e.tc] : [e.k, e.v, e.t])); }
+  _add(k, v, t, tc) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || typeof t !== 'number' || !Number.isFinite(t)) fail(TypeError, 'AudioParam: not a finite number');
+    if (t < 0) fail(RangeError, 'AudioParam: negative time');
+    const E = this._ev; let i = E.length;
+    while (i > 0 && E[i - 1].t > t) i--;
+    if ((k === 'ramp' || k === 'exp') && i === 0) { // (nothing before the ramp: it starts from the current value, now)
+      const c = this._ctx.currentTime;
+      if (c < t) { E.splice(0, 0, { k: 'set', v: this.at(c), t: c, hid: true }); i = 1; }
+    }
+    E.splice(i, 0, { k, v, t, tc });
+    return this;
+  }
+  setValueAtTime(v, t) { if (!this._tl) { this._v = v; return this; } return this._add('set', v, t); }
+  linearRampToValueAtTime(v, t) { if (!this._tl) { this._v = v; return this; } return this._add('ramp', v, t); }
+  exponentialRampToValueAtTime(v, t) {
+    if (!this._tl) { this._v = v; return this; }
+    if (v === 0) fail(RangeError, 'exponentialRampToValueAtTime: a target of 0');
+    return this._add('exp', v, t);
+  }
+  setTargetAtTime(v, t, tc) {
+    if (!this._tl) { this._v = v; return this; }
+    if (tc < 0) fail(RangeError, 'setTargetAtTime: negative time constant');
+    return tc === 0 || tc === undefined ? this._add('set', v, t) : this._add('target', v, t, tc);
+  }
+  cancelScheduledValues(t) {
+    if (!this._tl) return this;
+    this._ev = this._ev.filter(e => e.t < t);
+    if (this._ev.every(e => e.hid)) this._ev = [];
+    return this;
+  }
+  // the value just before event i (what a target starts from)
+  _before(i) {
+    const E = this._ev;
+    if (i === 0) return this._v;
+    const p = E[i - 1];
+    return p.k === 'target' ? p.v + (this._before(i - 1) - p.v) * Math.exp(-(E[i].t - p.t) / p.tc) : p.v;
+  }
+  at(T) {
+    const E = this._ev;
+    if (!E.length || !this._tl) return this._v;
+    let lo = 0, hi = E.length; // the last event with t <= T
+    while (lo < hi) { const m = (lo + hi) >> 1; if (E[m].t <= T) lo = m + 1; else hi = m; }
+    const i = lo - 1;
+    if (i < 0) return this._v;
+    const e = E[i], nx = E[i + 1];
+    if (nx && (nx.k === 'ramp' || nx.k === 'exp')) {
+      const v0 = e.k === 'target' ? this._before(i) : e.v, d = nx.t - e.t;
+      if (!(d > 0)) return nx.v;
+      const f = (T - e.t) / d;
+      if (nx.k === 'ramp') return v0 + (nx.v - v0) * f;
+      return v0 === 0 || v0 * nx.v < 0 ? v0 : v0 * Math.pow(nx.v / v0, f);
+    }
+    if (e.k === 'target') return e.v + (this._before(i) - e.v) * Math.exp(-(T - e.t) / e.tc);
+    return e.v;
+  }
 }
 // connect(n, output, input): one edge to n (a node has one output; a worklet one input — Web Audio's indices accepted, not modelled);
 // disconnect(): every edge; disconnect(n[, output, input]) (IMPL-SC §9.1): the edge to n alone — none there throws, as a browser's
@@ -153,8 +218,8 @@ class BaseContext {
     this.audioWorklet = { addModule: async url => { this.modules.push(String(url)); } };
   }
   get currentTime() { return this.frames / this.sampleRate; }
-  createGain() { const n = new Node(this, 'gain'); n.gain = new Param(1); return n; }
-  createStereoPanner() { const n = new Node(this, 'pan'); n.pan = new Param(0); return n; }
+  createGain() { const n = new Node(this, 'gain'); n.gain = new Param(1, this); return n; }
+  createStereoPanner() { const n = new Node(this, 'pan'); n.pan = new Param(0, this); return n; }
   createAnalyser() {
     const n = new Node(this, 'an');
     n.fftSize = 2048; n.smoothingTimeConstant = 0.8;
@@ -162,7 +227,7 @@ class BaseContext {
     return n;
   }
   createChannelSplitter(n = 6) { const x = new Node(this, 'split'); x.numberOfOutputs = n; return x; } // (IMPL-M O1: off the master — its analysers)
-  createOscillator() { const n = new Node(this, 'osc'); n.frequency = new Param(440); n.start = () => {}; n.stop = () => {}; return n; }
+  createOscillator() { const n = new Node(this, 'osc'); n.frequency = new Param(440, this); n.start = () => {}; n.stop = () => {}; return n; }
   // calls: the state changes asked for, in order (a suspended context's state and time stand still until resume); a
   // change fires statechange a microtask later
   _to(call, state) {
@@ -174,20 +239,25 @@ class BaseContext {
   suspend() { return this._to('suspend', 'suspended'); }
   close() { return this._to('close', 'closed'); }
 }
-// the gain / pan routes of node n's output: [{to, g, pan}] (a fan-out gives several) — `to` the destination, or the first
-// worklet with inputs met (IMPL-M §4: a mixing point — nothing passes through it as a wire); g the product of the gains,
-// pan the last panner's (null: none on the route — the signal as it is)
-function paths(n, g = 1, pan = null, seen = new Set(), top = true) {
-  if (n.kind === 'dest') return [{ to: n, g, pan }];
-  if (!top && n.kind === 'worklet') return n.nIn > 0 ? [{ to: n, g, pan }] : [];
+// the gain / pan routes of node n's output: [{to, gs, pp, g, pan}] (a fan-out gives several) — `to` the destination, or the first
+// worklet with inputs met (IMPL-M §4: a mixing point — nothing passes through it as a wire); gs the gain Params on the route in order,
+// pp the last panner's Param (null: none on the route — the signal as it is); g / pan their values (settle(), at a time)
+function paths(n, gs = [], pp = null, seen = new Set(), top = true) {
+  if (n.kind === 'dest') return [{ to: n, gs, pp, g: 1, pan: null }];
+  if (!top && n.kind === 'worklet') return n.nIn > 0 ? [{ to: n, gs, pp, g: 1, pan: null }] : [];
   if (seen.has(n)) return [];
   seen.add(n);
   const out = [];
-  for (const m of n.outs) {
-    const g2 = m.kind === 'gain' ? g * m.gain.value : g, p2 = m.kind === 'pan' ? m.pan.value : pan;
-    out.push(...paths(m, g2, p2, seen, false));
-  }
+  for (const m of n.outs) out.push(...paths(m, m.kind === 'gain' ? gs.concat([m.gain]) : gs, m.kind === 'pan' ? m.pan : pp, seen, false));
   return out;
+}
+// the routes' g (the product of the route's gains, in order) and pan at time t (s): a constant param is its value, bit for bit
+function settle(routes, t) {
+  for (const rs of routes.values()) for (const r of rs) {
+    let g = 1;
+    for (const p of r.gs) g = g * p.at(t);
+    r.g = g; r.pan = r.pp ? r.pp.at(t) : null;
+  }
 }
 // the worklets in processing order: every one after the worklets whose routes reach it (creation order otherwise; a
 // cycle — none in the app — keeps creation order)
@@ -272,11 +342,12 @@ export async function bootMain(o = {}) {
           let bytes = 0;
           try { bytes = serialize(c).length; } catch { bytes = -1; }
           node.posted.push({ m: c, bytes }); sim.posted.push({ node, m: c, bytes });
-          if (node.proc) node.proc.msg(c); else node.pend.push(c);
+          if (node.proc && ctx.live) node.proc.msg(c); else node.pend.push(c); // (offline: queued, drained before each quantum — Chrome applies a message at a quantum boundary)
         },
       };
       ctx.nodes.push(this);
-      if (ctx.live) { this.proc = ctx.scope().make(this.po, this); }
+      this.simProc = (opts && opts.simProc) || null; // a test's own processor {process, msg} in place of the engine (tests/main-sim-offline.test.mjs)
+      if (ctx.live) { this.proc = this.simProc || ctx.scope().make(this.po, this); }
     }
     _fromProc(m) { const c = structuredClone(m); this.got.push(c); if (typeof this.port.onmessage === 'function') this.port.onmessage({ data: c }); }
   }
@@ -307,9 +378,42 @@ export async function bootMain(o = {}) {
       this.length = opt.length; this.live = false;
       sim.offline.push(this);
     }
+    // suspend(t) / resume() (IMPL-AUTO §7.2; the §7.0 probe's Chrome): suspend(t) resolves when the render reaches the first quantum
+    // boundary >= round(t * sr), currentTime exactly there, state 'suspended' and no quantum rendered past it; what is posted to a
+    // node meanwhile is delivered before the next quantum; resume() continues. ctx.suspends: the times asked for (s, call order);
+    // ctx.suspendFrames: the frames stopped at (order of stopping). Rejections (InvalidStateError): negative t, a stop earlier than
+    // the current frame, at or after the length, a second in one quantum, a finished render; non-finite t: TypeError. Not modelled:
+    // the context is never 'suspended' before startRendering and ends 'running', not 'closed'; edges added while suspended are not
+    // routed (the routes are read at the render's start).
+    suspend(t) {
+      const bad = (n, m) => Promise.reject(new DOMException(m, n));
+      if (typeof t !== 'number' || !Number.isFinite(t)) return Promise.reject(new TypeError('suspend: not a finite number'));
+      if (this._done) return bad('InvalidStateError', 'cannot schedule a suspend on a finished context');
+      if (t < 0) return bad('InvalidStateError', 'negative suspend time');
+      const q = Math.ceil(Math.round(t * this.sampleRate) / 128) * 128, S = this._sus || (this._sus = []);
+      if (q >= this.length) return bad('InvalidStateError', 'suspend at or after the render length');
+      if (q < this.frames) return bad('InvalidStateError', 'suspend earlier than the current frame');
+      if (S.some(x => x.q === q)) return bad('InvalidStateError', 'a suspend is already scheduled at frame ' + q);
+      return new Promise(res => {
+        const e = { q, res }; let i = S.length;
+        while (i > 0 && S[i - 1].q > q) i--;
+        S.splice(i, 0, e);
+        (this.suspends || (this.suspends = [])).push(t);
+      });
+    }
+    resume() {
+      const bad = m => Promise.reject(new DOMException(m, 'InvalidStateError'));
+      if (!this._started) return bad('cannot resume an offline context that has not started');
+      if (this._done) return bad('cannot resume a finished offline context');
+      if (this._release) { const r = this._release; this._release = null; this._state('running'); r(); }
+      return Promise.resolve();
+    }
+    _state(s) { if (this.state !== s) { this.state = s; queueMicrotask(() => { if (typeof this.onstatechange === 'function') this.onstatechange({ type: 'statechange' }); }); } }
     async startRendering() {
+      if (this._started) throw new DOMException('startRendering: already started', 'InvalidStateError');
+      this._started = true;
       const S = workletScope(this.sampleRate), list = this.nodes.filter(n => n.kind === 'worklet');
-      for (const n of list) { n.proc = S.make(n.po, n); for (const m of n.pend.splice(0)) n.proc.msg(m); }
+      for (const n of list) { n.proc = n.simProc || S.make(n.po, n); for (const m of n.pend.splice(0)) n.proc.msg(m); }
       const N = Math.ceil(this.length / 128) * 128, L = new Float32Array(N), R = new Float32Array(N);
       const bL = new Float32Array(128), bR = new Float32Array(128);
       // (IMPL-M §4) the sums in Float64, each rounded once to Float32 where it is used: a mixing worklet's input, the
@@ -320,11 +424,21 @@ export async function bootMain(o = {}) {
       let at = 0;
       const rec = per ? (n, oL, oR) => { const o = per.get(n); o.L.set(oL, at); o.R.set(oR, at); } : null;
       for (let off = 0; off < N; off += 128) {
+        while (this._sus && this._sus.length && this._sus[0].q <= off) { // a stop: resolve the suspend, wait for resume()
+          const e = this._sus.shift();
+          (this.suspendFrames || (this.suspendFrames = [])).push(off);
+          const wait = new Promise(r => { this._release = r; });
+          this._state('suspended'); e.res();
+          await wait;
+        }
+        for (const n of list) if (n.pend.length) for (const m of n.pend.splice(0)) n.proc.msg(m); // (messages posted since the last quantum)
         at = off;
+        settle(routes, off / this.sampleRate); // (the gains / pans at this quantum's start: ramps show)
         quantum(order, routes, acc, bL, bR, rec);
         for (let i = 0; i < 128; i++) { L[off + i] = D.L[i]; R[off + i] = D.R[i]; }
         S.ctx.currentFrame += 128; this.frames += 128;
       }
+      this._done = true;
       const chs = [L.slice(0, this.length), R.slice(0, this.length)];
       sim.lastOffline = { ctx: this, scope: S, nodes: list, L: chs[0].slice(), R: chs[1].slice() };
       if (per) sim.lastOffline.out = per;
@@ -407,6 +521,7 @@ export async function bootMain(o = {}) {
       const L = new Float32Array(128), R = new Float32Array(128);
       // (IMPL-M §4) a worklet with inputs (the master) after its sources, fed their Float32-rounded sum; the destination is not mixed
       const routes = new Map(list.map(n => [n, paths(n)])), order = procOrder(list, routes), acc = sums(order, c.destination);
+      settle(routes, c.currentTime); // (live params are instant: their values)
       for (let off = 0; off < N; off += 128) {
         quantum(order, routes, acc, L, R, (n, bL, bR) => { out.get(n).L.set(bL, off); out.get(n).R.set(bR, off); });
         c.scope().ctx.currentFrame += 128; c.frames += 128;

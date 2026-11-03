@@ -59,7 +59,7 @@ export const BUDGET = Object.freeze({
   rate: 0.8,
   delivered: 0.8, // frames delivered ≥ 0.8 × the virtual display's (a starved main thread says so)
 });
-export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb', 'kit']); // ((MOD1 G6) mods: a Juno's modulators; (LC G6) comb: two Combiners' faces; (DM G9) kit: a kit track, the Starter's 8 voices and the fixture groove, playing; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
+export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb', 'kit', 'auto8', 'auto8r']); // ((AUTO G7) auto8: 16 curves playing (2 rigs, 5 classics, an FX knob), auto8r: the roll open on them; ((MOD1 G6) mods: a Juno's modulators; (LC G6) comb: two Combiners' faces; (DM G9) kit: a kit track, the Starter's 8 voices and the fixture groove, playing; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
 /** The scenes whose layout + style budget (< 1 ms / s, "idle-animating") is gated: the engine on, nothing playing. The others are recorded — a
  * playing project writes the transport's text every frame (IMPL-FR §3 A1: "the recorded exception"). `--layout-gate all` gates every scene. */
 export const LAYOUT_SCENES = Object.freeze(['idle']);
@@ -133,6 +133,25 @@ export const EXPECT = Object.freeze({
   // curves (canvas.rig-ccv) repaint only on a change (§6.6): not asked here — combProbe counts them. The LFO faces are off screen
   comb: Object.freeze([
     { name: 'Combiner overlays', kind: 'canvas', sel: '[data-rig-kind="comb"] canvas.rig-cov', rate: 'eff', min: 2 },
+  ]),
+  // (AUTO G7, IMPL-AUTO §4.2) 7 tracks playing — 2 rigs on f.cutoff, 5 classics on their cutoffs, the first rig's Reverb size — 16 curves set through
+  // cv.auto.set, each a triangle that moves on every automation tick (lane H1 plays them at the render tick). The shown track is the Minimoog: its cutoff
+  // knob follows its curve (P.follow at the display rate, a model-unit write a frame: aria-valuenow), absolute Hz — the follow is not a clock class.
+  // The patch stream: every automated track posts a {t: 'patch'} on its ticks; more than 4 tracks with curves are staggered over two ticks (§4.1), so a
+  // track posts every 2nd tick of the 60 Hz budget: 30 a second each, 7 ports (kind 'post': one rate per port). The rigs' and the Reverb's faces:
+  // autoFaces (a driver check: they are mounted only while their track is shown). auto8r: the roll open on the Minimoog's cutoff lane (the heard value's dot
+  // rides the playhead overlay: canvas.proll at the clock's rate; playback does not re-render the roll — only a recorded edit does, autoChanged)
+  auto8: Object.freeze([
+    { name: 'arrangement playhead', kind: 'canvas', sel: 'canvas.arrange', rate: 'eff' },
+    { name: 'head meters', kind: 'attr', attr: 'style', sel: '.head .hmeter i', rate: 'eff', min: 7, tol: 0.2 },
+    { name: 'classic cutoff knob follows its curve', kind: 'attr', attr: 'aria-valuenow', sel: '[data-dest="fc"] [aria-valuenow]', rate: 60 },
+    { name: 'patch posts per automated track', kind: 'post', t: 'patch', rate: 30, min: 7 },
+  ]),
+  auto8r: Object.freeze([
+    { name: 'arrangement playhead', kind: 'canvas', sel: 'canvas.arrange', rate: 'eff' },
+    { name: 'roll playhead', kind: 'canvas', sel: 'canvas.proll', rate: 'eff' },
+    { name: 'head meters', kind: 'attr', attr: 'style', sel: '.head .hmeter i', rate: 'eff', min: 7, tol: 0.2 },
+    { name: 'patch posts per automated track', kind: 'post', t: 'patch', rate: 30, min: 7 },
   ]),
   // (DM G9) a kit track (kit-ui: the Sequencer + the Starter's 8 voices, the fixture groove playing at 128 BPM). The faces ride the drum host's heard
   // queue, NOT the clock: nothing paints per display frame, only per heard step — a 16th at 128 BPM is 8.53 a second, whatever the cap: so the
@@ -437,6 +456,40 @@ export function benchRow(rep, meta = {}) {
   return row;
 }
 
+/** (AUTO G7) The posts of a window → { perS (every message), patchPerS (the {t: 'patch'} ones), byT (per second per message type), ports: [{ perS, eng }] (the patch
+ * stream per port — one port is one track's node —, fastest first) }. `posts` = { n, byT, ports: [{ n, eng }] } as installHooks' end() returns it, `secs` the window. Pure. */
+export function postsOf(posts, secs) {
+  const P = posts || { n: 0, byT: {}, ports: [] }, k = secs > 0 ? secs : 1;
+  const byT = Object.fromEntries(Object.entries(P.byT || {}).map(([t, n]) => [t, r1(n / k)]));
+  const ports = (P.ports || []).map(p => ({ perS: r1(p.n / k), eng: p.eng || '' })).sort((a, b) => b.perS - a.perS);
+  return { perS: r1((P.n || 0) / k), patchPerS: r1((P.byT && P.byT.patch || 0) / k), byT, ports };
+}
+/** (AUTO G7, IMPL-AUTO §4.2 "a 120 Hz display posts no more than a 60 Hz one") the patch stream of a scene's cells at 1 ×, judged against the 60 Hz cap's cell: every other cell
+ * (cap 120 on a 120 or 240 Hz display, cap 60 on a 240 Hz one — and a 240 cap when it was run) posts no more patches a second than the 60 cap's (+ 10 % and 2 a second:
+ * the window's edges), and no port posts more than its 60 Hz peer (rank for rank). `cells` = the report's cells of one size and scene. → { pass, rows: [{ key, patchPerS, limit, ports, pass }], note }. Pure. */
+export function autoCapCheck(cells, o = {}) {
+  const at1 = (cells || []).filter(c => c.throttle === 1 && c.posts), base = at1.find(c => c.cap === 60 && c.display === 60), slack = o.slack != null ? o.slack : 0.1, add = o.add != null ? o.add : 2;
+  if (!base) return { pass: false, rows: [], note: 'no 1 × cell at cap 60 on a 60 Hz display to compare with' };
+  const lim = base.posts.patchPerS * (1 + slack) + add, rows = at1.filter(c => c !== base).map(c => {
+    const pp = c.posts.ports.map(p => p.perS), peers = base.posts.ports.map(p => p.perS);
+    const portsOk = pp.every((v, i) => v <= (peers[i] != null ? peers[i] : Math.max(0, ...peers)) * (1 + slack) + add);
+    return { key: 'cap ' + c.cap + (c.display !== c.cap ? '@' + c.display : ''), patchPerS: c.posts.patchPerS, limit: r1(lim), ports: pp, pass: c.posts.patchPerS <= lim && portsOk };
+  });
+  return { pass: base.posts.patchPerS > 0 && rows.every(r => r.pass), rows, note: 'cap 60: ' + base.posts.patchPerS + ' patches/s over ' + base.posts.ports.length + ' ports (' + base.posts.ports.map(p => p.perS).join(' ') + '); ' + rows.map(r => r.key + ': ' + r.patchPerS + (r.pass ? '' : ' (> ' + r.limit + ')')).join(' · ') + (base.posts.patchPerS > 0 ? '' : ' — NO PATCHES POSTED: the automation is not live') };
+}
+
+/** (AUTO G7) The faces' follow (autoFaces): every control that follows its curve moves on ≥ 0.8 × the 60 Hz tick (a write a frame at the display's rate: never fewer than the tick),
+ * and the frame cost of the shown track's faces within the 1 × budget (med ≤ 2, p95 ≤ 4 ms). `r` = { per: [{ name, found, rates: [Hz per element], cost: q }] } → [[name, value, limit]] with
+ * the value ≤ its limit passing (a rate as its negative). Pure. */
+export const AUTO_FACE_HZ = 48;
+export function autoFaceGates(r) {
+  const G = [], b = costBudget(1, 60), n = x => (typeof x === 'number' && isFinite(x) ? x : Infinity);
+  for (const p of (r && r.per) || []) {
+    G.push([p.name + ': found on screen', p.found >= 1 ? 0 : 1, 0], [p.name + ': slowest element ≥ ' + AUTO_FACE_HZ + ' Hz', p.rates && p.rates.length ? -Math.min(...p.rates) : Infinity, -AUTO_FACE_HZ]);
+    if (p.cost) G.push([p.name + ': frame cost med ≤ ' + b.med + ' ms', n(p.cost.med), b.med], [p.name + ': frame cost p95 ≤ ' + b.p95 + ' ms', n(p.cost.p95), b.p95]);
+  }
+  return G;
+}
 /** (DM G9) The kit probe's gates at a CPU throttle → [[name, value, limit]] (a value ≤ its limit passes; "≥ x" as −value ≤ −x). Pure. */
 export function KIT_GATES(th, r) {
   const P = (r && r.per) || {}, n = x => (typeof x === 'number' && isFinite(x) ? x : Infinity), W = P.writes || {}, G = [];
@@ -539,6 +592,18 @@ export function installHooks(win, o) {
       return d0.set.call(this, w);
     } });
   }
+  // (AUTO G7) the page's posts: every MessagePort.postMessage while recording (a node's port is a MessagePort) counted per message type {t}, and the
+  // {t: 'patch'} ones per port with the engine of the last (one port = one track's node): the automation tick's patch stream (IMPL-AUTO §4.1)
+  let postN = 0, postT = {}, postP = new Map();
+  const PM = MP && MP.postMessage;
+  if (typeof PM === 'function') MP.postMessage = function (m) {
+    if (F.on && m && typeof m === 'object') {
+      const k = typeof m.t === 'string' ? m.t : '?';
+      postN++; postT[k] = (postT[k] || 0) + 1;
+      if (k === 'patch') { let e = postP.get(this); if (!e) postP.set(this, (e = { n: 0, eng: '' })); e.n++; if (m.p && typeof m.p.engine === 'string') e.eng = m.p.engine; }
+    }
+    return PM.apply(this, arguments);
+  };
   // canvases: paints per canvas, once per delivered frame
   const cvData = new WeakMap(), seen = [], CP = win.CanvasRenderingContext2D && win.CanvasRenderingContext2D.prototype;
   const note = (c, op) => {
@@ -586,7 +651,7 @@ export function installHooks(win, o) {
   win.addEventListener('unhandledrejection', e => { F.errs.push('unhandled: ' + String(e.reason && e.reason.message || e.reason).slice(0, 300)); });
   // recording
   F.begin = () => {
-    si = 0; msgAcc = 0; msgN = 0; msgMs = 0; byType = {}; t0 = now(); f0 = F.frame; miss0 = F.missed; del0 = F.delivered; epoch++;
+    si = 0; msgAcc = 0; msgN = 0; msgMs = 0; byType = {}; postN = 0; postT = {}; postP = new Map(); t0 = now(); f0 = F.frame; miss0 = F.missed; del0 = F.delivered; epoch++;
     for (const w of seen) { const c = w.deref(), d = c && cvData.get(c); if (d) { d.n = 0; d.ops = 0; d.last = -1; } }
     F.on = true;
   };
@@ -594,7 +659,7 @@ export function installHooks(win, o) {
     F.on = false;
     const ms = now() - t0;
     return { ms, frames: F.frame - f0, delivered: F.delivered - del0, missed: F.missed - miss0, raf: Array.from(sRaf.subarray(0, si)), msg: Array.from(sMsg.subarray(0, si)), dt: Array.from(sDt.subarray(0, si)),
-      cbs: Array.from(sN.subarray(0, si)), msgN, msgMs, byType };
+      cbs: Array.from(sN.subarray(0, si)), msgN, msgMs, byType, posts: { n: postN, byT: Object.assign({}, postT), ports: Array.from(postP.values()).map(e => ({ n: e.n, eng: e.eng })) } };
   };
   return F;
 }
@@ -751,6 +816,46 @@ const BUILD = {
     await sleep(300); await startPlay(A);
     if (A.cv.kit.state(id).voices.length !== 8) A.notes.push('the kit has ' + A.cv.kit.state(id).voices.length + ' voices, not the Starter\'s 8');
   },
+  // (AUTO G7, §4.2) the project's classic + 4 more (5 classics), 2 rigs (a Reverb in the first's effects), each track an 8th-note line, 128 BPM;
+  // 16 curves over the 4 bars (a triangle a bar, each its own phase): the 5 classics' cutoff + pan, the rigs' f.cutoff + volume, the Reverb's
+  // size and the second rig's resonance — through cv.auto.set (no recording; lane H1 plays them). Phase 0: the stubs — the scene runs today
+  // with the curves inert
+  async auto8(A) {
+    await prelude(A, 700);
+    for (const m of ['juno60', 'prophet5', 'obxa', 'jupiter8']) { A.shell.srcPick(m, 'track'); await mounted(A); }
+    const rigs = [];
+    for (let i = 0; i < 2; i++) { A.shell.srcPick('rig', 'track'); await mounted(A); rigs.push(A.trk().id); }
+    A.api.selectTrack(rigs[0]); await mounted(A);
+    A.cv.fx.addEffect(A.trk().prim + '/fx', 'rev'); await mounted(A);
+    A.cv.setProjectBpm(128);
+    await audioOn(A);
+    const P = A.api.project(), au = A.cv.auto, curves = [];
+    P.tracks.forEach((t, i) => A.api.clipToTrack(t.id, arpNotes(i, (i % 3) * 12 - 12)));
+    const tri = (lo, hi, ph) => Array.from({ length: 9 }, (_, k) => [k * 2 * PPQ, (k + ph) % 2 ? hi : lo]); // (a corner every half bar: up a half, down a half)
+    const curve = (tid, key, ph) => { const g = au && au.range(tid, key); if (!g) { A.notes.push('no automation range: ' + key); return; } const lo = g.lo + (g.hi - g.lo) * 0.2, hi = g.lo + (g.hi - g.lo) * 0.8; if (au.set(tid, key, tri(lo, hi, ph))) curves.push(key); else A.notes.push('curve refused: ' + key); };
+    if (!au) A.notes.push('no cv.auto (before AUTO phase 0)');
+    else P.tracks.forEach((t, i) => {
+      const dev = t.prim, rig = rigs.includes(t.id);
+      if (rig) { curve(t.id, dev + ':f.cutoff', i); curve(t.id, 'mix:vol', i + 1); if (t.id === rigs[0]) curve(t.id, dev + ':fx.rev.size', i); else curve(t.id, dev + ':f.res', i + 1); return; }
+      const cut = ['cf', 'fc'].map(id => dev + ':' + id).find(k => au.ok(t.id, k)); // (the classics' cutoffs: cf on four of them, fc on the Minimoog)
+      if (cut) curve(t.id, cut, i); else A.notes.push(t.name + ': no cutoff to automate');
+      curve(t.id, 'mix:pan', i + 1);
+    });
+    if (curves.length !== 16) A.notes.push(curves.length + ' curves, not 16');
+    A.api.selectTrack(P.tracks[0].id); await mounted(A); // (the shown track: the project's Minimoog — its cutoff knob is the classic face that follows its curve; the rigs' and the Reverb's are checked by autoFaces)
+    A.shell.topSet(700, 'end'); await sleep(500);
+    await startPlay(A);
+  },
+  async auto8r(A) { // (the same, the roll open on the shown track's automated lane — its cutoff curve: the curve, the heard value's dot on the playhead — §5.2)
+    await BUILD.auto8(A);
+    A.shell.openTab('roll'); await sleep(600);
+    try {
+      const R = A.api.roll(), t = A.trk(), L = (A.cv.auto.lanes(t.id) || []).find(x => !x.inert);
+      if (!R || !L) A.notes.push('no automated lane to show on ' + t.name);
+      else { R.host.setAutoLane(t, L.key); if (A.cv.auto.lane(t.id) !== L.key) A.notes.push('the roll is not on the lane ' + L.key); }
+    } catch (e) { A.notes.push('roll lane: ' + e.message); }
+    await sleep(600);
+  },
   async master(A) { // the master canvas: a Compressor and a Ducker in its rack, two LFOs cabled on them, the OUT; a Juno playing under it
     await prelude(A, 0);
     A.shell.srcPick('juno60', 'track'); await mounted(A);
@@ -905,6 +1010,11 @@ export function finish(win) {
   const expectRaw = [];
   for (const e of EXPECT[cfg.scene] || []) {
     let els = [];
+    if (e.kind === 'post') { // (AUTO G7) posts to the worklets: one rate per port that sent any {t: e.t} (one port = one track's node), a second long window's average
+      const rs = d.posts.ports.filter(p => e.t === 'patch').map(p => +(p.n / secs).toFixed(1)).sort((a, b) => b - a);
+      expectRaw.push({ name: e.name, found: rs.length, rates: rs });
+      continue;
+    }
     try {
       els = Array.from(A.doc.querySelectorAll(e.sel)).filter(el => {
         const b = e.box ? el.closest(e.box) : el; // (a knob's dot is hidden between notes: its knob says whether it is on screen)
@@ -918,9 +1028,34 @@ export function finish(win) {
   const dots = Array.from(A.doc.querySelectorAll('.wk-live')).filter(el => onScreen(win, el.closest('[data-dest]') || el, 0.2, true)).map(el => F.at(el, 'cx') / secs).filter(x => x > 0);
   return { ms: d.ms, delivered: +(d.delivered / secs).toFixed(2), frames: d.frames, missed: d.missed, cost: q(cost), raf: q(d.raf), msg: q(d.msg), dt: q(d.dt), callbacks: q(d.cbs),
     handlers: { n: d.msgN, perS: +(d.msgN / secs).toFixed(1), msPerS: +(d.msgMs / secs).toFixed(3), byType: Object.fromEntries(Object.entries(d.byType).map(([k, v]) => [k, { n: v.n, ms: r3(v.ms), max: r3(v.max) }])) },
+    posts: postsOf(d.posts, secs), // ((AUTO G7) what the page posted to the worklets: the patch stream per port)
     clock: { display: st.display, measured: st.measured, eff: st.eff, cap: st.cap, k: st.k, paints: st.paints, frames: st.frames, ms: { med: r3(st.ms.med), p95: r3(st.ms.p95), max: r3(st.ms.max) }, clients: names,
       drop: wk.clock.dropSpan ? wk.clock.dropSpan() : { lvl: 0, lo: 0, hi: 0 } }, // ((FR Cut B review 2, P1-1) the drop levels over the window
     expectRaw, canvases: cvs, dots: { n: dots.length, painting: dots.filter(x => x > 1).length, med: q(dots).med }, errors: F.errs.slice(0, 10) };
+}
+
+/** (AUTO G7) The faces that follow their curve, by family: for each probe the track is shown (a canvas shows one track's faces), the window recorded as a cell's (F.begin / F.end: the
+ * frame cost with those faces drawing) and the writes to `aria-valuenow` counted per element on screen — a classic knob and slider (hw-c), a Wavecraft rig's cutoff knob and its Reverb's size knob
+ * (wk-knob). Leaves the first track shown. The fixed ids of the auto8 scene: tracks 0 (Minimoog: fc), 1 (Juno: cf), 5 (the first rig: f.cutoff, fx.rev.size). → { ok, per: [{ name, found, rates, cost }] }. */
+export async function autoFaces(win, o = {}) {
+  const A = appOf(win), F = A.F, ms = o.ms || 2000, P = A.api.project(), out = { ok: true, per: [], notes: [] };
+  const probes = [[0, 'Minimoog cutoff knob (classic)', '[data-dest="fc"] [aria-valuenow]'], [1, 'Juno-60 cutoff slider (classic)', '[data-dest="cf"] [aria-valuenow]'],
+    [5, 'Wavecraft cutoff knob (rig)', '[data-dest="f.cutoff"][aria-valuenow], [data-dest="f.cutoff"] [aria-valuenow]'], [5, 'Reverb size knob (rig effect)', '[data-dest="fx.rev.size"][aria-valuenow], [data-dest="fx.rev.size"] [aria-valuenow]']];
+  if (P.tracks.length < 7) return { ok: false, why: 'not the auto8 project (' + P.tracks.length + ' tracks)', per: [] };
+  F.observe(['aria-valuenow']);
+  let shown = -1, secs = 1, cost = null;
+  for (const [ti, name, sel] of probes) {
+    if (ti !== shown) {
+      A.api.selectTrack(P.tracks[ti].id); await mounted(A); await sleep(700);
+      F.errs.length = 0; F.begin(); await sleep(ms);
+      const d = F.end(); secs = d.ms / 1000; cost = q(d.raf.map((x, i) => x + (d.msg[i] || 0))); shown = ti;
+      out.errors = (out.errors || []).concat(F.errs.slice(0, 5));
+    }
+    const els = Array.from(A.doc.querySelectorAll(sel)).filter(el => onScreen(win, el, 0.2, true));
+    out.per.push({ name, track: P.tracks[ti].id, found: els.length, rates: els.map(el => +(F.at(el, 'aria-valuenow') / secs).toFixed(1)), cost });
+  }
+  A.api.selectTrack(P.tracks[0].id); await mounted(A);
+  return out;
 }
 
 /** The ⚙ Settings popover at this viewport (G7: "the iPad sizes' ⚙ line fits"): opened, measured, closed. `fits` = the popover inside the
@@ -1524,7 +1659,7 @@ export async function drive(o) {
               const m2 = await metrics(), h1 = (m2.find(x => x.name === 'JSHeapUsedSize') || {}).value;
               const x = { size: sk, sizeName: SZ.name, scene, cap: c.cap, display: c.display, throttle: c.throttle, via: pre.via, notes: pre.notes, clockAtWarm: pre.clock,
                 layoutGate: o.layoutGate === 'all' || (o.layoutGate === 'idle' && LAYOUT_SCENES.includes(scene)),
-                frames: { delivered: raw.delivered, missed: raw.missed, ms: Math.round(raw.ms), display: c.display, stallMs: raw.dt.max }, frameCost: raw.cost, raf: raw.raf, msg: raw.msg, dt: raw.dt, callbacks: raw.callbacks, handlers: raw.handlers,
+                frames: { delivered: raw.delivered, missed: raw.missed, ms: Math.round(raw.ms), display: c.display, stallMs: raw.dt.max }, frameCost: raw.cost, raf: raw.raf, msg: raw.msg, dt: raw.dt, callbacks: raw.callbacks, handlers: raw.handlers, posts: raw.posts,
                 clock: Object.assign({ expectEff: eff }, raw.clock), contract: { med: r3(raw.clock.ms.med + raw.msg.med), p95: r3(raw.clock.ms.p95 + raw.msg.p95) }, cdp: metricsDelta(m0, m1), heap: { before: h0, after: h1 }, heapBytesPerS: h0 != null && h1 != null ? (h1 - h0) / (raw.ms / 1000) : null,
                 expect: raw.expectRaw.map((r, i) => evalExpect(list[i], r, { eff, display: c.display, delivered: raw.delivered, fast: pre.fast, perf: pre.perf, drop: raw.clock.drop.hi, dropLo: raw.clock.drop.lo })), canvases: raw.canvases, dots: raw.dots, errors: raw.errors.concat(L.slice(0, 10)), fast: pre.fast };
               const v = evalCell(x);
@@ -1548,6 +1683,21 @@ export async function drive(o) {
             say('   ' + c.throttle + '× cap ' + String(c.cap).padStart(3) + ' disp ' + String(c.display).padStart(3) + '  fps ' + String(raw.delivered).padStart(6) + (raw.missed ? ' (missed ' + raw.missed + ')' : '') + '  cost med ' + raw.cost.med + ' p95 ' + raw.cost.p95 + ' max ' + raw.cost.max +
               '  clock ' + (raw.clock.measured ? raw.clock.eff + '/' + raw.clock.display : '–') + ' ms ' + raw.clock.ms.med + '  L+S ' + r3(cell.cdp.layoutMs + cell.cdp.styleMs) + ' ms/s  heap ' + (cell.heapBytesPerS != null ? Math.round(cell.heapBytesPerS / 1024) + ' KB/s' : '–') +
               '  live ' + cell.expect.filter(x => x.pass).length + '/' + cell.expect.length + (cell.retry ? '  (re-measured: ' + cell.retry.soft.join(', ') + ')' : '') + '  ' + (v.pass ? 'ok' : 'FAIL ' + v.gates.filter(x => x.gated && !x.pass).map(x => x.id).join(', ')));
+          }
+          if (scene === 'auto8' || scene === 'auto8r') { // ((AUTO G7, §4.2) the patch stream against the 60 Hz cap's: a 120 Hz cap (and a 240 Hz display under the caps 120 / 60) posts no more than a 60 Hz one
+            const cc = autoCapCheck(rep.cells.filter(x => x.size === sk && x.scene === scene));
+            rep.checks.push({ id: 'auto patch posts', size: sk, scene, pass: cc.pass, value: cc.rows, note: cc.note });
+            say('   auto patch posts: ' + (cc.pass ? 'ok' : 'FAIL') + ' — ' + cc.note);
+          }
+          if (scene === 'auto8') { // the faces that follow, by family (the shown track's only): classic knob / slider, a rig's knob, an effect's knob — rate and the frame cost with them drawing
+            await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
+            for (const cap of [60, 120]) {
+              await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap, display: cap, warm: 1500, throttle: 1, fast: o.fast, perf: o.perf }) + ')', 120000);
+              const r = await ev('__fpsPage.autoFaces(window, { ms: 2500 })', 120000), G = r.ok ? autoFaceGates(r) : [];
+              const pass = !!r.ok && r.per.length === 4 && G.every(([, v, lim]) => v <= lim) && !(r.errors && r.errors.length);
+              rep.checks.push({ id: 'auto faces ' + cap, size: sk, scene, pass, value: r, note: !r.ok ? r.why : r.per.map(p => p.name + ' ' + p.found + ' on screen, ' + p.rates.join('/') + ' Hz, cost ' + p.cost.med + '/' + p.cost.p95 + ' ms').join(' · ') });
+              say('   auto faces @' + cap + ': ' + (pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
+            }
           }
           if (scene === 'tutorial' || scene === 'mods') { // ((FR Cut B §7 G7) the smooth probe at 120 and 240, 1 ×: LFO 1's overlay x on ≥ 0.9 of the frames, cv(|Δx|) ≤ 0.3; (MOD1 G6) a track LFO's face too
             await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;

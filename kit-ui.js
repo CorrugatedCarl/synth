@@ -815,7 +815,7 @@ export function kitHost(deps) {
     const offs = [subscribe(api, 'lit', m => { litMask |= m & 0xFFFF; if (bit(litMask, j)) ask(); else litMask = 0; }), subscribe(api, 'on', () => { if (recOf(t, dev) !== D) { recDirty = true; ask(); } })]; // ((lane G finding 2) a notify a heard post: the record's identity first
     sync();
     const V = {
-      el, face, jacks: new Map(),
+      el, face, jacks: new Map(), widgets, // ((AUTO §6) the host's follow / setAuto reach the voice's knobs
       update() {},
       sync,
       shown(on) { if (on !== false && stale && !dead) { stale = false; recDirty = true; ask(); } },
