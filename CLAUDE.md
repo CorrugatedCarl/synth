@@ -49,7 +49,7 @@ The user's Mac crashed twice from test memory blowups (one full run peaked at 47
 - One file at a time: `node --max-old-space-size=2048 --test tests/<file>.test.mjs`. Never run the suite from parallel agents; the lead
   may run every file sequentially (a loop, one file at a time). Node 24 rejects a bare directory: `node --test 'tests/*.test.mjs'`.
 - New test files `import './v8-guard.mjs'` first, import modules with the app's `?v=` suffix, and NEVER pass fake-DOM nodes to `assert.*`
-  (AssertionError walks the cyclic fake DOM: tens of GB). tests/serum-ui.test.mjs has a safe assert wrapper.
+  (AssertionError walks the cyclic fake DOM: tens of GB). the safe assert wrapper is `safeAssert` in tests/serum-ui-stubs/dom.js.
 - Sound must stay bit-identical: golden-classic / golden-fx / golden-presets / golden-random / golden-graph (frozen refs in tests/ref-p1,
   tests/ref-1c). Never weaken a test or loosen a gate; fix the code.
 - Bench gates: tests/bench.json ("node", "jsc", "ipad" rows). The user can run `canvas.domlavin.com/tests/bench.html` on the iPad
