@@ -22,8 +22,10 @@ the iPad's dot reads ≈ 29 Hz anchors (fast lane off in WebKit) — a small lag
 - Known (recorded, not guarded): an old build drops a track's combiners and their rows on load (accepted: canvas saves need no care);
   `normTrack` raises a track's `nid` past its highest device number (pre-existing; numbers change once on a first load / save).
 
-**Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — a new direct cable from a lower-numbered LFO can push
-another LFO's cable out of its slot with no message (cv-graph.js ~659–681, main.js ~10578; found by the LC skeptic); (2) ROADMAP 19
+**Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — **fixed and deployed 2026-11-03** (main.js `modLeftIds` /
+`modPushed` in `modConnect`: the rows left before and after the drop compared, a cable that would push another LFO's cable out of its slot
+is refused with the 11th cable's words, no step; tests/canvas-2b-sim "P3-10"; the slot order itself (cv-graph `take`, module-id order)
+is unchanged — payloads stay byte-identical); (2) ROADMAP 19
 **drum machine** (contract `IMPL-DM.md` on branch `worktree-agent-a8225cd7a2f7be32d`, b0b3b0b + answers 2735554: grid + one module per
 drum, no cables at first, an EMPTY grid, our own synth drums first; name `RIG.NAME + ' Drums'`) — a skeptic first; (3) later: the
 light-show skin (Cut B's meters exist now), the iPad pass, renaming Serum-like names before any sale (ROADMAP 15, incl. the dead code

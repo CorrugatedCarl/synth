@@ -10749,6 +10749,15 @@ function modLeftWhy(t, dev, id) {
   const code = (b.why && b.why[id]) || 'full', s = b.slots || {};
   return modRefusal(code, { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max, slots: s });
 }
+// (the LC skeptic P3-10, pre-existing) ModCore's LFO slots go in module-id order (cv-graph take), and the new row's own check above sees
+// only the new row: a direct cable from a LOWER-numbered LFO onto a full track took a slot from a higher-numbered LFO and left THAT
+// cable 'slots' without a word. The rows left before the drop and after: any other row newly left → the new one is refused with the
+// 11th cable's words (the pushed cable keeps its slot, no step). The compile is the memoised one buildMods runs (its options).
+const modLeftIds = t => { const p = CG.compileMods(t, project, { smooth: prefs.smooth, qr: null, ultra: 0, padVal: padValOf }); return new Set(p && p.left ? p.left.map(x => x.id) : []); }; // (null: no rows yet)
+function modPushed(t, pre, own, dev) {
+  for (const id of modLeftIds(t)) if (id !== own && !pre.has(id)) return modRefusal('slots', { slots: CG.modBudget(t, dev, project).slots });
+  return '';
+}
 // a drag released on a knob: one step "Modulate <knob> with <source>", the new cable selected; a row the ModCore budgets
 // refuse goes again (no step, the reason told)
 function modConnect(src, dst) {
@@ -10756,12 +10765,13 @@ function modConnect(src, dst) {
   if (!ok.ok) { notice(ok.why, 4000); return null; }
   if (own && D && D.dev === own.dev) return sxOwnConnect(t, own, D.pid); // ((3) its own knob: Serum's matrix row (the panel's undo)
   if (own) src = own.link; // ((3) elsewhere: a link row from its part's jack (2b))
+  const pre = modLeftIds(t);
   const cmb = t.dev[D.dev] && t.dev[D.dev].kind === 'comb';
   hist.record(project, cmb ? 'Plug ' + modLabel(src) + ' into ' + modLabel(D.dev) : 'Modulate ' + modLabel(dst) + ' with ' + modLabel(src)); // ((LC §8.3) "Plug LFO 2 into Combiner 1"
   const e = hist.u[hist.u.length - 1];
   const r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop }); // (the Serum's "Limit mod depth on drop")
   if (!r.ok) { hist.prune(project); notice(r.why || modRefusal(r.code), 4000); updateUndoUI(); return null; }
-  const left = modLeftWhy(t, D.dev, r.row.id);
+  const left = modLeftWhy(t, D.dev, r.row.id) || modPushed(t, pre, r.row.id, D.dev);
   if (left) { CMOD.removeMod(t, r.row.id); if (hist.u[hist.u.length - 1] === e) hist._drop(hist.u.pop()); notice(left, 5000); updateUndoUI(); return null; }
   modPend = null;
   cvModAfter(t);

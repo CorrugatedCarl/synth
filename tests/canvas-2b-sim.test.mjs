@@ -281,6 +281,23 @@ test('a refused row by the ModCore budgets goes again (eleven GLOBAL LFOs: the e
   assert.deepEqual([keys(), hsteps()], ['c1,fx1,i1,l1,m1,out', n0]);
 });
 
+test('(the LC skeptic P3-10, pre-existing) a new direct cable from a LOWER-numbered LFO never pushes a higher-numbered LFO\'s cable out of its slot: refused at the drop with the slots words, no step, every existing cable kept', () => {
+  const j = T(), n0 = hsteps();
+  M.del('l1'); sim.raf(); // (LFO slots go in module-id order: the lowest-numbered LFO must be the one without a cable)
+  for (let k = 0; k < 11; k++) drop('lfo', { x: -600, y: 1600 + k * 300 });
+  const ids = keys().split(',').filter(k => /^l\d+$/.test(k)).sort((a, b) => +a.slice(1) - +b.slice(1)), low = ids[0], high = ids.slice(1);
+  assert.equal(high.length, 10);
+  for (const id of high) { M.opts.onMod(id + '.out', 'i1:cf'); sim.raf(); }
+  const r0 = rows(), n1 = hsteps(), B = () => api.modBudget(j, 'i1');
+  assert.deepEqual([B().slots.lfo.join('/'), B().left.length, n1], ['10/10', 0, n0 + 1 + 11 + 10], 'ten cables, every one placed');
+  M.opts.onMod(low + '.out', 'i1:rs'); sim.raf();
+  const got = [rows(), hsteps(), B().left.length, /^ModCore slots full: LFO 10\/10/.test(note())], said = note();
+  while (hsteps() > n0) cv.undo(); // (the state back before the asserts: a failure here must not break the tests after it)
+  sim.raf();
+  assert.deepEqual(got, [r0, n1, 0, true], low + '\'s cable refused, every other kept: ' + said);
+  assert.deepEqual([keys(), hsteps()], ['c1,fx1,i1,l1,m1,out', n0]);
+});
+
 test('deleting the module drops its rows and posts {t: \'mods\', off: true} once nothing is left; undo brings the module, its rows and the payload back; redo posts off again; the classic halo goes', () => {
   const j = T(), n0 = hsteps();
   M.del('c1'); sim.raf(); M.del('m1'); sim.raf();
