@@ -636,8 +636,12 @@ export function normDev(r) {
 // dec, sus, rel, crv: [a, d, r], start, end } (normEnvMod), chaos { kind, chaos: { mono, sh }, rate, bpm, smooth }
 // (normChaosMod), macro { kind, v: [8 × 0…1], names: [8 strings ≤ 16; blank → 'Macro n'] }, cc { kind, cc: 0…127, ch: 0 (omni) … 16, v:
 // 0…1 }, note / velo / at / bend { kind }; a name (≤ 32) is kept on any of them; an unknown kind stays plain data (a later
-// stage's module reads as it was saved)
-const MOD_KINDS = ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend'];
+// stage's module reads as it was saved). Stage LC (IMPL-LC §2.1, no schema step): comb { kind, mode 'add' | 'mul' (add), win 0.5 | 1
+// | 2 | 4 bars (1), mark null (Off, Q3) | { t: a track id (validId's) or '', n: −1 every note | 0…127 } } — anything else the defaults;
+// its inputs are ordinary rows into '<id>:in'
+const MOD_KINDS = ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend', 'comb'];
+const WIN_BARS = [0.5, 1, 2, 4];
+const markOf = m => (isObj(m) && (m.t === '' || validId(m.t)) ? { t: m.t, n: Number.isInteger(m.n) && m.n >= 0 && m.n <= 127 ? m.n : -1 } : null);
 export function normModDev(d) {
   if (!isObj(d) || typeof d.kind !== 'string') return null;
   if (!MOD_KINDS.includes(d.kind)) return Object.assign(plain(d), { kind: d.kind });
@@ -650,6 +654,7 @@ export function normModDev(d) {
     o.v = Array.from({ length: 8 }, (_, k) => v01(v[k]));
     o.names = Array.from({ length: 8 }, (_, k) => (typeof nm[k] === 'string' && nm[k].trim() ? nm[k].slice(0, 16) : 'Macro ' + (k + 1))); // (an unnamed knob: the default name, review U8)
   } else if (d.kind === 'cc') { o.cc = clamp(R(num(d.cc, 1)), 0, 127); o.ch = clamp(R(num(d.ch, 0)), 0, 16); o.v = v01(d.v); }
+  else if (d.kind === 'comb') { o.mode = d.mode === 'mul' ? 'mul' : 'add'; o.win = WIN_BARS.includes(d.win) ? d.win : 1; o.mark = markOf(d.mark); }
   if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 32);
   return o;
 }
@@ -699,9 +704,9 @@ export const normPerf = x => ({ wheel: isObj(x) && isObj(x.wheel) ? { v: 1 } : n
 // modules — lfo / macro / cc / chaos, each under its kind's id prefix, normModDev's record with lfo.mono / chaos.mono forced to 1: the
 // master plays no notes, so a per-note mode means nothing there; any other key or kind dropped; DEV_MAX), mods (normMods: their cables
 // onto the master rack's knobs, 'mfx:fx.<inst>.<pid>') and mid (the next row number, a track's rule); nothing valid → undefined
-// (absent = an empty master: no key)
-export const MASTER_MOD_KINDS = Object.freeze(['lfo', 'macro', 'cc', 'chaos']);
-const MASTER_MOD_RE = { lfo: /^l[1-9]\d{0,5}$/, macro: /^m[1-9]\d{0,5}$/, cc: /^c[1-9]\d{0,5}$/, chaos: /^h[1-9]\d{0,5}$/ };
+// (absent = an empty master: no key); stage LC (IMPL-LC §2.1): + comb (x1 …; a schema-17 build at ⟨B⟩ drops it: §2.4, §16)
+export const MASTER_MOD_KINDS = Object.freeze(['lfo', 'macro', 'cc', 'chaos', 'comb']);
+const MASTER_MOD_RE = { lfo: /^l[1-9]\d{0,5}$/, macro: /^m[1-9]\d{0,5}$/, cc: /^c[1-9]\d{0,5}$/, chaos: /^h[1-9]\d{0,5}$/, comb: /^x[1-9]\d{0,5}$/ };
 function normMasterDev(d) {
   if (!isObj(d)) return undefined;
   const out = {};

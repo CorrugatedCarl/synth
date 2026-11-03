@@ -109,7 +109,7 @@ const errOn = () => { const ce = console.error; ERR.length = 0; console.error = 
 
 test('boot: a Juno-60, the panels and rig-ui loaded; the words are phase 0\'s (MOD_LABEL), the tray\'s data (LFO · Envelope · Macros first; the Wavecraft modules\' tiles without them)', () => {
   assert.equal(I().model, 'juno60');
-  assert.deepEqual(tiles().modTiles().map(b => b.getAttribute('data-mod')), ['lfo', 'env', 'macro', 'wheel', 'velo', 'at', 'bend', 'note', 'cc', 'chaos'], 'LFO · Envelope · Macros first');
+  assert.deepEqual(tiles().modTiles().map(b => b.getAttribute('data-mod')), ['lfo', 'env', 'macro', 'comb', 'wheel', 'velo', 'at', 'bend', 'note', 'cc', 'chaos'], 'LFO · Envelope · Macros first ((LC §8.1) the Combiner after them)');
   assert.deepEqual(['env', 'lfo', 'macros'].map(k => tiles().partTile(k) === null), [true, true, true], 'one tile per type: no Wavecraft module tile for them');
   assert.deepEqual(TRAY.RIG_TILES.map(x => x.id), ['osc', 'sub', 'noise', 'filter', 'arp', 'clip']);
 });

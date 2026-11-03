@@ -454,7 +454,7 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
 // a 2a-only track) — the posting from queuePatch's path and into processorOptions is the integrator's (lane D)
 function buildMods(tr) { // ((8, §5.3) padVal: a mod pad's live value — not in the memo signature: a press never reposts)
   const pay = tr && tr.dev ? CG.compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0, padVal: padValOf }) : null;
-  const out = pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? bpmPay(pay) : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
+  const out = pay && (pay.rows.length || pay.ext.length || pay.vals.length || (pay.cmb && pay.cmb.length)) ? bpmPay(pay) : { t: 'mods', i: tr && tr.id, off: true, key: 'off' }; // ((LC §8.6) a combiner's block: never off
   if (tr) modsLast.set(tr.id, out);
   modsBuilt++;
   return out;
@@ -2118,7 +2118,8 @@ async function play(from = T.pos, countBars = 0) {
   for (const t of project.tracks) if (songQ.has(t.id)) sendSong(t, true);
   const F = mAlign(Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate));
   T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null; chase.set(T.a, [0, T.a.tick]);
-  T.playing = true; T.startPos = from; T.lastClr = from;
+  T.playing = true; T.startPos = from; T.lastClr = from; runP = 0; runT = T.a.tick; // ((LC review R1-5) the run's ▶ tick: a count-in's bars before `from`
+  cmbSoon(); // ((LC) the Combiner faces: a new run
   postTransport(true);
   DRUM.transport(true); // ((7a) the synced drum machines' START state and LEDs follow the song)
   PADS.transport(true); // ((8, §6.2) the pads following roll notes check the heard tick each frame)
@@ -2126,20 +2127,25 @@ async function play(from = T.pos, countBars = 0) {
   transportUI();
 }
 function stop() {
-  if (!T.playing) { if (T.pos !== 0) { T.pos = 0; posUI(); } return; }
+  if (!T.playing) { if (T.pos !== 0) { T.pos = 0; posUI(); cmbSoon(); } return; }
   const t = recTick();
   if (T.rec) { recAdv(recP); finishRec(t); }
   postAll({ t: 'transport', play: false });
   T.playing = false; T.rec = false; T.a = T.seekA = null; T.as = [];
   recCutEnd(); // ((R review R-1) the song stopped: the notes of keys still down join it)
   T.pos = T.startPos;
+  cmbSoon();
   metroStop();
   for (const [k, P] of classicPanels) if (!seqRun.has(k) && !P.dead) P.seqStep(-1); // synced 303s stopped with the song
   DRUM.transport(false); // ((7a) and the synced drum machines: their LEDs back to the flashing key)
   PADS.transport(false);
   transportUI(); posUI();
 }
+// ((LC §7.2, lane F) the pass this run began in (▶: 0; a seek: its anchor's) — a Combiner face's song().pass counts from it; the faces
+// synced once a frame after a transport, tempo, signature or loop change (cmbSoon)
+let runP = 0, runT = 0, cmbT = 0; // (runT: the tick this run began at — the anchor's, ▶ or the last seek)
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
+  cmbSoon();
   if (!T.playing || !ctx) return;
   const sr = ctx.sampleRate, F = mAlign(Math.round((ctx.currentTime + 0.05) * sr)), H = outFrame(), sk = seekTick != null && seekTick !== false;
   const t = sk ? seekTick : AC.tickAt(F, T.a), pa = passAt(F, T.a) + (sk && T.a.wrap ? 1 : 0); // ((R) a seek while looping: a new pass)
@@ -2148,6 +2154,7 @@ function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, ap
   const p = T.a.frame > ctx.currentTime * sr ? T.as.pop() : null;
   T.a = anchor(F, t); T.as.push(T.a); passOf.set(T.a, pa); chase.set(T.a, [pa, fl]);
   if (sk || (p && p === T.seekA)) { T.seekA = T.a; seekAs.add(T.a); } // (a seek replaced before it sounded: this one carries its jump)
+  if (sk) { runP = pa; runT = t; }
   let j = -1; for (let i = 0; i < T.as.length - 1; i++) if (T.as[i].frame <= H) j = i;
   if (j > 0) T.as.splice(0, j); // the anchors before the latest one heard are gone
   postTransport(sk);
@@ -2155,6 +2162,7 @@ function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, ap
 }
 function seek(tick) {
   tick = Math.max(0, Math.round(tick));
+  cmbSoon(); // ((LC) stopped: the cursor moved (playing: reanchor's)
   if (T.playing) { if (T.rec) finishRec(recTick()); reanchor(tick); T.startPos = tick; DRUM.transport(true); } // ((7b review 1 #1) a seek ends a synced 606's D.S. / heard key, as ▶ / ■)
   else T.pos = tick;
   posUI();
@@ -4186,6 +4194,7 @@ function modCount(t, dev = t && curOf(t)) {
 function modBudgetOf(t, dev) {
   const b = CG.modBudget(t, dev, project);
   if (!isSxDev(t, dev)) { const p = buildMods(t); if (!p.off) { const mine = new Set(CG.modRowsFor(t, dev).map(r => r.id)); b.canvas = new Set(p.rows.filter(r => mine.has(r.id)).map(r => r.id)).size; } }
+  if (t.dev && t.dev[dev] && t.dev[dev].kind === 'comb') b.canvas = CMOD.inputsOf(t, dev).length; // ((LC review R2-3) a combiner: its input rows ("2 inputs · LFO 3/10")
   return b;
 }
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
@@ -7332,7 +7341,10 @@ function cvMenu(a, b) {
     const B = modBodies.get(key), own = B && B.kind === 'pads' ? B.menuItems() : [];
     return [...own, { sep: true }, fold, front, { sep: true }, { label: 'Delete', action: () => modDelete(key) }, { sep: true }, tidyI];
   }
-  if (kind === 'mod') return [{ label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
+  if (kind === 'mod') { // ((LC §7.2) a combiner's body may bring items of its own: first
+    const B = modBodies.get(key), own = B && B.kind === 'comb' && typeof B.menuItems === 'function' ? B.menuItems() || [] : [];
+    return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
+  }
   if (kind === 'pm') { const q = pmOf(t, key); return [...PATCH.items(t, q.dev, q.mid), { sep: true }, front, { sep: true }, tidyI]; } // ((9, §4.5) Duplicate, Driver ▸, Delete; no fold
   if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove ((WC) no Bundle: §6; the amp Envelope's Init: envFromAmp, rigEnvInit)
     const q = CMOD.partOf(key), own = sxViewItems(t, key).map(it => (q.part === 'env1' && /^Init\b/.test(it.label || '') && isRigDev(t, q.dev) ? Object.assign({}, it, { action: () => rigEnvInit(trk(), q.dev) }) : it));
@@ -8738,6 +8750,7 @@ function rigSkinPick(v) {
   const id = RC.SKINS.some(s => s.id === v) ? v : RC.SKIN_DEFAULT, W = cvW();
   store.set(RIG_SKIN, id);
   rigSkin();
+  cmbSoon(); // ((LC) the Combiner faces repaint in the new skin
   cvRender();
   if (W && W.el) wkRescale(W.el);
   if (shell.skinSel && shell.skinSel.value !== id) shell.skinSel.value = id;
@@ -9209,15 +9222,22 @@ function cordOf(c) {
   if (c.int) return typeof c.dev === 'string' && isRigDev(t, c.dev);
   if (c.kind !== 'mod' || c.preset) return false;
   if (c.own) return typeof c.dev === 'string' && isRigDev(t, c.dev);
+  if (cmbRow(t, c)) return true; // ((LC §8.3) a combiner's rows: its inputs (a track LFO's too) and its OUT's
   const m = typeof c.a === 'string' ? /^([a-z][a-z0-9]*)([./])/.exec(c.a) : null;
   return !!m && isRigDev(t, m[1]) && (m[2] === '/' || c.a === m[1] + '.env1');
 }
-const isKnobEnd = c => c.kind === 'mod' && typeof c.b === 'string' && c.b.indexOf(':') > 0;
+const isKnobEnd = c => c.kind === 'mod' && typeof c.b === 'string' && c.b.indexOf(':') > 0 && !cmbInEnd(c.b); // ((LC §8.3) a combiner's IN: a jack end — stacked on its socket, counted
+// (LC §8.3) '<comb>:in' — a combiner's IN, the one modulator destination; a record from or into a combiner of t (its OUT, its inputs)
+const cmbInEnd = b => /^x[1-9]\d*:in$/.test(b);
+function cmbRow(t, c) {
+  const d = k => !!t && !!t.dev && !!t.dev[k] && t.dev[k].kind === 'comb' && CMOD.kindOfId(k) === 'comb';
+  return (typeof c.b === 'string' && cmbInEnd(c.b) && d(c.b.slice(0, -3))) || (typeof c.a === 'string' && /^x[1-9]\d*\.out$/.test(c.a) && d(c.a.slice(0, -4)));
+}
 // a cord's look (§4.5): its colour (rig-core's rule, a user's dev.rig.cc pick for the rig's own cords), its alpha (1 · the rig's own rows
 // 0.85 · off / bypassed / warp 0.45 · the 24+ fade 0.3), its ends' plugs (a knob end: the BACK end, s 2)
 function toCord(c, t) {
-  const dev = c.int ? c.dev : (/^([a-z][a-z0-9]*)/.exec(String(c.a || '')) || [])[1], d = dev && t.dev ? t.dev[dev] : null, knob = isKnobEnd(c);
-  const col = c.int ? (Number.isInteger(c.c) ? c.c : 4) : RC.cordColor(rigSrcEnd(dev, c.a) || '', knob ? null : d && d.rig);
+  const dev = c.int ? c.dev : (/^([a-z][a-z0-9]*)/.exec(String(c.a || '')) || [])[1], d = dev && t.dev ? t.dev[dev] : null, knob = isKnobEnd(c), mk = !c.int && d && CMOD.kindOfId(dev) === d.kind ? d.kind : null; // ((LC) a track modulator's cord: its kind's colour (an LFO's a rig LFO's)
+  const col = c.int ? (Number.isInteger(c.c) ? c.c : 4) : mk ? RC.cordColor(mk) : RC.cordColor(rigSrcEnd(dev, c.a) || '', knob ? null : d && d.rig);
   const o = c.fade ? RC.LOOK.o.fade : c.dim || c.byp ? RC.LOOK.o.off : c.int ? (typeof c.o === 'number' ? c.o : 1) : RC.LOOK.o.row;
   return { id: c.id, a: c.a, b: c.b, c: col, s: knob ? 2 : 0, o };
 }
@@ -10027,8 +10047,9 @@ function moogCost(type) { const c = COSTM.COST.patch ? COSTM.COST.patch[type] : 
 /* ---- the bodies and their live values */
 const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
 const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
+const modBase = (key, kind) => ({ doc: document, get: () => modValue(kind), heardFrame: () => heardFrame(), sampleRate: () => fastSr(), shown: () => cvLive(key), devKey: key });
 function modMount(key, b) {
-  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind), heardFrame: () => heardFrame(), sampleRate: () => fastSr(), shown: () => cvLive(key), devKey: key }; // ((MM, §7.1) the shown canvas's record: a track's or MREC; (FR Cut B §4.4) the slot hosts read their rings at the frame's heard frame, at the context's rate; (MOD1 §4.3, P2-10) shown: an off-screen / folded face stops its tick; devKey: every face's title number (CC n too)
+  const t = mOwn(), tid = t.id, kind = modKindOfKey(t, key), o = modBase(key, kind); // ((MM, §7.1) the shown canvas's record: a track's or MREC; (FR Cut B §4.4) the slot hosts read their rings at the frame's heard frame, at the context's rate; (MOD1 §4.3, P2-10) shown: an off-screen / folded face stops its tick; devKey: every face's title number (CC n too)
   modUnmount(key);
   if (kind === 'pads') { // ((8, §1.1, §7) a Pads module's body: a view of the host — its grid on the cv-keys bed, its footer, Edit mode, the inspector)
     const B = cvPads.padsBody({ host: PADS, id: key, doc: document, track: () => trk().id }); // (its buttons: cv-pads tapOn — pressOrTap's rule, plus the keyboard's click)
@@ -10047,12 +10068,18 @@ function modMount(key, b) {
     // Destinations), its view state for the session (editor zoom, grid, tool), the app's storage and notices
     if (MOD_SLOT.has(kind)) Object.assign(o, { live: f => modLive(key, f), cancel: () => modCancel(), rows: modRowsOps(key, tid), view: modViewOf(tid, key), storage: hostStore, notify: txt => notice(txt, 3500), devKey: key });
     if (kind === 'cc') o.learn = on => modLearn(key, on);
-  }
+  } else if (kind === 'comb') Object.assign(o, cmbHost(key, tid)); // ((LC §7.2) the Combiner's face: its inputs, gestures, clock, marks
   const B = cvModsUI.bodyFor(kind, o);
   if (!B) return;
   B.kind = kind;
   b.append(B.el);
   modBodies.set(key, B);
+  if (kind === 'comb' && B.inJack && typeof B.inJack.addEventListener === 'function') { // ((LC §8.3) a tap on the IN: "Connect to…" with the LFOs not yet plugged
+    const J = B.inJack, go = () => { if (mOwn().id === tid) cmbPick(key, J); };
+    J.addEventListener('pointerdown', e => { if (e && e.stopPropagation) e.stopPropagation(); }); // (never the world's press: no pan, its click arrives)
+    J.addEventListener('click', e => { if (e && e.stopPropagation) e.stopPropagation(); go(); });
+    J.addEventListener('keydown', e => { if (e && (e.key === 'Enter' || e.key === ' ')) { if (e.preventDefault) e.preventDefault(); go(); } });
+  }
   if (kind === 'wheel') B.setOthers(modOthers());
   else if (kind === 'note') B.update(lastNote(t));
   else if (kind === 'cc') { const v = modCCLast.get(tid + '/' + key); if (v !== undefined) B.update(v); }
@@ -10102,8 +10129,8 @@ const modViewOf = (tid, key) => { const k = tid + '/' + key; let v = modViews.ge
 // { kind, i } (fixer B); each mounted body reads its entry at the monitor rate. One subscription per track while such a
 // body is mounted (the primary instrument's part: its message carries mc), live while one of them is on screen; either
 // field absent (until A and B merge): nothing moves
-const MC_KINDS = new Set(['lfo', 'env', 'chaos']);
-const MC_FAST = new Set(['lfo', 'env']); // ((review 1, P3) the fast path's: a chaos body's view never reads a ring — it stays on mcSnap
+const MC_KINDS = new Set(['lfo', 'env', 'chaos', 'comb']); // ((LC §8.5) a combiner's face: its block (cb) — y and its inputs' clocks
+const MC_FAST = new Set(['lfo', 'env', 'comb']); // ((review 1, P3) the fast path's: a chaos body's view never reads a ring — it stays on mcSnap
 const mcMons = new Map(); // track id → off
 const mcAny = () => { for (const B of modBodies.values()) if (MC_KINDS.has(B.kind)) return true; return false; };
 // (milestone 3, §2.9) track-level: the 'mods' monitor id alone (role 'none': no part — lane E's engine posts {t: 'smon', mc,
@@ -10114,7 +10141,7 @@ function mcMonitor(tid) {
   if (mcMons.has(tid)) { monitors.sync(); return; }
   if (!ownerById(tid)) return;
   const live = () => { if (shownId() !== tid || !mcAny()) return false; for (const [k, B] of modBodies) if (MC_KINDS.has(B.kind) && (!cvView || cvView.live(k))) return true; return false; };
-  const deliver = d => { if (d.mc) mcSnap(tid, d.mc, d.mcx); };
+  const deliver = d => { if (d.mc) mcSnap(tid, d.mc, d.mcx, d.cb, d.cF); }; // ((LC §5.3) + the combiners' block at its frame
   const onFast = d => mcFast(tid, d); // ((FR Cut B §5.3) the 'mods' fast part: {mc, x} at F → the slot hosts' rings
   mcMons.set(tid, tid === MASTER ? monitors.sub(MASTER, 'mods', { live, deliver, fast: true, onFast }) : monitors.sub(tid, null, { role: 'none', mods: true, live, deliver, fast: true, onFast }));
 }
@@ -10122,12 +10149,13 @@ function mcMonSync() { for (const [tid, off] of mcMons) if (tid !== shownId() ||
 // (milestone 3, §2.9) with lane E's mcx { ph: Float32Array(20), env: Float32Array(8) }: an LFO's phase and Path Y (mc[l] its
 // X: { v, ph, y, out } — the phase dot, the PATH playhead), an ENV's stage and stage time ({ v, stage, t } — its playhead),
 // as Serum's own panels read them (the slot host's snapshot)
-function mcSnap(tid, mc, mcx) {
+function mcSnap(tid, mc, mcx, cb, cF) {
   if (shownId() !== tid || !modBodies.size) return;
   const t = ownerById(tid), pay = t ? modsPay(t) : null, S = pay && !pay.off && pay.slots;
   if (!S) return;
   const ph = mcx && mcx.ph, ev = mcx && mcx.env;
   for (const [k, B] of modBodies) {
+    if (B.kind === 'comb') { cmbFeed(B, S[k], k, cb, cF); continue; } // ((LC §8.5) its ring takes the slow anchors too (cF): no bodyAns gate
     const e = MC_KINDS.has(B.kind) ? S[k] : null;
     if (!e || !(e.i >= 0) || e.i >= mc.length || (cvView && !cvView.live(k))) continue;
     if (bodyAns(B)) continue; // ((FR Cut B P2-4) a body fed fast: its slot host's ring is the truth while it answers (R1-C)
@@ -10145,6 +10173,7 @@ function mcFast(tid, d) {
   const t = ownerOf(tid), pay = t ? modsPay(t) : null, S = pay && !pay.off && pay.slots, mc = d.mc, x = d.x, F = d.F;
   if (!S || !mc || typeof F !== 'number' || !(F === F)) return;
   for (const [k, B] of modBodies) {
+    if (B.kind === 'comb') { cmbFeed(B, S[k], k, d.cb, F); continue; } // ((LC §8.5) the fast part's cb at F
     const e = MC_FAST.has(B.kind) ? S[k] : null;
     if (!e || !(e.i >= 0) || e.i >= mc.length || (cvView && !cvView.live(k))) continue;
     const u = B.fastV || (B.fastV = {}), v = mc[e.i];
@@ -10153,6 +10182,150 @@ function mcFast(tid, d) {
     else if (B.kind === 'env' && x && e.i >= 10 && e.i < 14 && x.length >= 28) { u.stage = x[20 + e.i - 10]; u.t = x[24 + e.i - 10]; }
     try { B.update(u); } catch (err) { console.warn(err); }
   }
+}
+// (LC §8.5) a combiner body's update: one reused { F, cb, i, n } (mcFast's way) — cb the block, i its offset (pay.slots[id]: [y, then per
+// input x, r, v]), F the post's frame (the slow one's cF); nothing without a block, a frame, or while its module is off screen
+function cmbFeed(B, e, k, cb, F) {
+  if (!e || e.kind !== 'comb' || !cb || typeof F !== 'number' || !(F === F) || !(e.i >= 0) || e.i >= cb.length || (cvView && !cvView.live(k))) return;
+  const u = B.cbV || (B.cbV = {});
+  u.F = F; u.cb = cb; u.i = e.i; u.n = e.n;
+  try { B.update(u); } catch (err) { console.warn(err); }
+}
+/* ---- (LC §7.2, §8) the Combiner's body host (o): its inputs — the rows into '<id>:in' in t.mods order (the list's, the payload's) —, their
+   gestures (an amount: live writes under the throttled repost while it moves, one step at its end; a mute, an unplug: one step each), the
+   cord's selection, the device's mode / window / marks (one step each: modEditState), the song's clock for the window and the playhead (one
+   object, reused: the face reads it every frame), the payload, the reference marks, the IN's "Connect to…" */
+const cmbIds = t => (t && t.dev ? Object.keys(t.dev).filter(k => t.dev[k] && t.dev[k].kind === 'comb' && CMOD.kindOfId(k) === 'comb') : []);
+function cmbSync() { for (const B of modBodies.values()) if (B.kind === 'comb' && typeof B.sync === 'function') { try { B.sync(); } catch (err) { console.warn(err); } } }
+function cmbSoon() { // (once a frame, while a combiner face is mounted; no frames: at once)
+  if (cmbT) return;
+  let any = false;
+  for (const B of modBodies.values()) if (B.kind === 'comb') { any = true; break; }
+  if (!any) return;
+  if (typeof requestAnimationFrame !== 'function') { cmbSync(); return; }
+  cmbT = requestAnimationFrame(() => { cmbT = 0; cmbSync(); });
+}
+// the selected cable lit in its combiner's list (B.highlight(row)); every other combiner's line unlit
+function cmbHl(id) {
+  if (!modBodies.size) return;
+  const c = id && cvView ? cvView.cables.list().find(x => x.id === id) : null, k = c && c.nobadge && typeof c.b === 'string' ? c.b.slice(0, -3) : null;
+  for (const [key, B] of modBodies) if (B.kind === 'comb' && typeof B.highlight === 'function') { try { B.highlight(key === k ? id : null); } catch (err) { console.warn(err); } }
+}
+const CMB_APPROX = 'Rise and Delay act per note: not in the Combiner';
+function cmbHost(key, tid) {
+  const own = () => ownerById(tid), rec = () => { const t = own(); return t && t.dev && t.dev[key] ? t.dev[key] : null; };
+  const SG = { bpm: 120, sig: [4, 4], playing: false, tick: 0, cursor: 0, start: 0, pass: 0, loop: { on: false, start: 0, end: 0 } };
+  return {
+    get: () => rec() || {},
+    edit: f => modEditState(key, f),
+    cords: () => !cvMaster && drawMode(trk()) === 'cords', // (the IN's count: the cord layer's there, the face's own chip elsewhere)
+    song: () => {
+      const L = project.loop;
+      SG.bpm = project.bpm > 0 ? +project.bpm : 120; SG.sig[0] = project.sig[0]; SG.sig[1] = project.sig[1];
+      SG.playing = !!T.playing; SG.tick = heardTickNow(); SG.cursor = T.pos;
+      SG.start = T.playing ? runT : T.pos; SG.pass = T.playing && T.a && ctx ? Math.max(0, heardPass(heardFrame()) - runP) : 0; // (this run: ▶ or the last seek, its loop pass from 0)
+      SG.loop.on = !!(L && L.on && L.end > L.start); SG.loop.start = L ? L.start : 0; SG.loop.end = L ? L.end : 0;
+      return SG;
+    },
+    inputs: () => cmbInputs(own(), key),
+    setAmt: (row, v, ph) => cmbAmt(tid, row, v, ph),
+    setMute: (row, on) => cmbRowEdit(tid, row, on ? 'Mute ' : 'Unmute ', t => { CMOD.setMod(t, row, { byp: on ? 1 : 0 }); }, r => !!r.byp !== !!on),
+    unplug: row => cmbRowEdit(tid, row, 'Unplug ', t => { CMOD.removeMod(t, row); }),
+    select: row => modSelect(row),
+    selected: () => (cvView ? cvView.cables.selected() : null),
+    payload: () => { const t = own(), p = t ? modsPay(t) : null; return p && !p.off ? p : null; },
+    marks: (t0, t1) => cmbMarks(rec(), t0, t1),
+    markList: () => cmbMarkList(),
+    connect: el => cmbPick(key, el),
+  };
+}
+// the face's list: { row, src, l (its ModCore slot, −1 none yet), name, color (its line's tint: CMB_TINT by index), amt, byp, why (a left one's code:
+// 'slots' — the face words it), apx (what the combiner does not hear of it: the "≈" tip, '' none) }
+function cmbInputs(t, key) {
+  if (!t) return [];
+  const pay = modsPay(t), on = pay && !pay.off, C = on && Array.isArray(pay.cmb) ? pay.cmb.find(c => c && c.id === key) : null;
+  const left = new Map(on && Array.isArray(pay.left) ? pay.left.map(x => [x.id, x.why]) : []), TT = cvModsUI.CMB_TINT;
+  const R = CMOD.inputsOf(t, key), SL = R.length ? modSrcList(t) : []; // ((G6) the source list once — modLabel builds it per name: 7 µs each, the face asks on every amount move)
+  return R.map((r, k) => {
+    const e = C && Array.isArray(C.in) ? C.in.find(x => x && x.row === r.id) : null, S = SL.find(x => x.id === r.src);
+    const color = TT[k % TT.length]; // ((review 2 R2-5, the lead) a tint per line by its index — its dot and its faint curve; the cord keeps its own
+    return { row: r.id, src: r.src, l: e && Number.isInteger(e.l) ? e.l : -1, name: S ? S.label : modLabel(r.src, t), color, amt: r.amt, byp: r.byp ? 1 : 0, why: left.has(r.id) ? String(left.get(r.id) || '') : '', apx: cmbApprox(t, r.src) };
+  });
+}
+// (§16) an input's RISE / DELAY (per note on a direct cable; the combiner reads the LFO as an ext feed does: without them)
+function cmbApprox(t, src) {
+  const q = modSrcOf(src), d = q && t.dev ? t.dev[q.dev] : null;
+  if (!d) return '';
+  if (d.kind === 'lfo') return d.rise > 0 || d.delay > 0 ? CMB_APPROX : '';
+  const m = q.link ? /^lfo(\d+)$/.exec(q.link) : null, sx = m && isSxDev(t, q.dev) && d.vals ? d.vals.s : null;
+  if (!sx) return '';
+  const pre = 'l' + m[1] + '.';
+  try { if (core.destBase(sx, null, pre + 'rise') > 0 || core.destBase(sx, null, pre + 'delay') > 0) return CMB_APPROX; } catch (err) { /* a state without them */ }
+  // (§16, R3) its knobs under a cable — its own matrix's rows, a track row onto them —: the twin / linked slot copies their bases only
+  const own = Array.isArray(sx.matrix) && sx.matrix.some(r => r && typeof r.dst === 'string' && r.dst.startsWith(pre)), row = (t.mods || []).some(r => r && typeof r.dst === 'string' && r.dst.startsWith(q.dev + ':' + pre));
+  return own || row ? 'Its modulation stays inside the ' + RIG.NAME : '';
+}
+// an amount gesture on the face's list: 'move' writes live (the step opened at the first, the repost throttled: N.modsHold), 'end' / 'set'
+// one step "Mod amount" (none when it ends where it began: modStep prunes it), 'cancel' the value back and no step
+let cmbG = null; // { tid, row, a0 }
+function cmbAmt(tid, row, v, ph) {
+  const t = ownerById(tid), r = t && Array.isArray(t.mods) ? t.mods.find(x => x && x.id === row) : null, N = ownerNode(t);
+  if (!r) return false;
+  const a = Math.max(-1, Math.min(1, Math.round((+v || 0) * 1e4) / 1e4));
+  if (ph === 'cancel') {
+    const G = cmbG; cmbG = null;
+    if (N) N.modsHold = false;
+    if (G && G.row === row && G.tid === tid) { CMOD.setMod(t, row, { amt: G.a0 }); modUnstep(); queuePatch(t); cvModSync(); }
+    return true;
+  }
+  if (!cmbG || cmbG.row !== row || cmbG.tid !== tid) { modPre(); cmbG = { tid, row, a0: r.amt }; }
+  if (ph === 'start') return true;
+  if (r.amt !== a) CMOD.setMod(t, row, { amt: a });
+  if (ph === 'move') { if (N) N.modsHold = true; queuePatch(t); return true; }
+  cmbG = null;
+  if (N) N.modsHold = false;
+  modStep('Mod amount');
+  cvModSync();
+  return true;
+}
+// a one-step edit of an input row: "<what> LFO 2" (Mute, Unmute, Unplug); test(r): false → nothing to do
+function cmbRowEdit(tid, row, what, fn, test) {
+  const t = ownerById(tid), r = t && Array.isArray(t.mods) ? t.mods.find(x => x && x.id === row) : null;
+  if (!r || (test && !test(r))) return false;
+  hist.record(project, what + modLabel(r.src, t));
+  fn(t);
+  cvModAfter(t);
+  cvModSync();
+  return true;
+}
+// (§6.7) the Marks menu: Off, every track (its every note), a drum machine's sounds (its rows) — { value: the mark edit({ mark }) takes
+// (null Off, { t, n }), label }
+function cmbMarkList() {
+  const out = [{ value: null, label: 'Off' }];
+  for (const tr of project.tracks) {
+    const nm = tr.name || tr.id;
+    out.push({ value: { t: tr.id, n: -1 }, label: nm });
+    for (const dev of CMOD.instIds(tr)) {
+      const D = isDrumDev(tr, dev) ? drumOf(tr, dev) : null;
+      if (D) for (const q of DC.drumRows(D.map, tr.dev[dev].model)) out.push({ value: { t: tr.id, n: q.n }, label: nm + ' · ' + q.name });
+    }
+  }
+  return out;
+}
+// the marked track's hits in [t0, t1) ticks, sorted: its notes (every one, or one number) and its drum machines' own pattern hits while
+// they follow the song (drum-core's "Pattern to notes" reader: rollPlan / toNotes) — page data, nothing posted
+function cmbMarks(d, t0, t1) {
+  const m = d && d.mark, tr = m && m.t ? trackById(m.t) : null, out = [];
+  if (!tr || !(t1 > t0)) return out;
+  const want = q => !!q && (m.n < 0 || q.n === m.n);
+  for (const q of Array.isArray(tr.notes) ? tr.notes : []) if (want(q) && q.t >= t0 && q.t < t1) out.push(q.t);
+  for (const dev of CMOD.instIds(tr)) {
+    const D = isDrumDev(tr, dev) ? drumOf(tr, dev) : null;
+    if (!D || !D.x || !D.x.sync) continue; // (a free-running machine is off the song's grid)
+    try { for (const q of DC.toNotes(DC.rollPlan(D, project.bpm, drumSess(tr, dev)), Object.assign({ t0, t1 }, DC.rollOpts(D, tr.dev[dev])))) if (want(q)) out.push(q.t); } catch (err) { /* no plan */ }
+  }
+  out.sort((a, b) => a - b);
+  return out.filter((x, i) => !i || x !== out[i - 1]);
 }
 // (review 2 P2) a canvas ENV cabled to a Serum knob is injected into a free ENV slot of that Serum (cv-graph injectMods: no
 // ModCore slot, mcSnap never feeds it): [{ key, dev, k }] per payload; the Serum's own snapshot of slot k drives its body
@@ -10529,6 +10702,7 @@ function modLabel(id, t0) { // canvas-form ids: a source ('wheel', 've.out', 'l2
   const D = modSplit(id);
   if (!D) return t.dev && t.dev[id] ? cvDevName(t, id) : '';
   const d = t.dev ? t.dev[D.dev] : null;
+  if (d && d.kind === 'comb' && CMOD.kindOfId(D.dev) === 'comb') return CMOD.modLabelOf(D.dev, d) + (D.pid === 'in' ? ' · IN' : ''); // ((LC §8.4) "Combiner 1 · IN"
   if (isSxDev(t, D.dev)) { try { return core.destLabel(D.pid, d.vals.s, d.fx) || D.pid; } catch (err) { return D.pid; } }
   if (d && d.kind === 'panel') { const x = modDescsOf(d).find(k => k.id === D.pid), m = /^fx\.([^.]+)\./.exec(D.pid); return x ? (m ? modInstLabel(d, m[1]) + ' ' : '') + x.label : D.pid; } // ("Reverb Mix")
   const c = d && d.kind === 'synth' ? (modelById(d.model).controls || []).find(x => x.id === D.pid) : null;
@@ -10538,6 +10712,7 @@ const modInstLabel = (d, inst) => { try { return core.instLabel(d.fx, inst) || i
 // can src modulate knob dst ('<dev>:<param>') of this track → {ok, why} (the refusal texts of §2.13)
 function modCan(src, dst) {
   const t = mOwn(), D = modSplit(dst), d = D && t.dev ? t.dev[D.dev] : null, own = sxOwnSrc(src);
+  if (d && d.kind === 'comb') return cmbCan(t, own ? own.link : src, D); // ((LC §8.3) a combiner's IN: an LFO not yet plugged — the drop's words
   if (own) { // ((3, §2.5) a Serum's own LFO / ENV / macro: a native row on its own knobs, a link row elsewhere — never its macros)
     if (!d || !isSxDev(t, own.dev)) return { ok: false, why: modRefusal('nomod') };
     if (D.dev === own.dev) { const r = CMOD.destOk(d, D.pid); return r.ok ? { ok: true, why: '' } : { ok: false, why: modRefusal('nomod') }; }
@@ -10551,10 +10726,20 @@ function modCan(src, dst) {
   if (isSxDev(t, D.dev)) { const b = CG.modBudget(t, D.dev, project); if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max }); }
   return { ok: true, why: '' };
 }
-// the knobs a drag lights up: every modulatable one of the track's instruments and panels (memoised per drag)
-function modMarks() {
-  const t = mOwn(), memo = new Map();
-  return (dev, id) => { const k = dev + ':' + id; if (!memo.has(k)) memo.set(k, !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], id).ok); return memo.get(k); };
+// the knobs a drag lights up: every modulatable one of the track's instruments and panels (memoised per drag); (LC §8.3) a combiner's IN
+// for the dragged source when it is an LFO not plugged there yet (cmbSrcOk — destOk alone takes any source there)
+function modMarks(src) {
+  const t = mOwn(), memo = new Map(), own = sxOwnSrc(src), s = own ? own.link : src;
+  const ok = (dev, id) => { const d = t.dev && t.dev[dev]; return !!d && (d.kind === 'comb' ? typeof s === 'string' && cmbCan(t, s, { dev, pid: id }).ok : CMOD.destOk(d, id).ok); };
+  return (dev, id) => { const k = dev + ':' + id; if (!memo.has(k)) memo.set(k, ok(dev, id)); return memo.get(k); };
+}
+// (LC §2.2, §8.3) can src plug into the combiner's end D ({ dev, pid }) → { ok, why }: its IN only (destOk), an LFO not plugged there yet
+// (cmbSrcOk: "A combiner takes LFOs", "That LFO is already plugged in"; a <NAME>'s own macros say the first too)
+function cmbCan(t, src, D) {
+  const k = CMOD.destOk(t.dev[D.dev], D.pid);
+  if (!k.ok) return { ok: false, why: modRefusal('nomod') };
+  const c = typeof src === 'string' ? CMOD.cmbSrcOk(t, src, D.dev) : { ok: false, why: CMOD.CMB_LFOS };
+  return c.ok ? { ok: true, why: '' } : { ok: false, why: c.why };
 }
 // (2b) a row the compile cannot evaluate (ModCore LFO / ENV / chaos slots, ext slots or synthetic rows full): the reason;
 // '' when it compiled
@@ -10571,7 +10756,8 @@ function modConnect(src, dst) {
   if (!ok.ok) { notice(ok.why, 4000); return null; }
   if (own && D && D.dev === own.dev) return sxOwnConnect(t, own, D.pid); // ((3) its own knob: Serum's matrix row (the panel's undo)
   if (own) src = own.link; // ((3) elsewhere: a link row from its part's jack (2b))
-  hist.record(project, 'Modulate ' + modLabel(dst) + ' with ' + modLabel(src));
+  const cmb = t.dev[D.dev] && t.dev[D.dev].kind === 'comb';
+  hist.record(project, cmb ? 'Plug ' + modLabel(src) + ' into ' + modLabel(D.dev) : 'Modulate ' + modLabel(dst) + ' with ' + modLabel(src)); // ((LC §8.3) "Plug LFO 2 into Combiner 1"
   const e = hist.u[hist.u.length - 1];
   const r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop }); // (the Serum's "Limit mod depth on drop")
   if (!r.ok) { hist.prune(project); notice(r.why || modRefusal(r.code), 4000); updateUndoUI(); return null; }
@@ -10591,6 +10777,15 @@ function modSrcPick(dst, el) {
   return true;
 }
 const modAt = el => { const r = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null; return r ? { x: r.left, y: r.bottom + 6 } : { x: undefined, y: undefined }; };
+// (LC §8.3) a tap on a combiner's IN: "Connect to…" with the track's LFOs not yet plugged there (modSrcPick's way; a pick: modConnect's one
+// step) → the items (none: said)
+function cmbPick(key, el) {
+  const t = mOwn(), L = modSrcList(t).filter(s => !s.hidden && cmbCan(t, s.id, { dev: key, pid: 'in' }).ok);
+  if (!L.length) { notice(modSrcList(t).some(s => cmbCan(t, s.id, { dev: key, pid: 'in' }).why === CMOD.CMB_TWICE) ? `Every LFO of this track is plugged into ${modLabel(key, t)}` : 'Add an LFO first (Sources ▸ Modulators)', 4000); return []; }
+  const p = modAt(el), items = L.map(s => ({ label: s.label, action: () => modConnect(s.id, key + ':in') }));
+  cvTray.popupMenu(p.x, p.y, items);
+  return items;
+}
 // the parameter list of the Serum a cable is aimed at (a drop on its bar, a tap on the jack); elsewhere the reason
 function modDests(src, dev, el) {
   const t = mOwn(), d = dev && t.dev ? t.dev[dev] : null;
@@ -10609,7 +10804,7 @@ function modJackTap(src, el) {
 }
 const modDragOpts = {
   canMod: (src, dst) => modCan(src, dst),
-  markDests: () => modMarks(),
+  markDests: src => modMarks(src), // ((LC §8.3) the dragged source: a combiner's IN is lit for an LFO alone
   onMod: (src, dst) => { modConnect(src, dst); },
   onRefuse: (src, dst, why) => notice(why || modRefusal('nomod'), 4000),
   // (milestone 3, §2.5) the audio side of the same drag: a Serum's internal ends in parts view (a part's / VOICE's jack:
@@ -10648,9 +10843,11 @@ function afterTap(fn) {
 /* ---- the mod cables' badges (cv-cables host.cables) */
 // a tap on a badge (selected or not): the inspector at it — after the event, so a long-press / right-click (its menu) does not
 function modCableSel(id, by) {
+  cmbHl(id); // ((LC §8.3) the combiners' faces: the selected input's list line
   if (modSelHost || !id || !modLayer) return;
   modMenuId = null;
   const c0 = cvView && cvView.cables.list().find(x => x.id === id);
+  if (c0 && c0.kind === 'mod' && c0.nobadge) return; // ((LC §8.3) an input cord's tap selects it: its line in the face is the picker
   if (c0 && c0.int && c0.stub) { // ((3, §2.5) a stub "→ Filter (off)": a tap opens the source's routing popover — after the tap (review 2 P1-5)
     (by ? afterTap : f => Promise.resolve().then(f))(() => {
       const c = cvView && cvView.cables.list().find(x => x.id === id);
@@ -10674,6 +10871,7 @@ function modCableMenu(id) {
   if (c && c.int && (c.fork || c.stub)) return [{ label: c.stub ? 'Routing…' : 'Balance…', action: () => sxCableAct(c, 'balance') }] // ((3) a forked internal cable, a stub: the source's routing popover
     .concat(c.off ? [{ label: 'Turn ' + rigLabel(mOwn(), c.dev, c.off) + ' on', action: () => sxAddPart(c.dev, 'filter', null, c.off) }] : []); // ((P1-6) a stub into an off filter)
   if (!c || c.kind !== 'mod') return [];
+  if (c.nobadge) return [{ label: c.byp ? 'Unmute' : 'Mute', action: () => modBypass(id) }]; // ((LC §8.4) an input's: Mute / Unmute (cv-cables' Disconnect first) — its amount the face's
   return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } },
     { label: 'Bypass', checked: !!c.byp, action: () => modBypass(id) }]; // (U15, SPEC §2.9; the amount stays the inspector's)
 }
@@ -10682,7 +10880,7 @@ function modBypass(id) {
   const t = mOwn(), c = cvView && cvView.cables.list().find(x => x.id === id);
   if (!c || c.kind !== 'mod') return;
   if (c.preset || c.own) modEdit({ preset: c.dev, slot: c.slot }, { byp: c.byp ? 0 : 1 });
-  else { hist.record(project, 'Mod bypass'); CMOD.setMod(t, id, { byp: c.byp ? 0 : 1 }); }
+  else { hist.record(project, c.nobadge ? (c.byp ? 'Unmute ' : 'Mute ') + modLabel(c.src || c.a) : 'Mod bypass'); CMOD.setMod(t, id, { byp: c.byp ? 0 : 1 }); } // ((LC) an input: "Mute LFO 2"
   cvModAfter(t);
   cvModSync();
 }
@@ -10734,7 +10932,28 @@ function modUnstep() {
   if (P && P.e && hist.u[hist.u.length - 1] === P.e) { hist._drop(hist.u.pop()); updateUndoUI(); }
 }
 // after every row edit: the patch, the Serum's halos, the view (cables, the "mods n/64" badge), the track rows
-function cvModAfter(t) { queuePatch(t); modHalos(t); cvRender(); renderHeads(); persist(); updateUndoUI(); }
+function cvModAfter(t) { cmbRoom(t); queuePatch(t); modHalos(t); cvRender(); renderHeads(); persist(); updateUndoUI(); cmbSoon(); } // ((LC) the Combiner faces follow every row / state edit
+// (LC review R2-2) a plug / an unplug changes a Combiner face's height (32 px a list line): the modules stacked under it in its column move
+// by the difference (cv-module roomBelow: down growing, back up shrinking) — written to t.lay inside the edit's own step (undo takes both);
+// the face synced at once, so a second edit before the next frame measures from the new height
+function cmbRoom(t) {
+  if (!cvView || !t || cvView.trackId !== t.id || !modBodies.size || typeof cvModsUI.combFaceH !== 'function') return;
+  for (const [key, B] of modBodies) {
+    const d = t.dev && t.dev[key], m = cvView.modules.get(key);
+    if (!B || B.kind !== 'comb' || !d || d.kind !== 'comb' || !m || m.fold || !B.face || !(B.face.h > 0)) continue;
+    const dh = cvModsUI.combFaceH(CMOD.inputsOf(t, key).length) - B.face.h;
+    if (!dh) continue;
+    const R = cvView.rects();
+    R[key] = Object.assign({}, R[key], { h: cvModule.BAR_H + B.face.h }); // (its height now: the face's, ahead of the next measure)
+    const mv = cvModule.roomBelow(R, key, dh);
+    if (mv) {
+      const lay = cvPinned(t);
+      for (const k of Object.keys(mv)) { lay[k] = Object.assign({}, lay[k] || {}, { x: mv[k].x, y: mv[k].y }); const mm = cvView.modules.get(k); if (mm) mm.setPos(mv[k].x, mv[k].y, false); }
+      t.lay = lay;
+    }
+    try { B.sync(); } catch (err) { console.warn(err); }
+  }
+}
 function modHalos(t) {
   for (const d of sxIds(t)) {
     const r = sxRecOf(t.id, d);
@@ -10987,7 +11206,7 @@ function initModLayer() {
       nativeLabel: (dev, src) => { const x = modSources(dev).find(q => q.id === src); return x ? x.label : ''; }, // ((3) a Serum source's name)
       hidden: (dev, pid) => modHidden(dev, pid), // ((3, §2.4) a knob no mounted view shows: its tag, Show …
       budget: dev => { // (2b: the ModCore slots, the device kind; (U9) cables, not payload rows)
-        const t = mOwn(), d = t.dev && t.dev[dev], b = Object.assign(modBudgetOf(t, dev), { kind: isSxDev(t, dev) ? 'serum' : d && d.kind === 'panel' ? 'panel' : 'classic' });
+        const t = mOwn(), d = t.dev && t.dev[dev], b = Object.assign(modBudgetOf(t, dev), { kind: isSxDev(t, dev) ? 'serum' : d && d.kind === 'panel' ? 'panel' : d && d.kind === 'comb' ? 'comb' : 'classic' }); // ((LC §8.4) a combiner: its inputs' words
         if (t === MREC && b.slots && typeof b.slots === 'object') { b.slots = Object.assign({}, b.slots); delete b.slots.env; } // ((MM UI fixer, review MM-2 P3-1) the master has no envelopes: no "ENV 0/4"
         return b;
       },
@@ -11010,7 +11229,7 @@ function initModLayer() {
   } catch (err) { modLayer = null; console.warn('The modulation inspector is unavailable', err); }
 }
 // ⋯ → Modulation list…: every mod row of the track by Serum (canvas and preset), the budgets
-function modList() { const t = mOwn(); if (modLayer) modLayer.openList(t.name, modDestDevs(t).map(id => ({ id, label: cvDevName(t, id) }))); }
+function modList() { const t = mOwn(); if (modLayer) modLayer.openList(t.name, modDestDevs(t).concat(cmbIds(t).filter(id => CMOD.inputsOf(t, id).length)).map(id => ({ id, label: cvDevName(t, id) }))); } // ((LC §8.4) + the combiners' inputs
 // undo / redo / a load (applyRestore), a preset load (sxLoad): the open inspector and Mod list re-read, (2b) the editing
 // bodies re-read their state; no gesture open
 function cvModSync() {
@@ -11137,6 +11356,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, tile: modTile, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
       bodies: modBodies, sel: modCableSel, act: modCableAct, cmenu: modCableMenu, list: modList, label: modLabel, descs: modDescs, decor: cvModDecor, cableDrag: () => modDrag,
+      comb: key => Object.assign(modBase(key, 'comb'), cmbHost(key, mOwn().id)), feed: cmbFeed, // ((LC, tests/canvas-LC-sim) a combiner's body host o, as modMount builds it
       hintReset: () => { modHinted = false; } }, // ((SX0) the 24+ hint's session flag: a rig's own rows drawn as cords say it earlier in canvas-2a-sim)
   };
   // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers

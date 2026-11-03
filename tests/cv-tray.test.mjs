@@ -1078,9 +1078,9 @@ test('(WC, fixer K; review P3-14) the Sources tray scrolls as one under the mous
 
 /* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): the six new tiles */
 test('sourcesTray (2b): MOD_TILES lists every kind ((MOD1 §5) LFO · Envelope · Macros first, then MOD_ORDER\'s rest; the wheel project-scoped; LFO / Envelope / Macros / CC / Chaos multi); the tiles carry original glyphs (one each) and data-multi; a multi tile never greys out (setPlaced ignored); the Serum view\'s note and the Note tools placeholder re-worded', () => {
-  assert.deepEqual(T.MOD_TILES.map(m => m.id + ':' + m.scope + (m.multi ? ':multi' : '')), ['lfo:track:multi', 'env:track:multi', 'macro:track:multi', 'wheel:project', 'velo:track', 'at:track', 'bend:track', 'note:track', 'cc:track:multi', 'chaos:track:multi']);
+  assert.deepEqual(T.MOD_TILES.map(m => m.id + ':' + m.scope + (m.multi ? ':multi' : '')), ['lfo:track:multi', 'env:track:multi', 'macro:track:multi', 'comb:track:multi', 'wheel:project', 'velo:track', 'at:track', 'bend:track', 'note:track', 'cc:track:multi', 'chaos:track:multi']); // ((LC §8.1) the Combiner after Macros)
   const R = modRig({ mods: T.MOD_TILES });
-  assert.deepEqual([R.S.modTiles().length, new Set(R.S.modTiles().map(b => b.children[0].innerHTML)).size], [10, 10], 'ten tiles, ten glyphs');
+  assert.deepEqual([R.S.modTiles().length, new Set(R.S.modTiles().map(b => b.children[0].innerHTML)).size], [11, 11], 'eleven tiles, eleven glyphs');
   assert.ok(R.S.modTiles().every(b => /<svg /.test(b.children[0].innerHTML) && !/<text|<image|href/.test(b.children[0].innerHTML)), 'inline strokes, no text / images / links');
   // ((MOD1 §5) the LFO, Envelope and Macros tiles wear the Wavecraft's glyphs — the Envelope's ADSR trace on a baseline and the LFO's shape, each with
   // the editor's square handles at its points (three each), the Macros' four panes — and the other seven keep the Modulators' own (drawn with circles and paths)
@@ -1089,6 +1089,10 @@ test('sourcesTray (2b): MOD_TILES lists every kind ((MOD1 §5) LFO · Envelope �
   assert.deepEqual([nrect(G.env), nrect(G.lfo), nrect(G.macro)], [3, 3, 4], 'the editor\'s handles (three each); the Macros\' four panes');
   assert.match(G.env, /<path d="M6 24 12 5l6 9.5h10L34 24"\/>/, 'the trace itself');
   assert.match(G.lfo, /<path d="M5 21C9 21 9 6 14 6s7 15 12 15 5-8 9-8"\/>/, 'the LFO\'s shape');
+  // ((LC §12, lane U folded into phase 0) the Combiner's own: two faint waves running into one junction, one full-strength wave out of it)
+  const faint = (G.comb.match(/<path opacity="\.45" /g) || []).length, solid = (G.comb.match(/<path d=/g) || []).length;
+  assert.deepEqual([faint, solid, /<circle cx="22" cy="14"/.test(G.comb), /fill=/.test(G.comb), mtile(R, 'comb').title, mtile(R, 'comb').hasAttribute('data-multi')],
+    [2, 1, true, false, 'Combiner — tap to add one, or drag it onto the canvas', true], 'stroked, monochrome; a multi tile');
   const lfo = mtile(R, 'lfo'), velo = mtile(R, 'velo');
   assert.deepEqual([lfo.hasAttribute('data-multi'), velo.hasAttribute('data-multi'), lfo.title, mtile(R, 'wheel').title],
     [true, false, 'LFO — tap to add one, or drag it onto the canvas', 'Mod Wheel — tap to add it (one for the whole project), or drag it onto the canvas']);
@@ -1127,9 +1131,9 @@ test('sourcesTray (MOD1 §5, Q5): the Modulators view — SRC_VIEWS lists it aft
   R.S.modTile('env').click(); R.S.setMode('track'); R.S.modTile('macro').click();
   assert.deepEqual(R.picks, ['mod env:replace', 'mod macro:track']);
   R.S.setMaster(true);
-  assert.deepEqual([modIds(R.S), R.host.hidden], [['lfo', 'macro', 'cc', 'chaos'], true], 'the master: its four tiles, the view menu away');
+  assert.deepEqual([modIds(R.S), R.host.hidden], [['lfo', 'macro', 'comb', 'cc', 'chaos'], true], 'the master: its five tiles ((LC) the Combiner), the view menu away');
   R.S.setMaster(false);
-  assert.deepEqual([R.S.view(), modIds(R.S).length, R.host.hidden], ['mods', 10, false], 'back in the Modulators view');
+  assert.deepEqual([R.S.view(), modIds(R.S).length, R.host.hidden], ['mods', 11, false], 'back in the Modulators view');
   R.S.destroy();
 });
 
@@ -1229,7 +1233,7 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   const M2 = modRig({ mods: T.MOD_TILES, parts: T.RIG_TILES, view: 'rig' });
   assert.deepEqual([M2.S.partTiles().map(b => b.getAttribute('data-part')), ['lfo', 'env', 'macro'].map(id => M2.S.modTile(id).hidden)], [['osc', 'sub', 'noise', 'filter'], [false, false, false]],
     'the Modulators\' tiles are the rig view\'s LFO / Envelope / Macros');
-  assert.equal(new Set([...M2.S.partTiles(), ...M2.S.modTiles()].map(b => b.children[0].innerHTML)).size, 14, 'the Wavecraft view\'s fourteen tiles, fourteen glyphs');
+  assert.equal(new Set([...M2.S.partTiles(), ...M2.S.modTiles()].map(b => b.children[0].innerHTML)).size, 15, 'the Wavecraft view\'s fifteen tiles, fifteen glyphs ((LC) the Combiner\'s)');
   M2.S.destroy();
   // in o.secEl when the host gives no elements: the modules' section with its four tiles, Note tools a placeholder; without o.parts: both placeholders
   const d = fresh(), list = d.createElement('div'), sec = d.createElement('div');
@@ -1947,7 +1951,7 @@ test('style.css (WC, the user 2026-10-26): each corner screw is one SVG image �
 /* ---------------------------------------------------------------- (MM, IMPL-MM §7.3; lane U) the Sources tray on the master canvas */
 // The master has no notes: its tray shows the Modulators section with the four tiles it takes (LFO, Macro, CC, Chaos) and a short note.
 // setMaster(on) is the host's call (main.js srcModeUI: cvMaster && mode !== 'track'); the view the user chose is kept underneath.
-const MASTER_NOTE_TXT = 'The master has no notes: its modulators are LFOs, Macros, CC and Chaos. Drop one on the canvas and cable its jack to any knob of the master rack.';
+const MASTER_NOTE_TXT = 'The master has no notes: its modulators are LFOs, Macros, Combiners, CC and Chaos. Drop one on the canvas and cable its OUT to any knob of the master rack.'; // ((LC §12) + the Combiner)
 // the tray as main.js builds it (index.html's boxes: the view host, the sections of #srcScroll, #srcNote), every tile row on
 function mastRig(o = {}) {
   const d = fresh();
@@ -1982,7 +1986,7 @@ const modIds = S => S.modTiles().filter(b => !b.hidden).map(b => b.getAttribute(
 const noneShown = s => !/1/.test(s);
 
 test('sourcesTray (MM): the constants — MASTER_MODS (LFO, Macro, CC, Chaos: no envelope, no notes on the master), MASTER_NOTE, MASTER_SRC; every master tile is a multi tile of MOD_TILES', () => {
-  assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos']);
+  assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos', 'comb']); // ((LC §2.1) + the Combiner)
   assert.ok(Object.isFrozen(T.MASTER_MODS));
   assert.equal(T.MASTER_NOTE, MASTER_NOTE_TXT);
   assert.equal(T.MASTER_SRC, 'The master takes effects (the rack’s +) and modulators (Sources ▸ Modulators)');
@@ -1998,7 +2002,7 @@ test('sourcesTray (MM): setMaster(true) — the view menu is hidden, every model
     assert.deepEqual([R.S.master(), R.list.getAttribute('data-master'), R.tray.classList.contains('cv-mside'), R.S.view()], [true, '1', true, view], view + ': on; the chosen view kept underneath');
     assert.deepEqual([sh.models, sh.sets].map(noneShown), [true, true], view + ': no model or set tile shown (the rows in sections: the sections below)');
     assert.deepEqual([R.mods.s.hidden, R.ctls.s.hidden, R.parts.s.hidden, R.notes.s.hidden, R.host.hidden], [false, true, true, true, true], view + ': the Modulators section alone; the view menu\'s host hidden');
-    assert.deepEqual(modIds(R.S), ['lfo', 'macro', 'cc', 'chaos'], view + ': four tiles, in the Modulators\' order');
+    assert.deepEqual(modIds(R.S), ['lfo', 'macro', 'comb', 'cc', 'chaos'], view + ': five tiles ((LC) the Combiner), in the Modulators\' order');
     assert.deepEqual(R.scroll.children.filter(c => c !== R.list && c !== R.mods.s).map(c => c.hidden), R.scroll.children.filter(c => c !== R.list && c !== R.mods.s).map(() => true), view + ': every other section of the scroller hidden (Moog, placeholders, parts, Controllers)');
     assert.deepEqual([sh.mnote, R.note.textContent], [1, ''], view + ': the master\'s note shown, the view\'s own note cleared');
     const mn = mnoteOf(R);
@@ -2020,11 +2024,11 @@ test('sourcesTray (MM): setMaster(false) gives every view back exactly as it was
     R.S.destroy();
   }
   const R = mastRig({ view: RIG.VIEW });
-  assert.equal(modIds(R.S).length, 10, 'the rig view: all ten tiles (their section shows)');
+  assert.equal(modIds(R.S).length, 11, 'the rig view: all eleven tiles (their section shows)');
   R.S.setMaster(true);
-  assert.equal(modIds(R.S).length, 4);
+  assert.equal(modIds(R.S).length, 5);
   R.S.setMaster(false);
-  assert.deepEqual([modIds(R.S).length, R.mods.s.hidden], [10, false], 'ENV, Velocity, Aftertouch, Bend, Note, Mod Wheel are back');
+  assert.deepEqual([modIds(R.S).length, R.mods.s.hidden], [11, false], 'ENV, Velocity, Aftertouch, Bend, Note, Mod Wheel are back');
   R.S.setView('hw');
   assert.equal(R.mods.s.hidden, true, 'Hardware: no Modulators (as before)');
   R.S.destroy();
@@ -2035,9 +2039,9 @@ test('sourcesTray (MM): while the master canvas shows, a view restore (setView �
   R.S.setMaster(true);
   R.S.setView('hw');
   const sh = trayShape(R);
-  assert.deepEqual([R.S.view(), R.list.getAttribute('data-view'), noneShown(sh.models), modIds(R.S), R.mods.s.hidden, sh.mnote, R.host.hidden], ['hw', 'hw', true, ['lfo', 'macro', 'cc', 'chaos'], false, 1, true]);
+  assert.deepEqual([R.S.view(), R.list.getAttribute('data-view'), noneShown(sh.models), modIds(R.S), R.mods.s.hidden, sh.mnote, R.host.hidden], ['hw', 'hw', true, ['lfo', 'macro', 'comb', 'cc', 'chaos'], false, 1, true]);
   R.S.setView('ctl');
-  assert.deepEqual([R.S.view(), R.ctls.s.hidden, R.mods.s.hidden, modIds(R.S).length], ['ctl', true, false, 4], 'the Controllers view underneath: its row stays hidden');
+  assert.deepEqual([R.S.view(), R.ctls.s.hidden, R.mods.s.hidden, modIds(R.S).length], ['ctl', true, false, 5], 'the Controllers view underneath: its row stays hidden');
   R.S.setMaster(false);
   assert.deepEqual([R.S.view(), R.ctls.s.hidden, R.mods.s.hidden, R.host.hidden], ['ctl', false, true, false], 'the Controllers row is back, the Modulators gone');
   R.S.destroy();
@@ -2072,7 +2076,7 @@ test('sourcesTray (MM): o.masterMods / o.masterNote — a host list narrows the 
   E.S.destroy();
   const D2 = mastRig({ masterMods: undefined, masterNote: '' });
   D2.S.setMaster(true);
-  assert.deepEqual([modIds(D2.S), mnoteOf(D2).textContent], [['lfo', 'macro', 'cc', 'chaos'], MASTER_NOTE_TXT]);
+  assert.deepEqual([modIds(D2.S), mnoteOf(D2).textContent], [['lfo', 'macro', 'comb', 'cc', 'chaos'], MASTER_NOTE_TXT]);
   D2.S.destroy();
 });
 
@@ -2097,11 +2101,11 @@ test('sourcesTray (MM): without a section element (a flat list) the heading "Mod
   d.body.append(list);
   const S = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: T.MOD_TILES, ctls: T.CTL_TILES, pick() {}, drag: {}, view: RIG.VIEW }); // ((SX0) the rig view: the Modulators with their heading, as the Serum view showed them
   const names = () => list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.tagName === 'P' ? 'p' : n.getAttribute('data-model') || n.getAttribute('data-mod') || n.getAttribute('data-ctl')) + (n.hidden ? '!' : ''));
-  assert.equal(list.children.length, 2 + 1 + 10 + 1 + 1, 'before the first visit: the synths, the Modulators\' heading and ten tiles, the Controllers\' heading and tile — no note');
+  assert.equal(list.children.length, 2 + 1 + 11 + 1 + 1, 'before the first visit: the synths, the Modulators\' heading and eleven tiles, the Controllers\' heading and tile — no note');
   S.setMaster(true);
-  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env!', 'macro', 'wheel!', 'velo!', 'at!', 'bend!', 'note!', 'cc', 'chaos', 'p', '#Controllers!', 'pads!']); // ((MOD1 §5) LFO · Envelope · Macros first)
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env!', 'macro', 'comb', 'wheel!', 'velo!', 'at!', 'bend!', 'note!', 'cc', 'chaos', 'p', '#Controllers!', 'pads!']); // ((MOD1 §5) LFO · Envelope · Macros first; (LC) the Combiner after them)
   S.setMaster(false);
-  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env', 'macro', 'wheel', 'velo', 'at', 'bend', 'note', 'cc', 'chaos', 'p!', '#Controllers!', 'pads!']);
+  assert.deepEqual(names(), [MODELS[0].id + '!', MODELS[1].id + '!', '#Modulators', 'lfo', 'env', 'macro', 'comb', 'wheel', 'velo', 'at', 'bend', 'note', 'cc', 'chaos', 'p!', '#Controllers!', 'pads!']);
   S.destroy();
   assert.equal(list.children.filter(n => n.tagName === 'P').length, 0, 'the note goes with the tray');
 });

@@ -32,6 +32,8 @@
 // its one section is the Modulators', which stay at the end of the rig view and of the Serum view until ROADMAP 28), Hardware / Simple's note
 // pointing to it, the rig view's note about its own modules only —, and the LFO / Envelope / Macros tiles wearing the rig's glyphs (an ADSR
 // trace and an LFO shape with the editor's square handles, four panes) in MOD_GLYPH, the part tiles' no more.
+// Stage LC (IMPL-LC §2.1, §8.1; phase 0, lane U's folded in): the Combiner's tile after Macros in MOD_TILES (multi), its glyph (two faint waves
+// into one), the master's fifth tile (MASTER_MODS) and MASTER_NOTE naming it.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -711,25 +713,28 @@ const partGlyph = id => PART_GLYPH[id] || PART_GLYPH.osc;
 const RIG_META = 'modular synth', RIG_GIVES = () => (RIG.STARTER ? 'a small starter rig that plays' : 'an Amplifier to add modules to');
 /** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles: id = the mod kind, scope 'project' (the wheel) or 'track', multi = any
  * number per track (its tile never greys out: setPlaced ignores it). The host passes them as o.mods (with its own names if it likes).
- * (MOD1 §5, the user's answer 3) one tile per type, LFO · Envelope · Macros first, then MOD_ORDER's rest; the names cv-mods MOD_LABEL's. */
+ * (MOD1 §5, the user's answer 3) one tile per type, LFO · Envelope · Macros first, ((LC §8.1) the Combiner after them,) then MOD_ORDER's
+ * rest; the names cv-mods MOD_LABEL's. */
 export const MOD_TILES = Object.freeze([
   { id: 'lfo', name: 'LFO', scope: 'track', multi: true }, { id: 'env', name: 'Envelope', scope: 'track', multi: true },
-  { id: 'macro', name: 'Macros', scope: 'track', multi: true },
+  { id: 'macro', name: 'Macros', scope: 'track', multi: true }, { id: 'comb', name: 'Combiner', scope: 'track', multi: true },
   { id: 'wheel', name: 'Mod Wheel', scope: 'project' }, { id: 'velo', name: 'Velocity', scope: 'track' },
   { id: 'at', name: 'Aftertouch', scope: 'track' }, { id: 'bend', name: 'Bend', scope: 'track' }, { id: 'note', name: 'Note', scope: 'track' },
   { id: 'cc', name: 'CC', scope: 'track', multi: true }, { id: 'chaos', name: 'Chaos', scope: 'track', multi: true },
 ].map(Object.freeze));
 /** (MM, IMPL-MM §7.3) The Modulators the master takes (no notes there: no Envelope, Velocity, Aftertouch, Bend, Note, Mod Wheel — an LFO in ENV
- * mode already runs once from ▶; a CC module is the hardware wheel): ids of MOD_TILES; the host may pass its own as o.masterMods. */
-export const MASTER_MODS = Object.freeze(['lfo', 'macro', 'cc', 'chaos']);
+ * mode already runs once from ▶; a CC module is the hardware wheel; (LC §2.1) the Combiner, its LFOs the master's): ids of MOD_TILES (song
+ * MASTER_MOD_KINDS' list; shown in MOD_TILES' order); the host may pass its own as o.masterMods. */
+export const MASTER_MODS = Object.freeze(['lfo', 'macro', 'cc', 'chaos', 'comb']);
 /** (MM) The note under the master's tiles (o.masterNote overrides): what the master has, in plain words. */
-export const MASTER_NOTE = 'The master has no notes: its modulators are LFOs, Macros, CC and Chaos. Drop one on the canvas and cable its jack to any knob of the master rack.';
+export const MASTER_NOTE = 'The master has no notes: its modulators are LFOs, Macros, Combiners, CC and Chaos. Drop one on the canvas and cable its OUT to any knob of the master rack.';
 /** (MM) The master canvas's refusal of an instrument (a drop or a pick) and of a modulator it does not take: the one line it says. */
 export const MASTER_SRC = 'The master takes effects (the rack’s +) and modulators (Sources ▸ Modulators)';
 // original monochrome glyphs (stroked with currentColor): a wheel, velocity bars, an aftertouch pad, a bend curve, (2b) a CC fader, a scribble,
 // a key, ((MOD1 §5) the rig's own three for the LFO, Envelope and Macros: an LFO shape and an ADSR trace on a baseline, each with the editor's
-// square handles at its points (three each), four panes)
+// square handles at its points (three each), four panes), ((LC) the Combiner: two faint waves running into a junction, one full-strength out)
 const MOD_GLYPH = {
+  comb: '<svg viewBox="0 0 40 28" aria-hidden="true"><path opacity=".45" d="M4 9c2-4 4-4 6 0s4 4 6 0l6 5"/><path opacity=".45" d="M4 19c1.5-3 2.5-3 4 0s2.5 3 4 0 2.5-3 4 0l6-5"/><circle cx="22" cy="14" r="1.6"/><path d="M23.6 14c1.6-7 3.2-7 4.4 0s2.8 7 4.4 0 2-5 3.6-5"/></svg>',
   wheel: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="14" y="2.5" width="12" height="23" rx="3"/><path d="M15.5 9.5h9M15.5 12h9M15.5 14.5h9"/></svg>',
   velo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 24.5h30"/><path d="M8 24.5v-4M14 24.5v-8M20 24.5v-12M26 24.5v-16M32 24.5v-20"/></svg>',
   at: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="7" y="13.5" width="26" height="11" rx="2"/><path d="M20 3.5v7M16.5 7.5 20 11l3.5-3.5"/></svg>',

@@ -90,7 +90,7 @@ test('an LFO tile drop adds l1 with Serum\'s default LFO state (GLOBAL, one step
   const t = T(), n0 = hsteps();
   ID.a = t.id;
   tiles().setView('mods'); // ((MOD1 §5) the Modulators' own view; (SX0) the Serum view that held them too is gone)
-  assert.deepEqual([keys(), tiles().modTiles().length, tiles().modTile('lfo').hasAttribute('data-multi')], [RK(), 10, true]);
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().modTile('lfo').hasAttribute('data-multi')], [RK(), 11, true]); // ((LC) + the Combiner)
   drop('lfo');
   assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], [RK('l1'), n0 + 1, 'Add LFO 1', 'Added LFO 1 · tap to undo']);
   const d = t.dev.l1, L0 = C.normLfo({ mono: 1 });

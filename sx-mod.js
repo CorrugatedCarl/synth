@@ -43,6 +43,8 @@
  *   reset(sx[, proc])               back to the attach state (§11.6 signature; without proc the current rates are kept)
  *   fxMods(proc, sx) → Float64Array(MAXFX)   offsets in FX-context order (§4.2, §5.5), reused
  *   [+] snap(proc, sx, s)           modulation part of the snapshot (§6.20): eff, LFO/env monitors, mOut (when s has it)
+ *   [+] lfoLock / lfoClock / lfoRead / lfoTau / lfoRate / lfoMon (sx, l, …)   IMPL-LC §5.4: a processor LFO's lock, clock closed
+ *                                   forms and read law for the Combiner's preview and monitor (below fxMods' block, at the end)
  *   [+] fastRead(proc, sx, v, off) / effAt(proc, sx, ix, n, v, off)   FR Cut B §2.4, the engine's fast lane: snap's LFO / ENV
  *                                   lines into v[off …] (ph 10, out 10, y 10, env 4, stage 4, t 4) / its eff at ix[0 … n) into
  *                                   v[off + j] — an additive copy, allocation-free
@@ -2185,9 +2187,82 @@
       }
     }
 
+    /* ------------------------------------------------------------ (IMPL-LC §5.2, §5.4, D3) a processor LFO's laws on a state */
+    // Stage LC, the Combiner: its preview (the page runs these on a ModCore of its own, synced from the payload the worklet got) and its
+    // monitor (the worklet, while watched). Processor LFOs only — kind K_OFF (FREE GLOBAL) and K_MONO (RETRIG / ENVELOPE GLOBAL): what a
+    // combiner input always is (its own slot or its GLOBAL twin). Additive: nothing above calls them. The clock x is the DSP's own state
+    // variable — FREE: cycles + phase before PHASE and DIRECTION (freePos' oCy + oPh; the fast path offLfo keeps the phase alone, and
+    // needs no more: it runs only without PHASE, direction or swing); RETRIG / ENVELOPE: P.lCy + P.lPh (PHASE in its start point); an
+    // ENVELOPE pass x < 1, its loop passes x ≥ 1 (lp + (x − 1) mod (1 − lp), cycle 1 + floor((x − 1) / (1 − lp))). ModCore has no
+    // keyboard swing (shim.p.seq null) and no Voice Control (scale 1): neither is modelled here.
+    //   lfoLock(sx, l, noteless) → 'song' (FREE + ANCHOR: BPM, or Hz while playing — a closed form of the song beat) | 'time' (FREE: linear
+    //       in frames from ▶) | 'note' (RETRIG / ENVELOPE: restarted by every note-on; 'time' on a noteless host, the master) | 'rand'
+    //       (S&H, Lorenz, Rossler: drawn / integrated)
+    //   lfoClock(sx, l, b, b0) → the clock at song beat b when ▶ started at beat b0 — ▶ resets every processor LFO to its start
+    //       (transport); FREE + BPM ANCHOR start + b / beats (offLfo, freePos); FREE + Hz ANCHOR start + b·60 / bpm·hz (freePos'
+    //       re-anchor at ▶, a seek, a wrap); other FREE start + (b − b0)·60 / bpm·hz; RETRIG / ENVELOPE (lfoAdvG from ▶) start +
+    //       (b − b0)·60 / bpm·hz, with BPM ANCHOR startPh + (b − b0) / beats after ▶'s first chunk
+    //   lfoRead(sx, l, x, gate) → the raw value at clock x: FREE + PHASE (the cycle with it), ENVELOPE its pass / loop (gate 0: the loop
+    //       never runs — no voice holds it, the master), DIRECTION (readPos), the shape / point law / Path X (rawOf on the processor
+    //       holder); no SMOOTH
+    //   lfoTau(sx, l) → SMOOTH's time constant in s (0.5·s³; 0 = none): per chunk k = 1 − exp(−dtC / τ), offLfo's recurrence
+    //   lfoRate(sx, l) → cycles per base frame (lfoHz / base)
+    //   lfoMon(sx, l, out, j) → out[j] the clock of the span's last chunk (the one starting 4 base frames before the span's end: lane
+    //       F's anchor convention), out[j + 1] lfoRate (the worklet's monitor: no write, no allocation) — FREE + BPM ANCHOR the closed form
+    //       at that chunk's beat (exact); otherwise the state the span left (the next chunk's clock) minus one chunk's advance (4·r;
+    //       ≈ 1e-16 off the DSP's own sum)
+    const lfoBeats = (m, l, E) => (m.lfoBpm[l] ? ladBeats(m, l, E[LRATE[l]]) : 0);
+    const offFast = (m, l) => m.lKind[l] === K_OFF && m.lExt[l] === 0 && m.monoEff[VC_LSCALE] === 0.5 && m.monoEff[L1_PHASE + l] === 0 && m.fB0[l] === 0; // (begin's fast-path test)
+    function lfoLock(sx, l, noteless) {
+      const m = sx.mod, ty = m.lfoType[l], k = m.lKind[l];
+      if (ty === T_SH || ty === T_LORENZ || ty === T_ROSSLER) return 'rand';
+      if (k === K_OFF) return (m.lfoAnchor[l] && lfoBeats(m, l, m.monoEff) > 0) || m.hostHz[l] !== 0 ? 'song' : 'time';
+      return k === K_MONO && noteless ? 'time' : 'note';
+    }
+    function lfoRate(sx, l) { const m = sx.mod; return lfoHz(m, l, m.monoEff, 1) / m.base; }
+    function lfoClock(sx, l, b, b0) {
+      const m = sx.mod, E = m.monoEff, beats = lfoBeats(m, l, E), st = m.lfoStart[l], spb = 60 / m.bpm;
+      if (m.lKind[l] === K_MONO) {
+        if (beats > 0 && m.lfoAnchor[l] && b - b0 >= m.dtC * m.bpm / 60) return startPh(m, l, E) + (b - b0) / beats;
+        return st + (b - b0) * spb * lfoHz(m, l, E, 1);
+      }
+      if (beats > 0 && m.lfoAnchor[l]) return st + b / beats;
+      if (m.hostHz[l] !== 0) return st + b * spb * lfoHz(m, l, E, 1);
+      return st + (b - b0) * spb * lfoHz(m, l, E, 1);
+    }
+    function lfoRead(sx, l, x, gate) {
+      const m = sx.mod, E = m.monoEff, k = m.lKind[l];
+      let ph, cy;
+      if (k === K_MONO && m.lfoMode[l] === 1) {
+        const lp = m.lfoLoop[l];
+        if (x < 1) { ph = x > 0 ? x : 0; cy = 0; }
+        else if (lp >= 0 && lp < 1 && gate !== 0) { const L = 1 - lp, u = x - 1; cy = 1 + floor(u / L); ph = lp + u % L; }
+        else { ph = 1; cy = 0; }
+      } else {
+        cy = floor(x); ph = x - cy;
+        if (k !== K_MONO) { const d = E[L1_PHASE + l]; if (d !== 0) { const u = ph + d, f = floor(u); ph = u - f; cy += f; } }
+      }
+      return rawOf(m, m.P, l, readPos(m, l, ph, cy), E);
+    }
+    function lfoTau(sx, l) { const sm = sx.mod.monoEff[LRATE[l] + 3]; return sm > 0 ? 0.5 * sm * sm * sm : 0; }
+    function lfoMon(sx, l, out, j) {
+      const m = sx.mod, E = m.monoEff, r = lfoRate(sx, l), dx = m.dtC * m.base * r;
+      let x;
+      if (m.lKind[l] === K_MONO) {
+        const P = m.P, ph = P.lPh[l], cy = P.lCy[l], lp = m.lfoLoop[l];
+        x = (m.lfoMode[l] !== 1 ? cy + ph : cy === 0 || !(lp >= 0 && lp < 1) ? ph : 1 + (cy - 1) * (1 - lp) + (ph - lp)) - dx;
+      } else {
+        const beats = lfoBeats(m, l, E);
+        if (beats > 0 && m.lfoAnchor[l]) { const fb = m.fB0[l], b = m.beatC[m.nCh > 0 ? m.nCh - 1 : 0]; x = m.lfoStart[l] + (fb !== 0 ? b - fb : b) * m.scM / beats; }
+        else x = (offFast(m, l) ? m.oPh[l] : m.oCy[l] + m.oPh[l]) - dx;
+      }
+      out[j] = x; out[j + 1] = r;
+    }
+
     globalThis.SxMod = Object.freeze({
       VER, NSV, NSRC, NROW, MAXCH, MAXFX, DEF_CT,
       attach, sync, syncCT, begin, idle, transport, reset, fxMods, snap, fastRead, effAt, ModV,
+      lfoLock, lfoClock, lfoRead, lfoTau, lfoRate, lfoMon, // ((LC §5.4) additive: the Combiner's preview and monitor
     });
   } catch (err) {
     globalThis.SxMod = null;                                   // a load failure never throws out of the script

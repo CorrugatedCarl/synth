@@ -46,7 +46,7 @@ test('normMaster: mdev — lfo / macro / cc / chaos under their prefixes (lfo.mo
   assert.deepEqual(S.normMaster({ mid: 5 }), { mid: 5 }, 'a mid alone is kept (ids stay fresh, a track\'s rule)');
   assert.deepEqual(S.normMaster({ mdev: { l1: { kind: 'lfo' } } }).mdev.l1.lfo.mono, 1);
   assert.deepEqual([S.normMaster({ mdev: { e1: { kind: 'env' } } }), S.normMaster({ mdev: { mfx: { kind: 'panel', fx: {} } }, mods: [{ id: 'bad' }] }), S.normMaster({ fx: 3, lay: { mfx: { x: 'a' } } }), S.normMaster(null), S.normMaster({ mdev: 4 })], [undefined, undefined, undefined, undefined, undefined], 'nothing valid: no key');
-  assert.equal(S.MASTER_MOD_KINDS.join(), 'lfo,macro,cc,chaos');
+  assert.equal(S.MASTER_MOD_KINDS.join(), 'lfo,macro,cc,chaos,comb'); // ((LC §2.1) + the Combiner)
 });
 
 test('deserialize keeps project.master with mdev / mods / mid (the whitelist); a master with nothing valid writes no key', () => {

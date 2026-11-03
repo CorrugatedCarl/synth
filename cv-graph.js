@@ -133,8 +133,21 @@
 //                           without pad rows signs and compiles byte-identically, IMPL-8 D5; memoSig: the signature, tests)
 //   SCRATCH / KEEP_ID       the scratch destinations: V-scope rows of silent modules (oscillator / sub / noise / filter
 //                           knobs), never a note-on, LFO, ENV, chaos, porta or voice-control destination
+// Stage LC (IMPL-LC §4; lane E): a combiner module 'x<n>' (cv-mods inputsOf: its rows src → '<id>:in', LFOs only, t.mods order)
+// compiles when it has ≥ 1 input or OUT row; its needs come AFTER every existing one (the modules', the pads', the links' — §18
+// P1-5: no existing cable's slot moves or goes): first each combiner's value slot (one of the 16, a CC's: its OUT rows read
+// ext<j> = 62 + k − 8, onto a Serum-engine knob through the ext list), then its inputs' LFO slots — a GLOBAL track LFO or
+// Serum-engine LFO its own (shared with its cables: pay.slots['l1'] / ['i2/lfo1']), a PER NOTE / per-voice one a GLOBAL twin keyed
+// '<src>#g' (its state with mono 1; one per source, shared by the combiners; pay.slots[<module>] → the twin when the module has no
+// slot of its own, P3-9); every input slot a keep-alive (the existing rule). A combiner with no value slot runs nothing (its OUT and
+// input rows left 'slots', its inputs take no LFO slot); an input past the 10 LFO slots left 'slots', absent from in. Without a
+// combiner nothing here runs (D1: no key, field or byte differs). The payload gains, only then:
+//     cmb                   [{ id, k (value table 8…23), mode (0 add | 1 mul), in: [{ row, src (the CP source index), l (slot 0…9),
+//                           a (−1…1; 0 bypassed) }] }] — the combiners with a value slot, in module order (ModCore's span, §5.1)
+//     slots[<comb>]         { kind: 'comb', i (offset into the monitor block MC.cb: Σ 1 + 3n before it), n (inputs) }
+//   sigOf hashes a combiner's mode, never its win / mark (view only: a window pick recompiles nothing); its rows as every row
 import * as CM from './cv-mods.js?v=9';
-import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs, isPadSrc } from './cv-mods.js?v=9';
+import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs, isPadSrc, inputsOf } from './cv-mods.js?v=9';
 import { padOfSrc } from './pads-core.js?v=9'; // (IMPL-8 §5.3: a mod pad's id → its module and slot)
 import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX, N_LFO, N_ENV, N_MACRO, normalizeSerum, defaultSerum, compileSerum, SRC_INDEX, vi, DESTS, DEST_INDEX,
   NOTE_ON_DESTS, normLfo, lfoUsed, extIndex } from './serum-core.js?v=9';
@@ -142,7 +155,7 @@ import { fxLayout, fxDest } from './fx-core.js?v=9';
 import { patchFor, isSxId } from './models.js?v=9'; // ((WC) isSxId: a device's model runs on the Serum engine — the Serum and the rig; the literal 'serum' stays in the payload's shape / kind tags)
 
 export const LIMITS = Object.freeze({ inst: 8, panels: 16, fxPerPanel: 48 });
-export const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc', 'chaos']);
+export const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc', 'chaos', 'comb']); // ((LC phase 0) the Combiner a modulator device)
 const PORTS = { inst: ['out'], panel: ['in', 'out'], out: ['in'] };
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -593,7 +606,7 @@ function sigOf(t, project, o) {
   H1 = 0x811c9dc5; H2 = 0x9747b28c;
   mixN(isObj(project) && project.bpm > 0 ? +project.bpm : 120); mixN(o.smooth > 0 ? +o.smooth : 1); mixN(o.ultra ? 1 : 0); mixS(o.qr ? JSON.stringify(o.qr) : '');
   mixN(fnId(o.xferOf)); mixN(fnId(o.targetsOf));
-  for (const { id, dev, kind } of modDevs(t)) { mixS(id); if (kind === 'macro') hv(dev.names); else if (kind === 'cc') { hv(dev.cc); hv(dev.ch); } else hv(dev); }
+  for (const { id, dev, kind } of modDevs(t)) { mixS(id); if (kind === 'macro') hv(dev.names); else if (kind === 'cc') { hv(dev.cc); hv(dev.ch); } else if (kind === 'comb') mixS(dev.mode === 'mul' ? 'mul' : 'add'); else hv(dev); } // ((LC §4.2) a combiner: its mode — never win / mark
   const seen = new Set();
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
     if (!isObj(r)) continue;
@@ -641,6 +654,37 @@ export function compileMods(t, project, opts) {
   MEMO.set(t, { sig, pay });
   return pay;
 }
+// (LC §4) the combiners that compile — ≥ 1 input (cv-mods inputsOf) or an OUT row the compile needs — in module order, each input's
+// alloc key: the LFO's own id when GLOBAL, its GLOBAL twin '<src>#g' when PER NOTE / per voice
+function cmbPlan(t, devs, need) {
+  const out = [];
+  for (const { id, dev, kind } of devs) {
+    if (kind !== 'comb') continue;
+    const I = inputsOf(t, id), o = id + '.out';
+    if (I.length || need.has(o)) out.push({ id, dev, out: o, I: I.map(r => ({ r, key: perNoteOf(t, r.src) ? r.src + '#g' : r.src })) });
+  }
+  return out;
+}
+// (LC §4.3) pay.cmb and the slots' comb entries; the rows that found no slot → left 'slots'
+function cmbPay(CB, alloc, left, slots) {
+  const cmb = [];
+  let i = 0;
+  for (const c of CB) {
+    const a = alloc.get(c.out);
+    if (!a) { for (const x of c.I) left.push({ id: x.r.id, why: 'slots' }); continue; }
+    const ins = [];
+    for (const x of c.I) {
+      const b = alloc.get(x.key), m = b ? /^lfo(\d+)$/.exec(b.sid) : null;
+      if (!m) { left.push({ id: x.r.id, why: 'slots' }); continue; }
+      const v = typeof x.r.amt === 'number' && x.r.amt === x.r.amt ? Math.max(-1, Math.min(1, x.r.amt)) : 0;
+      ins.push({ row: x.r.id, src: SRC_IDX(b.sid), l: +m[1] - 1, a: x.r.byp ? 0 : v });
+    }
+    cmb.push({ id: c.id, k: a.k, mode: c.dev.mode === 'mul' ? 1 : 0, in: ins });
+    slots[c.id] = { kind: 'comb', i, n: ins.length };
+    i += 1 + 3 * ins.length;
+  }
+  return cmb;
+}
 function buildMods(t, project, o, V, devs) {
   const left = [], why = new Map(), dashed = new Set();
   // 1. the sources ModCore must evaluate: every non-Serum row's, and every Serum row's that needs an ext slot (a plan
@@ -674,16 +718,23 @@ function buildMods(t, project, o, V, devs) {
     else if (kind === 'env') take(src, 'env', true);
     else if (kind === 'chaos') take(src, 'chaos', !dev.chaos.mono);
     else if (kind === 'cc') take(src, 'val');
+    else if (kind === 'comb') continue; // ((LC §4) after every existing need, below)
     else take(src, MOD_SRC[src], kind === 'velo' || kind === 'note');
   }
   take('wheel', 'wheel');
   for (const id of [...need].filter(isPadSrc).sort(padOrd)) take(id, 'val'); // (IMPL-8 §5.3: the project's mod pads, after the track's modules)
   for (const id of [...need].filter(x => /\//.test(x)).sort()) { const S = srcDev(t, id); if (S && S.kind === 'link') take(id, /^lfo/.test(S.q.link) ? 'lfo' : 'env', !!perNoteOf(t, id)); }
+  const CB = cmbPlan(t, devs, need); // ((LC §4.1–4.2, P1-5) the combiners' value slots, then their inputs' LFO slots: after all of the above
+  if (CB.length) {
+    for (const c of CB) { need.add(c.out); take(c.out, 'val'); }
+    for (const c of CB) if (alloc.get(c.out)) for (const x of c.I) { need.add(x.key); take(x.key, 'lfo', false); }
+  }
   for (const id of need) if (!alloc.has(id) || alloc.get(id) === null) { alloc.set(id, null); }
   // the value table: macros (the first macro module) and the value sources, initial values from the modules
   for (const [id, a] of alloc) {
     if (!a || a.k < 0) continue;
     const S = srcDev(t, id), v = S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[k0(id) - 1] : 0) : S.kind === 'cc' ? S.dev.v : S.kind === 'pad' ? padVal(project, o, id) : 0;
+    if (S.kind === 'comb') continue; // ((LC) its slot is ModCore's to write: no host value
     vals.push({ k: a.k, src: SRC_IDX(a.sid), v: typeof v === 'number' ? v : 0, id });
   }
   vals.sort((a, b) => a.k - b.k);
@@ -748,12 +799,14 @@ function buildMods(t, project, o, V, devs) {
     const S = srcDev(t, id), m = /^(lfo|env|chaos|macro|ext)(\d+)$/.exec(a.sid);
     if (!m) continue;
     const k = +m[2] - 1;
-    if (m[1] === 'lfo' || m[1] === 'env') { const st = slotState(t, id); if (st) writeSlot(sy, st.kind, k, st.state); }
+    const tw = id.endsWith('#g') ? id.slice(0, -2) : null; // ((LC §4.2) a combiner input's GLOBAL twin: the source's state, mono 1
+    if (m[1] === 'lfo' || m[1] === 'env') { const st = slotState(t, tw || id); if (st) writeSlot(sy, st.kind, k, tw ? Object.assign({}, st.state, { lfo: Object.assign({}, isObj(st.state.lfo) ? st.state.lfo : {}, { mono: 1 }) }) : st.state); }
     else if (m[1] === 'chaos') { const c = isObj(S.dev.chaos) ? S.dev.chaos : {}; sy.chaos[k] = { mono: c.mono ? 1 : 0, sh: c.sh ? 1 : 0 }; if (typeof S.dev.rate === 'number') sy.p['c' + (k + 1) + '.rate'] = S.dev.rate; sy.p['c' + (k + 1) + '.bpm'] = S.dev.bpm ? 1 : 0; }
     else if (m[1] === 'macro') { const nm = Array.isArray(S.dev.names) ? S.dev.names[k] : ''; sy.macros[k] = { name: (typeof nm === 'string' && nm) || 'Macro ' + (k + 1), v: typeof S.dev.v[k] === 'number' ? S.dev.v[k] : 0 }; }
     else anyExt = true;
     if (m[1] === 'lfo' || m[1] === 'env' || m[1] === 'chaos') {
-      slots[id.replace(/\.out$/, '')] = { kind: m[1], i: m[1] === 'lfo' ? k : m[1] === 'env' ? (k === 0 ? 13 : 9 + k) : 14 + k };
+      const sk = (tw || id).replace(/\.out$/, '');
+      if (!tw || !(sk in slots)) slots[sk] = { kind: m[1], i: m[1] === 'lfo' ? k : m[1] === 'env' ? (k === 0 ? 13 : 9 + k) : 14 + k }; // ((LC P3-9) a module through its twin only)
       if (keepOf(id, a)) keep.push(SRC_IDX(a.sid));
     }
   }
@@ -762,10 +815,13 @@ function buildMods(t, project, o, V, devs) {
   for (const [id, a] of alloc) if (a && /^(lfo|env|chaos)/.test(a.sid) && keepOf(id, a) && slot < N_MATRIX) sy.matrix[slot++] = normRow({ src: a.sid, amt: 1, dst: KEEP_ID });
   const bpm = isObj(project) && project.bpm > 0 ? +project.bpm : 120;
   const P = compileSerum(sy, { bpm, smooth: o.smooth > 0 ? +o.smooth : 1, fx: null, qr: o.qr || null, ultra: o.ultra ? 1 : 0, ext: anyExt || undefined });
-  const ord = new Map(V.map((x, i) => [x.r.id, i]));
-  left.sort((a, b) => ord.get(a.id) - ord.get(b.id)); // (in track.mods order)
+  const cmb = CB.length ? cmbPay(CB, alloc, left, slots) : null;
+  if (cmb !== null) { const ix = new Map(t.mods.map((r, i) => [isObj(r) ? r.id : null, i])); left.sort((a, b) => ix.get(a.id) - ix.get(b.id)); } // ((LC) the inputs too: in track.mods order
+  else { const ord = new Map(V.map((x, i) => [x.r.id, i])); left.sort((a, b) => ord.get(a.id) - ord.get(b.id)); } // (in track.mods order)
   const pay = { t: 'mods', i: t.id, key: '', cp: P.serum, ct: P.serumT, rows, xfer, ext, vals, keep, left, dashed: [...dashed], n, slots };
-  let h = fnv(0x811c9dc5, JSON.stringify([rows, xfer, ext, vals.map(v => [v.k, v.src, v.id]), keep, left, pay.dashed, n, slots])); // (vals without v: a macro gesture reposts nothing — review C5)
+  const kx = [rows, xfer, ext, vals.map(v => [v.k, v.src, v.id]), keep, left, pay.dashed, n, slots];
+  if (cmb !== null && cmb.length) { pay.cmb = cmb; kx.push(cmb); } // ((LC §4.3) absent without combiners: the key and the payload as before (D1)
+  let h = fnv(0x811c9dc5, JSON.stringify(kx)); // (vals without v: a macro gesture reposts nothing — review C5)
   h = fnv(h, P.serum.cpKey + P.serumT.key);
   pay.key = (h >>> 0).toString(16).padStart(8, '0');
   return pay;

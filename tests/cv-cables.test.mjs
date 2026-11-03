@@ -967,11 +967,11 @@ test('modSrcPort / modSrcKey / keyKind / srcKind / MOD_PREFIX / MOD_COLOR (2b): 
     [{ key: 'wheel', port: 'out' }, { key: 'l1', port: 'out' }, { key: 'm1', port: 'k3' }, { key: 'm1', port: 'k8' }, null, null, null, { key: 've', port: 'out' }, null, null, null]);
   assert.deepEqual(['m1.k3', 'h2.out', 'wheel', 'x'].map(C.modSrcKey), ['m1', 'h2', 'wheel', null]);
   assert.deepEqual(['wheel', 've', 'at', 'bd', 'nt', 'l1', 'l10', 'e2', 'm1', 'c3', 'h1', 'l', 'lfo1', 'x1', 'i1', 'l01', 'e0', '', null].map(C.keyKind),
-    ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'lfo', 'env', 'macro', 'cc', 'chaos', null, null, null, null, null, null, null, null]);
+    ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'lfo', 'env', 'macro', 'cc', 'chaos', null, null, 'comb', null, null, null, null, null]); // ((LC §2.1) x1: the Combiner)
   assert.deepEqual(['m1.k3', 'l2.out', 'wheel', 'zz', 'i1.out'].map(C.srcKind), ['macro', 'lfo', 'wheel', null, null]);
   assert.deepEqual([C.MOD_PREFIX, Object.keys(C.MOD_COLOR), C.MACRO_PORTS],
-    [{ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h' }, ['wheel', 'velo', 'at', 'bend', 'lfo', 'env', 'macro', 'cc', 'chaos', 'note'], ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']]);
-  assert.equal(new Set(Object.values(C.MOD_COLOR)).size, 10, 'ten distinct colours');
+    [{ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', comb: 'x' }, ['wheel', 'velo', 'at', 'bend', 'lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'comb'], ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']]);
+  assert.equal(new Set(Object.values(C.MOD_COLOR)).size, 11, 'eleven distinct colours ((LC) the Combiner\'s)');
 });
 
 test('cablesOf (2b): rows from the new kinds — a: \'<dev>.out\', a macro\'s \'<dev>.k<n>\'; the colour by the source kind (the device\'s own colour first); dashed from opts.dashed; a missing source module keeps the track colour', () => {
@@ -1937,4 +1937,29 @@ test('(WC, fixer K; review P3-9 and its skeptics) the target chip never cuts its
   const q2 = pos(c3);
   R2.upAt(521, 361); R2.D.destroy();
   assert.deepEqual([q1 && q1[1], q2 && q2[1]], [361 - 27 - 58, 361 - 27 - 75], 'the same text, a narrower overlay: its height read again (75, not the 58 cached at 1024)');
+});
+
+/* ------------------------------------------------------------------ stage LC (IMPL-LC §8.3, lane H): the Combiner's IN */
+test('(LC §8.3) one jack, many cords: a row into a combiner\'s IN (\'x1:in\', its device a comb) carries nobadge — no amount badge in the layers (the amounts live in the face\'s list); its OUT rows, an LFO\'s rows onto knobs and every other row keep theirs; an \'<id>:in\' end on anything but a combiner is no input; nothing else in the records changes', () => {
+  const t = v2m(), base = C.cablesOf(v2m());
+  Object.assign(t.dev, { l1: { kind: 'lfo' }, l2: { kind: 'lfo' }, x1: { kind: 'comb', mode: 'add', win: 1, mark: null } });
+  t.mods = t.mods.concat([{ id: 'r10', src: 'l1.out', dst: 'x1:in', amt: 1 }, { id: 'r11', src: 'l2.out', dst: 'x1:in', amt: -0.5, byp: 1 }, { id: 'r12', src: 'x1.out', dst: 'i2:a.semi', amt: 0.5 },
+    { id: 'r13', src: 'l1.out', dst: 'i2:a.pan', amt: 0.25 }, { id: 'r14', src: 'l2.out', dst: 'l1:in', amt: 1 }, { id: 'r15', src: 'i2/lfo3.out', dst: 'x1:in', amt: 0.3 }, { id: 'r16', src: 'l2.out', dst: 'x9:in', amt: 1 }]);
+  const L = C.cablesOf(t), M = L.filter(c => c.kind === 'mod');
+  assert.deepEqual(M.map(c => c.id + ':' + (c.nobadge === true)), ['r1:false', 'r2:false', 'r5:false', 'r10:true', 'r11:true', 'r12:false', 'r13:false', 'r14:false', 'r15:true', 'r16:false'], 'the IN\'s rows (a track LFO\'s, a Serum-engine LFO\'s link) only');
+  assert.ok(M.filter(c => !c.nobadge).every(c => !('nobadge' in c)), 'no key on the others');
+  assert.deepEqual(L.filter(c => !/^r1[0-6]$/.test(c.id)), base, 'the rest exactly as without the combiner');
+  assert.deepEqual([M.find(c => c.id === 'r10').color, M.find(c => c.id === 'r12').color, M.find(c => c.id === 'r10').badge], [C.MOD_COLOR.lfo, C.MOD_COLOR.comb, '+100%'], 'the colours by the source; the record keeps its badge text (the inspector\'s)');
+  // the layers: no badge shown for an input, the OUT's as every row's
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const K = C.createCables(W, { doc, k: () => 1 });
+  K.set(L);
+  K.layout(new Map([['wheel.out', { x: -176, y: 68 }], ['ve.out', { x: -176, y: 356 }], ['i2:a.semi', { x: 300, y: 800 }], ['i2:fx.r1.mix', { x: 1600, y: 900 }], ['i2:a.pan', { x: 320, y: 820 }],
+    ['l1.out', { x: -900, y: 100 }], ['l2.out', { x: -900, y: 500 }], ['x1:in', { x: -600, y: 900 }], ['x1.out', { x: -200, y: 900 }], ['i2/lfo3.out', { x: 900, y: 1200 }]]));
+  const badge = id => all(W).find(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '') && n.getAttribute('data-cable') === id) || null;
+  assert.deepEqual(['r10', 'r11', 'r15', 'r12', 'r13', 'r1'].map(id => !!badge(id) && badge(id).hidden), [true, true, true, false, false, false], 'inputs: hidden; the OUT, an LFO onto a knob, the wheel: shown');
+  K.setModsVisible('never'); K.setModsVisible('always');
+  assert.deepEqual(['r10', 'r12'].map(id => badge(id).hidden), [true, false], 'the ∿ modes keep it so');
+  K.destroy();
 });

@@ -8,12 +8,13 @@ import './v8-guard.mjs';
 // rig-ui's slot faces over sx-host slot hosts (the body contract main.js mounts: update / sync / menuItems / host / view / value /
 // knobs, the old body's ⋯ items, data-nomod, the MONO lock, `shown`, every data-dest of the old panel on the face). G8: no Serum-part
 // UI in cv-mods-ui.js or rig-ui.js; (SX0) no mountSlot / part view anywhere on the site, mountPart for the Arpeggiator / Clip only.
+// (LC, lane F; IMPL-LC §7) the Combiner's face (combBody: its recipe, head, list, IN Σ / OUT, the view on demand) — at the end.
 // Never passes fake-DOM nodes to assert.* (strings and numbers only; the slot faces' tests through safeAssert).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-mods-ui.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { fresh, all, ptr, key, place, layout, Ev } from './wk-dom.mjs';
+import { fresh, all, ptr, key, place, layout, Ev, raf } from './wk-dom.mjs';
 import * as U from '../cv-mods-ui.js?v=9';
 import { MOD_COLS } from '../cv-mods.js?v=9';
 import { GRID, faceW, layoutOf } from '../rig-grid.js?v=9';
@@ -507,4 +508,214 @@ test('(MOD1 G8) no Serum-part UI: cv-mods-ui.js and rig-ui.js name none of mount
   for (const kind of ['lfo', 'env', 'macro', 'chaos']) { const { B } = srig(kind, {}, { rows: { count: () => 1, bypassed: () => false, bypass() {}, remove() {} } }); scan(kind, B.el, B.menuItems()); B.destroy(); }
   for (const kind of PLAIN) { const d = fresh(), B = U.bodyFor(kind, { doc: d, get: () => (kind === 'cc' ? { kind: 'cc', cc: 1, ch: 0 } : 0), edit() {} }); scan(kind, B.el, []); B.destroy(); }
   sweep.deepEqual(bad, []);
+});
+
+/* ---------------------------------------------------------------- (LC §7, lane F) the Combiner's face */
+// combBody over a plain device and a host of fakes (IMPL-LC §7.2's o): the 6-column recipe (head · the large screen · the input list, a
+// 32 px line per input · the jack row: IN Σ left, OUT right), the head's picks (one o.edit each), the list (amount: live moves and one
+// end; keys; typed; mute; the name's menu: Mute / Unplug / Select the cord), the IN socket (a [data-dest="in"] drop target, never a
+// registered jack, never data-nomod), the count chip (lines canvases, ≥ 2), "≈" / greyed lines, the element budget (≤ 24 + 6n), the view
+// loaded on demand (lc-view: a stand-in ModCore — tests/lc-stub.mjs — until lane E), the clock client only while shown and live.
+const LS = await import('./lc-stub.mjs');
+const WK = await import('../wk.js?v=9');
+const jc = x => JSON.parse(JSON.stringify(x));
+const inp = (j, o = {}) => Object.assign({ row: 'r' + j, src: 'l' + j + '.out', l: j - 1, name: 'LFO ' + j, color: '#ff7f5a', amt: 1, byp: 0, why: '', apx: '' }, o);
+const MARKS = [{ value: null, label: 'Off' }, { value: { t: 'trk_2', n: -1 }, label: 'TR-808 2' }, { value: { t: 'trk_2', n: 36 }, label: 'TR-808 2 · Kick' }];
+function comb(inputs = [], extra = {}) {
+  const d = fresh(), calls = [], st = { kind: 'comb', mode: 'add', win: 1, mark: null };
+  const S = { inputs, pay: null, song: { bpm: 120, sig: [4, 4], playing: false, tick: 0, cursor: 0, loop: { on: false, start: 0, end: 0 } }, Fh: NaN, shown: true, cords: false };
+  const o = Object.assign({ doc: d, devKey: 'x1', get: () => st, edit: f => { calls.push(['edit', jc(f)]); Object.assign(st, jc(f)); }, shown: () => S.shown,
+    heardFrame: () => S.Fh, sampleRate: () => 48000, song: () => S.song, inputs: () => S.inputs, payload: () => S.pay,
+    setAmt: (row, v, ph) => calls.push(['amt', row, Math.round(v * 1000) / 1000, ph]), setMute: (row, on) => calls.push(['mute', row, on]),
+    unplug: row => calls.push(['unplug', row]), select: row => calls.push(['select', row]), marks: () => [], markList: () => MARKS, cords: () => S.cords }, extra);
+  const B = U.bodyFor('comb', o);
+  d.body.append(B.el);
+  return { d, B, st, S, calls };
+}
+const linesOf = B => all(B.el).filter(n => n.classList && n.classList.contains('rig-cline'));
+const lineOf = (B, row) => linesOf(B).find(n => n.getAttribute('data-row') === row) || null;
+const menuPick = (d, label) => { const it = all(d.body).find(n => n.classList && n.classList.contains('wk-ci') && n.textContent.replace('✓', '').trim() === label); if (!it) return false; ptr(it, 'pointerdown', 1, 1); it.click(); return true; };
+const menuLabels = d => all(d.body).filter(n => n.classList && n.classList.contains('wk-ci')).map(n => (n.getAttribute('aria-checked') === 'true' ? '✓' : '') + n.textContent.replace('✓', '').trim());
+
+test('(LC §7.1) the recipe: 6 columns (MOD_COLS.comb, 416 px) — the head, the large screen, the input list (32 px a line, one at least: the hint), the jack row (IN Σ at the left, OUT at the right); rig-grid\'s numbers only', () => {
+  assert.equal(U.CMB_FACE.cols, MOD_COLS.comb);
+  for (const n of [0, 1, 4, 12]) {
+    const F = U.combRecipe(n), L = layoutOf(F);
+    assert.deepEqual([F.cols, L.w, F.rows.map(r => r.t), F.rows.map(r => r.h)], [6, faceW(6), ['head', 'screen', 'list', 'jacks'], [GRID.rows.head, GRID.rows.screenL, GRID.rows.head * Math.max(1, n), GRID.rows.jacks]], 'n ' + n);
+    assert.deepEqual(L.rows.at(-1).cells.map(c => c.jack.port + ':' + c.jack.dir + ':' + c.col), ['in:in:0', 'out:out:5']);
+    assert.equal(L.h, GRID.top + 32 + 12 + 128 + 12 + 32 * Math.max(1, n) + 12 + 56 + GRID.bottom);
+  }
+  assert.ok(Object.isFrozen(U.CMB_FACE) && Object.isFrozen(U.combRecipe(3).rows));
+  assert.deepEqual(Object.keys(U.MOD_FACE).sort(), PLAIN.slice().sort(), 'the six plain recipes as they were');
+});
+
+test('(LC §7.1, §7.2) the face: a section.rig-face of the recipe titled "Combiner n"; the head (Mode: Add | Multiply, Window: ½ 1 2 4, Marks: Off — Q3), the screen\'s two canvases, the list (the hint while empty), IN Σ (a [data-dest="in"] socket: no registered jack, no data-nomod) and OUT (the inline anchor); ≤ 24 + 6n elements', () => {
+  const { B, d } = comb([]);
+  const rows = rowsOf(B.el);
+  assert.deepEqual([B.el.tagName, B.el.getAttribute('data-rig-kind'), B.el.getAttribute('aria-label'), B.el.style['--rig-n'], rows.map(r => r.className.split(' ').slice(0, 2).join(' ')), rows[1].getAttribute('data-h')],
+    ['SECTION', 'comb', 'Combiner 1', '6', ['rig-row rig-head', 'rig-row rig-screen', 'rig-row rig-list', 'rig-row rig-jacks'], 'L']);
+  assert.deepEqual([B.face.kind, B.face.cols, B.face.w, B.face.h], ['comb', 6, 416, layoutOf(U.combRecipe(0)).h]);
+  const segs = all(rows[0]).filter(n => n.getAttribute && n.getAttribute('role') === 'radiogroup');
+  assert.deepEqual(segs.map(s => [s.getAttribute('aria-label'), s.children.map(b => b.textContent + (b.getAttribute('aria-checked') === 'true' ? '*' : ''))]), [['Mode', ['Add*', 'Multiply']], ['Window', ['½', '1*', '2', '4']]]);
+  assert.deepEqual(segs[1].children.map(b => b.getAttribute('aria-label')), ['½ bar', '1 bar', '2 bars', '4 bars']);
+  const mk = cls(rows[0], 'rig-cmark');
+  assert.deepEqual([mk.tagName, mk.textContent, mk.getAttribute('aria-haspopup'), mk.parentNode === rows[0]], ['BUTTON', 'Marks: Off', 'menu', true]);
+  const scr = cls(rows[1], 'rig-disp');
+  assert.deepEqual([scr.classList.contains('rig-cscr'), scr.children.map(c => c.tagName + '.' + c.className), scr.getAttribute('role')], [true, ['CANVAS.rig-ccv', 'CANVAS.rig-cov'], 'img']);
+  assert.equal(txt(rows[2], 'rig-chint'), 'Plug LFOs into IN');
+  const IN = all(B.el).find(n => n.getAttribute && n.getAttribute('data-dest') === 'in');
+  assert.deepEqual([IN.className, IN.getAttribute('data-jack'), IN.getAttribute('aria-label'), IN.title, IN === B.inJack, IN.parentNode.style.gridColumn, IN.parentNode.children[1].textContent],
+    ['rig-jack cv-fjack rig-cin', null, 'Combiner 1 · IN Σ', 'any number of LFO cords', true, '1 / span 1', 'IN Σ']);
+  let nomod = false; for (let n = IN; n; n = n.parentNode) if (n.getAttribute && n.getAttribute('data-nomod') !== null) nomod = true;
+  assert.equal(nomod, false, 'the IN under no data-nomod');
+  const OUT = all(B.el).find(n => n.getAttribute && n.getAttribute('data-jack') === 'out');
+  assert.deepEqual([OUT.className, OUT.getAttribute('data-rig-sig'), OUT.hasAttribute('data-cv-awake'), OUT.getAttribute('aria-label'), OUT.parentNode.style.gridColumn, [...B.jacks.keys()]],
+    ['rig-jack cv-jack cv-fjack', 'mod', true, 'Combiner 1 · OUT', '6 / span 1', ['out']]);
+  assert.ok(all(B.el).length <= 24, all(B.el).length + ' elements at 0 inputs');
+  for (const n of [1, 4, 12]) {
+    const R = comb(Array.from({ length: n }, (_, j) => inp(j + 1, { apx: j % 3 === 0 ? 'Rise and Delay act per note: not in the Combiner' : '' })));
+    assert.ok(all(R.B.el).length <= 24 + 6 * n, n + ' inputs: ' + all(R.B.el).length + ' elements');
+    assert.equal(R.B.face.h, layoutOf(U.combRecipe(n)).h);
+    R.B.destroy();
+  }
+  assert.equal(typeof B.update, 'function');
+  B.destroy();
+  assert.equal(B.el.parentNode, null);
+  assert.equal(all(d.head).filter(n => n.id === U.MOD_CSS_ID).length, 1);
+});
+
+test('(LC §7.1) the list: a line per input in o.inputs() order — its cord\'s colour dot, its name, its amount (±100 %), MUTE; a left input greyed with its reason as the tip; "≈" with its reason where the combiner hears it otherwise; the count chip (≥ 2, lines canvases only)', () => {
+  const R = comb([inp(1), inp(2, { amt: -0.5, byp: 1, color: '#41a75c' }), inp(3, { amt: 0.3, why: 'slots' }), inp(4, { amt: 0, apx: 'Its modulation stays inside the Wavecraft' })]), B = R.B;
+  const L = linesOf(B);
+  assert.deepEqual(L.map(l => l.getAttribute('data-row')), ['r1', 'r2', 'r3', 'r4']);
+  assert.equal(cls(B.el, 'rig-chint'), null, 'no hint with inputs');
+  const parts = l => [txt(l, 'rig-cname').replace('≈', '').trim(), cls(l, 'rig-cname').style['--rig-cc'], txt(l, 'rig-camt'), cls(l, 'rig-camt').getAttribute('role'), cls(l, 'rig-camt').getAttribute('aria-valuetext'),
+    cls(l, 'rig-cmute').textContent, cls(l, 'rig-cmute').getAttribute('aria-pressed')];
+  assert.deepEqual(L.map(parts), [['LFO 1', '#ff7f5a', '+100%', 'spinbutton', '+100%', 'Mute', 'false'], ['LFO 2', '#41a75c', '−50%', 'spinbutton', '−50%', 'Mute', 'true'],
+    ['LFO 3', '#ff7f5a', '+30%', 'spinbutton', '+30%', 'Mute', 'false'], ['LFO 4', '#ff7f5a', '0%', 'spinbutton', '0%', 'Mute', 'false']]);
+  assert.deepEqual([L[2].hasAttribute('data-left'), L[2].title, L[0].hasAttribute('data-left')], [true, 'The track runs 10 LFOs', false]);
+  const apx = cls(L[3], 'rig-capx');
+  assert.deepEqual([apx && apx.textContent, apx && apx.title, cls(L[0], 'rig-capx')], ['≈', 'Its modulation stays inside the Wavecraft', null]);
+  const chip = cls(B.el, 'rig-cn');
+  assert.deepEqual([chip && chip.textContent, chip && chip.getAttribute('aria-hidden'), chip && chip.parentNode === B.inJack.parentNode], ['4', 'true', true]);
+  R.S.cords = true; B.sync();
+  assert.equal(cls(B.el, 'rig-cn'), null, 'on a cords canvas the cord layer counts');
+  R.S.cords = false; R.S.inputs = [inp(1)]; B.sync();
+  assert.deepEqual([cls(B.el, 'rig-cn'), linesOf(B).length, B.face.h], [null, 1, layoutOf(U.combRecipe(1)).h], 'one cord: no count');
+  R.S.inputs = []; B.sync();
+  assert.deepEqual([linesOf(B).length, txt(B.el, 'rig-chint')], [0, 'Plug LFOs into IN']);
+  B.destroy();
+});
+
+test('(LC §7.1, §2.3) the head\'s picks: Mode, Window, Marks — one o.edit each (the current pick: none); Marks lists o.markList() (the current checked), Off by default', () => {
+  const R = comb([inp(1)]), B = R.B, head = rowsOf(B.el)[0];
+  const [mode, win] = all(head).filter(n => n.getAttribute && n.getAttribute('role') === 'radiogroup');
+  mode.children[0].click();
+  assert.deepEqual(R.calls, [], 'Add again: nothing');
+  mode.children[1].click();
+  win.children[2].click(); win.children[0].click();
+  assert.deepEqual(R.calls, [['edit', { mode: 'mul' }], ['edit', { win: 2 }], ['edit', { win: 0.5 }]]);
+  assert.deepEqual([mode.children.map(b => b.getAttribute('aria-checked')), win.children.map(b => b.getAttribute('aria-checked'))], [['false', 'true'], ['true', 'false', 'false', 'false']]);
+  key(win.children[0], 'ArrowRight');
+  assert.deepEqual(R.calls.at(-1), ['edit', { win: 1 }], 'the arrows move the pick');
+  R.calls.length = 0;
+  cls(head, 'rig-cmark').click();
+  assert.deepEqual(menuLabels(R.d), ['✓Off', 'TR-808 2', 'TR-808 2 · Kick']);
+  assert.ok(menuPick(R.d, 'TR-808 2 · Kick'));
+  assert.deepEqual([R.calls, txt(head, 'rig-cmark')], [[['edit', { mark: { t: 'trk_2', n: 36 } }]], 'Marks: TR-808 2 · Kick']);
+  cls(head, 'rig-cmark').click();
+  assert.deepEqual(menuLabels(R.d), ['Off', 'TR-808 2', '✓TR-808 2 · Kick']);
+  menuPick(R.d, 'Off');
+  assert.deepEqual([R.calls.at(-1), txt(head, 'rig-cmark')], [['edit', { mark: null }], 'Marks: Off']);
+  R.st.mode = 'add'; R.st.win = 4; B.sync();
+  assert.deepEqual([mode.children.map(b => b.getAttribute('aria-checked')).join(), win.children.map(b => b.getAttribute('aria-checked')).join()], ['true,false', 'false,false,false,true'], 'sync: an undo shows');
+  B.destroy();
+});
+
+test('(LC §7.1, §2.3) the amount: a drag → setAmt(row, v, "move") per move and ONE "end" (the step); a two-finger cancel puts it back; keys ±1 % / ±10 % / Home −100 / End +100 (an end each); Enter types it ("−50" → −0.5); Escape keeps it', () => {
+  const R = comb([inp(1, { amt: 0.5 }), inp(2)]), B = R.B, a = cls(lineOf(B, 'r1'), 'rig-camt');
+  place(a, 100, 100, 120, 28); layout(a, 120, 28);
+  ptr(a, 'pointerdown', 150, 110, { pointerId: 2 });
+  ptr(a, 'pointermove', 150, 100, { pointerId: 2 }); ptr(a, 'pointermove', 150, 80, { pointerId: 2 }); ptr(a, 'pointerup', 150, 80, { pointerId: 2 });
+  assert.deepEqual(R.calls, [['amt', 'r1', 0.6, 'move'], ['amt', 'r1', 0.8, 'move'], ['amt', 'r1', 0.8, 'end']]);
+  assert.equal(a.textContent, '+80%', 'shown at once');
+  R.calls.length = 0;
+  ptr(a, 'pointerdown', 150, 110, { pointerId: 3, pointerType: 'touch' }); ptr(a, 'pointermove', 150, 250, { pointerId: 3, pointerType: 'touch' });
+  ptr(a, 'pointercancel', 150, 250, { pointerId: 3, pointerType: 'touch', gesture: 'two-finger' });
+  assert.deepEqual(R.calls, [['amt', 'r1', -0.6, 'move'], ['amt', 'r1', 0.8, 'end']], 'two fingers: back where it was');
+  R.calls.length = 0;
+  for (const k of ['ArrowUp', 'ArrowDown', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']) key(a, k);
+  assert.deepEqual(R.calls.map(c => c[2] + ':' + c[3]), ['0.81:end', '0.8:end', '0.79:end', '0.89:end', '0.79:end', '-1:end', '1:end']);
+  R.calls.length = 0;
+  key(a, 'Enter');
+  const box = all(a).find(n => n.tagName === 'INPUT');
+  assert.ok(box, 'an input');
+  box.value = '−50'; key(box, 'Enter');
+  assert.deepEqual([R.calls, all(a).some(n => n.tagName === 'INPUT')], [[['amt', 'r1', -0.5, 'end']], false]);
+  key(a, 'Enter');
+  const b2 = all(a).find(n => n.tagName === 'INPUT'); b2.value = '20'; key(b2, 'Escape');
+  assert.equal(R.calls.length, 1, 'Escape: nothing');
+  B.destroy();
+});
+
+test('(LC §7.1) MUTE toggles the input (setMute: one step); a tap on the name opens Mute / Unmute, Unplug, Select the cord (the IN\'s cord picker); highlight(row) marks a line (a cord tapped)', () => {
+  const R = comb([inp(1), inp(2, { byp: 1 })]), B = R.B;
+  cls(lineOf(B, 'r1'), 'rig-cmute').click();
+  cls(lineOf(B, 'r2'), 'rig-cmute').click();
+  assert.deepEqual(R.calls, [['mute', 'r1', true], ['mute', 'r2', false]]);
+  R.calls.length = 0;
+  cls(lineOf(B, 'r2'), 'rig-cname').click();
+  assert.deepEqual(menuLabels(R.d), ['Unmute', 'Unplug', 'Select the cord']);
+  menuPick(R.d, 'Unplug');
+  cls(lineOf(B, 'r1'), 'rig-cname').click();
+  assert.deepEqual(menuLabels(R.d), ['Mute', 'Unplug', 'Select the cord']);
+  menuPick(R.d, 'Select the cord');
+  cls(lineOf(B, 'r1'), 'rig-cname').click(); menuPick(R.d, 'Mute');
+  assert.deepEqual(R.calls, [['unplug', 'r2'], ['select', 'r1'], ['mute', 'r1', true]]);
+  B.highlight('r2');
+  assert.deepEqual(linesOf(B).map(l => l.classList.contains('rig-hl')), [false, true]);
+  B.highlight(null);
+  assert.deepEqual(linesOf(B).map(l => l.classList.contains('rig-hl')), [false, false]);
+  B.destroy();
+});
+
+test('(LC §7.2) the view on demand: the face draws when lc-view and the DSP are there (a stand-in ModCore); update({ F, cb, i }) feeds its ring; the clock client only while shown and live (playing or the ring live) — off screen none', async () => {
+  const prev = globalThis.ModCore;
+  globalThis.ModCore = LS.MC;
+  raf.install();
+  try {
+    const lfos = [{ lock: 'song', beats: 1, start: 0, shape: 'sine', sm: 0 }];
+    const R = comb([inp(1)]), B = R.B;
+    R.S.pay = { t: 'mods', key: 'k', bpm: 120, cp: LS.cpOf(lfos, 'cmb-face'), ct: { key: 'c' }, cmb: [{ id: 'x1', k: 8, mode: 0, in: [{ row: 'r1', src: 2, l: 0, a: 1 }] }], slots: { x1: { kind: 'comb', i: 0, n: 1 } } };
+    B.update({ F: 1000, cb: new Float64Array([0.5, 0, 0, 0.5]), i: 0 }); // (before the view: nothing breaks)
+    await B.ready();
+    const V = B.view();
+    sweep.ok(V && typeof V.frame === 'function', 'the view');
+    R.S.Fh = 2000;
+    B.update({ F: 2000, cb: new Float64Array([0.25, 0, 0, 0.25]), i: 0 });
+    sweep.equal(V.state().ring, 1, 'the ring took the block');
+    sweep.ok(WK.clock.clients().includes('lc'), 'shown and live: a client');
+    raf.flush(2);
+    sweep.ok(V.state().recomputes >= 1 && V.state().drawn[0] === 1, 'drawn');
+    R.S.shown = false; raf.flush(2);
+    sweep.equal(WK.clock.clients().includes('lc'), false, 'off screen: no client');
+    R.S.shown = true; B.sync();
+    sweep.equal(WK.clock.clients().includes('lc'), true, 'back on screen (sync / a post re-adds it)');
+    B.destroy();
+    raf.flush(1);
+    sweep.equal(WK.clock.clients().includes('lc'), false, 'destroyed: gone');
+  } finally { raf.uninstall(); globalThis.ModCore = prev; }
+});
+
+test('(LC G9) the Combiner\'s words: Combiner, IN, OUT, Add, Multiply, Window, Marks, Mute, Unplug — no "Serum", no "Xfer" on the face or in its menus', () => {
+  const R = comb([inp(1), inp(2, { apx: 'Rise and Delay act per note: not in the Combiner', why: 'slots' })]), B = R.B, words = [];
+  const walk = n => { for (const c of n.children) { for (const v of [c.getAttribute('aria-label'), c.getAttribute('title'), c.children.length ? '' : c.textContent]) if (v) words.push(v); walk(c); } };
+  walk(B.el);
+  cls(lineOf(B, 'r1'), 'rig-cname').click();
+  words.push(...menuLabels(R.d));
+  const s = words.join(' | ');
+  sweep.equal(/Serum|Xfer/.test(s), false, s);
+  for (const w of ['Combiner', 'IN', 'OUT', 'Add', 'Multiply', 'Window', 'Marks', 'Mute', 'Unplug']) sweep.ok(new RegExp('\\b' + w + '\\b').test(s), w);
+  sweep.deepEqual(B.menuItems(), []);
+  B.destroy();
 });

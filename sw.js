@@ -37,14 +37,14 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = '8830128cc491'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = '1598ce2460a9'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'classic-panel.js', 'cv-art.js', 'cv-cables.js',
   'cv-cords.js', 'cv-cost.js', 'cv-drum.js', 'cv-face.js', 'cv-gl.js', 'cv-graph.js', 'cv-keys.js', 'cv-migrate.js',
   'cv-model.js', 'cv-modlayer.js', 'cv-mods-ui.js', 'cv-mods.js', 'cv-module.js', 'cv-pads.js', 'cv-panel.js',
   'cv-patch.js', 'cv-tray.js', 'cv-world.js', 'dr-808.js', 'dr-seq.js', 'drum-core.js', 'engine.js', 'fonts/fonts.css',
-  'fx-core.js', 'fx-dsp.js', 'fx-mods2.js', 'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'main.js',
+  'fx-core.js', 'fx-dsp.js', 'fx-mods2.js', 'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'lc-view.js', 'main.js',
   'master-dsp.js', 'master-ui.js', 'midi.js', 'mod-core.js', 'models.js', 'moog-core.js', 'moog-dsp.js', 'motion.js',
   'pads-core.js', 'panels/arp2600.js', 'panels/cs80.js', 'panels/dx7.js', 'panels/index.js', 'panels/juno60.js',
   'panels/jupiter8.js', 'panels/m900.js', 'panels/m900b.js', 'panels/m900c.js', 'panels/minimoog.js',

@@ -3587,8 +3587,20 @@ function fastParts(ids, ix, k, master) {
 // before it: the ring's bracket spans one period, never the pause — a pause past EXTRA_S starts it afresh), then the new ones. A
 // part's hold (fastParts): w the twin of the message last posted (its arrays copies — allocated at a new shape or length only, never
 // per post), m that message, n the unchanged checks in a row, cF the F of the last check. Fast posts only: FR1b holds as before
-const FAST_A = Object.freeze(['v', 'q', 'gr', 'e', 'mo', 'mc', 'x', 'm']);
+const FAST_A = Object.freeze(['v', 'q', 'gr', 'e', 'mo', 'mc', 'x', 'm', 'cb']); // ((LC §5.3) cb: the 'mods' part's combiner block — a message without it skips the key
 const fastH = () => ({ w: null, m: null, n: 0, cF: 0 });
+// (IMPL-LC §5.3, §18 P1-4) the 'mods' part's message object carries cb exactly while the ModCore runs combiners: a payload with them
+// replaces the object (cb, the hold reset), one without them after one with puts the plain shape back — never a key added to the live
+// object (fastSame / fastKeep read w[k].length for every FAST_A key: a twin made before cb existed would throw on the audio thread).
+// Message time only (modsMsg, modsOff, fastOn); without combiners nothing here runs past the first test
+function cbPart(M, mc) {
+  const d = M ? M.mods : undefined;
+  if (d === undefined) return;
+  const on = mc !== null && mc.cmbN !== 0;
+  if (!on && d.m.cb === undefined) return;
+  d.m = on ? { t: 'fast', F: 0, mc: null, x: d.m.x, cb: null } : { t: 'fast', F: 0, mc: null, x: d.m.x };
+  d.h = fastH();
+}
 // m's arrays equal to the twin's: the same message (shape), the same lengths, element by element (NaN equal to NaN)
 function fastSame(h, m) {
   const w = h.w;
@@ -4145,7 +4157,7 @@ class Track extends Facade {
   // panel's rack unmodulated next span
   modsMsg(d) {
     const MCM = globalThis.ModCore;
-    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0));
+    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0) && !(Array.isArray(d.cmb) && d.cmb.length > 0)); // ((LC) a combiner alone runs: its face's truth
     if (empty) { this.modsOff(); return; }
     let MC = this.mc;
     try {
@@ -4159,6 +4171,7 @@ class Track extends Facade {
     }
     this.mc = MC;
     this.handRows(MC);
+    cbPart(this.fastM, MC); // ((LC §5.3) the fast 'mods' message's shape
   }
   modsOff() {
     if (this.mc === null) return;
@@ -4166,6 +4179,7 @@ class Track extends Facade {
     const SD = globalThis.SerumDSP;
     for (const I of this.insts) if (I.kind === 'serum' && I.sx !== null) { I.sx.mcFx = null; I.sx.mcHi = 0; if (SD) SD.extOff(I); }
     this.handRows(null);
+    cbPart(this.fastM, null);
   }
   // the classic adapter's rows (IMPL-2b §5, lane A2 Inst.modRows): each classic Inst's payload rows ({…row, slot | field,
   // xfer}, payload order) — null for an Inst without, or when the ModCore goes; also for an Inst a later graph adds
@@ -4215,6 +4229,7 @@ class Track extends Facade {
     this.fastK = typeof d.ixv === 'number' && d.ixv - d.ixv === 0 ? d.ixv : 0;
     if (hz === 0) { this.fastM = null; return; }
     this.fastM = fastParts(d.ids, d.ix, this.fastK, false);
+    cbPart(this.fastM, this.mc); // ((LC) built after a payload with combiners: their shape
     if (was === 0) for (const I of this.insts) { I.mixPkF.fill(0); if (I.sx) I.sx.pkF.fill(0); }
   }
   // the fast posts (§2.2) in postMon's order: per watched Inst / chain with a fast part, then 'mods' (F = this.frames); each through
@@ -4233,7 +4248,7 @@ class Track extends Facade {
       for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.mon) { const d = M[c.id]; if (d !== undefined) this.fastChain(c, d, F, false); } }
     }
     const mc = this.mc;
-    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); fastSend(this.port, d.h, m, F); } }
+    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); if (mc.cmbN !== 0 && m.cb !== undefined) m.cb = mc.cb; fastSend(this.port, d.h, m, F); } } // ((LC §5.3) cb re-pointed per post, as mc
   }
   // an Inst's fast post: a Serum {i, k, v, q?, gr?} (v: SerumDSP.fastSnap, its mix[7…11) the engine's taps, mixPkF restarted; q
   // sq.snapshot with a sequencer; gr its own rack's grFast() with a GR unit); a classic Inst with ModCore rows {i, e} (the slow rule)
@@ -4291,7 +4306,7 @@ class Track extends Facade {
     };
     if (this.graphed === 0) { if (this.i0.mon) part(this.i0, null); if (this.c0.mon) part(null, this.c0); }
     else { for (const I of this.insts) if (I.mon) part(I, null); for (const c of this.chains) if (c.mon) part(null, c); }
-    if (this.mcMon && mc !== null && M.mods !== undefined) o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) };
+    if (this.mcMon && mc !== null && M.mods !== undefined) { o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) }; if (mc.cmbN !== 0) o.mods.cb = mc.cb.slice(); }
     return o;
   }
   // RULINGS2 F1: every processor's rack hears of every asset stored / dropped (FXRack.assets() decides what concerns it)
@@ -5146,7 +5161,7 @@ class Track extends Facade {
           this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap, pt: I.pm.lamps(this.frames) });
         } else this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
-      if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
+      if (this.mcMon && this.mc !== null) this.port.postMessage(this.mc.cmbN !== 0 ? { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx, cF: this.frames, cb: this.mc.cb } : { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx }); // ((LC §5.3) + cF, cb with combiners
       return;
     }
     for (const I of this.insts) {
@@ -5180,8 +5195,8 @@ class Track extends Facade {
     // 4, 1, chaos 1, 2] 0…1, for a 'mods' monitor subscription ({t: 'mon', ids: [… 'mods']}); the host maps modules to
     // entries through the payload's slots. Track-level (no part id needed beside 'mods'). mcx (IMPL-3 §2.9): the LFO phase /
     // Path Y and ENV stage / time fields {ph: Float32Array(20), env: Float32Array(8)} — written by the ModCore, and posted,
-    // only while this subscription is on (MC.mon)
-    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
+    // only while this subscription is on (MC.mon). (LC §5.3) With combiners: + cF (the frames at the post) + cb (MC.cb, IMPL-LC §5.2)
+    if (this.mcMon && this.mc !== null) this.port.postMessage(this.mc.cmbN !== 0 ? { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx, cF: this.frames, cb: this.mc.cb } : { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
   }
   // output stage: DC block, stereo-linked peak limiter, final safety clip
   outStage(Lo, Ro, off, n) {
@@ -5391,7 +5406,7 @@ class Master extends AudioWorkletProcessor {
   // runs its BPM LFOs at while stopped and with ANCHOR off
   modsMsg(d) {
     const MCM = globalThis.ModCore;
-    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0));
+    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0) && !(Array.isArray(d.cmb) && d.cmb.length > 0)); // ((LC) a combiner alone runs: its face's truth
     if (empty) { this.modsOff(); return; }
     let MC = this.mc;
     try {
@@ -5404,12 +5419,14 @@ class Master extends AudioWorkletProcessor {
       return;
     }
     this.mc = MC;
+    cbPart(this.fastM, MC); // ((LC §5.3)
   }
   // leaving: the rack unmodulated at once (setMods(null) once while rows had reached it — the calm copy path may follow, so
   // the next part's chainMods would not get there), the snap pending for nothing cleared
   modsOff() {
     if (this.mc === null) return;
     this.mc = null; this.snap = 0;
+    cbPart(this.fastM, null);
     const c = this.c;
     if (c.mcOn !== 0) { if (c.rack !== null) c.rack.setMods(null); c.mcOn = 0; }
   }
@@ -5495,6 +5512,7 @@ class Master extends AudioWorkletProcessor {
     this.fastHz = hz; this.fastP = hz > 0 ? this.base / hz : 0; this.fastAcc = this.fastP;
     if (hz === 0) { this.fastM = null; return; }
     this.fastM = fastParts(d.ids, null, 0, true);
+    cbPart(this.fastM, this.mc); // ((LC)
     if (was === 0 && this.M !== null) this.M.peek(null);
   }
   postFast() {
@@ -5509,14 +5527,14 @@ class Master extends AudioWorkletProcessor {
         if (g !== null || mo !== null) { const m = d.c; m.F = F; m.gr = g; m.mo = mo; fastSend(this.port, d.h, m, F); }
       }
     }
-    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); fastSend(this.port, d.h, m, F); } }
+    if (this.mcMon && mc !== null) { const d = M.mods; if (d !== undefined) { const m = d.m; m.F = F; m.mc = mc.live; mc.fastRead(m.x); if (mc.cmbN !== 0 && m.cb !== undefined) m.cb = mc.cb; fastSend(this.port, d.h, m, F); } } // ((LC §5.3) cb re-pointed per post, as mc
   }
   fastRead() {
     const M = this.fastM, o = {}, mc = this.mc;
     if (M === null) return o;
     if (this.mm && this.M !== null && M.meters !== undefined) { const m = this.M.peek(new Float32Array(7), 1); m[0] = NaN; m[1] = NaN; m[2] = NaN; m[3] = NaN; o.meters = { m }; }
     if (this.mx && M.mfx !== undefined) { const r = this.c.rack, g = r !== null && typeof r.grFast === 'function' ? r.grFast() : null, mo = mc !== null ? mc.fxMon('mfx') : null; o.mfx = { gr: g ? g.slice() : null, mo: mo ? mo.slice() : null }; }
-    if (this.mcMon && mc !== null && M.mods !== undefined) o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) };
+    if (this.mcMon && mc !== null && M.mods !== undefined) { o.mods = { mc: mc.live.slice(), x: mc.fastRead(new Float32Array(28)) }; if (mc.cmbN !== 0) o.mods.cb = mc.cb.slice(); }
     return o;
   }
   // mo (IMPL-MM §3.2, the Track's 2b halos): a ModCore with rows on the rack posts their FX-context offsets with the rack's message —
@@ -5529,7 +5547,7 @@ class Master extends AudioWorkletProcessor {
       if (mo !== null) this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null, mo });
       else this.port.postMessage({ t: 'smon', c: 'mfx', gr: r !== null ? r.gr() : null, fxph: r !== null ? r.phases() : null, ftap: r !== null ? r.tapOut() : null });
     }
-    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
+    if (this.mcMon && this.mc !== null) this.port.postMessage(this.mc.cmbN !== 0 ? { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx, cF: this.frames, cb: this.mc.cb } : { t: 'smon', mc: this.mc.live, mcx: this.mc.mcx }); // ((LC §5.3)
   }
   // {t: 'bypass', on, g}: the A/B target; turning on freezes the bypassed signal's gain — g true: the level match (the
   // output's short-term − the input's, the moment of the tap; R1-4: while either is ≤ −70 LUFS the match is pending at

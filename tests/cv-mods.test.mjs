@@ -264,7 +264,7 @@ test('2b descriptors carry the centred flag and the class: classic (law / lo / h
 test('2b modulator ids, labels, sources: kindOfId / modLabelOf / modDevs / srcOf / perNoteOf; sourcesOf over every module (a macro: 8 knobs); linkSources', () => {
   assert.deepEqual(['l1', 'e12', 'm1', 'c3', 'h2', 'nt', 've', 'at', 'bd', 'i1', 'fx1', 'l0', 'x', null].map(V.kindOfId), ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend', null, null, null, null, null]);
   assert.deepEqual([V.modLabelOf('l3'), V.modLabelOf('m1', { kind: 'macro' }), V.modLabelOf('ve'), V.modLabelOf('h2', { kind: 'chaos' }), V.modLabelOf('i1')], ['LFO 3', 'Macros 1', 'Velocity', 'Chaos 2', 'i1']); // ((MOD1 §2.2) the words: "Macros n", "Envelope n" — tests/mod1-model.test.mjs
-  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos' });
+  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos', comb: 'Combiner' }); // ((LC §2.1) + the Combiner)
   assert.deepEqual([V.srcOf('wheel'), V.srcOf('m1.k3'), V.srcOf('i2/lfo10.out'), V.srcOf('i2/env2.out'), V.srcOf('i2/lfo11.out'), V.srcOf('x'), V.srcOf(null)],
     [{ dev: 'wheel', port: '', link: '' }, { dev: 'm1', port: 'k3', link: '' }, { dev: 'i2', port: 'out', link: 'lfo10' }, { dev: 'i2', port: 'out', link: 'env2' }, null, null, null]);
   const s = C.normalizeSerum(C.defaultSerum());
@@ -292,7 +292,7 @@ test('2b modulator ids, labels, sources: kindOfId / modLabelOf / modDevs / srcOf
   delete t.dev.i1.name; // (an unnamed device: the model's own name — the rig's — never "Serum")
   assert.deepEqual(V.linkSources(t).map(x => x.label), ['LFO 1 · ' + RIG.NAME, 'Envelope 1 · ' + RIG.NAME, 'Envelope 3']);
   assert.deepEqual(V.srcDev(t, 'm1.k3'), { q: { dev: 'm1', port: 'k3', link: '' }, dev: t.dev.m1, kind: 'macro' });
-  assert.deepEqual([V.MOD_SRC['nt.out'], V.SRC_MOD.note, V.MOD_DEV.note, V.MOD_PREFIX.chaos, V.MOD_MULTI, V.MOD_ORDER[4]], ['note', 'nt.out', 'nt', 'h', ['lfo', 'env', 'macro', 'cc', 'chaos'], 'note']);
+  assert.deepEqual([V.MOD_SRC['nt.out'], V.SRC_MOD.note, V.MOD_DEV.note, V.MOD_PREFIX.chaos, V.MOD_MULTI, V.MOD_ORDER[4]], ['note', 'nt.out', 'nt', 'h', ['lfo', 'env', 'macro', 'cc', 'chaos', 'comb'], 'note']);
 });
 
 test('2a sourcesOf / wheelTracks: the project wheel when placed, the track\'s modulators; the tracks the live wheel reaches', () => {
@@ -338,7 +338,7 @@ test('2b fixer B (C3 / C13): targetsOf memoised per (model, ctl); depsOf names t
 
 test('milestone 3 destOk: a modulator\'s own knobs (its body a Serum panel on a slot host: Serum ids) are never a cable\'s end, kept rows too; a Serum part\'s knobs are its Serum\'s', () => {
   // the four Serum-faithful kinds carry the ids their slot uses (LFO 1 / ENV 2 / chaos 1 / the macros), the rest their own
-  const ids = { lfo: ['l1.rate', 'l1.rise'], env: ['e2.att', 'e2.ca'], macro: ['m1', 'm8'], chaos: ['c1.rate', 'c1.bpm'], cc: ['x'], velo: ['x'], at: ['x'], bend: ['x'], note: ['x'], wheel: ['x'] };
+  const ids = { lfo: ['l1.rate', 'l1.rise'], env: ['e2.att', 'e2.ca'], macro: ['m1', 'm8'], chaos: ['c1.rate', 'c1.bpm'], cc: ['x'], velo: ['x'], at: ['x'], bend: ['x'], note: ['x'], wheel: ['x'], comb: ['x', 'mode', 'out'] }; // ((LC §2.2) a Combiner too, bar its 'in')
   for (const kind of Object.keys(ids)) for (const id of ids[kind]) {
     for (const keep of [false, true]) assert.deepEqual(V.destOk({ kind, lfo: {}, env: {} }, id, keep), { ok: false, why: V.NOMOD_MOD, stage: null }, kind + ' ' + id);
   }

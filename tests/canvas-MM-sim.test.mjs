@@ -111,7 +111,7 @@ test('G5 the master canvas takes LFO / Macro / CC / Chaos only: ENV, Velocity, N
     assert.equal(X.add(k, null), null, k + ': refused');
     assert.equal(note(), MM.src);
   }
-  assert.deepEqual(S.MASTER_MOD_KINDS.slice(), ['lfo', 'macro', 'cc', 'chaos']);
+  assert.deepEqual(S.MASTER_MOD_KINDS.slice(), ['lfo', 'macro', 'cc', 'chaos', 'comb']); // ((LC §2.1) + the Combiner)
   assert.deepEqual([hsteps(), tracksJSON() === before, 'master' in P() ? JSON.stringify(P().master.mdev || null) : 'none'], [n0, true, 'none'], 'nothing written');
 });
 

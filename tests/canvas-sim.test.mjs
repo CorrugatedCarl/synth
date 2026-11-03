@@ -547,7 +547,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   tap(vb); tap(rigV);
   const shownIds = () => tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
   assert.deepEqual([tiles.view(), tiles.layout(), api.store.get('synth.cv.trayLayout', null), shownIds(), sim.$('#srcModSec').hidden, tiles.modTiles().length],
-    [RIG.VIEW, 'flow', RIG.VIEW, [RIG.ID], false, 10]); // (2b: the ten modulator tiles)
+    [RIG.VIEW, 'flow', RIG.VIEW, [RIG.ID], false, 11]); // (2b: the ten modulator tiles; (LC) + the Combiner)
   // a rig: no hardware panel — the view's layout does nothing to it; in track mode its tile adds a rig track
   sh.cvOpenSources('track'); sim.raf();
   assert.deepEqual([tiles.mode(), tiles.view()], ['track', RIG.VIEW], '+ Track opens the view last used');

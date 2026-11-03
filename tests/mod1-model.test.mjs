@@ -18,7 +18,7 @@ const TRACK = () => ({ dev: { i1: { kind: 'synth', model: 'juno60', vals: {} }, 
   ve: { kind: 'velo' }, nt: { kind: 'note' }, l2: { kind: 'env', env: {} }, x9: { kind: 'lfo', lfo: {} } } });
 
 test('MOD1 §2.2 the words: MOD_LABEL env "Envelope", macro "Macros" (every other kind as it was); modLabelOf numbers them; no module is named "ENV" or "Macro"', () => {
-  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos' });
+  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos', comb: 'Combiner' }); // ((LC §2.1) + the Combiner)
   assert.ok(Object.isFrozen(V.MOD_LABEL));
   assert.deepEqual([V.modLabelOf('e2'), V.modLabelOf('e1', { kind: 'env' }), V.modLabelOf('m1'), V.modLabelOf('m3', { kind: 'macro' }), V.modLabelOf('l3'), V.modLabelOf('c4'), V.modLabelOf('h2', { kind: 'chaos' })],
     ['Envelope 2', 'Envelope 1', 'Macros 1', 'Macros 3', 'LFO 3', 'CC 4', 'Chaos 2']);
@@ -35,7 +35,7 @@ test('MOD1 §2.2 the sources read the words: a track Envelope "Envelope 1", an u
 });
 
 test('MOD1 §2.3 MOD_COLS: every modulator kind\'s face columns on the RIG grid (frozen data; widths 64·cols + 32) — (reviewer 2) none under 3: a 2-column bar held no "AFTERTOUCH" / "MOD WHEEL"', () => {
-  assert.deepEqual(V.MOD_COLS, { lfo: 5, env: 5, macro: 4, chaos: 3, wheel: 3, velo: 3, at: 3, bend: 3, note: 3, cc: 3 });
+  assert.deepEqual(V.MOD_COLS, { lfo: 5, env: 5, macro: 4, chaos: 3, wheel: 3, velo: 3, at: 3, bend: 3, note: 3, cc: 3, comb: 6 }); // ((LC §2.1, §7.1) the Combiner 416)
   assert.ok(Object.isFrozen(V.MOD_COLS));
   assert.deepEqual(Object.keys(V.MOD_COLS).sort(), Object.keys(V.MOD_LABEL).sort(), 'one per modulator kind');
   assert.deepEqual([...V.MOD_ORDER].sort(), Object.keys(V.MOD_COLS).sort(), 'and MOD_ORDER\'s kinds');
@@ -44,7 +44,7 @@ test('MOD1 §2.3 MOD_COLS: every modulator kind\'s face columns on the RIG grid 
 });
 
 test('(reviewer 2) modBarSub(kind): a modulator\'s bar shows its sub-label (the track\'s name) on a face of 4 or more columns only — a 3-column bar holds its title alone', () => {
-  assert.deepEqual(V.MOD_ORDER.filter(k => V.modBarSub(k)), ['lfo', 'env', 'macro']);
+  assert.deepEqual(V.MOD_ORDER.filter(k => V.modBarSub(k)), ['lfo', 'env', 'macro', 'comb']); // ((LC) the Combiner's 6 columns)
   assert.deepEqual([V.modBarSub('nope'), V.modBarSub(undefined)], [false, false]);
 });
 
@@ -91,14 +91,14 @@ test('MOD1 §2.2 nextOrdinal(rig, kind, parts, taken): the lowest 1…99 that no
 
 test('MOD1 §5 the tray\'s data: MOD_TILES — LFO · Envelope · Macros first, then Mod Wheel, Velocity, Aftertouch, Bend, Note, CC, Chaos (names = MOD_LABEL); RIG_TILES without env / lfo / macros (Oscillator, Sub oscillator, Noise, Filter; Note tools as before); MASTER_MODS unchanged', () => {
   assert.deepEqual(T.MOD_TILES.map(m => [m.id, m.name, m.scope, !!m.multi]), [['lfo', 'LFO', 'track', true], ['env', 'Envelope', 'track', true], ['macro', 'Macros', 'track', true],
-    ['wheel', 'Mod Wheel', 'project', false], ['velo', 'Velocity', 'track', false], ['at', 'Aftertouch', 'track', false], ['bend', 'Bend', 'track', false], ['note', 'Note', 'track', false],
-    ['cc', 'CC', 'track', true], ['chaos', 'Chaos', 'track', true]]);
+    ['comb', 'Combiner', 'track', true], ['wheel', 'Mod Wheel', 'project', false], ['velo', 'Velocity', 'track', false], ['at', 'Aftertouch', 'track', false], ['bend', 'Bend', 'track', false], ['note', 'Note', 'track', false],
+    ['cc', 'CC', 'track', true], ['chaos', 'Chaos', 'track', true]]); // ((LC §8.1) the Combiner after Macros)
   assert.ok(T.MOD_TILES.every(m => m.name === V.MOD_LABEL[m.id] && Object.isFrozen(m)) && Object.isFrozen(T.MOD_TILES), 'one wording: MOD_LABEL');
   assert.deepEqual(T.MOD_TILES.filter(m => m.multi).map(m => m.id).sort(), [...V.MOD_MULTI].sort(), 'multi = MOD_MULTI');
   assert.deepEqual(T.RIG_TILES.map(p => [p.id, p.name, p.group, p.cut]), [['osc', 'Oscillator', 'rigmods', 1], ['sub', 'Sub oscillator', 'rigmods', 1], ['noise', 'Noise', 'rigmods', 1],
     ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
   assert.ok(T.RIG_TILES.every(p => !['env', 'lfo', 'macros'].includes(p.id)), 'one tile per type: the modulators are the Modulators\' tiles');
   assert.ok(T.RIG_TILES.every(p => p.name === R.MODULES[p.id].label && Object.isFrozen(p)) && Object.isFrozen(T.RIG_TILES));
-  assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos']);
+  assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos', 'comb']); // ((LC §2.1) + the Combiner; MOD1 left the four as they were)
   assert.ok(T.MASTER_MODS.every(id => T.MOD_TILES.some(m => m.id === id && m.multi)));
 });

@@ -907,3 +907,18 @@ test('P2: Track.warmUp\'s ModCore round (warmMods: a payload on a hand-built CP 
   assert.ok(q.mc === null && q.i0.moN === 0 && q.i0.moFN === 0 && q.c0.mcOn === 0 && q.nHeld === 0 && q.insts.length === 1 && q.chains.length === 1, 'clean after the warm-up');
   assert.equal(D2.global('ModCore').warmPayload(D2.global('SxBase'), false).rows.length, 8);
 });
+
+/* ------------------------------------------------------------------ stage LC (IMPL-LC §3, §5.1; lane E): the payload's cmb */
+test('LC: the frozen ModCore exposes combine and preview; setRows reads the payload\'s cmb [{id, k, mode, in: [{row, src, l, a}]}] — MC.cmbN, MC.cb Float64Array(Σ 1 + 3n); a payload without cmb leaves cmbN 0 and an empty block (N1: no combiner work)', () => {
+  const S = scope(), M = S.M;
+  assert.deepEqual([typeof M.combine, typeof M.preview], ['function', 'function']);
+  const s = synth(st => { st.lfo[0] = { ...st.lfo[0], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; st.p['l1.rate'] = hzN(2); st.matrix[0] = row('lfo1', 'a.pan', 1); });
+  const T = { trackId: 'trk_lc', songBeat: () => null }, MC = M.create(T, SR);
+  MC.setRows(payload(s, { cmb: [{ id: 'x1', k: 8, mode: 0, in: [{ row: 'r1', src: S_LFO1, l: 0, a: 1 }] }] }));
+  assert.deepEqual([MC.cmbN, MC.cb.length], [1, 4]);
+  for (let k = 0; k < 4; k++) MC.span(k * 128, 128, 32);
+  const g = MC.sx.mod.g;
+  for (let c = 0; c < 32; c++) assert.ok(Object.is(g[S_EXT0 * 32 + c], g[S_LFO1 * 32 + c]), 'one input at +100 %: the LFO itself');
+  MC.setRows(payload(s));
+  assert.deepEqual([MC.cmbN, MC.cb.length], [0, 0]);
+});

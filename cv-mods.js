@@ -409,8 +409,9 @@ export function descs(dev) {
 //   MOD_SRC / SRC_MOD        canvas source ↔ the native Serum source a row compiles to as it is (wheel / velo / at / bend / note)
 //   MOD_DEV                  the per-track singletons: kind → device id (velo 've', at 'at', bend 'bd', note 'nt')
 //   MOD_LABEL                kind → label (MOD1 §2.2: one word per module in both hosts — 'Envelope', 'Macros'; a macro's knobs
-//                            keep "Macro 1" … "Macro 8"); MOD_PREFIX kind → id prefix ('l', 'e', 'm', 'c', 'h' numbered; the singletons'
-//                            ids); MOD_MULTI the kinds a track may hold several of; MOD_ORDER the Tidy order of kinds
+//                            keep "Macro 1" … "Macro 8"; (LC §2.1) 'Combiner'); MOD_PREFIX kind → id prefix ('l', 'e', 'm', 'c', 'h',
+//                            (LC) 'x' numbered; the singletons' ids); MOD_MULTI the kinds a track may hold several of; MOD_ORDER the Tidy
+//                            order of kinds (the Combiner last)
 //   MOD_COLS                 (MOD1 §2.3) kind → its face's RIG-grid columns (rig-grid faceW: 64·cols + 32 → lfo / env 352, macro 288,
 //                            every other kind 224 — (review 2) the wheel / at / bend 160 no more: their bar held no "AFTERTOUCH"): the
 //                            faces are laid to it, cv-module's MOD_W reads it
@@ -429,8 +430,14 @@ export function descs(dev) {
 //                            'pd<n>.p<i>': slot i 0–63 of the project's Pads module pd<n>) answers { q, dev: null, kind:
 //                            'pad' } without reading the track or the project, as the wheel (srcOk / the host check those)
 //   perNoteOf(track, src)    true for a source that follows the note: velo, note, a PER NOTE lfo (mono 0), an env, a poly
-//                            chaos, a linked POLY Serum LFO / ENV; false for the globals (the wheel, a pad); null for an
-//                            unknown source
+//                            chaos, a linked POLY Serum LFO / ENV; false for the globals (the wheel, a pad, (LC) a combiner); null
+//                            for an unknown source
+//   cmbSrcOk(track, src, id) (LC §2.2) { ok, why } can src plug into combiner id's IN: a track LFO ('l<n>.out') or a Serum-engine
+//                            LFO's link ('<dev>/lfo<n>.out'); anything else CMB_LFOS ("A combiner takes LFOs": no envelope, macro,
+//                            CC, chaos, performance source, pad or combiner — no cycles), a row src → '<id>:in' there already
+//                            CMB_TWICE ("That LFO is already plugged in", a muted one too); 'No such combiner'
+//   inputsOf(track, id)      (LC §2.2) the combiner's inputs: the rows into '<id>:in' (the row objects) in track.mods order — the
+//                            face's list, the payload's; a row from no LFO of the track, or from one listed already, is none
 //   sourcesOf(track, p)      [{ id, label, scope: 'project' | 'track', kind, dev, port, perNote }] the sources a cable may
 //                            start from on this track: the wheel when placed, the project's mod pads (IMPL-8 §5.1: kind
 //                            'pad', modules by id, slots in order, + hidden: a slot outside its module's grid — its rows
@@ -449,7 +456,7 @@ export function descs(dev) {
 //                            renumbered module's), and a title a track module shows already (an old project's clash, §13) reads
 //                            "LFO 1 · <name>": no name twice in the "Connect to…" list
 //   destOk(dev, paramId, keep) { ok, why, stage }: (3) a modulator device (any MOD_LABEL kind): never (NOMOD_MOD) — its
-//                            panel's knobs carry Serum ids on a slot host; a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
+//                            panel's knobs carry Serum ids on a slot host; (LC §2.2) bar a combiner's 'in'; a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
 //                            f.route<X> / f2.route<X> are plain switches: refused unless `keep`, a row that exists); a classic sm / apply / proc knob
 //                            (chunk: stage '5'; struct / none: never; a switched-off oscillator's level: "Switch the
 //                            oscillator on…"); a panel's effect knob (not nomod)
@@ -461,16 +468,16 @@ export function descs(dev) {
 export const MOD_SRC = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend', 'nt.out': 'note' });
 export const SRC_MOD = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out', note: 'nt.out' });
 export const MOD_DEV = Object.freeze({ velo: 've', at: 'at', bend: 'bd', note: 'nt' });
-export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos' });
-export const MOD_PREFIX = Object.freeze({ lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', velo: 've', at: 'at', bend: 'bd', note: 'nt' });
-export const MOD_MULTI = Object.freeze(['lfo', 'env', 'macro', 'cc', 'chaos']);
-export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
-export const MOD_COLS = Object.freeze({ lfo: 5, env: 5, macro: 4, chaos: 3, wheel: 3, velo: 3, at: 3, bend: 3, note: 3, cc: 3 }); // (MOD1 §2.3: data; a lane needing another count asks the lead; (review 2) the wheel, Aftertouch, Bend 2 → 3: a 2-column bar left its title 52 px)
+export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'Envelope', macro: 'Macros', cc: 'CC', chaos: 'Chaos', comb: 'Combiner' });
+export const MOD_PREFIX = Object.freeze({ lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', velo: 've', at: 'at', bend: 'bd', note: 'nt', comb: 'x' });
+export const MOD_MULTI = Object.freeze(['lfo', 'env', 'macro', 'cc', 'chaos', 'comb']);
+export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'comb']); // ((LC §2.1) the Combiner last: no kind's place moves)
+export const MOD_COLS = Object.freeze({ lfo: 5, env: 5, macro: 4, chaos: 3, wheel: 3, velo: 3, at: 3, bend: 3, note: 3, cc: 3, comb: 6 }); // (MOD1 §2.3: data; a lane needing another count asks the lead; (review 2) the wheel, Aftertouch, Bend 2 → 3: a 2-column bar left its title 52 px; (LC §7.1) the Combiner 416)
 export const modBarSub = kind => (MOD_COLS[kind] || 0) >= 4;
-const ID_KIND = { l: 'lfo', e: 'env', m: 'macro', c: 'cc', h: 'chaos' };
+const ID_KIND = { l: 'lfo', e: 'env', m: 'macro', c: 'cc', h: 'chaos', x: 'comb' };
 export function kindOfId(id) {
   if (typeof id !== 'string') return null;
-  const m = /^([lemch])([1-9]\d{0,5})$/.exec(id);
+  const m = /^([lemchx])([1-9]\d{0,5})$/.exec(id);
   if (m) return ID_KIND[m[1]];
   for (const k of Object.keys(MOD_DEV)) if (MOD_DEV[k] === id) return k;
   return null;
@@ -517,7 +524,25 @@ export function perNoteOf(t, src) {
   }
   if (x.kind === 'lfo') return !(isObj(x.dev.lfo) && x.dev.lfo.mono);
   if (x.kind === 'chaos') return !(isObj(x.dev.chaos) && x.dev.chaos.mono);
-  return x.kind === 'velo' || x.kind === 'note' || x.kind === 'env';
+  return x.kind === 'velo' || x.kind === 'note' || x.kind === 'env'; // ((LC §2.1) a combiner GLOBAL: its inputs run GLOBAL, §4.2)
+}
+// (LC §2.2) a combiner's inputs: rows src → '<id>:in' from LFOs only — a track LFO's 'l<n>.out' (GLOBAL or PER NOTE), a
+// Serum-engine LFO's link '<dev>/lfo<n>.out' —, each LFO once a combiner (no cycles: no combiner feeds one)
+export const CMB_LFOS = 'A combiner takes LFOs', CMB_TWICE = 'That LFO is already plugged in';
+const combOf = (t, id) => { const d = isObj(t) && isObj(t.dev) ? t.dev[id] : null; return isObj(d) && d.kind === 'comb' && kindOfId(id) === 'comb' ? d : null; };
+const lfoIn = (t, src) => { const S = srcDev(t, src); return !!S && (S.kind === 'lfo' || (S.kind === 'link' && /^lfo/.test(S.q.link))); };
+export function cmbSrcOk(t, src, id) {
+  if (!combOf(t, id)) return { ok: false, why: 'No such combiner' };
+  if (!lfoIn(t, src)) return { ok: false, why: CMB_LFOS };
+  const dst = id + ':in';
+  if (Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === src && r.dst === dst)) return { ok: false, why: CMB_TWICE };
+  return { ok: true, why: '' };
+}
+export function inputsOf(t, id) {
+  if (!combOf(t, id) || !Array.isArray(t.mods)) return [];
+  const dst = id + ':in', seen = new Set(), out = [];
+  for (const r of t.mods) if (isObj(r) && r.dst === dst && !seen.has(r.src) && lfoIn(t, r.src)) { seen.add(r.src); out.push(r); }
+  return out;
 }
 const wheelOn = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
 // (IMPL-8 §5) the Pads modules of a project by id (pd1 … pd64; normPads'd by the host — read defensively), a module by id,
@@ -623,7 +648,7 @@ export const NOMOD_MOD = 'A modulator’s own knobs can’t be modulated';
 export function destOk(dev, id, keep) {
   const no = (why, stage = null) => ({ ok: false, why, stage }), ok = { ok: true, why: '', stage: null };
   if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
-  if (MOD_LABEL[dev.kind]) return no(NOMOD_MOD);
+  if (MOD_LABEL[dev.kind]) return dev.kind === 'comb' && id === 'in' ? ok : no(NOMOD_MOD); // ((LC §2.2) a combiner's IN: the one modulator destination — its sources cmbSrcOk's)
   if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
   if (dev.kind !== 'synth') return no(NOMOD);
   if (!isSxId(dev.model)) {

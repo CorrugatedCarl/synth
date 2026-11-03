@@ -238,6 +238,38 @@ function pair(mk) {
   return RUNS.get(sc.id);
 }
 
+// (IMPL-LC §5.3) scene 4: combiners — a Juno-60 into fx1 (a compressor), two GLOBAL canvas LFOs (a sine at BPM 1/4, 0.8 Hz) into an Add
+// combiner onto the Juno's cutoff and a Multiply one onto the compressor's threshold; 'mods' monitored: its slow {mc, mcx, cF, cb} and
+// fast {mc, x, cb} carry the combiners' block. Not in SCENES (their pins stay as they were)
+function combScene() {
+  const fxP = core.defaultFx2(), pc = fxInst(fxP, 'cmp', { thr: Math.pow(10, -30 / 20), ratio: 4, att: 2, rel: 80 });
+  const t = { id: TID, name: 'C', notes: [], cc: [], prim: 'i2', nid: 4, mid: 1, dev: { i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null }, fx1: { kind: 'panel', fx: fxP }, out: { kind: 'out' } },
+    wires: [{ id: 'w2', a: 'i2.out', b: 'fx1.in' }, { id: 'w3', a: 'fx1.out', b: 'out.in' }], mods: [] };
+  t.dev.l1 = S.normModDev({ kind: 'lfo', lfo: { mono: 1, mode: 'free', bpm: 1, anchor: 0, pts: SINE }, rate: ladN('1/4') });
+  t.dev.l2 = S.normModDev({ kind: 'lfo', lfo: { mono: 1, mode: 'free', bpm: 0, anchor: 0 }, rate: hzN(0.8) });
+  t.dev.x1 = S.normModDev({ kind: 'comb' }); t.dev.x2 = S.normModDev({ kind: 'comb', mode: 'mul' });
+  for (const [src, dst, amt] of [['l1.out', 'x1:in', 1], ['l2.out', 'x1:in', -0.5], ['l2.out', 'x2:in', 0.8], ['x1.out', 'i2:cf', 0.4], ['x2.out', `fx1:fx.${pc.id}.thr`, 0.3]]) {
+    const r = MO.addMod(t, src, dst, { project: PROJ });
+    if (!r.ok) throw new Error(src + ' → ' + dst + ': ' + r.why);
+    MO.setMod(t, r.row.id, { amt });
+  }
+  const pay = Object.assign(G.compileMods(t, PROJ, { smooth: 1, qr: null, ultra: 0 }), { bpm: 128 }), g = G.compileGraph(t), juno = junoPatch(), chain = G.chainPatch(fxP, { sr: SR, bpm: 128 });
+  if (!pay.cmb || pay.cmb.length !== 2) throw new Error('comb scene: no combiners compiled');
+  const ids = ['i2', 'fx1', 'mods'];
+  return {
+    id: 'comb', mon: ids, fast: { ids, ix: null, ixv: 4 }, events: beats(4), pay,
+    make(D) {
+      const p = new D.Proc({ processorOptions: { os: 2, hostOS: 4, trackId: TID } });
+      p.msg(Object.assign({ t: 'graph' }, g.graph));
+      p.msg({ t: 'patch', i: 'i2', p: juno });
+      p.msg(Object.assign({ t: 'chain', c: 'fx1' }, chain));
+      p.msg(pay);
+      if (!p.mc || p.mc.cmbN !== 2) throw new Error('comb scene: the ModCore runs no combiner');
+      return p;
+    },
+  };
+}
+
 /* ------------------------------------------------------------------ FR1b */
 test('FR1b: with the fast lane on (120 Hz) the audio is bit-identical and every slow message is equal in order (stats left out) — legacy Serum, graphed Track, MASTER; fast off posts no fast message', () => {
   for (const mk of SCENES) {
@@ -280,6 +312,29 @@ test('FR1b: every fast field equals its slow twin in a quantum where both post (
     }
     assert.ok(pairs >= 3 * want.length, sc.id + ': coinciding posts (' + pairs + ')');
   }
+});
+
+test('LC §5.3 the combiner scene: the fast lane on (120 Hz) leaves the audio bit-identical and every slow message equal; the slow \'mods\' post carries cF (its frames) and cb, the fast one cb; at hz 30 every fast cb equals its slow twin at the same F, exactly', () => {
+  const sc = combScene(), off = render(sc, null), on = render(sc, { hz: 120 }), h30 = render(sc, { hz: 30 });
+  assert.ok(bitsEqual(off.L, on.L) && bitsEqual(off.R, on.R) && bitsEqual(off.L, h30.L), 'the audio bit-identical');
+  const A = slowOf(off.log).map(e => e.c), B = slowOf(on.log).map(e => e.c);
+  assert.equal(A.length, B.length);
+  let first = -1;
+  for (let k = 0; k < A.length && first < 0; k++) if (!isDeepStrictEqual(A[k], B[k])) first = k;
+  assert.equal(first, -1, 'slow message ' + first + ' differs');
+  const n = 1 + 3 * 2 + 1 + 3 * 1, mods = slowOf(off.log).filter(e => e.c.t === 'smon' && e.c.mc !== undefined);
+  assert.ok(mods.length > 60 && mods.every(e => e.c.cF === e.F && e.c.cb.length === n), 'slow: cF = the frames, cb Σ (1 + 3n)');
+  const F120 = fastOf(on.log).filter(e => partF(e.c) === 'mods');
+  assert.ok(F120.length > 100 && F120.every(e => e.c.cb.length === n && e.c.F === e.F), 'fast: cb on every mods post');
+  const S0 = slowByF(h30.log);
+  let pairs = 0;
+  for (const e of fastOf(h30.log)) {
+    if (partF(e.c) !== 'mods' || !S0.has(e.F) || !S0.get(e.F).has('mods')) continue;
+    const s0 = S0.get(e.F).get('mods');
+    pairs++;
+    for (let j = 0; j < n; j++) if (!Object.is(e.c.cb[j], s0.cb[j])) assert.fail('F ' + e.F + ' cb[' + j + ']: ' + e.c.cb[j] + ' vs ' + s0.cb[j]);
+  }
+  assert.ok(pairs > 60, 'paired posts ' + pairs);
 });
 
 // A Serum's slow channel peaks (smon s.mix[0…7)) have one more restart than its slow posts, from before Cut B: Track.stats() (every

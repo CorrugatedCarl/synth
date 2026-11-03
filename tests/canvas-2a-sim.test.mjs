@@ -71,7 +71,7 @@ const frameNow = () => { WK.clock.config({ gate: false }); try { sim.raf(); } fi
 test('a Velocity tile dropped on the canvas adds the module where it lands (one History step, the notice undoes it); its tile greys out; a tap adds it left of the instrument', () => {
   const t = T(), n0 = hsteps();
   ID.a = t.id;
-  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], [RIGK, 10, null]); // (2b: the ten kinds)
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], [RIGK, 11, null]); // (2b: the ten kinds; (LC) + the Combiner)
   // (2026-10-19) the Modulators live in the Sources tray's Modulators view ((MOD1 §5) their own; (SX0) the Serum view that held them too is
   // gone) — Hardware / Simple: the classic synths only
   assert.deepEqual([tiles().view(), sim.$('#srcModSec').hidden], ['hw', true]);

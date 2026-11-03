@@ -1,0 +1,5 @@
+v 1 (IMPL-LC §10): the combiners project, ▶ from bar 1, the loop bars 3–4 wrapping once, 5 bars; per node SHA-256 of L and R
+0 synth-master - 28da917d227e6e222404076ef828ed4c9bdbceb3b01aac741d5466ff5c0ae4b2 182e386c26b7660ecdfa125d1fd14db1e7612aa524b136123e4403f7eb1275fb
+1 synth-engine trk_1 2b5087a8334ac41c4cf637d19aa1476173ba24d41b00d527504ad55a1f5c0d13 29834ffd9563a2df3cfca80335c3344c725539c2b7a444f4ced8b12073bec771
+2 synth-engine trk_2 78352e13ab8b476637d114bd482f284f26168e6fb0f2d0394cab584481318f55 e6ba00bce4bbfd920cf40392d6cbe70afd856c5b9ec1d2685c542bb3d64fcf6c
+frames 450000 sr 48000 peak 0.458552

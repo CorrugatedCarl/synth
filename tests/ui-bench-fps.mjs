@@ -59,7 +59,7 @@ export const BUDGET = Object.freeze({
   rate: 0.8,
   delivered: 0.8, // frames delivered ≥ 0.8 × the virtual display's (a starved main thread says so)
 });
-export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip']); // ((MOD1 G6) mods: a Juno's modulators; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
+export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb']); // ((MOD1 G6) mods: a Juno's modulators; (LC G6) comb: two Combiners' faces; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
 /** The scenes whose layout + style budget (< 1 ms / s, "idle-animating") is gated: the engine on, nothing playing. The others are recorded — a
  * playing project writes the transport's text every frame (IMPL-FR §3 A1: "the recorded exception"). `--layout-gate all` gates every scene. */
 export const LAYOUT_SCENES = Object.freeze(['idle']);
@@ -127,6 +127,12 @@ export const EXPECT = Object.freeze({
   // samples the playhead itself through a seek back
   clip: Object.freeze([ // (max: the overlay moves a pixel column ≈ 137 times a second here — measured at 240 Hz, the default view, any viewport: layout px)
     { name: 'CLIP roll playhead', kind: 'canvas', sel: '.sx-roll canvas.sx-rollov', rate: 'eff', max: 120 },
+  ]),
+  // (LC G6) two Combiners' faces (cv-mods-ui combBody): the overlay (lc-view paintOverlay — the playhead at heardTickNow, the live dot) on its
+  // `lc` clock client, a new x every painted frame while playing (≥ ¼ px a frame at 128 BPM over 2 bars at 240 Hz): the clock's rate. The
+  // curves (canvas.rig-ccv) repaint only on a change (§6.6): not asked here — combProbe counts them. The LFO faces are off screen
+  comb: Object.freeze([
+    { name: 'Combiner overlays', kind: 'canvas', sel: '[data-rig-kind="comb"] canvas.rig-cov', rate: 'eff', min: 2 },
   ]),
 });
 
@@ -675,6 +681,33 @@ const BUILD = {
     A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
     await sleep(300); await startPlay(A);
   },
+  async comb(A) { // (LC G6) a Juno with 8 track LFOs (GLOBAL, FREE: BPM-anchored and Hz, one SMOOTHed) into 2 Combiners × 4 (Add 1 bar, Multiply 2 bars), each OUT on a Juno knob, playing
+    const CORE = await A.imp('serum-core.js'), hzN = hz => Math.pow(hz / 100, 0.25), lad = l => CORE.LFO_LADDER.findIndex(x => x.label === l) / (CORE.LFO_LADDER.length - 1);
+    await prelude(A, 0);
+    A.shell.srcPick('juno60', 'track'); await mounted(A);
+    const t = A.trk(), dev = t.prim, L = [], X = [], lf = (bpm, anchor, extra) => Object.assign({ lfo: Object.assign({ mode: 'free', mono: 1, bpm, anchor }, extra && extra.lfo) }, extra && extra.k);
+    const ST = [lf(1, 1, { k: { rate: lad('1/4') } }), lf(0, 0, { k: { rate: hzN(0.7) } }), lf(1, 1, { k: { rate: lad('1/2') } }), lf(0, 0, { lfo: { type: 'path' }, k: { rate: hzN(1.3), smooth: 0.3 } }),
+      lf(1, 1, { k: { rate: lad('1/8') } }), lf(0, 0, { k: { rate: hzN(0.4) } }), lf(1, 1, { k: { rate: lad('1 bar') } }), lf(0, 0, { k: { rate: hzN(2.1) } })];
+    // the LFOs two rows of four far left (off screen: the camera frames the combiners and the Juno), the combiners between them and the Juno
+    ST.forEach((s, i) => { try { const k = A.cv.mod.add('lfo', { x: -3600 + (i % 4) * 384, y: Math.floor(i / 4) * 576 }); if (!k) { A.notes.push('lfo ' + i + ' refused'); return; } L.push(k); if (!A.cv.mod.comb(k).edit(s)) A.notes.push('lfo ' + k + ' state refused'); } catch (e) { A.notes.push('lfo ' + i + ': ' + e.message); } }); // (o.edit = modEditState(key): an LFO's own step)
+    for (let j = 0; j < 2; j++) { try { const k = A.cv.mod.add('comb', { x: -1100, y: j * 560 }); if (k) X.push(k); else A.notes.push('comb ' + j + ' refused'); } catch (e) { A.notes.push('comb ' + j + ': ' + e.message); } }
+    await mounted(A);
+    const AMT = [[0.5, -0.3, 0.4, 0.25], [0.6, 0.5, 0.7, 0.4]];
+    X.forEach((x, j) => {
+      for (let k = 0; k < 4; k++) {
+        const l = L[j * 4 + k];
+        try { const row = l && A.cv.mod.connect(l + '.out', x + ':in'); if (!row) A.notes.push('row ' + l + ' → ' + x + ' refused'); else A.cv.mod.comb(x).setAmt(row, AMT[j][k], 'set'); } catch (e) { A.notes.push('row ' + l + ': ' + e.message); }
+      }
+      try { if (!A.cv.mod.connect(x + '.out', dev + ':' + (j ? 'rs' : 'cf'))) A.notes.push('row ' + x + ' → Juno refused'); } catch (e) { A.notes.push('row ' + x + '.out: ' + e.message); }
+    });
+    try { if (X[1] && !A.cv.mod.comb(X[1]).edit({ mode: 'mul', win: 2 })) A.notes.push('comb 2: mode / window refused'); } catch (e) { A.notes.push('comb 2 edit: ' + e.message); }
+    await mounted(A);
+    A.cv.world().fit({ ids: X.concat(dev), animate: false }); await sleep(500); // (the combiners and the Juno framed)
+    A.cv.setProjectBpm(128);
+    await audioOn(A);
+    A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
+    await sleep(300); await startPlay(A);
+  },
   async master(A) { // the master canvas: a Compressor and a Ducker in its rack, two LFOs cabled on them, the OUT; a Juno playing under it
     await prelude(A, 0);
     A.shell.srcPick('juno60', 'track'); await mounted(A);
@@ -882,6 +915,101 @@ export async function clipCheck(win, ms = 6000, seekAt = 2500) {
   win.requestAnimationFrame(loop);
   await sleep(ms); live = false;
   return Object.assign({ ok: true, heard: CP.heard(), frames: out.length, fps: r1(out.length / (ms / 1000)) }, clipJumps(out));
+}
+
+/** (LC G6) The comb scene's Combiner faces (cv.mod.bodies of kind 'comb', their lc-view V): playing, for `ms` — each view's frame() timed
+ * (the face's per-frame work under its `lc` client: the client's callback is shownNow + V.frame()), the overlay's playhead x per delivered
+ * frame (its moveTo at y 0 → `moved`, the share of frames with a new x), the curves' paints a second (§6.6: on a change only — the window's
+ * turn); then a curve recompute — V.dirty(2) + V.frame() (the keys' path), `reps` times, and the host's own: o.edit({ win }) there and back
+ * (the frame after it, by the same wrapper) —, and an amount move's re-combine as the face's drag runs it (o.setAmt(row, v, 'move') +
+ * V.dirty(1) + V.frame(): recombine()) `reps` times, then 'cancel' (no step). `o.stop`: only the stopped check — ■ (the button) and,
+ * `settle` ms on, `ms` of frames: the curves never repainted, the overlay only when the level mark moved (the FREE GLOBAL inputs run on
+ * while stopped: the knob moves, §6.4 — its client stays by design); then ⏻ off (the button): no `lc` client, no frame(), no paint.
+ * → the numbers, ms (wall: the CPU throttle included). */
+export async function combProbe(win, o = {}) {
+  const A = appOf(win), F = A.F, ms = o.ms || 2000, reps = o.reps || 15, now = () => win.performance.now();
+  const Bs = Array.from(A.cv.mod.bodies).filter(([, B]) => B && B.kind === 'comb' && typeof B.view === 'function' && B.view() && B.el)
+    .map(([k, B]) => ({ k, B, V: B.view(), H: A.cv.mod.comb(k), ov: B.el.querySelector('canvas.rig-cov'), cc: B.el.querySelector('canvas.rig-ccv'), T: [], on: false, x: NaN, cp: 0, cpF: -1 }));
+  if (!Bs.length || Bs.some(b => !b.ov || !b.cc)) return { ok: false, why: 'no Combiner face with its view and canvases' };
+  const wk = await wkOf(A), undo = [], st = b => b.V.state(), lcN = () => wk.clock.clients().filter(n => n === 'lc').length;
+  for (const b of Bs) {
+    const f0 = b.V.frame, g = b.ov.getContext('2d'), mt = g.moveTo, gc = b.cc.getContext('2d'), fr = gc.fillRect;
+    b.V.frame = function () { const a = now(); try { return f0.apply(this, arguments); } finally { if (b.on) b.T.push(now() - a); } };
+    g.moveTo = function (x, y) { if (y === 0) b.x = x; return mt.apply(this, arguments); }; // (the playhead's line: moveTo(x, 0))
+    gc.fillRect = function () { if (b.cpF !== F.frame) { b.cpF = F.frame; b.cp++; } return fr.apply(this, arguments); };
+    undo.push(() => { b.V.frame = f0; delete g.moveTo; delete gc.fillRect; });
+  }
+  const frames = n => new Promise(r => { let k = 0; const f = () => (++k >= n ? r() : win.requestAnimationFrame(f)); win.requestAnimationFrame(f); });
+  const res = { ok: true, faces: Bs.length, playing: !!A.api.transport().playing, per: [] };
+  try {
+    if (o.stop) { // ■ (the engine on: the FREE GLOBAL inputs run on — the dot, a level mark, follows the knob; the curves hold), then ⏻ off: nothing per frame
+      const win1 = async () => {
+        await sleep(o.settle || 1500);
+        for (const b of Bs) { b.T.length = 0; b.on = true; b.cp = 0; b.lv = []; }
+        F.begin(); await sleep(ms); const d = F.end();
+        const r = { playing: !!A.api.transport().playing, audio: A.api.ctx() ? A.api.ctx().state : 'none', lc: lcN(), frames: d.delivered, rafMed: q(d.raf).med, per: [] };
+        for (const b of Bs) { let same = 0; for (let i = 1; i < b.lv.length; i++) if (b.lv[i] === b.lv[i - 1]) same++; r.per.push({ k: b.k, frames: b.T.length, overlayPaints: F.cv(b.ov).n, samePaints: same, curvePaints: b.cp, live: b.V.live() }); b.on = false; }
+        return r;
+      };
+      for (const b of Bs) { const g = b.ov.getContext('2d'), fr = g.fillRect; g.fillRect = function (x, y, w) { if (b.on && x === 0 && w === 8) b.lv.push(y); return fr.apply(this, arguments); }; undo.push(() => { delete g.fillRect; }); } // (the level mark: fillRect(0, y − 1.5, 8, 3))
+      if (A.api.transport().playing) A.doc.querySelector('#tPlay').click();
+      res.stopped = await win1();
+      const pw = A.doc.querySelector('#power');
+      if (pw && A.api.ctx()) pw.click();
+      res.off = await win1();
+      const S = res.stopped, Z = res.off;
+      res.pass = !S.playing && S.per.every(p => !p.curvePaints && !p.samePaints) && Z.audio === 'none' && Z.lc === 0 && Z.per.every(p => !p.frames && !p.overlayPaints && !p.curvePaints && !p.live);
+      return res;
+    }
+    // playing: the per-frame work and the overlay's x per delivered frame
+    for (const b of Bs) { b.T.length = 0; b.on = true; b.cp = 0; b.xs = []; }
+    let lastF = -1;
+    const t0 = now();
+    await new Promise(r => { const loop = () => { if (now() - t0 >= ms) { r(); return; } if (F.frame !== lastF) { lastF = F.frame; for (const b of Bs) b.xs.push(b.x); } win.requestAnimationFrame(loop); }; win.requestAnimationFrame(loop); });
+    const secs = (now() - t0) / 1000;
+    res.lc = lcN();
+    for (const b of Bs) {
+      const xs = b.xs; let pairs = 0, mv = 0;
+      for (let i = 1; i < xs.length; i++) { if (!(xs[i] === xs[i] && xs[i - 1] === xs[i - 1])) continue; pairs++; if (xs[i] !== xs[i - 1]) mv++; }
+      res.per.push({ k: b.k, frame: q(b.T), moved: pairs ? r3(mv / pairs) : 0, steps: pairs, curvesPerS: r1(b.cp / secs), mode: st(b).mode, W: st(b).W, n: st(b).n });
+      b.on = false;
+    }
+    // a curve recompute: the keys' path (dirty 2), timed alone
+    for (const [j, b] of Bs.entries()) {
+      const P = res.per[j], R = [], r0 = st(b).recomputes;
+      for (let i = 0; i < reps; i++) { await frames(1); const a = now(); b.V.dirty(2); b.V.frame(); R.push(now() - a); }
+      P.recompute = q(R); P.recomputed = st(b).recomputes - r0;
+      // the host's own: the window there and back (one step each; the frame after it by the wrapper)
+      const back = (b.H.get() || {}).win || 1, there = back === 1 ? 2 : 1, wr = [];
+      for (const w of [there, back]) {
+        b.T.length = 0; b.on = true;
+        const c0 = st(b).recomputes;
+        b.H.edit({ win: w }); await frames(4);
+        b.on = false;
+        wr.push({ win: w, ms: r3(b.T.length ? Math.max(...b.T) : NaN), recomputes: st(b).recomputes - c0, beats: r3(st(b).W) });
+      }
+      P.winEdit = wr;
+      // an amount move's re-combine, as the face's drag: setAmt 'move' then recombine (dirty 1 + frame); 'cancel' after (no step)
+      const I = b.H.inputs(), row = I.length ? I[0].row : null;
+      if (row) {
+        const a0 = +I[0].amt, M = [], Mh = [], Mv = [], c0 = st(b).recomputes, k0 = st(b).combines;
+        b.H.setAmt(row, a0, 'start');
+        for (let i = 0; i < reps; i++) { await frames(1); const v = Math.max(-1, Math.min(1, a0 + (i % 2 ? -1 : 1) * 0.02 * (1 + (i >> 1)))), a = now(); b.H.setAmt(row, v, 'move'); const m = now(); b.V.dirty(1); b.V.frame(); const e = now(); M.push(e - a); Mh.push(m - a); Mv.push(e - m); }
+        b.H.setAmt(row, a0, 'cancel');
+        P.amtMove = q(M); P.amtHost = q(Mh); P.amtView = q(Mv); P.amtRecomputes = st(b).recomputes - c0; P.amtCombines = st(b).combines - k0; // (host: setMod + the held repost; view: the combine + the curves' repaint + the overlay)
+        await frames(2);
+      }
+      // the combine alone (lc-view sumCurve over the cached value arrays: §6.6's "only the combine"), no paint
+      const S = st(b), MC = win.ModCore, LV = await A.imp('lc-view.js');
+      if (MC && S.n && S.N) {
+        const am = Float64Array.from(S.amts), va = Float64Array.from(S.vals), sm = new Float64Array(S.N), C = [];
+        for (let i = 0; i < reps; i++) { const a = now(); LV.sumCurve(MC, S.mode, S.n, am, va, S.N, sm); C.push(now() - a); }
+        P.combine = q(C); P.N = S.N;
+      }
+    }
+    res.errors = F.errs.slice(0, 5);
+    return res;
+  } finally { for (const f of undo) f(); }
 }
 
 /* ================================================================================================ on a device: index.html?fpsdev=1 */
@@ -1258,6 +1386,24 @@ export async function drive(o) {
               rep.checks.push({ id: 'smooth probe ' + cap, size: sk, scene, pass: !pre.fast || !!r.pass, value: r, note: (r.ok ? r.frames + ' frames, moved ' + r.moved + ', cv ' + r.cv + ', ' + r.wraps + ' wrap(s)' : r.why) + (pre.fast ? '' : ' (the lane off' + (o.fast ? ' here — WebKit' : '') + ': recorded, the before)') });
               say('   smooth probe @' + cap + ': ' + (rep.checks.at(-1).pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
             }
+          }
+          if (scene === 'comb') { // ((LC G6) the faces' own numbers at 1 × and 6 × (cap 120): per-frame work ≤ 0.1 ms and the overlay moving every painted frame at 1 ×; a curve recompute ≤ 4 ms, an amount move's re-combine ≤ 0.5 ms at 6 ×; then ■: nothing per frame
+            for (const th of [1, 6]) {
+              await s('Emulation.setCPUThrottlingRate', { rate: th }); lastTh = th;
+              await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap: 120, display: 120, warm: 1500, throttle: th, fast: o.fast, perf: o.perf }) + ')', 120000);
+              const r = await ev('__fpsPage.combProbe(window, { ms: 2500, reps: 15 })', 120000), P = r.per || [], mx = f => (P.length ? Math.max(...P.map(f)) : NaN);
+              const G = th === 1 ? [['frame med ≤ 0.1 ms', mx(p => p.frame.med), 0.1], ['overlay moved ≥ 0.98 of the frames', -Math.min(...P.map(p => p.moved)), -0.98]]
+                : [['recompute med ≤ 4 ms', mx(p => p.recompute.med), 4], ['window edit ≤ 4 ms', mx(p => Math.max(...p.winEdit.map(w => w.ms))), 4], ['amount move re-combine med ≤ 0.5 ms', mx(p => p.amtView ? p.amtView.med : NaN), 0.5]];
+              const pass = !!r.ok && r.playing && P.length === 2 && G.every(([, v, lim]) => v <= lim) && !(r.errors && r.errors.length);
+              rep.checks.push({ id: 'comb probe ' + th + 'x', size: sk, scene, pass, value: r, note: !r.ok ? r.why : G.map(([n, v]) => n + ': ' + r3(Math.abs(v))).join(' · ') + ' · ' + P.map(p => p.k + ' frame ' + p.frame.med + '/' + p.frame.p95 + ' recompute ' + p.recompute.med + '/' + p.recompute.max + ' move ' + (p.amtMove ? p.amtMove.med + '/' + p.amtMove.max + ' (host ' + p.amtHost.med + ', view ' + p.amtView.med + ', the combine alone ' + (p.combine ? p.combine.med : '–') + ')' : '–') + ' curves ' + p.curvesPerS + '/s').join(' · ') });
+              say('   comb probe @' + th + '×: ' + (pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
+            }
+            await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
+            await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap: 120, display: 120, warm: 500, throttle: 1, fast: o.fast, perf: o.perf }) + ')', 120000);
+            const r = await ev('__fpsPage.combProbe(window, { stop: true, ms: 2500, settle: 1500 })', 120000);
+            const wd = (t, w) => t + ': lc ' + w.lc + ', ' + w.per.map(p => p.k + ' frame() ' + p.frames + ' overlay ' + p.overlayPaints + ' (unmoved ' + p.samePaints + ') curves ' + p.curvePaints + (p.live ? ' live' : '')).join(' · ') + ' (rAF med ' + w.rafMed + ' ms, ' + w.frames + ' frames)';
+            rep.checks.push({ id: 'comb stopped', size: sk, scene, pass: !!r.pass, value: r, note: !r.ok ? r.why : wd('■', r.stopped) + ' | ' + wd('⏻ off', r.off) });
+            say('   comb stopped: ' + (r.pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
           }
           if (o.load && (scene === 'tutorial' || scene === 'master') && sk === o.sizes[0]) { // ((FR Cut B §7 G8) Δ load (on − off) ≤ max(0.005, 2 × the A/A spread)
             await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;

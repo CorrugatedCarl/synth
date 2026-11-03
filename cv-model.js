@@ -46,7 +46,8 @@
 //        that prefix + 1 — a removed module's number comes round again, its rows went with it) with the module's default
 //        state (song.normModDev of nothing: an LFO = Serum's default LFO as GLOBAL (mono 1), an ENV = Serum's ENV 2
 //        defaults, a macro 8 knobs at 0 with empty names, a CC { cc: 1, ch: 0, v: 0 }, a chaos GLOBAL (mono 1, as a canvas
-//        LFO: the lead, review 2 — a per-note chaos on a classic knob would restart at every note) at Serum's rate, S&H off)
+//        LFO: the lead, review 2 — a per-note chaos on a classic knob would restart at every note) at Serum's rate, S&H off;
+//        (LC §2.1) 'comb' → 'x<n>', a Combiner { mode: 'add', win: 1, mark: null })
 //   removeModDev(t, id) → { ok, rows }   the device and every row from it (any port); rows: the ids removed
 //   setModState(t, id, fields) → { ok, why }   the module's state fields merged in and bounded (song.normModDev: the
 //        device-level keys — rate, att…rel, crv, v, names, cc… — and the slot objects lfo / env / chaos, each replaced
@@ -80,7 +81,12 @@
 //        rules. codes: end (no such device), src (unknown source), nomod, stage, full ("<name>’s mod rows are full
 //        (64/64)", o.name: the module's title), aux (refused by normRow)
 //        Row: { id: 'r<n>', src, dst, amt, bi, curve, aux, inv, byp, out, acurve, crv, rise, fall, slink } (normRow's
-//        fields and order after the ends); ids from the counter track.mid (saved; also past every 'r<n>' present): never reused
+//        fields and order after the ends); ids from the counter track.mid (saved; also past every 'r<n>' present): never reused.
+//        (LC §2.2, §4) dst '<comb>:in': an input — a track LFO or a Serum-engine LFO's link, each once (cmbSrcOk's words, code
+//        src), amt +1 (o.amt) and o.byp, the rest normRow's defaults; refused while it needs an eleventh ModCore LFO slot
+//        (CMB_FULL "That LFO can’t join: this track runs 10 LFOs", code slots). A combiner's OUT ('x1.out') onto a knob: the
+//        knob's rules, refused as a pad's while the track's 16 value sources are taken and the combiner holds none
+//        (VALS_FULL, code slots)
 //   setMod(t, rowId, fields) → { ok, why }   the row's fields (not id / src / dst) through normRow's rules (a non-native
 //        source or destination: the same rules by proxy — the source check is the row's own, done at addMod)
 //   removeMod(t, rowId) → { ok, why }
@@ -96,13 +102,13 @@
 //        (a line for the caller; '' when none)
 import { trackToV2, panelOf, V1_KEYS } from './cv-migrate.js?v=9';
 import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget, compileMods, VAL_N } from './cv-graph.js?v=9';
-import { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, destOk, srcDev, descs, modLabelOf } from './cv-mods.js?v=9';
+import { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, destOk, srcDev, descs, modLabelOf, kindOfId, perNoteOf, cmbSrcOk } from './cv-mods.js?v=9';
 import { padOfSrc, freeId, newModule, PAD_ID, MAX_MODS } from './pads-core.js?v=9'; // (IMPL-8 §1, §5, §10: the Pads modules)
-// (the host's one namespace for the rows: cv-mods' tables and checks, re-exported)
+// (the host's one namespace for the rows: cv-mods' tables and checks, re-exported; (LC) the Combiner's)
 export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, plainSwitch, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf,
-  padTracks, isPadSrc, padSrcLabel } from './cv-mods.js?v=9';
+  padTracks, isPadSrc, padSrcLabel, cmbSrcOk, inputsOf, CMB_LFOS, CMB_TWICE } from './cv-mods.js?v=9';
 import { normModDev, DEV_MAX } from './song.js?v=9';
-import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
+import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX, N_LFO } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
 import { isSxId } from './models.js?v=9'; // ((WC) a Serum-engine device — the Serum and the rig — has its own FX rack, its matrix, its link rows)
 import { RIG } from './rig-core.js?v=9'; // ((SX0) the fallback name of an unnamed Serum-engine device)
@@ -495,6 +501,29 @@ export function prunePads(p) {
   for (const t of Array.isArray(p.tracks) ? p.tracks : []) if (isObj(t) && isObj(t.lay)) for (const k of Object.keys(t.lay)) if (PAD_ID.test(k) && !have.has(k)) delete t.lay[k];
   return r;
 }
+// (LC §2.2, §4.2) an input row src → '<id>:in': LFOs only, each once a combiner (cv-mods cmbSrcOk: code src); +100 % (o.amt −1…1)
+// and o.byp, every other field normRow's default (they mean nothing on an input: no knob rules). The budget the pad precedent's: an
+// input that needs a ModCore LFO slot of its own while the track runs N_LFO is refused at the drop (CMB_FULL, code slots) — a GLOBAL
+// LFO's own slot is pay.slots['l1'] / ['i1/lfo3'] (shared with its cables), a PER NOTE / per-voice one's a GLOBAL twin, one a source
+// (held while another combiner's input from it is placed); nothing else is evicted (the compile's order, §4.2)
+export const CMB_FULL = `That LFO can’t join: this track runs ${N_LFO} LFOs`;
+function cmbIn(t, src, id, o, no) {
+  if (kindOfId(id) !== 'comb') return no('A modulation cable ends on nothing', 'end');
+  const c = cmbSrcOk(t, src, id);
+  if (!c.ok) return no(c.why, 'src');
+  const pay = compileMods(t, o.project);
+  if (pay && pay.n.lfo >= N_LFO) {
+    const left = new Set(pay.left.map(x => x.id)), dst = id + ':in', R = Array.isArray(t.mods) ? t.mods : [];
+    const cmbAt = x => { const k = x.slice(0, -3); return kindOfId(k) === 'comb' && isObj(t.dev[k]) && t.dev[k].kind === 'comb'; };
+    const twin = () => R.some(r => isObj(r) && r.src === src && r.dst !== dst && typeof r.dst === 'string' && r.dst.endsWith(':in') && cmbAt(r.dst) && !left.has(r.id));
+    if (perNoteOf(t, src) ? !twin() : !(isObj(pay.slots) && pay.slots[src.slice(0, -4)])) return no(CMB_FULL, 'slots');
+  }
+  // ((review 1 R1-6) its first input makes the combiner take a value slot (§4.1): the 16 taken and none held → the OUT's pre-check, its words
+  if (pay && pay.n.vals >= VAL_N && !(Array.isArray(pay.cmb) && pay.cmb.some(c => c.id === id))) return no(VALS_FULL, 'slots');
+  const row = rowOf(rowId(t), src, id + ':in', normRow({ src: 'wheel', dst: 'f.cutoff', amt: typeof o.amt === 'number' ? o.amt : 1, byp: o.byp }));
+  mods(t).push(row);
+  return { ok: true, row, why: '', code: null };
+}
 export function addMod(t, src, dst, o = {}) {
   const no = (why, code) => ({ ok: false, row: null, why, code });
   if (!isObj(t) || !isObj(t.dev)) return no('No such track', 'end');
@@ -503,9 +532,11 @@ export function addMod(t, src, dst, o = {}) {
   if (!isObj(d)) return no('A modulation cable ends on nothing', 'end');
   const k = destOk(d, D.param);
   if (!k.ok) return no(k.why, k.stage ? 'stage' : 'nomod');
-  if (padOfSrc(src)) { // (IMPL-8 §5.3) a mod pad new to the track takes one of its 16 value slots: none left → refused (the 2a budget's way)
-    const pay = compileMods(t, o.project);
-    if (pay && pay.n.vals >= VAL_N && !pay.vals.some(v => v.id === src)) return no(VALS_FULL, 'slots');
+  if (d.kind === 'comb') return cmbIn(t, src, D.dev, o, no); // ((LC §2.2) an LFO into a combiner's IN — destOk passes 'in' only)
+  const S0 = srcDev(t, src), cmb = !!S0 && S0.kind === 'comb';
+  if (padOfSrc(src) || cmb) { // (IMPL-8 §5.3) a mod pad new to the track takes one of its 16 value slots: none left → refused (the 2a budget's way); (LC §4.1) a combiner's OUT too, unless it holds one
+    const pay = compileMods(t, o.project), has = pay && (pay.vals.some(v => v.id === src) || (cmb && Array.isArray(pay.cmb) && pay.cmb.some(c => c.id === S0.q.dev)));
+    if (pay && pay.n.vals >= VAL_N && !has) return no(VALS_FULL, 'slots');
   }
   const sx = d.kind === 'synth' && isSxId(d.model), f = {};
   if (sx) {

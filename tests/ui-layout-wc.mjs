@@ -16,8 +16,10 @@
 // margins, fill and contrast; their words (no "ENV" — the LFO's mode excepted —, no "Serum", no "Xfer", "Macro" a knob's name only); then
 // the skins: each face's box unmoved by a switch to ivory and glass, its label contrast in each. (MOD1 review, reviewer 2 P2) each modulator's
 // bar as cv-module builds it (⏻ slot hidden, stripe, title over its sub — cv-mods modBarSub —, chip, CPU, ⋯, ▾) at its face's width: its title
-// and sub never clipped, in every skin.
-//   node --max-old-space-size=2048 tests/ui-layout-wc.mjs [--out <dir>] [--narrow [<Archivo Narrow woff2>]] [--sizes d,l,p] [--json] [--profile <dir>]
+// and sub never clipped, in every skin. (LC G7, lane F) the Combiner's face at 0 / 4 / 12 inputs (cv-mods-ui combBody on a stand-in ModCore:
+// tests/lc-stub.mjs): the same numbers, ≤ 24 + 6n elements, each text ≥ 4.5 : 1 on its own ground, its list's 32 px lines in their columns,
+// the hits on touch (the head's 44 px, a line's control the line's band); --lc writes its face in each skin (lc-face-<size>-<skin>.png).
+//   node --max-old-space-size=2048 tests/ui-layout-wc.mjs [--out <dir>] [--narrow [<Archivo Narrow woff2>]] [--sizes d,l,p] [--json] [--profile <dir>] [--faces] [--lc]
 //     sizes: d 1440 × 900 at 100 % (mouse) · l 1366 × 1024 and p 1024 × 1366 (touch) — every one at dpr 2 (§10 G11; review 2 P3-8: d ran
 //     at 1); --narrow measures with the narrow face too (each size twice: Inter alone — fonts.css served WITHOUT its Archivo Narrow face, so
 //     the skin's stack falls to Inter as it does when that face fails —, then Archivo Narrow: the bundled fonts/ArchivoNarrowVariable.woff2,
@@ -50,7 +52,7 @@ html, body { margin: 0; background: #0c0d0f; }
 `;
 export async function page(o) {
   const O = o || {}, d = document, v = '?v=9';
-  window.__wcStep = 'imports';
+  window.__wcStep = 'imports'; window.__wcTouch = !!O.touch;
   const [core, wt, SU, MOD, RU, RC, wk, OSC] = await Promise.all(['../serum-core.js', '../wt.js', '../sx-host.js', '../sx-ui-mod.js', '../rig-ui.js', '../rig-core.js', '../wk.js', '../sx-ui-osc.js'].map(p => import(p + v)));
   // (SX0) the stage-3 panels' frozen data-dest ids (tests/ref-SX0/dests.mjs) and the donors their views were (bare, as the registration
   // built them; their ⏻ in the shell)
@@ -156,11 +158,86 @@ export async function page(o) {
     mod.style.width = V.face.w + 'px'; // (cv-module's fixed width: the bar never wider than the face)
     views.push({ key, kind, part: dk, V, b3, mod, recipe: slot ? null : CMU.MOD_FACE[kind], slot, plain: !slot, host: slot ? B.host() : null, body: B, ref: slot ? DESTS3.slots[kind] : null });
   }
+  // (LC G7, lane F) the Combiner's face at 0 / 4 / 12 inputs (cv-mods-ui combBody, recipe combRecipe(n)): the same numbers, margins, fill
+  // and contrast, ≤ 24 + 6n elements, its list's hits; (review 2 R2-6) its view on the page's real DSP — ModCore.preview over a real
+  // payload (cv-graph compileMods: a track's LFOs into x1 — BPM ¼, BPM 1 bar + PHASE, a square under SMOOTH 0.3, a RETRIG one: dashed),
+  // the anchors read off that preview — so the sheet shows the real curves; a build without the preview: the stand-in (tests/lc-stub.mjs:
+  // its laws and its payload together, never one on the other)
+  window.__wcStep = 'combiner';
+  const LS = await import('./lc-stub.mjs');
+  try { await wk.loadDSP(); } catch (e) { /* none: the stand-in */ }
+  const REAL = !!(globalThis.ModCore && typeof globalThis.ModCore.preview === 'function');
+  if (!REAL) globalThis.ModCore = LS.MC;
+  const [CG, CMO] = REAL ? await Promise.all(['../cv-graph.js', '../cv-model.js'].map(p => import(p + v))) : [null, null];
+  const ladN = l => core.LFO_LADDER.findIndex(x => x.label === l) / (core.LFO_LADDER.length - 1), SQ = [[0, 1, 0], [0.5, 1, 0], [0.5, 0, 0], [1, 0, 0]];
+  const REAL_LFO = [{ lfo: { bpm: 1, anchor: 1 }, rate: ladN('1/4') }, { lfo: { bpm: 1, anchor: 1 }, rate: ladN('1 bar'), phase: 0.25 }, { lfo: { bpm: 1, anchor: 1, pts: SQ }, rate: ladN('1/2'), smooth: 0.3 },
+    { lfo: { mode: 'retrig' }, rate: Math.pow(1.5 / 100, 0.25) }];
+  // a real track: i1 → OUT, l1 … ln (REAL_LFO's laws in turn) plugged into x1 at the sheet's amounts (the 6th muted; an 11th past the 10
+  // ModCore LFOs as a loaded project could hold it — the drop refuses it: its row pushed as written, the compile leaves it 'slots')
+  function realPay(ins) {
+    const t = { id: 'trk_g', prim: 'i1', dev: { i1: { kind: 'synth', model: 'juno60', vals: {} }, out: { kind: 'out' }, x1: song.normModDev({ kind: 'comb' }) }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [], mid: 1 }, P = { bpm: 120 };
+    ins.forEach((x, j) => {
+      const L = REAL_LFO[j % 4];
+      t.dev['l' + (j + 1)] = song.normModDev({ kind: 'lfo', lfo: Object.assign({ mono: 1, mode: 'free', bpm: 0, anchor: 0 }, L.lfo), rate: L.rate, smooth: L.smooth || 0, phase: L.phase || 0 });
+      const r = CMO.addMod(t, 'l' + (j + 1) + '.out', 'x1:in', { project: P, amt: x.amt, byp: x.byp });
+      if (r.ok) x.row = r.row.id;
+      else { const r0 = t.mods[t.mods.length - 1]; t.mods.push(Object.assign({}, r0, { id: 'r' + (100 + j), src: 'l' + (j + 1) + '.out', amt: x.amt, byp: x.byp })); x.row = 'r' + (100 + j); }
+    });
+    const pay = Object.assign({}, CG.compileMods(t, P, { smooth: 1 }), { bpm: 120 }), C = pay.cmb ? pay.cmb[0] : null, left = new Set((pay.left || []).map(q => q.id));
+    for (const x of ins) { const e = C ? C.in.find(q => q.row === x.row) : null; x.l = e ? e.l : -1; x.why = left.has(x.row) ? 'slots' : ''; }
+    return pay;
+  }
+  const CORD = ['#d8432f', '#e6b83a', '#3f80d8', '#41a75c', '#e9e5da', '#e27c2f', '#9060c9', '#8a8c90'];
+  const LAWS = [{ lock: 'song', beats: 1, start: 0, shape: 'sine', sm: 0 }, { lock: 'song', beats: 4, start: 0.25, shape: 'tri', sm: 0 }, { lock: 'song', beats: 0.5, start: 0, shape: 'square', sm: 0.3 },
+    { lock: 'note', hz: 1.5, start: 0, shape: 'saw', sm: 0 }];
+  const FH = 124800, MARKL = [{ value: null, label: 'Off' }, { value: { t: 'trk_2', n: -1 }, label: 'TR-808 2' }];
+  for (const nIn of [0, 4, 12]) {
+    const key = 'm-comb' + nIn, mod = d.createElement('div'); mod.className = 'cv-mod'; mod.setAttribute('data-cv-rig', ''); mod.setAttribute('data-cv-mod', key);
+    const bar = d.createElement('div'); bar.className = 'cv-bar';
+    const pow = d.createElement('span'); pow.className = 'cv-pow'; pow.hidden = true;
+    const stripe = d.createElement('span'); stripe.className = 'cv-stripe';
+    const tt = d.createElement('span'); tt.className = 'cv-ttl'; const te = d.createElement('span'); te.className = 'cv-title'; te.textContent = 'Combiner 1';
+    const se = d.createElement('span'); se.className = 'cv-sub'; se.textContent = typeof CVMODS.modBarSub !== 'function' || CVMODS.modBarSub('comb') ? 'Juno-60 12' : ''; se.hidden = !se.textContent;
+    tt.append(te, se);
+    const chip = d.createElement('span'); chip.className = 'cv-chip'; chip.hidden = true;
+    const cpu = d.createElement('span'); cpu.className = 'cv-cpu';
+    const more = d.createElement('button'); more.className = 'cv-btn cv-more'; more.textContent = '⋯';
+    const fold = d.createElement('button'); fold.className = 'cv-btn cv-fold'; fold.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg>';
+    bar.append(pow, stripe, tt, chip, cpu, more, fold);
+    const body = d.createElement('div'); body.className = 'cv-body';
+    mod.append(bar, body);
+    world.appendChild(mod);
+    const ins = Array.from({ length: nIn }, (_, j) => ({ row: 'r' + j, src: 'l' + (j + 1) + '.out', l: j, name: 'LFO ' + (j + 1), color: (CMU.CMB_TINT || CORD)[j % 8], /* (review 2 R2-5) the host's rule: a tint per line */ amt: [1, -0.5, 0.3, 0.6][j % 4], byp: j === 5 ? 1 : 0,
+      why: j === 10 ? 'slots' : '', apx: j === 2 ? 'Rise and Delay act per note: not in the Combiner' : '' }));
+    const pay = REAL ? realPay(ins) : null, live = ins.filter(x => !x.why), lfos = Array.from({ length: Math.max(1, nIn) }, (_, j) => LAWS[j % 4]);
+    const pay0 = pay || { t: 'mods', key: 'g' + nIn, bpm: 120, cp: LS.cpOf(lfos, 'gate' + nIn), ct: { key: '' }, cmb: [{ id: 'x1', k: 8, mode: 0, in: live.map(x => ({ row: x.row, src: 2 + x.l, l: x.l, a: x.byp ? 0 : x.amt })) }],
+      slots: { x1: { kind: 'comb', i: 0, n: live.length } } };
+    const C0 = pay0.cmb ? pay0.cmb[0] : { in: [] }, PV = REAL && pay ? globalThis.ModCore.preview(pay, 48000) : null;
+    const sng = { bpm: 120, sig: [4, 4], playing: true, tick: 2.6 * 960, cursor: 0, loop: { on: false, start: 0, end: 0 }, start: 0, pass: 0 };
+    const dev = Object.assign(song.normModDev({ kind: 'comb' }), nIn ? { mark: { t: 'trk_2', n: -1 } } : {});
+    const B = CMU.bodyFor('comb', { doc: d, devKey: 'x1', get: () => dev, edit() {}, shown: () => true, heardFrame: () => FH, sampleRate: () => 48000, song: () => sng, inputs: () => ins, payload: () => pay0,
+      setAmt() {}, setMute() {}, unplug() {}, select() {}, marks: (t0, t1) => [0, 1, 2, 3, 3.5].map(b => b * 960).filter(t => t >= t0 && t < t1), markList: () => MARKL, cords: () => false });
+    body.appendChild(B.el);
+    await B.ready();
+    for (const F of [FH - 1536, FH + 1536]) { // (two monitor posts round the heard frame: the dot, the dashed input's anchor)
+      const cb = new Float64Array(1 + 3 * C0.in.length);
+      cb[0] = 0.62;
+      C0.in.forEach((x, j) => {
+        if (!PV) { cb[1 + 3 * j] = 2.6 * 2 + (F - FH) * 1.5 / 48000; cb[2 + 3 * j] = 1.5 / 48000; cb[3 + 3 * j] = 0.5; return; }
+        const r = PV.rate(x.l), X = 0.37 + (F - 4) * r; cb[1 + 3 * j] = X; cb[2 + 3 * j] = r; cb[3 + 3 * j] = PV.read(x.l, X); // (the real preview's own clock, rate and value)
+      });
+      B.update({ F, cb, i: 0 });
+    }
+    if (PV) PV.destroy();
+    mod.style.width = B.face.w + 'px';
+    views.push({ key, kind: 'comb', part: 'x1', V: { el: B.el, face: B.face, menuItems: () => B.menuItems() }, mod, recipe: CMU.combRecipe(nIn), plain: true, comb: nIn, body: B, ref: null });
+  }
+  window.__lcSync = () => { for (const F of views) if (F.comb != null) F.body.sync(); }; // (a skin switch: the screens' palette again)
   window.__wcStep = 'mounted';
   for (const F of views) if (F.host) F.host.paint(true);
   H.paint(true); H3.paint(true);
   if (d.fonts && d.fonts.ready) await d.fonts.ready;
-  const paintAll = () => { H.paint(true); for (const F of views) if (F.host) F.host.paint(true); };
+  const paintAll = () => { H.paint(true); for (const F of views) if (F.host) F.host.paint(true); window.__lcSync(); }; // ((LC) the Combiner's screens: their palette at a skin switch
   for (let i = 0; i < 6; i++) { await new Promise(r => requestAnimationFrame(r)); paintAll(); }
   await new Promise(r => setTimeout(r, 300));
   paintAll();
@@ -200,12 +277,13 @@ export async function page(o) {
 }
 const vis = (el, root) => { if (!el || !el.getClientRects || !el.getClientRects().length) return false; if (el.closest && el.closest('.rig-screen[data-h="K"]')) return false; // (the kit's own type view in the frame: WC-2 lays it)
   for (let n = el; n && n !== root; n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return false; if (n.classList && (n.classList.contains('rig-park') || n.classList.contains('rig-drawer'))) return false; } return true; };
-const TEXT_SEL = '.wk-knob > .wk-lab, .wk-knob > .wk-num, .wk-nb > .wk-lab, .sx-nf > .sx-nfl, .wk-nbv, .sx-nfv, .rig-cap, .rig-jl, .rig-hint, .sx-vc, .sxo-wl, .wk-sl > .wk-lab, .wk-mtxt, .wk-tl, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mval, .rig-mlab, .rig-mothers, .rig-mlearn'; // ((MOD1) the plain faces' readouts, chip and Learn
-const CTL_SEL = '.wk-knob > .wk-svg, .wk-nbv, .sx-nfv, .wk-tog, .wk-mbtn, .wk-arr, .sx-hbtn, input, .rig-jack, .rig-disp, .wk-seg button, .sx-seg button, .sx-tile, .wk-slt, .rig-glyph, .rig-mw, .rig-mothers, .rig-mlearn';
+const TEXT_SEL = '.wk-knob > .wk-lab, .wk-knob > .wk-num, .wk-nb > .wk-lab, .sx-nf > .sx-nfl, .wk-nbv, .sx-nfv, .rig-cap, .rig-jl, .rig-hint, .sx-vc, .sxo-wl, .wk-sl > .wk-lab, .wk-mtxt, .wk-tl, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mval, .rig-mlab, .rig-mothers, .rig-mlearn' + // ((MOD1) the plain faces' readouts, chip and Learn
+  ', .rig-cseg > button, .rig-cmark, .rig-cname, .rig-camt, .rig-cmute, .rig-chint, .rig-cn'; // ((LC) the Combiner's head, its list's lines, its hint and IN count
+const CTL_SEL = '.wk-knob > .wk-svg, .wk-nbv, .sx-nfv, .wk-tog, .wk-mbtn, .wk-arr, .sx-hbtn, input, .rig-jack, .rig-disp, .wk-seg button, .sx-seg button, .sx-tile, .wk-slt, .rig-glyph, .rig-mw, .rig-mothers, .rig-mlearn, .rig-cseg > button, .rig-cmark, .rig-cname, .rig-camt, .rig-cmute';
 const FILL_SEL = '.wk-knob, .wk-nb, .sx-nf, .wk-tog, .wk-menu, .sx-hbtn, input, .rig-jack, .rig-jl, .rig-disp, .wk-seg, .sx-seg, .sx-tile, .rig-cap, .rig-hint, .sx-vc, .wk-meter, .rig-glyph, .wk-sl';
 function textBox(el) {
   // a text element's box: the element itself when it shrinks to its text, else its text's range (a button's / a menu's label)
-  if (el.matches('.wk-mtxt, .wk-tl, .wk-nbv, .sx-nfv, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mothers, .rig-mlearn') && el.firstChild) {
+  if (el.matches('.wk-mtxt, .wk-tl, .wk-nbv, .sx-nfv, .wk-seg button, .sx-seg button, .sx-tile .sx-tl, .rig-mothers, .rig-mlearn, .rig-cseg > button, .rig-cmark, .rig-cname, .rig-camt, .rig-cmute') && el.firstChild) {
     const r = document.createRange(); r.selectNodeContents(el); const b = r.getBoundingClientRect();
     if (b.width > 0) return b;
   }
@@ -214,7 +292,7 @@ function textBox(el) {
 const gap = (a, b) => { const dx = Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right)), dy = Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)); return Math.hypot(dx, dy); };
 const cellOf = el => (el.closest ? el.closest('.rig-cell, .rig-head > *, .rig-strip > *, .rig-mread') : null); // ((MOD1) a readout's value / label stack is one
 function measure(F, RU, d) {
-  const face = F.V.el, fr = face.getBoundingClientRect(), fails = [], out = { key: F.key, kind: F.kind, variant: F.V.face && F.V.face.variant };
+  const face = F.V.el, fr = face.getBoundingClientRect(), fails = [], out = { key: F.key, kind: F.kind, variant: F.V.face && F.V.face.variant, touch: !!window.__wcTouch };
   const rel = r => ({ left: r.left - fr.left, top: r.top - fr.top, right: r.right - fr.left, bottom: r.bottom - fr.top, width: r.width, height: r.height });
   const L = RU.layoutOf(F.recipe || RU.FACE[out.variant]), G = RU.GRID, n = L.cols, kit = out.variant === 'osc.kit';
   out.w = Math.round(fr.width * 100) / 100; out.h = Math.round(fr.height * 100) / 100;
@@ -282,11 +360,11 @@ function measure(F, RU, d) {
       if (g < G.margin - 0.01) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" ' + g.toFixed(1) + ' px from a control (' + (c.getAttribute('data-dest') || c.className.baseVal || c.className) + ')');
     }
     const fs = parseFloat(getComputedStyle(e).fontSize) || 0, fs2 = e.matches('.wk-lab[data-l]') ? parseFloat(getComputedStyle(e, '::after').fontSize) : fs; // (a relabelled knob prints its ::after)
-    const want = e.matches('.wk-num, .wk-nbv, .sx-nfv, .rig-jl, .sxo-wl, .wk-sl > .wk-lab, .rig-mothers') ? MIN.val : e.closest('.rig-head') ? MIN.head : MIN.lab;
+    const want = e.matches('.wk-num, .wk-nbv, .sx-nfv, .rig-jl, .sxo-wl, .wk-sl > .wk-lab, .rig-mothers, .rig-cn') ? MIN.val : e.closest('.rig-head') ? MIN.head : MIN.lab; // ((LC) the IN's count: the stacked jack's 10 px
     minFont = Math.min(minFont, fs2);
     if (fs2 < want - 0.01) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" ' + fs2 + ' px < ' + want);
-    const name = e.matches('.wk-mtxt') && (e.closest('.rig-grow') || e.closest('.rig-strip') || e.closest('.rig-sel'));
-    if (!name && e.scrollWidth > e.clientWidth + 1 && e.clientWidth > 0) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" clipped (' + e.scrollWidth + ' > ' + e.clientWidth + ')');
+    const name = (e.matches('.wk-mtxt') && (e.closest('.rig-grow') || e.closest('.rig-strip') || e.closest('.rig-sel'))) || e.matches('.rig-cname, .rig-cmark'); // ((LC) an input's / a marked track's name ellipsizes
+    if (!name && e.scrollWidth > e.clientWidth + 1 && e.clientWidth > 0 && textW(e) > e.clientWidth + 1) fails.push('text "' + e.textContent.trim().slice(0, 18) + '" clipped (' + e.scrollWidth + ' > ' + e.clientWidth + ')');
   }
   for (let i = 0; i < tb.length; i++) for (let j = i + 1; j < tb.length; j++) {
     const a = tb[i], b = tb[j], ca = cellOf(a.e), cb = cellOf(b.e);
@@ -310,6 +388,7 @@ function measure(F, RU, d) {
   for (const re of face.querySelectorAll('.rig-row')) {
     if (re.matches('.rig-knobs, .rig-switches, .rig-jacks')) { for (const c of re.querySelectorAll('.rig-cell')) if (Array.from(c.children).some(x => vis(x, face) || c.hasAttribute('data-dim'))) paint(c.getBoundingClientRect()); }
     else if (re.matches('.rig-head')) { const R = re.getBoundingClientRect(); for (const x of re.children) if (vis(x, face)) { const r = x.getBoundingClientRect(); paint({ left: r.left, right: r.right, top: R.top, bottom: R.bottom }); } }
+    else if (re.matches('.rig-list')) { for (const x of re.children) if (vis(x, face)) paint(x.getBoundingClientRect()); } // ((LC) the Combiner's lines (the hint its one line while empty)
     else for (const x of re.querySelectorAll('.rig-disp, .rig-strip')) if (vis(x, face) || x.closest('[data-h="K"]')) paint(x.getBoundingClientRect());
   }
   for (const { r } of tb) paint(r);
@@ -317,7 +396,7 @@ function measure(F, RU, d) {
   out.fill = +(on / grid.length).toFixed(3);
   if (!kit && (out.fill < G.fill[0] || out.fill > G.fill[1])) fails.push('fill ' + out.fill + ' outside ' + G.fill.join('…'));
   // contrast: a label against the face
-  const lab = texts.find(e => e.matches('.wk-knob > .wk-lab')) || texts[0], bg = getComputedStyle(face).backgroundColor;
+  const lab = texts.find(e => e.matches('.wk-knob > .wk-lab')) || (F.comb != null ? texts.find(e => e.matches('.rig-jl')) : null) || texts[0], bg = getComputedStyle(face).backgroundColor; // ((LC) its first text is a lit pick
   out.contrast = lab ? +(contrast(getComputedStyle(lab).color, bg) || 0).toFixed(2) : null;
   const vlab = texts.find(e => e.matches('.wk-knob > .wk-num'));
   out.contrastVal = vlab ? +(contrast(getComputedStyle(vlab).color, bg) || 0).toFixed(2) : null;
@@ -342,7 +421,9 @@ function measure(F, RU, d) {
   } else { out.count3 = out.painted3 = out.ratio = out.pratio = null; }
   // ((MOD1 G5) the modulators' element counts: a slot face ≤ 1.2 × its old panel's (the ratio above), a plain face ≤ 48
   if (F.slot && out.count > 1.2 * out.count3) fails.push('elements ' + out.count + ' > 1.2 × ' + out.count3);
-  if (F.plain && out.count > 48) fails.push('elements ' + out.count + ' > 48');
+  if (F.comb != null) { if (out.count > 24 + 6 * F.comb) fails.push('elements ' + out.count + ' > 24 + 6 × ' + F.comb); } // ((LC G7) the Combiner: 24 + 6 a line
+  else if (F.plain && out.count > 48) fails.push('elements ' + out.count + ' > 48');
+  if (F.comb != null) combChecks(F, face, texts, out, fails);
   // G13's words on a face (lane K / H gate them; listed here): no Serum / Xfer / VOICE in its texts, titles or names; (MOD1 G8) a modulator's:
   // no ENV (the LFO's mode ENV is no module name), "Macro" a knob's name only — failures
   const words = new Set(), mw = new Set(), modf = F.slot || F.plain;
@@ -358,6 +439,63 @@ function measure(F, RU, d) {
   if (mw.size) fails.push('words: ' + Array.from(mw).join(' | '));
   out.fails = fails;
   return out;
+}
+// (LC G7) the Combiner's own: each text against its own ground (the nearest opaque background: a lit pick, a box, the screen, the face)
+// ≥ 4.5 : 1; its list's lines 32 px (the grid's head row) with no gap, each line's controls in their columns (name 3 · amount 2 · mute 1);
+// the hits — the head's ≥ 44 px tall (inside the row gaps), a line's control the whole line band (32 px: the next line's is its
+// neighbour — a 44 px hit would take its presses) and ≥ 44 px wide, no two lines' hits overlapping
+const opaque = c => { const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?/.exec(c || ''); return !!m && (m[4] == null || +m[4] >= 0.99); };
+function groundOf(e, face) { for (let n = e; n; n = n.parentElement) { const c = getComputedStyle(n).backgroundColor; if (opaque(c)) return c; if (n === face) break; } return getComputedStyle(face).backgroundColor; }
+// (review 2 R2-4) a text's own width (its contents' range): a positioned hit area (an ::after past the box) widens scrollWidth, not the text
+function textW(e) { try { const R = e.ownerDocument.createRange(); R.selectNodeContents(e); return R.getBoundingClientRect().width / ((e.getBoundingClientRect().width / e.offsetWidth) || 1); } catch (err) { return e.scrollWidth; } }
+function hitOf(e) {
+  const r = e.getBoundingClientRect(), a = getComputedStyle(e, '::after');
+  if (!a || a.content === 'none' || a.position !== 'absolute') return r;
+  const w = parseFloat(a.width), h = parseFloat(a.height), L = r.left + e.clientLeft + (parseFloat(a.left) || 0), T = r.top + e.clientTop + (parseFloat(a.top) || 0); // (from the padding edge)
+  return { left: L, top: T, right: L + (w || r.width), bottom: T + (h || r.height), width: w || r.width, height: h || r.height };
+}
+function combChecks(F, face, texts, out, fails) {
+  const own = [];
+  for (const e of texts) {
+    const c = contrast(getComputedStyle(e).color, groundOf(e, face));
+    own.push(+(c || 0).toFixed(2));
+    if (c != null && c < 4.5) fails.push('text "' + e.textContent.trim().slice(0, 14) + '" contrast ' + c.toFixed(2) + ' on its ground');
+  }
+  out.ownContrast = own.length ? Math.min(...own) : null;
+  const lines = Array.from(face.querySelectorAll('.rig-cline')), fr = face.getBoundingClientRect();
+  let prev = null;
+  for (const l of lines) {
+    const r = l.getBoundingClientRect();
+    if (Math.abs(r.height - 32) > 0.5 || Math.abs(r.width - (fr.width - 32)) > 0.5) fails.push('line ' + l.getAttribute('data-row') + ' ' + r.width + ' × ' + r.height);
+    if (prev && Math.abs(r.top - prev.bottom) > 0.5) fails.push('a gap above line ' + l.getAttribute('data-row'));
+    const cols = [['.rig-cname', 0, 3], ['.rig-camt', 3, 2], ['.rig-cmute', 5, 1]];
+    for (const [sel, c0, span] of cols) {
+      const x = l.querySelector(sel), b = x && x.getBoundingClientRect(), L0 = r.left + 64 * c0, R0 = L0 + 64 * span;
+      if (!b || b.left < L0 - 0.5 || b.right > R0 + 0.5) { fails.push(sel + ' of ' + l.getAttribute('data-row') + ' outside its columns'); continue; }
+      if (out.touch) { const h = hitOf(x); if (h.height < 32 - 0.5 || h.width < 44 - 0.5 || h.top < r.top - 0.5 || h.bottom > r.bottom + 0.5) fails.push(sel + ' of ' + l.getAttribute('data-row') + ' hit ' + h.width.toFixed(1) + ' × ' + h.height.toFixed(1) + ' (the line ' + r.top.toFixed(1) + '…' + r.bottom.toFixed(1) + ')'); }
+    }
+    prev = r;
+  }
+  // (review 2 R2-4) the head's hits as hit-tested — across the box's centre row and down its centre column (elementFromPoint, ½ px steps,
+  // layout px): ≥ 44 both ways, so each pick's own centre takes it
+  if (out.touch) {
+    const d = face.ownerDocument, k = fr.width / face.offsetWidth || 1, sx = scrollX, sy = scrollY, row = face.querySelector('.rig-head');
+    // (its own box or pseudo; for Marks also the head row's band round it, which combBody forwards to it)
+    const mine = (x, e, X) => !!e && (e === x || x.contains(e) || (e === row && x.classList.contains('rig-cmark') && X >= x.getBoundingClientRect().left && X <= x.getBoundingClientRect().right));
+    face.querySelector('.rig-head').scrollIntoView({ block: 'center', inline: 'center' }); // (elementFromPoint sees the viewport only)
+    for (const x of face.querySelectorAll('.rig-head .rig-cseg > button, .rig-head .rig-cmark')) {
+      const b = x.getBoundingClientRect(), cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
+      let w = 0, hh = 0;
+      for (let X = b.left - 40 * k; X < b.right + 40 * k; X += 0.5) if (mine(x, d.elementFromPoint(X, cy), X)) w += 0.5;
+      for (let Y = b.top - 40 * k; Y < b.bottom + 40 * k; Y += 0.5) if (mine(x, d.elementFromPoint(cx, Y), cx)) hh += 0.5;
+      w /= k; hh /= k;
+      const wMin = x.parentElement.classList.contains('rig-cwin') ? b.width / k - 0.5 : 44 - 0.5; // ((the lead, fix round K) a Window pick's hit is its own box: 4 × 44 would skew off the boxes
+      if (w < wMin || hh < 44 - 0.5) fails.push('head hit "' + x.textContent + '" ' + w.toFixed(1) + ' × ' + hh.toFixed(1) + ' px');
+      (out.headHits || (out.headHits = [])).push(x.textContent + ' ' + w.toFixed(1) + '×' + hh.toFixed(1));
+    }
+    scrollTo(sx, sy);
+  }
+  out.lines = lines.length;
 }
 function measureDrawer(D, d) {
   const fails = [], r0 = D.getBoundingClientRect(), out = { w: r0.width, h: r0.height };
@@ -456,6 +594,8 @@ async function main() {
         R.name = S.name + (narrow ? '-narrow' : '');
         R.console = logs.splice(0);
         if (R.console.length) console.log(R.name + ' console:\n  ' + R.console.slice(0, 20).join('\n  '));
+        const errs = R.console.filter(m => !/^warning: /.test(m)); // ((review 2 R2-6) a console error or an exception fails the size
+        if (errs.length && !R.error) { R.fails = (R.fails || []).concat(errs.map(m => 'console ' + m.slice(0, 160))); }
         all.push(R);
         if (R.error) { failed++; console.log(R.name + ': ERROR ' + R.error); }
         else {
@@ -474,6 +614,18 @@ async function main() {
             const file = path.join(OUT, 'wc1-faces-' + R.name + '.png');
             fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
             sheets.push(file);
+            if (process.argv.includes('--lc')) { // ((LC, lane F) the Combiner's face (4 inputs) in each skin, 2 × — its screens repainted in the skin
+              for (const sk of ['charcoal', 'ivory', 'glass']) {
+                await s('Runtime.evaluate', { expression: "document.getElementById('world').setAttribute('data-cv-skin', '" + sk + "'); window.__lcSync(); 1", returnByValue: true });
+                await new Promise(r => setTimeout(r, 400));
+                const rc = JSON.parse((await s('Runtime.evaluate', { expression: 'JSON.stringify(Array.from(document.querySelectorAll("#world > .cv-mod[data-cv-mod=m-comb4]")).map(m => { const r = m.getBoundingClientRect(); return [r.left + scrollX, r.top + scrollY, r.width, r.height]; }))', returnByValue: true })).result.value);
+                for (const [x, y, w, h] of rc) { const sh = await s('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: x - 12, y: y - 12, width: w + 24, height: h + 24, scale: 2 } }); const f = path.join(OUT, 'lc-face-' + R.name + '-' + sk + '.png'); fs.writeFileSync(f, Buffer.from(sh.data, 'base64')); sheets.push(f); }
+              }
+              await s('Runtime.evaluate', { expression: "document.getElementById('world').setAttribute('data-cv-skin', 'charcoal'); window.__lcSync(); 1", returnByValue: true });
+              await new Promise(r => setTimeout(r, 200));
+              const le = logs.splice(0).filter(m => !/^warning: /.test(m)); // ((review 2 R2-6) the skin passes' errors count too
+              if (le.length) { console.log(R.name + ' --lc console:\n  ' + le.slice(0, 20).join('\n  ')); failed += le.length; }
+            }
             if (process.argv.includes('--faces')) {
               const dir = path.join(OUT, R.name);
               fs.mkdirSync(dir, { recursive: true });

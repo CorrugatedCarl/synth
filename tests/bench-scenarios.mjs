@@ -542,6 +542,38 @@ function fastMaster(on) {
   const B = masterMods(), ids = ['meters', 'mfx', 'mods'];
   return Object.assign(B, { host: 'master', mon: ids, fast: on ? { hz: 120, ids, ix: null, ixv: 1 } : null });
 }
+/* ------------------------------------------------------------------ stage LC G6 (lane E, IMPL-LC §11): the combiner */
+// lc: a Juno-60 into a panel EQ, ten GLOBAL canvas LFOs (FREE Hz and BPM, BPM anchored, a Path, a ping-pong, one SMOOTHed) — the build
+// two combiners of five inputs each (Add onto the Juno's cutoff, Multiply onto the EQ's low gain), the base the same ten LFOs cabled
+// directly (five onto each knob); the host's compile (cv-graph compileMods: the synthetic CP, the keep-alives, the value slots), 120 BPM.
+// No monitor (the span's combine alone; the block is written only while 'mods' is watched)
+function lcTrack(comb) {
+  const fx = core.defaultFx2(), eq = fxInst(fx, 'eq', { gainL: 0.5 });
+  const m = MODELS.find(x => x.id === 'juno60'), v = Object.fromEntries(m.controls.map(k => [k.id, k.def]));
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
+  delete p.fxr; delete p.fxrT;
+  const lfo = (lf, o) => normModDev(Object.assign({ kind: 'lfo', lfo: Object.assign({ mono: 1, mode: 'free', bpm: 0, anchor: 0 }, lf), rate: hzN(1) }, o));
+  const ladN = label => core.LFO_LADDER.findIndex(x => x.label === label) / (core.LFO_LADDER.length - 1);
+  const L = [lfo({}, { rate: hzN(0.5) }), lfo({ bpm: 1, anchor: 1 }, { rate: ladN('1/4') }), lfo({ type: 'path' }, { rate: hzN(1.5) }), lfo({ dir: 'pp' }, { rate: hzN(2) }), lfo({}, { rate: hzN(3), smooth: 0.3 }),
+    lfo({ bpm: 1 }, { rate: ladN('1/8') }), lfo({}, { rate: hzN(0.7) }), lfo({ bpm: 1, anchor: 1 }, { rate: ladN('1/2') }), lfo({}, { rate: hzN(5) }), lfo({}, { rate: hzN(0.25), phase: 0.25 })];
+  const t = { id: 'trk_lc', prim: 'i1', mid: 1, dev: { i1: { kind: 'synth', model: 'juno60', vals: v, preset: null }, fx1: { kind: 'panel', fx }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }], mods: [] };
+  L.forEach((d, k) => { t.dev['l' + (k + 1)] = d; });
+  const dst = k => (k < 5 ? 'i1:cf' : `fx1:fx.${eq.id}.gainL`);
+  let n = 0;
+  const R = (src, to, amt) => t.mods.push(mrow('r' + ++n, src, to, amt, 0));
+  if (comb) {
+    t.dev.x1 = normModDev({ kind: 'comb' }); t.dev.x2 = normModDev({ kind: 'comb', mode: 'mul' });
+    for (let k = 0; k < 10; k++) R('l' + (k + 1) + '.out', k < 5 ? 'x1:in' : 'x2:in', k & 1 ? -0.6 : 0.8);
+    R('x1.out', dst(0), 0.3); R('x2.out', dst(5), 0.3);
+  } else for (let k = 0; k < 10; k++) R('l' + (k + 1) + '.out', dst(k), 0.06);
+  const pay = compileMods(t, { bpm: 120, perf: { wheel: null }, tracks: [], pads: [] }, { smooth: 1, qr: null, ultra: 0 });
+  if (!pay || pay.left.length || (comb ? !pay.cmb || pay.cmb.length !== 2 || pay.rows.length !== 2 : pay.rows.length !== 10)) throw new Error('bench lc: the payload compiles ' + (pay ? pay.rows.length + ' rows, ' + pay.left.length + ' left' : 'nothing'));
+  pay.bpm = 120;
+  const Z = { lo: 0, hi: 127, xp: 0 };
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'lc' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: chord(4), mods: pay };
+}
 // the build's monitors (B.mon, B.fast) on processor p: every post cloned (B.posts counts the fast ones), {t: 'mon'}, {t: 'fastOn'}
 const CLONE = typeof structuredClone === 'function' ? structuredClone : null;
 function monitor(p, B) {
@@ -710,6 +742,10 @@ export function scenarios() {
       kind: 'fast', base: () => fastFx(false), build: () => fastFx(true) },
     { id: 'fast-master', label: 'Fast lane: monitored master-mods (rack5 + its ModCore payload + the meters) at 120 Hz, minus the same without (posts cloned)', node: 0.002, ipad: 0.003, jsc: 0.003,
       kind: 'fast', base: () => fastMaster(false), build: () => fastMaster(true) },
+    // IMPL-LC G6 (lane E): 2 combiners × 5 inputs onto a Juno and a panel minus the same LFOs cabled directly (measureFast's paired
+    // interleaved medians with an A/A pair; the gate Δ ≤ max(0.002, 2 × the A/A spread), tests/lc-engine.test.mjs)
+    { id: 'lc', label: 'Combiners: a Juno-60 + panel EQ, 10 GLOBAL canvas LFOs into 2 combiners (Add onto the cutoff, Multiply onto the EQ) minus the same LFOs cabled directly', node: 0.002, ipad: 0.003, jsc: 0.003,
+      kind: 'track', base: () => lcTrack(false), build: () => lcTrack(true) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',

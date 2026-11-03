@@ -55,6 +55,8 @@
 // after every relayout (the cord layer's anchors), host.members(key) (a driver outlines its driven modules).
 // Stage MOD1 (IMPL-MOD1 §4.3; lane H): every modulator wears a face on the RIG grid — MOD_W[kind] = faceW(MOD_COLS[kind]), its height its
 // content's (SX_MODS: every kind; MOD_H the guesses), its out jack inline on the face's jack row (the right-edge dot the fallback).
+// Stage LC (IMPL-LC §8.2; lane H): the Combiner ('x1' …, kind 'comb') last in MOD_ORDER — 416 px, its OUT the one registered jack (its IN the
+// face's [data-dest="in"]: a drop target, the end its input rows' cables and cords meet — destPort), its cost 40 + 8 per input line.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_PREFIX, keyKind, MACRO_PORTS, partsView, hiddenTag, NOTE_END } from './cv-cables.js?v=9';
@@ -62,7 +64,7 @@ import { PARTS, splitKey, kindOf as sxKind, partLabel, partOn, endOf } from './s
 // ((WC) a part's kind; ENV 1 is a module of the rig — an Envelope — whether or not sx-edges' table knows it yet)
 const partKind = p => sxKind(p) || (p === 'env1' ? 'env' : null);
 import { isSxId } from './models.js?v=9'; // ((WC) the own-FX key and module of a Serum-engine device — the Serum and the rig; the bundled panel's sizes stay the Serum's)
-import { MOD_COLS } from './cv-mods.js?v=9'; // ((MOD1 §2.3) each modulator face's RIG-grid columns
+import { MOD_COLS, inputsOf } from './cv-mods.js?v=9'; // ((MOD1 §2.3) each modulator face's RIG-grid columns; (LC) a combiner's inputs: its cost
 import { faceW } from './rig-grid.js?v=9';
 export { MOD_COLOR, MOD_PREFIX, keyKind } from './cv-cables.js?v=9';
 
@@ -85,8 +87,8 @@ export const W_MOD = 240;
 /** (2b) the heights by mod kind; (milestone 3) for the Serum-faithful kinds (SX_MODS: LFO / ENV / Macro / Chaos, their bodies
  * a Serum panel whose height is its content, measured) Tidy's and the drop ghost's guess until measured; (MOD1 §4.3) every kind's: a face's
  * height is its content (the numbers as they were — cv-migrate's STEPS[6] reads them). */
-export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224 });
-export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
+export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224, comb: 352 }); // ((LC §8.2) the Combiner's: its face at one list line + the bar
+export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'comb']); // ((LC) cv-mods' order: the Combiner last
 export const MOD_KINDS = Object.freeze(new Set(MOD_ORDER.filter(k => k !== 'wheel')));
 /** (milestone 3, IMPL-3 §2.2) The modulator kinds whose body is a Serum panel on a slot host (lane B: the same class a Serum's
  * own slot uses): height = content (measured), width MOD_W. (MOD1 §4.3) every kind: each wears a face on the RIG grid, its height its
@@ -554,6 +556,29 @@ export function makeRoom(rects, key, gap) {
   if (!(d > 0)) return null;
   const out = {};
   for (const k of R) out[k] = { x: rects[k].x + d, y: rects[k].y };
+  return out;
+}
+/** (LC review R2-2) Room under a module whose height changes by dh (a Combiner's face: 32 px a list line): the modules stacked under it —
+ * overlapping it horizontally, their top below its top and within a gap (gap, VGAP) of its bottom (growing: of the bottom it will have —
+ * what the growth would cover), then the ones stacked so under those — move by dh together (down growing, back up shrinking), their
+ * layout kept. Pure. @param {Object<string, {x: number, y: number, w: number, h: number}>} rects @param {string} key @param {number} dh
+ * @param {number} [gap] @returns {Object<string, {x: number, y: number}> | null} */
+export function roomBelow(rects, key, dh, gap) {
+  const C = isObj(rects) ? rects[key] : null, g = fin(gap) ? gap : VGAP;
+  if (!C || ![C.x, C.y, C.w, C.h].every(fin) || !fin(dh) || dh === 0) return null;
+  const ok = r => !!r && [r.x, r.y, r.w, r.h].every(fin), xo = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w;
+  const S = [key], seen = new Set(S);
+  for (let i = 0; i < S.length; i++) {
+    const A = rects[S[i]], lim = A.y + A.h + Math.max(0, dh) + g;   // (A's bottom, grown by the step when growing, + a gap)
+    for (const k of Object.keys(rects)) {
+      const r = rects[k];
+      if (seen.has(k) || !ok(r) || !xo(r, A) || !(r.y > A.y) || r.y > lim) continue;
+      seen.add(k); S.push(k);
+    }
+  }
+  if (S.length < 2) return null;
+  const out = {};
+  for (const k of S.slice(1)) out[k] = { x: rects[k].x, y: rects[k].y + dh };
   return out;
 }
 
@@ -1273,7 +1298,7 @@ export function createTrackView(world, track, host) {
     if (!m || !ids || ids.length < 2 || !ids.includes(key)) return null;
     return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
   };
-  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : 600) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SLOT_MODS.has(mkOf(key)) ? 160 : 40; };
+  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : 600) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'pm' ? COST_PM : kind === 'mod' && SLOT_MODS.has(mkOf(key)) ? 160 : kind === 'mod' && mkOf(key) === 'comb' ? 40 + 8 * inputsOf(T, key).length : 40; }; // ((LC §8.2) a combiner: a plain face's + 8 per input line
   const colorOf = key => { const d = devOf(key), e = DEV ? DM.get(key) : null; return (d && typeof d.color === 'string' && d.color) || (e && typeof e.color === 'string' && e.color) || (kindOf(key) === 'mod' && MOD_COLOR[mkOf(key)]) || T.color; }; // ((8) an entry's own colour: the Pads module's)
   // (3) a part's title and chip: the host's, else 'OSC B' and 'S<n>' (the Serum's number: its group)
   const partMeta = (key, M0) => { const P = partOf(key), n = /(\d+)$/.exec(P.dev || ''); return { title: M0.title || partLabel(P.part), sub: M0.sub, chip: M0.chip !== undefined ? M0.chip : 'S' + (n ? n[1] : '1') }; };

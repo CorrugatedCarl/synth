@@ -73,6 +73,18 @@
  *   MC.stats() → {lfos, envs, rows, ext, spans, half}   (spans: the spans evaluated since the payload)
  *   ModCore.warmPayload(SxBase) → a {t: 'mods'} payload on a hand-built CP (2 GLOBAL LFOs, a PER NOTE LFO, an ENV, chaos,
  *                         a macro, a value source; cls / set / fx rows, one ext slot) for Track.warmUp's ModCore round
+ * Stage LC (IMPL-LC §3, §5; lane E) — the Combiner, only with the payload's cmb (absent: not one instruction more than the guard, D1):
+ *   setRows               cmb [{ id, k 8…23 (its value source, each once), mode 0 add | 1 mul, in: [{ row, src (an LFO slot's source),
+ *                         l 0…9, a −1…1 (0 muted) }] }] (cv-graph §4.3), validated before anything is written (E6: a malformed one
+ *                         throws, the previous state kept) and laid out flat; the combiners' value slots leave vUse (never glided)
+ *   span                  after step (1), before step (2): per combiner and chunk g[(62 + k − 8)·32 + c] = combine over its inputs' g
+ *                         rows — so the pseudo-voice, ext and every target read it as they read a CC; while monitored the block below
+ *   MC.cmbN / MC.cb       the combiner count; Float64Array(Σ 1 + 3n), per combiner in payload order [y (its value at the last chunk),
+ *                         then per input x (its clock at that chunk: SxMod lfoMon), r (cycles per base frame), v (its g value at that
+ *                         chunk: SMOOTH's state)] — y, x and v all belong to the span's last chunk, starting at the post's frame − 4 (cF −
+ *                         4 / F − 4); written only while MC.mon (watch on: at once)
+ *   ModCore.combine(mode, n, a, x, ax, xx)   the law (pure, no allocation; the worklet's span and the page's preview call it)
+ *   ModCore.preview(pay, sr) → P   the page's preview of a payload (§5.4): lock / playX / read / rate / tau / destroy
  *
  * Levers (IMPL-2b §9.0 Q4 → N4): the host parks unused LFO slots FREE + MONO (one offSkip per span); rows are read at the
  * span ends only (matrix at chunks 0 and nCh − 1 — with the mono-context slew convention: the chunk-0 evaluation advances
@@ -99,6 +111,7 @@
     const PER = new Uint8Array(NSRC);
     for (const k of [2, 3, 4, 34, 13, 14, 16, 19, 20, 21, 22, 23, 29, 30, 31, 32, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61]) PER[k] = 1;
     const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);     // NaN → 0
+    const E64 = new Float64Array(0), EI32 = new Int32Array(1), EU8 = new Uint8Array(0), EI8 = new Int8Array(0); // ((LC) no combiner
     function xorshift(s) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0; }
     function fnv1a32(str) { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); } return h >>> 0; }
     const fin = x => typeof x === 'number' && x === x && x !== Infinity && x !== -Infinity;
@@ -159,13 +172,14 @@
         this.half = true; this.halfOn = 0; this.pvOn = 0;
         this.live = new Float32Array(NLIVE); this.spans = 0;
         this.mon = 0; this.livePh = new Float32Array(2 * N_LFO); this.liveEnv = new Float32Array(2 * N_ENV); this.mcx = { ph: this.livePh, env: this.liveEnv };
+        this.cmbN = 0; this.cb = E64; this.cbK = EI32; this.cbM = EU8; this.cbI = EI32; this.cbA = E64; this.cbS = EI32; this.cbL = EI8; this.cbX = E64; this.cbE = 0; // ((LC) the combiners
       }
       // the monitor fields on / off (the Track, from its 'mods' monitor id; IMPL-3 §2.9): going on reads them once, from the
       // state the last span left (a post right after the subscription is as fresh as one a span later); going off leaves
       // them as they were (nothing posts them)
       watch(on) {
         on = on ? 1 : 0;
-        if (on !== 0 && this.mon === 0 && this.ok !== 0) this.mread();
+        if (on !== 0 && this.mon === 0 && this.ok !== 0) { this.mread(); if (this.cmbN !== 0) this.cbRead(); }
         this.mon = on;
       }
       // the two monitor fields (no allocation): SerumDSP's snapshot reads of the LFOs and ENVs (sx-mod snap) — the recent
@@ -191,12 +205,35 @@
         for (let j = 0; j < 2 * N_ENV; j++) x[2 * N_LFO + j] = EV[j];
         return x;
       }
+      // (LC §5.1) per combiner and chunk: its inputs' g rows gathered (cbX), combined into its value source's row (no allocation)
+      cmbSpan(g, nCh) {
+        const N = this.cmbN, K = this.cbK, Mo = this.cbM, I = this.cbI, A = this.cbA, S = this.cbS, X = this.cbX;
+        for (let j = 0; j < N; j++) {
+          const i0 = I[j], n = I[j + 1] - i0, o = K[j], md = Mo[j];
+          for (let c = 0; c < nCh; c++) {
+            for (let q = 0; q < n; q++) X[q] = g[S[i0 + q] + c];
+            g[o + c] = combine(md, n, A, X, i0, 0);
+          }
+        }
+        this.cbE = nCh - 1;
+      }
+      // (LC §5.2) the monitor block: per combiner [y, then per input x, r (SxMod lfoMon: the processor state after begin), v] — all of
+      // the last span's last chunk (it starts 4 base frames before the span's end; no allocation)
+      cbRead() {
+        const SM = globalThis.SxMod, sx = this.sx, g = sx.mod.g, cE = this.cbE, B = this.cb, N = this.cmbN, K = this.cbK, I = this.cbI, S = this.cbS, L = this.cbL;
+        let o = 0;
+        for (let j = 0; j < N; j++) {
+          B[o++] = g[K[j] + cE];
+          for (let q = I[j]; q < I[j + 1]; q++) { SM.lfoMon(sx, L[q], B, o); B[o + 2] = g[S[q] + cE]; o += 3; }
+        }
+      }
       /* ---- the payload (allocation here only; a rejected one leaves the previous state as it was) ---- */
       setRows(m) {
         if (!m || typeof m !== 'object' || !m.cp || typeof m.cp !== 'object') throw new Error('ModCore: no cp');
         const SD = globalThis.SerumDSP, shim = this.shim, sx = this.sx, mod = sx.mod;
         const rows = Array.isArray(m.rows) ? m.rows : [], ext = Array.isArray(m.ext) ? m.ext : [], vals = Array.isArray(m.vals) ? m.vals : null;
         const bpm = fin(m.bpm) && m.bpm > 0 ? +m.bpm : 120;
+        const CB = m.cmb === undefined ? null : cmbOf(m.cmb);   // ((LC §5.1) before anything is written: a malformed cmb throws here
         // the CP first: SD.sync refuses before it touches the state (cpOk), so a refusal puts the shim back as it was
         const p0 = shim.p, ct0 = shim.ct, bpm0 = shim.bpm;
         shim.p = { serum: m.cp, seq: null, bpm }; shim.bpm = bpm;
@@ -297,6 +334,11 @@
         for (let j = 0; j < this.fxIds.length; j++) fxMo[this.fxIds[j]] = new Float32Array(fxHi[this.fxIds[j]]);   // (the monitor's copy, fxMon)
         this.fxMo = fxMo;
         this.halfOn = this.half && extPerN === 0 ? 1 : 0;
+        // (LC §5.1) the combiners: their arrays, the monitor block; their value slots out of vUse (ModCore writes them, nothing glides them)
+        if (CB !== null && CB.N > 0) {
+          this.cmbN = CB.N; this.cb = CB.cb; this.cbK = CB.K; this.cbM = CB.M; this.cbI = CB.I; this.cbA = CB.A; this.cbS = CB.S; this.cbL = CB.L; this.cbX = CB.X;
+          for (let j = 0; j < CB.N; j++) vu[CB.K[j] / MAXCH - S_EXT0 + N_MACRO] = 0;
+        } else if (this.cmbN !== 0) { this.cmbN = 0; this.cb = E64; this.cbK = EI32; this.cbM = EU8; this.cbI = EI32; this.cbA = E64; this.cbS = EI32; this.cbL = EI8; this.cbX = E64; }
         this.ok = 1;
       }
       // a source whose value lives on the pseudo-voice: ENV / note-on values, per-voice LFOs (RETRIG / ENV / FREE on the
@@ -346,6 +388,9 @@
           if (x - t < 1e-12 && t - x < 1e-12) x = t;             // (settle exactly: no endless glide)
           vS[8 + j] = x;
         }
+        // (1b) (LC §5.1) the combiners into their value sources' g rows — read by (2), (3) and every target as a CC's — and their
+        // monitor block while watched
+        if (this.cmbN !== 0) { this.cmbSpan(g, nCh); if (this.mon !== 0) this.cbRead(); }
         // (2) the pseudo-voice: its chunk loop (every second chunk when it feeds no per-chunk target: halfOn), the rows at
         // the span ends (the span-end sources read at chunk nCh − 1 whatever the tick; the slew of a rise / fall row
         // advanced by the whole span at the end and not at all at chunk 0: the mono-context convention, RXD = this.dt),
@@ -464,6 +509,65 @@
           { id: 'w6', src: S_MACRO1, vi: D.B_WT, dst: { kind: 'set', inst: 'w1', field: 'vcf.comp' }, xfer: { a: 0, b: 0.5, x0: 0.3 } },
           { id: 'w7', src: S_LFO1 + 2, vi: D.A_FINE, dst: { kind: 'cls', inst: 'w2', slot: 1 }, xfer: { a: 0, b: 1, x0: 0.5 } }] };
     }
+    // (LC §3) the combine law — the worklet's span and the page's preview call this one function (pure, no allocation): inputs j < n,
+    // a[ax + j] the amount (−1…1; 0 muted), x[xx + j] the LFO's value (0…1); c = a·x (a ≥ 0) or −a·(1 − x) (the inverted LFO at that
+    // depth); mode 1 Multiply: clamp01(Π (1 − |a| + c)), the product from 1; else Add: clamp01(Σ c), the sum from 0, its top clipped
+    // flat (Q1 "Clip flat": never scaled down); no input or every amount 0 → 0. One input at +1 (the rest 0) is x bit for bit in both
+    // modes (0 + 1·x; 1·((1 − 1) + 1·x), then ·1 and +0 exactly)
+    function combine(mode, n, a, x, ax, xx) {
+      let s = mode === 1 ? 1 : 0, on = 0;
+      for (let j = 0; j < n; j++) {
+        const w = a[ax + j], v = x[xx + j], c = w >= 0 ? w * v : -w * (1 - v);
+        if (mode === 1) s *= 1 - (w >= 0 ? w : -w) + c; else s += c;
+        if (w !== 0) on = 1;
+      }
+      return on === 0 ? 0 : s > 0 ? (s < 1 ? s : 1) : 0;
+    }
+    // (LC §5.1) a payload's cmb validated and laid out flat (setRows' allocation): K the value rows' g offsets, M the modes, I the input
+    // offsets (N + 1), A the amounts (clamped ±1), S the inputs' g offsets, L their slots, X the gather scratch, cb the monitor block —
+    // anything malformed (not an array, an entry no object, k not an integer 8…23 or twice, mode not 0 / 1, in no array, an input's src
+    // not 1…77, l not 0…9, a not finite) throws
+    function cmbOf(C) {
+      const bad = () => { throw new Error('ModCore: bad cmb'); };
+      if (!Array.isArray(C)) bad();
+      const N = C.length, seen = new Uint8Array(NVAL);
+      let n = 0, mx = 0;
+      for (let j = 0; j < N; j++) {
+        const c = C[j];
+        if (!c || typeof c !== 'object' || !Array.isArray(c.in) || !(c.k >= N_MACRO && c.k < N_MACRO + NEXT && c.k === (c.k | 0)) || seen[c.k] !== 0 || (c.mode !== 0 && c.mode !== 1)) bad();
+        seen[c.k] = 1;
+        for (const x of c.in) if (!x || typeof x !== 'object' || !(x.src > 0 && x.src < NSRC && x.src === (x.src | 0)) || !(x.l >= 0 && x.l < N_LFO && x.l === (x.l | 0)) || !fin(x.a)) bad();
+        n += c.in.length;
+        if (c.in.length > mx) mx = c.in.length;
+      }
+      const K = new Int32Array(N), M = new Uint8Array(N), I = new Int32Array(N + 1), A = new Float64Array(n), S = new Int32Array(n), L = new Int8Array(n);
+      let q = 0;
+      for (let j = 0; j < N; j++) {
+        const c = C[j];
+        K[j] = (S_EXT0 + c.k - N_MACRO) * MAXCH; M[j] = c.mode; I[j] = q;
+        for (const x of c.in) { const a = +x.a; A[q] = a > 1 ? 1 : a < -1 ? -1 : a; S[q] = x.src * MAXCH; L[q] = x.l; q++; }
+      }
+      I[N] = q;
+      return { N, K, M, I, A, S, L, X: new Float64Array(mx), cb: new Float64Array(N + 3 * n) };
+    }
+    // (LC §5.4) the page's preview of a payload: a ModCore of its own on a stub host (nothing posted, nothing ticked but one first
+    // span: begin sets the tempo the laws read), the payload's CP synced as the worklet syncs it — the caller keys it by the CP (cpKey
+    // + the CT key + bpm): an amount / mute / mode change never rebuilds it (the amounts are the payload's cmb; combine above)
+    //   P.lock(l) · P.playX(l, b, b0) · P.read(l, x) · P.rate(l) · P.tau(l)   SxMod lfoLock / lfoClock / lfoRead / lfoRate / lfoTau on
+    //   slot l (a cmb[].in[].l); the master (pay.i 'master') plays no notes: RETRIG / ENVELOPE run from ▶, an ENVELOPE never loops
+    //   P.destroy()   drops it (a later call throws)
+    function preview(pay, sr) {
+      const T = { trackId: pay && typeof pay.i === 'string' ? pay.i : '', offline: true, wheel: 0, at: 0, bendRaw: 0, songBeat: () => null };
+      const MC = new ModCore(T, sr > 0 ? +sr : 48000);
+      MC.setRows(pay);
+      globalThis.SerumDSP.begin(MC.shim, 4);
+      const M = globalThis.SxMod, master = T.trackId === 'master' ? 1 : 0;
+      let sx = MC.sx;
+      return {
+        lock: l => M.lfoLock(sx, l, master), playX: (l, b, b0) => M.lfoClock(sx, l, b, b0), read: (l, x) => M.lfoRead(sx, l, x, master ? 0 : 1),
+        rate: l => M.lfoRate(sx, l), tau: l => M.lfoTau(sx, l), destroy() { sx = null; },
+      };
+    }
     // the transfer T over the knob's mod space 0…1: a + b·x, or the 129-point table (linear interpolation, clamped)
     function xf(e, x) {
       const t = e.tab;
@@ -476,7 +580,7 @@
     }
     function create(T, base, sN) { return new ModCore(T, base, sN); }
 
-    globalThis.ModCore = Object.freeze({ VER, NEXT, NVAL, NLIVE, create, warmPayload, ModCore, PseudoVoice });
+    globalThis.ModCore = Object.freeze({ VER, NEXT, NVAL, NLIVE, create, warmPayload, ModCore, PseudoVoice, combine, preview });
   } catch (err) {
     globalThis.ModCore = null;                                  // a load failure never throws out of the script
     if (typeof console !== 'undefined') console.error('mod-core: load failed', err);

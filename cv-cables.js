@@ -74,23 +74,23 @@ export const END_PX = 24, MOD_FADE_N = 24;
 /** (review 2 P1-7) Hidden-end badges at one end stack this many screen px apart (the badge's 18 + 4). */
 export const HID_STEP = 22;
 /** (2a) The modulator modules' colours (their cables' and their classic halos' too, SPEC §2.9 / §7.11): by mod kind;
- * (2b) the six stage-2b kinds. */
+ * (2b) the six stage-2b kinds; (LC §2.1) the Combiner's lime. */
 export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a',
-  lfo: '#ff7f5a', env: '#d9c84a', macro: '#5b8cff', cc: '#9aa4b2', chaos: '#e05fb4', note: '#7fe0d6' });
+  lfo: '#ff7f5a', env: '#d9c84a', macro: '#5b8cff', cc: '#9aa4b2', chaos: '#e05fb4', note: '#7fe0d6', comb: '#b5e05a' });
 /** (2a) A singleton mod device kind (track.dev) → its fixed module key; a Serum matrix performance source → that
  * module's key (perfRows). The multi-instance kinds are keyed by prefix: MOD_PREFIX / keyKind. */
 export const MOD_KEY = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd' });
 /** (2b, IMPL-2b §1.1) Every mod kind → its device-id prefix: the singletons their key, the multi-instance kinds a
- * letter followed by a number ('l1', 'e2', 'm1', 'c3', 'h1'). */
-export const MOD_PREFIX = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h' });
+ * letter followed by a number ('l1', 'e2', 'm1', 'c3', 'h1'; (LC §2.1) 'x1' a Combiner). */
+export const MOD_PREFIX = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', comb: 'x' });
 const PREFIX_KIND = Object.freeze(Object.keys(MOD_PREFIX).reduce((o, k) => { o[MOD_PREFIX[k]] = k; return o; }, {}));
 /** (2b) The mod kind of a module key ('wheel' → 'wheel', 've' → 'velo', 'nt' → 'note', 'l3' → 'lfo', 'm1' → 'macro', 'c2'
- * → 'cc', 'h1' → 'chaos', 'e1' → 'env'; anything else null). Pure. */
+ * → 'cc', 'h1' → 'chaos', 'e1' → 'env', (LC) 'x1' → 'comb'; anything else null). Pure. */
 export function keyKind(key) {
   if (typeof key !== 'string' || !key) return null;
   if (PAD_ID.test(key)) return 'pads'; // ((8) a project Pads module: no track device, no MOD_PREFIX entry)
-  if (PREFIX_KIND[key] && MOD_PREFIX[PREFIX_KIND[key]] === key && !/^[lemch]$/.test(key)) return PREFIX_KIND[key];
-  const m = /^([lemch])([1-9]\d*)$/.exec(key);
+  if (PREFIX_KIND[key] && MOD_PREFIX[PREFIX_KIND[key]] === key && !/^[lemchx]$/.test(key)) return PREFIX_KIND[key];
+  const m = /^([lemchx])([1-9]\d*)$/.exec(key);
   return m ? PREFIX_KIND[m[1]] : null;
 }
 /** (2b) A macro module's jack ports (its knob rows). */
@@ -369,7 +369,8 @@ function internal(id, dev, tc, on, lay) {
  * (devId, dev) → rows), one per performance row of a Serum's own matrix whose module exists (the wheel: opts.project
  * .perf.wheel; Velocity / Aftertouch / Bend: that device on the track) — {id: 'p:<dev>:<slot>', preset: true, dev, slot}.
  * opts.dashed(row) → true draws a row dashed (.cv-dash: a per-note source on a target following the last note, IMPL-2b
- * §1.3 — derived by the host, never stored). Colour by the source module's kind (MOD_COLOR, any 2b kind by prefix). Pure.
+ * §1.3 — derived by the host, never stored). Colour by the source module's kind (MOD_COLOR, any 2b kind by prefix). (LC §8.3) A row into a
+ * combiner's IN ('x1:in', its device a comb) carries nobadge: true — one jack, many cords, the amounts in its face's list. Pure.
  */
 function modCables(t, D, opts) {
   const o = isObj(opts) ? opts : {}, out = [], tc = typeof t.color === 'string' ? t.color : undefined;
@@ -385,6 +386,7 @@ function modCables(t, D, opts) {
     return c;
   };
   const sxColor = k => { const d = D[k.split('/')[0]]; return serumDev(D, k.split('/')[0]) && typeof d.color === 'string' && d.color ? d.color : null; };
+  const cmbIn = b => { const i = b.indexOf(':'), k = b.slice(0, i); return b.slice(i + 1) === 'in' && keyKind(k) === 'comb' && isObj(D[k]) && D[k].kind === 'comb'; }; // ((LC) a combiner's IN
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
     if (!isObj(r) || typeof r.id !== 'string' || typeof r.dst !== 'string' || r.dst.indexOf(':') < 1) continue;
     const P = modSrcPort(r.src); // ((2b) a macro's cable leaves at its knob's jack: 'm1.k3'; (3) a linked Serum LFO / ENV its part's)
@@ -392,6 +394,7 @@ function modCables(t, D, opts) {
     const c = mk(r.id, modSrcJack(r.src), r.dst, r, P.key, { src: r.src });
     if (P.key.indexOf('/') > 0) { const k = sxColor(P.key); if (k) c.color = k; }
     else if (keyKind(P.key) === 'pads') { const k = padColor(PJ, P.key, P.port); if (k) c.color = k; } // ((8) the pad's colour, §6.4)
+    if (cmbIn(r.dst)) c.nobadge = true; // ((LC §8.3) no amount badge on an input
     out.push(c);
   }
   // (milestone 3) a Serum in parts view: its own LFO / ENV / macro rows from their modules' jacks (the Serum's colour)
@@ -833,7 +836,7 @@ export function createCables(worldEl, o) {
       const t = touching(it.c.id), hide = mode === 'never' || (mode === 'select' && !t);
       tog(it, 'cv-hide', hide);
       tog(it, 'cv-fade', many && !t);
-      it.badge.hidden = hide || !fin(it.mx);
+      it.badge.hidden = hide || !fin(it.mx) || !!it.c.nobadge; // ((LC §8.3) a combiner input's: never — its amount is its face's list's
       it.hide = hide; it.fade = many && !t; // ((WC) a claimed one's: the records the layer gets)
     }
     if (many && !hinted) { hinted = true; if (typeof O0.onHint === 'function') { try { O0.onHint(MOD_HINT); } catch (err) { console.error(err); } } }

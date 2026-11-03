@@ -452,3 +452,39 @@ test('(2b fixer C, C7) a classic / panel row (host.budget kind): the inspector h
   assert.deepEqual(dh, ['2 cables · LFO 1/10 · ENV 0/4 · ext 2/16', '2/64'], 'the host\'s cable count, the slots');
   M.close();
 });
+
+test('(LC §8.4, lane H) a Combiner\'s input row (host.budget kind \'comb\'): the inspector "LFO 2 → Combiner 1 · IN" holds Amount (the slider and its number box: live edits, one step), Mute (the row\'s bypass in the input\'s word: one step "Mute" / "Unmute") and Disconnect — no Bipolar, Curve, Custom…, Output, Aux, Invert, Rise, Fall, Link, Save with preset; its header the LFO slots; the Mod list: the combiner\'s section "n inputs · LFO a/10", its lines "LFO 2 → Combiner 1 · IN · +98%" (a muted one "· muted"); every other row as before', () => {
+  const slots = { lfo: [3, 10], env: [0, 4], chaos: [0, 2], macro: [0, 8], vals: [1, 16], ext: [0, 16] };
+  const s = setup({ budget: dev => (dev === 'x1' ? { preset: 0, canvas: 2, left: [], max: 64, kind: 'comb', slots } : { preset: (s.H.pre[dev] || []).length + 20, canvas: 1, left: [], max: 64 }) });
+  const { H, M, pop } = s;
+  H.rows.push(Object.assign({ id: 'r7', src: 'l2.out', dst: 'x1:in', amt: 1 }, ROW), Object.assign({ id: 'r8', src: 'l1.out', dst: 'x1:in', amt: -0.5 }, ROW, { byp: 1 }));
+  const L0 = H.labelOf, NM = { 'l1.out': 'LFO 1', 'l2.out': 'LFO 2', x1: 'Combiner 1', 'x1:in': 'Combiner 1 · IN' };
+  H.labelOf = id => NM[id] || L0(id);
+  take(H);
+  assert.equal(M.openInspector('r7', 10, 10), true);
+  const p = pop();
+  assert.deepEqual([one(p, 'cv-ml-t').textContent, one(p, 'cv-ml-b').textContent, p.getAttribute('data-input')], ['LFO 2 → Combiner 1 · IN', 'LFO 3/10', ''], 'the title, the LFO slots (the input\'s budget)');
+  const shown = el => { if (!el) return false; for (let n = el; n && n !== p; n = n.parentNode) if (n.hidden) return false; return true; };
+  assert.deepEqual(['Amount', 'Amount %', 'Mute'].map(l => shown(lab(p, l))), [true, true, true], 'Amount, Mute');
+  assert.deepEqual(['Bipolar', 'Bypass', 'Curve', 'Output', 'Aux source', 'Invert aux', 'Rise', 'Fall', 'Link'].map(l => shown(lab(p, l))), [false, false, false, false, false, false, false, false, false], 'no row field that means nothing on an input');
+  assert.deepEqual(['curve', 'save', 'disconnect'].map(a => shown(act(p, a))), [false, false, true], 'Disconnect alone in the foot');
+  assert.deepEqual(take(H), ['select r7']);
+  key(lab(p, 'Amount'), 'ArrowLeft');
+  assert.deepEqual(take(H), ['edit r7 {"amt":0.98}', 'step Mod amount'], 'an amount step');
+  lab(p, 'Mute').click();
+  assert.deepEqual([take(H), lab(p, 'Mute').getAttribute('aria-pressed') || lab(p, 'Mute').getAttribute('aria-checked')], [['edit r7 {"byp":1}', 'step Mute'], 'true']);
+  lab(p, 'Mute').click();
+  assert.deepEqual(take(H), ['edit r7 {"byp":0}', 'step Unmute']);
+  M.close();
+  // a knob row on the same layer: as before (its Bypass, its curve, its slew)
+  M.openInspector('r1', 10, 10);
+  assert.deepEqual(['Bypass', 'Bipolar', 'Curve', 'Rise'].map(l => shown(lab(pop(), l))).concat(pop().hasAttribute('data-input')), [true, true, true, true, false]);
+  M.close();
+  M.openList('Track 1', ['i2', { id: 'x1', label: 'Combiner 1' }]);
+  const sh = one(s.doc.body, 'cv-sheet'), sec = byCls(sh, 'cv-ml-dev').find(g => g.getAttribute('data-dev') === 'x1');
+  assert.deepEqual([byCls(sec, 'cv-ml-b')[0].textContent, byCls(sec, 'cv-ml-line').map(l => l.childNodes[0].textContent)],
+    ['2 inputs · LFO 3/10', ['LFO 2 → Combiner 1 · IN · +98%', 'LFO 1 → Combiner 1 · IN · −50% · muted']]);
+  byCls(sec, 'cv-ml-line')[1].click();
+  assert.deepEqual([one(pop(), 'cv-ml-t').textContent, pop().hasAttribute('data-input')], ['LFO 1 → Combiner 1 · IN', true], 'a line: the input\'s inspector');
+  M.close(); M.close();
+});

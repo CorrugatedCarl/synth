@@ -1338,8 +1338,8 @@ test('devicesOf / MOD_KINDS / mkOf / modJacks / modJackY / MOD_H (2b): every kin
   Object.assign(t.dev, { h1: { kind: 'chaos' }, l2: { kind: 'lfo' }, l10: { kind: 'lfo' }, l1: { kind: 'lfo' }, m1: { kind: 'macro' }, c1: { kind: 'cc' }, e1: { kind: 'env' }, nt: { kind: 'note' }, bd: { kind: 'bend' }, zz: { kind: 'nope' } });
   assert.deepEqual(M.devicesOf(t).filter(d => d.kind === 'mod').map(d => d.key + ':' + d.mod), ['bd:bend', 'nt:note', 'l1:lfo', 'l2:lfo', 'l10:lfo', 'e1:env', 'm1:macro', 'c1:cc', 'h1:chaos'], 'an unknown kind is no module');
   assert.deepEqual([[...M.MOD_KINDS], M.MOD_ORDER, Object.keys(M.MOD_H), ['m3', 'nt', 'x9', 'l', 'wheel', 'i1'].map(M.mkOf)],
-    [['velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'],
-      ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['macro', 'note', null, null, 'wheel', null]]);
+    [['velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'comb'], ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'comb'],
+      ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos', 'comb'], ['macro', 'note', 'comb', null, 'wheel', null]]); // ((LC phase 0) x9: cv-cables keyKind's Combiner; (LC §8.2, lane H) the Combiner last in Tidy's order)
   assert.deepEqual([M.MOD_H.lfo, M.MOD_H.env, M.MOD_H.macro, M.MOD_H.cc, M.MOD_H.chaos, M.MOD_H.note, M.MACRO_ROW, M.MACRO_Y0], [256, 224, 288, 160, 224, 160, 28, 52]);
   // (milestone 3) inline: each name tile of the Serum MACROS panel is its jack; the y is the fallback (a 2b body: the right edge)
   assert.deepEqual(M.modJacks('macro', 'Macro').map(j => j.id + '@' + j.y + ':' + j.side + ':' + j.kind + ':' + j.label), ['k1@66', 'k2@94', 'k3@122', 'k4@150', 'k5@178', 'k6@206', 'k7@234', 'k8@262'].map((s, i) => s + ':inline:mod:Macro knob ' + (i + 1)));
@@ -1405,9 +1405,9 @@ test('MOD1 §4.3 (lane H) one face for every modulator: MOD_W[kind] = rig-grid f
     assert.deepEqual(J.map(j => j.id + ':' + j.side + ':' + j.kind), k === 'macro' ? M.modJacks('macro').map(j => j.id + ':inline:mod') : ['out:inline:mod'], k + ': inline');
     if (k !== 'macro') assert.deepEqual([J[0].y, J[0].label], [M.BAR_H + M.JACK_Y, 'T out'], k + ': the fallback dot at JACK_Y');
   }
-  assert.ok(Object.isFrozen(M.MOD_W) && Object.keys(M.MOD_W).length === 10);
+  assert.ok(Object.isFrozen(M.MOD_W) && Object.keys(M.MOD_W).length === 11); // ((LC §8.2) + the Combiner
   assert.deepEqual([M.MOD_W.lfo, M.MOD_W.env, M.MOD_W.macro], [RCORE.MODULES.lfo.cols, RCORE.MODULES.env.cols, RCORE.MODULES.macros.cols].map(faceW), 'a track LFO / Envelope / Macros as wide as a Wavecraft\'s');
-  assert.deepEqual(M.MOD_H, { wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224 }, 'Tidy\'s guesses, as they were (a migration reads them)');
+  assert.deepEqual(M.MOD_H, { wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224, comb: 352 }, 'Tidy\'s guesses, as they were (a migration reads them); (LC §8.2) the Combiner\'s: its face at one list line + the bar');
   // a module of every kind: its width the face\'s, no fixed height, the slot faces' cost 160 and the plain ones' 40 (as before)
   const doc = fresh(), W = fakeWorld(1), t = v2t();
   Object.assign(t.dev, { ve: { kind: 'velo' }, at: { kind: 'at' }, bd: { kind: 'bend' }, nt: { kind: 'note' }, l1: { kind: 'lfo' }, e1: { kind: 'env' }, m1: { kind: 'macro', v: [], names: [] }, c1: { kind: 'cc' }, h1: { kind: 'chaos' } });
@@ -1418,6 +1418,33 @@ test('MOD1 §4.3 (lane H) one face for every modulator: MOD_W[kind] = rig-grid f
     assert.deepEqual([m.w, !!(m.fixed && m.fixed.h), m.cost, m.jack(k === 'macro' ? 'k1' : 'out').hasAttribute('data-inline'), m.jack(k === 'macro' ? 'k1' : 'out').getAttribute('data-kind')],
       [M.MOD_W[k], false, ['lfo', 'env', 'macro', 'chaos'].includes(k) ? 160 : 40, true, 'mod'], k);
   }
+  R.V.destroy();
+});
+
+test('(LC §8.2, lane H) the Combiner\'s module: kind \'mod\' (\'x1\' … numbered, after the Chaos in Tidy\'s column), 416 px = faceW(MOD_COLS.comb 6), modX −512, its height its content\'s (MOD_H.comb Tidy\'s guess), ONE registered jack — the inline OUT (the IN is the face\'s [data-dest="in"] drop target, never a jack); its input rows end on that IN (destPort \'x1:in\': the cords\' and the lines\' end); cost a plain face\'s 40 + 8 per input line', () => {
+  assert.deepEqual([M.MOD_W.comb, faceW(MOD_COLS.comb), M.modX('comb'), M.MOD_H.comb, M.SX_MODS.has('comb'), M.MOD_KINDS.has('comb'), M.MOD_ORDER.at(-1), M.mkOf('x3')], [416, 416, -512, 352, true, true, 'comb', 'comb']);
+  assert.deepEqual(M.modJacks('comb', 'Combiner 1').map(j => j.id + ':' + j.side + ':' + j.kind + ':' + j.label), ['out:inline:mod:Combiner 1 out'], 'the OUT alone');
+  const t = v2t();
+  Object.assign(t.dev, { l1: { kind: 'lfo' }, l2: { kind: 'lfo' }, h1: { kind: 'chaos' }, x2: { kind: 'comb', mode: 'add', win: 1, mark: null }, x1: { kind: 'comb', mode: 'mul', win: 2, mark: null } });
+  assert.deepEqual(M.devicesOf(t).filter(d => d.kind === 'mod').map(d => d.key + ':' + d.mod), ['l1:lfo', 'l2:lfo', 'h1:chaos', 'x1:comb', 'x2:comb'], 'after the Chaos, by number');
+  const xy = L => ['l1', 'l2', 'h1', 'x1', 'x2'].map(k => k + '@' + L[k].x + ',' + L[k].y).join(' ');
+  assert.equal(xy(M.tidy(t, {})), 'l1@-448,0 l2@-448,320 h1@-320,640 x1@-512,928 x2@-512,1344', 'Tidy stacks them at the column\'s end (MOD_H + VGAP, on the dots)');
+  t.mods = [{ id: 'r1', src: 'l1.out', dst: 'x1:in', amt: 1 }, { id: 'r2', src: 'l2.out', dst: 'x1:in', amt: -0.5, byp: 1 }, { id: 'r3', src: 'x1.out', dst: 'i1:cf', amt: 0.4 }, { id: 'r4', src: 'l1.out', dst: 'x2:in', amt: 1 }];
+  const doc = fresh(), W = fakeWorld(1);
+  const R = dview(t, W, doc, { bodies: { mount: (k, b) => { if (k === 'x1') { const s = doc.createElement('span'); s.setAttribute('data-dest', 'in'); b.append(s); place(s, 40, 300, 28, 28); } }, unmount() {} } });
+  const m = R.V.modules.get('x1');
+  layout(m.el, 416, 400);
+  place(m.el, 0, 0, 416, 400);
+  R.V.remeasure('x1'); // (measured: the face is up)
+  assert.deepEqual([m.kind, m.w, !!(m.fixed && m.fixed.h), m.jackIds().join(), m.jack('out').hasAttribute('data-inline'), m.jack('out').getAttribute('data-kind'), m.el.style['--mc']], ['mod', 416, false, 'out', true, 'mod', CB.MOD_COLOR.comb]);
+  assert.deepEqual([m.cost, R.V.modules.get('x2').cost], [40 + 8 * 2, 40 + 8], 'its input lines (a muted one too)');
+  assert.ok(!R.V.jacks().some(J => J.id === 'x1.in'), 'no registered IN jack');
+  const P = R.V.ports(), q = P.get('x1:in');
+  assert.deepEqual([!!q, q && q.x, q && q.y, q && 'r' in q], [true, m.x + 54, m.y + 314, false], 'the input rows\' end: the IN\'s centre (no knob rim)');
+  assert.deepEqual(R.V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + ' ' + !!c.nobadge), ['r1 l1.out x1:in true', 'r2 l2.out x1:in true', 'r3 x1.out i1:cf false', 'r4 l1.out x2:in true']);
+  t.mods = t.mods.filter(r => r.id !== 'r2');
+  R.sync(t);
+  assert.equal(R.V.modules.get('x1').cost, 40 + 8, 'a sync follows the inputs');
   R.V.destroy();
 });
 

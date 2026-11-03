@@ -17,6 +17,9 @@
 // ENV / macro rows own: true, tagged "Serum" — they stay in the matrix: no Keep on canvas) — the Mod list replaces MATRIX —,
 // named by host.nativeLabel(dev, src); a destination no mounted view shows (host.hidden(dev, pid) → { tag, show }) carries
 // its tag ("OSC B · LEVEL · hidden") in the list and the inspector, whose foot offers show.label ("Show OSC B").
+// Stage LC (IMPL-LC §8.4, lane H): a Combiner's input row (host.budget kind 'comb': a row into '<id>:in') — the inspector holds Amount,
+// Mute (the row's bypass in the input's word) and Disconnect, nothing else (bipolar, curve, output, aux, slew mean nothing on an input);
+// its header the LFO slots; the Mod list's section "n inputs · LFO a/10", its lines "LFO 2 → Combiner 1 · IN · +100%" (· muted).
 // Rules: plain ES module, no DOM at module top level (node imports it), survives tests/main-sim.mjs's DOM stub (keeps
 // references, never queries the DOM back); imports carry ?v=9; styles ship as STYLE (the host injects it once).
 import * as wk from './wk.js?v=9';
@@ -213,14 +216,15 @@ export function createModLayer(host) {
     let left = new Set();
     if (Array.isArray(b.left)) left = new Set(b.left.map(String));
     else if (num(b.left, 0) > 0) { const rs = rows || call('rowsOf', dev) || []; left = new Set(rs.slice(Math.max(0, rs.length - b.left)).map(r => r.id)); }
-    const kind = typeof b.kind === 'string' ? b.kind : 'serum';
+    const kind = typeof b.kind === 'string' ? b.kind : 'serum'; // ((LC) 'comb': a combiner's inputs
     return { used, max, left, full: kind === 'serum' ? used >= max || left.size > 0 : left.size > 0, slots: isObj(b.slots) ? b.slots : null, why: isObj(b.why) ? b.why : {}, kind, canvas: num(b.canvas, 0) };
   }
   const leftText = (B, id) => LEFT_TEXT[B.why[id]] || LEFT_TEXT.full;
-  const budgetText = B => (B.kind === 'serum' ? B.used + '/' + B.max : B.canvas + ' cable' + (B.canvas === 1 ? '' : 's') + (B.slots ? ' · ' + slotsText(B.slots, ['lfo', 'env', 'ext']) : '')) + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
+  const budgetText = B => (B.kind === 'serum' ? B.used + '/' + B.max : B.kind === 'comb' ? B.canvas + ' input' + (B.canvas === 1 ? '' : 's') + (B.slots ? ' · ' + slotsText(B.slots, ['lfo']) : '')
+    : B.canvas + ' cable' + (B.canvas === 1 ? '' : 's') + (B.slots ? ' · ' + slotsText(B.slots, ['lfo', 'env', 'ext']) : '')) + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
   const srcOfRow = (R, preset) => preset ? (CANVAS[R.src] || R.src) : R.src;
   const pidOfRow = (R, preset) => preset ? String(R.dst) : splitDst(R.dst)[1];
-  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset), preset ? dev : null) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? ' · bypassed' : ''); // (U11: the badge's format)
+  const lineOf = (R, preset, dev, inp) => srcName(srcOfRow(R, preset), preset ? dev : null) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? (inp ? ' · muted' : ' · bypassed') : ''); // (U11: the badge's format; (LC) an input's mute)
   // ((milestone 3, §2.4) a destination no mounted view of its Serum shows: { tag: 'OSC B · LEVEL · hidden', show?: { label, action } })
   const hiddenOf = (dev, pid) => { const h = call('hidden', dev, pid); return isObj(h) && typeof h.tag === 'string' ? h : null; };
   // ((milestone 3) a row of a Serum's matrix whose source is its own LFO / ENV / macro … (the parts view's Mod list): own, not "preset")
@@ -305,11 +309,12 @@ export function createModLayer(host) {
     if (!T) return false;
     let R = readRow(T);
     if (!R || !T.dev) return false;
-    const dev = T.dev, pre = T.preset, B0 = budgetOf(dev), sx = B0.kind === 'serum';
+    const dev = T.dev, pre = T.preset, B0 = budgetOf(dev), sx = B0.kind === 'serum', inp = !pre && B0.kind === 'comb'; // ((LC §8.4) a combiner's input
     const titleOf = () => srcName(srcOfRow(R, pre), pre ? dev : null) + ' → ' + knobName(dev, pidOfRow(R, pre)); // (U12: a preset slot can hold another row after a sync)
     const title = titleOf();
     const p = popover('insp', 'Modulation: ' + title, x, y);
     const box = p.box, W = p.widgets;
+    if (inp) box.setAttribute('data-input', '');
     const own = ownRow(R, pre), hid = hiddenOf(dev, pidOfRow(R, pre)); // ((3) a Serum's own row; a hidden destination)
     const tags = pre ? [own ? ['own', ownTag(dev)] : ['preset', 'preset']] : [];
     if (hid) tags.push(['hidden', hid.tag]);
@@ -354,8 +359,8 @@ export function createModLayer(host) {
     sA.classList.add('cv-ml-amt');
     // bipolar, bypass
     const tog = (lab, k, stepLab, extra) => w(wk.toggle({ label: lab, kind: 'led', get: () => (R[k] ? 1 : 0), disabled: extra && extra.disabled,
-      set: v => { const f = extra && extra.fields ? extra.fields(v) : { [k]: v ? 1 : 0 }; if (changes(f)) { edit(f); step(stepLab); } } }));
-    const bi = tog('Bipolar', 'bi', 'Mod polarity'), byp = tog('Bypass', 'byp', 'Mod bypass');
+      set: v => { const f = extra && extra.fields ? extra.fields(v) : { [k]: v ? 1 : 0 }; if (changes(f)) { edit(f); step(typeof stepLab === 'function' ? stepLab(v) : stepLab); } } }));
+    const bi = tog('Bipolar', 'bi', 'Mod polarity'), byp = inp ? tog('Mute', 'byp', v => (v ? 'Mute' : 'Unmute')) : tog('Bypass', 'byp', 'Mod bypass'); // ((LC) an input's mute: its word
     const tg = mk('div', 'cv-ml-tg');
     tg.append(bi.el, byp.el);
     // curve (the matrix's curve, −1…1), output (0…1)
@@ -438,18 +443,19 @@ export function createModLayer(host) {
       closePop();
       step(pre ? 'Keep on canvas' : 'Save with preset');
     }
-    const sC = sec('', curve.el, crvBtn), sAux = sec('', aux.el, inv.el);
+    const sC = sec('', curve.el, crvBtn), sAux = sec('', aux.el, inv.el), sOut = sec('', out.el), sRise = sec('', rise.el), sFall = sec('', fall.el, link.el);
     sC.classList.add('cv-ml-curve');
     if (!sx) { move.hidden = true; sAux.hidden = true; } // ((2b) a classic / panel row has no preset to move into; (C7) its aux would name the synthetic CP's slot, not a canvas source — no Aux menu)
     if (own) move.hidden = true; // ((3) a Serum's own LFO / ENV / macro row stays in its matrix: no canvas cable to move it to)
-    box.append(sA, tg, sC, crvBox, sec('', out.el), sAux, sec('', rise.el), sec('', fall.el, link.el), foot);
+    if (inp) for (const e of [bi.el, sC, crvBox, sOut, sRise, sFall]) e.hidden = true; // ((LC §8.4) an input: Amount, Mute, Disconnect — its curve, output, slew mean nothing there
+    box.append(sA, tg, sC, crvBox, sOut, sAux, sRise, sFall, foot);
     function refresh() {
       for (const x of W) x.update();
       const tt = titleOf();
       if (hd.t.textContent !== tt) { hd.t.textContent = tt; hd.t.title = tt; box.setAttribute('aria-label', 'Modulation: ' + tt); }
       const B = budgetOf(dev), left = !pre && B.left.has(T.id);
       // (2b) a Serum row: its matrix "n/64"; a classic / panel row: the ModCore slot budgets "LFO 3/10 · ENV 1/4 · ext 2/16"
-      hd.b.textContent = sx ? B.used + '/' + B.max : slotsText(B.slots, ['lfo', 'env', 'ext']) || B.canvas + ' cables';
+      hd.b.textContent = sx ? B.used + '/' + B.max : inp ? slotsText(B.slots, ['lfo']) : slotsText(B.slots, ['lfo', 'env', 'ext']) || B.canvas + ' cables'; // ((LC) an input: the LFO slots it takes
       hd.b.title = sx ? devName(dev) + '\'s mod rows: ' + B.used + ' of ' + B.max + ' used' + (B.left.size ? ', ' + B.left.size + ' not compiled' : '') : 'ModCore slots of this track: ' + (slotsText(B.slots) || 'none') + (B.left.size ? ', ' + B.left.size + ' not compiled' : '');
       if (B.full) hd.b.setAttribute('data-full', ''); else hd.b.removeAttribute('data-full');
       leftTag.hidden = !left;
@@ -577,7 +583,7 @@ export function createModLayer(host) {
       }
       grp.append(dh);
       const line = (R, pre) => {
-        const t = lineOf(R, pre, dev), left = !pre && B.left.has(R.id);
+        const t = lineOf(R, pre, dev, B.kind === 'comb'), left = !pre && B.left.has(R.id);
         const el = button('cv-ml-line', null, null, () => {
           const r = el.getBoundingClientRect();
           openInspector(pre ? { preset: dev, slot: R.slot } : { id: R.id, dev }, r.left, r.bottom + 4);
