@@ -35,6 +35,16 @@ tile (an empty grid: paint a beat), the drum tiles add drums, KIT ▾ loads the 
   kit tile sits below the four classic machines in the Drums view (below the fold at 1440 × 900); a second finger landing late in a paint
   cancels the paint but no pinch starts; a classic → classic Replace keeps the old OUT jack's name (pre-existing, cv-module).
 
+**Done — ROADMAP 21, automation recording** (contract `docs/canvas/IMPL-AUTO.md`; the lead's four guesses in its header — lanes under
+the roll, Ableton's grab / re-enable, every knob with a writer, touch-to-release then latch — stand until the user answers; the skeptic §14):
+squashed onto `canvas` as **0bdf773** "AUTO" and deployed 2026-11-03 (Fable lead; Opus / Sonnet lanes). The round: the map
+(`map-auto.md`) → the contract → the skeptic (24 items folded in: pure model writers + polling, `renderTick`, a 60 Hz staggered
+tick, the bounce probe first) → phase 0 (P0M the model + schema 19, P0H the host's pure parts) ∥ W (follow + the dot) ∥ L (the roll's
+lane editor) → H1 (the host) ∥ the §7.0 probe (suspend + post holds in Chrome, lag 0) → H2a (the sim's offline fake) → H2 (the bounce)
+∥ G (fps scenes auto8 / auto8r, bench `ui-AUTO-mac`) ∥ reviewer 1 (engine: 2 P1, 5 P2, P3s) ∥ reviewer 2 (Chrome: 1 P1, 3 P2, P3s)
+→ one fixer (15 items; the lead then un-commented a swallowed `autoChanged` and named shared classic labels by section) → sweep. Everything is in IMPL-AUTO §12 (known limits), §13 (every note, "Fix round" last), §14. **Tell the user**: ●, play,
+grab a knob; the roll's ▾ Vel chooser shows the curve; ↺ re-enables after a grab; WebKit (the iPad) is untested for the bounce.
+
 **Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — **fixed and deployed 2026-11-03** (main.js `modLeftIds` /
 `modPushed` in `modConnect`: the rows left before and after the drop compared, a cable that would push another LFO's cable out of its slot
 is refused with the 11th cable's words, no step; tests/canvas-2b-sim "P3-10"; the slot order itself (cv-graph `take`, module-id order)
@@ -63,6 +73,8 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 ### 0.1 Branches at handover
 - `wt-LC` (0b03be8) — the combiner, squashed onto canvas as 480bb3f (history only; lane branches E `worktree-agent-aa3b001edf7e989a3`, F
   `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`, G6 `lc-g6`).
+- `wt-AUTO` — automation, squashed onto canvas as 0bdf773 (history only; lane branches auto-p0m / auto-p0h / auto-W / auto-L / auto-H1 /
+  auto-H2a / auto-H2 / auto-G / auto-X; worktrees removed after the deploy).
 - `wt-DM` (6659cb3) — the drum machine, squashed onto canvas as e676abb (history only; lane branches dm-V / dm-S / dm-F / dm-U / dm-P / dm-H /
   dm-G / dm-X in the lead's scratchpad worktrees, removed after the deploy).
 - `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only). Old `worktree-agent-*` branches: unmerged leftovers of past stages.

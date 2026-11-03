@@ -644,6 +644,8 @@ auto-model, roll-auto, wk-auto / classic-auto, cv-migrate; G's checks and review
     track's curves in its lost list ("“Bass”: 2 automation curves").
 15. (H1 deviation 5) AW survives ▶: the stopped rest and a stopped lane edit write it, a stopped release keeps it — a knob turned while
     stopped (a write, a grab) is an override at ▶; an untouched one follows its curve.
+**After the fix round (the lead, 2026-11-03):** reading the fixer's diffs, `autoSpanWrite`'s `autoChanged` had slid into fix 7's comment (the dots and the roll's lane did not follow a take): back out; a classic label two controls of a model share is named by its panel section (`autoSec`: the Minimoog's "Filter Attack" / "Loudness Contour Attack", never two bare "Attack"s in the chooser; auto-host pins it); the sweep's one red, smpgen §10.1 (it evals `buildPatch`'s source with a fixed free-variable list), fixed by handing `autoMoved` in as `buildPatch`'s `nokey` parameter from `sendPatch`. Sweep 181 files / 4726 green, peak 2.19 GB. Squashed onto canvas as 0bdf773.
+
 **Fix round, left** (recorded, not fixed): a touch tap within 14 px of the line adds nothing (a dead tap, contract-consistent); the amber
 "on" / ivory contrast (the ring and its dark edge keep it visible); lane G 4 (the kit's +0.025 ms, noise); lane G 5 (the roll is not
 re-rendered during playback: the heard dot rides the playhead); `save()` writing automated positions into the per-model memory
