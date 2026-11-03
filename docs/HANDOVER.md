@@ -4,7 +4,7 @@ Written for the next agent taking over this project. Read it fully, then `docs/c
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
 concrete UX feedback, and expect finished work to be pushed live.
 
-## 0. Handover 2026-11-02 (Opus lead → a new session) — START HERE
+## 0. Handover 2026-11-03 (Fable lead → a new session) — START HERE
 
 **Live**: canvas.domlavin.com = branch `canvas` (see `git log -1 canvas`). Shipped this session, in order: FR Cut A, skinned popups, cords
 still on a track switch, Ivory + glass skins, display skins, **FR Cut B** (per-frame LFO / ENV / knob-ring motion at the heard frame;
@@ -22,12 +22,23 @@ the iPad's dot reads ≈ 29 Hz anchors (fast lane off in WebKit) — a small lag
 - Known (recorded, not guarded): an old build drops a track's combiners and their rows on load (accepted: canvas saves need no care);
   `normTrack` raises a track's `nid` past its highest device number (pre-existing; numbers change once on a first load / save).
 
+**Done — ROADMAP 19, the drum machine ("Wavecraft Drums")** (contract `docs/canvas/IMPL-DM.md`; the user's answers in §11; the skeptic
+§14): squashed onto `canvas` as **e676abb** "DM" and deployed 2026-11-03 (Fable lead; lanes / reviewers / fixer Opus 5.5 and Sonnet). The
+round: phase 0 (the lead: failing tests, kit-core, schema 18) → lanes V (kit-dsp, six voice types) ∥ S (dr-seq / drum-core, the kit's plan)
+∥ F (kit-ui faces, the layout gate) ∥ U (the Drums-view tiles, the art) → the Perc DC fix → H (the main.js host, undo, files, the roll /
+Pads / Ducker / Combiner) → G (the kit frame scenes, bench.json `ui-DM-mac`) ∥ reviewer 1 (the real engine: 1 P1 — undo after a
+multi-voice Delete; 1 P3) ∥ reviewer 2 (Chrome for Testing: 0 P1, 5 P2, 11 P3; the contact sheet) → one fixer (9 items, failing test
+first, the reviewers' repros rerun) → sweep. Everything is in IMPL-DM §12 (known limits, the "fix round, left" lines), §13 (every lane's
+note, the fix round), §14. `tests/ref-DM` frozen (PIN set at the final freeze). **Tell the user**: Sources → Drums → the Wavecraft Drums
+tile (an empty grid: paint a beat), the drum tiles add drums, KIT ▾ loads the four kits, the drums show as named rows in the roll.
+- Known (recorded): a pattern switch while playing shows the new grid at once (heard at the bar's end, no pending mark — a follow-up); the
+  kit tile sits below the four classic machines in the Drums view (below the fold at 1440 × 900); a second finger landing late in a paint
+  cancels the paint but no pinch starts; a classic → classic Replace keeps the old OUT jack's name (pre-existing, cv-module).
+
 **Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — **fixed and deployed 2026-11-03** (main.js `modLeftIds` /
 `modPushed` in `modConnect`: the rows left before and after the drop compared, a cable that would push another LFO's cable out of its slot
 is refused with the 11th cable's words, no step; tests/canvas-2b-sim "P3-10"; the slot order itself (cv-graph `take`, module-id order)
-is unchanged — payloads stay byte-identical); (2) ROADMAP 19
-**drum machine** (contract `IMPL-DM.md` on branch `worktree-agent-a8225cd7a2f7be32d`, b0b3b0b + answers 2735554: grid + one module per
-drum, no cables at first, an EMPTY grid, our own synth drums first; name `RIG.NAME + ' Drums'`) — a skeptic first; (3) later: the
+is unchanged — payloads stay byte-identical); (2) ROADMAP 19 the **drum machine** — **done, deployed 2026-11-03** (below); (3) later: the
 light-show skin (Cut B's meters exist now), the iPad pass, renaming Serum-like names before any sale (ROADMAP 15, incl. the dead code
 SX0 kept: renderLast, savePresetUI / stepPresetUI / authorDialog, the C1 folds, alignPhase, swing, the lay flag `ui: 'parts'`, the
 `voice` part sizes).
@@ -52,6 +63,8 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 ### 0.1 Branches at handover
 - `wt-LC` (0b03be8) — the combiner, squashed onto canvas as 480bb3f (history only; lane branches E `worktree-agent-aa3b001edf7e989a3`, F
   `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`, G6 `lc-g6`).
+- `wt-DM` (6659cb3) — the drum machine, squashed onto canvas as e676abb (history only; lane branches dm-V / dm-S / dm-F / dm-U / dm-P / dm-H /
+  dm-G / dm-X in the lead's scratchpad worktrees, removed after the deploy).
 - `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only). Old `worktree-agent-*` branches: unmerged leftovers of past stages.
 
 ## 1. What exists
