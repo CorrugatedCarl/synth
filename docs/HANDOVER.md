@@ -12,17 +12,14 @@ WebKit / iPad lane OFF until measured), **MOD1** (ROADMAP 27: every modulator in
 skin neutral** (no Serum blue), **SX0** (ROADMAP 28: Serum complete and the parts machinery gone from canvas; old Serums open as
 Wavecrafts, same sound). `main` (synth.domlavin.com) untouched since 2026-10-17 — the user's brother uses it; never change it.
 
-**In flight — ROADMAP 26, the LFO combiner** (contract `docs/canvas/IMPL-LC.md`, §18 the skeptic, the user's answers Q1–Q4 in it:
-Add clips flat, "Combiner n", no marks until the user picks a track, the stopped view shows how it will play):
-- **Built and integrated, NOT reviewed, NOT live**: branch `wt-LC` at **cf8adc3** = phase 0 + lanes E (engine) + F (face, `lc-view.js`)
-  + H (host), `tests/ref-LC` recorded once on the merged tree; the full sweep is green (170 files, 4440 tests). Lane notes, payload /
-  message shapes and every deviation are in IMPL-LC §17.
-- **Next**: (1) the `comb` frame-cost scene in tests/ui-bench-fps.mjs (G6 — no lane owned it); (2) two reviewers on cf8adc3 (one: the
-  real engine + node sims, the "picture = sound" 1e-6 claim, budgets / refusals; two: Chrome for Testing at the three sizes and skins,
-  a contact sheet of the face for the user, frame cost vs canvas); (3) one fixer (failing test first); (4) the sweep; (5) squash
-  `wt-LC` onto `canvas`, `node tools/precache.mjs --write`, push, `tools/deploy-canvas.sh`; (6) ROADMAP 26 + this file + memory;
-  tell the user in a few words.
-- Known: an old build (before LC) drops a track's combiners and their rows on load (accepted: canvas saves need no care);
+**Done — ROADMAP 26, the LFO combiner** (contract `docs/canvas/IMPL-LC.md`; the user's answers Q1–Q4 in its header): squashed onto
+`canvas` as **480bb3f** "LC" and deployed 2026-11-02 (Fable lead; lanes / reviewers / fixer Opus 5.5). The round: lane G6 (the `comb` fps
+scene) ∥ reviewer 1 (the real engine: 0 P1, 2 P2, 5 P3; G1–G4 re-derived, the view ≤ 2.9e-10 playing) ∥ reviewer 2 (Chrome for Testing:
+0 P1, 3 P2, 3 P3; the contact sheet) → one fixer (13 items, failing test first, the reviewers' repros rerun) → the lead reverted one fix
+(skewed 44 px touch bands on the Window picks → their own boxes, §16) → sweep 170 files / 4448 green (peak 2.2 GB). Everything is in
+IMPL-LC §16 (known limits incl. the measured view bounds), §17 (every note), §18. **Tell the user**: try it (ROADMAP 26's "pending" list);
+the iPad's dot reads ≈ 29 Hz anchors (fast lane off in WebKit) — a small lag at corners is expected, not a bug.
+- Known (recorded, not guarded): an old build drops a track's combiners and their rows on load (accepted: canvas saves need no care);
   `normTrack` raises a track's `nid` past its highest device number (pre-existing; numbers change once on a first load / save).
 
 **Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — a new direct cable from a lower-numbered LFO can push
@@ -51,9 +48,8 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 "still running" updates, no memories they didn't ask for.
 
 ### 0.1 Branches at handover
-- `wt-LC` (cf8adc3) — the combiner, integrated. Lane branches (merged): E `worktree-agent-aa3b001edf7e989a3`, F
-  `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`. Its worktree was in the old session's scratchpad; make a
-  new one (`git worktree add <your scratchpad>/LC-wt wt-LC`).
+- `wt-LC` (0b03be8) — the combiner, squashed onto canvas as 480bb3f (history only; lane branches E `worktree-agent-aa3b001edf7e989a3`, F
+  `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`, G6 `lc-g6`).
 - `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only). Old `worktree-agent-*` branches: unmerged leftovers of past stages.
 
 ## 1. What exists
