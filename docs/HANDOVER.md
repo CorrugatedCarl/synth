@@ -12,14 +12,18 @@ WebKit / iPad lane OFF until measured), **MOD1** (ROADMAP 27: every modulator in
 skin neutral** (no Serum blue), **SX0** (ROADMAP 28: Serum complete and the parts machinery gone from canvas; old Serums open as
 Wavecrafts, same sound). `main` (synth.domlavin.com) untouched since 2026-10-17 — the user's brother uses it; never change it.
 
-**In flight — ROADMAP 26, the LFO combiner** (contract `docs/canvas/IMPL-LC.md`, §18 the skeptic, the user's answers Q1–Q4 in it):
-- Holding branch `wt-LC` = phase 0 (1c99d07: the `comb` kind's data, registries, tray tile, model checks; sweep LC-0).
-- Lanes E (engine: mod-core / sx-mod / engine / cv-graph), F (face + `lc-view.js` + style.css), H (host: main / cv-module /
-  cv-modlayer / cv-cables) were built from 1c99d07 on branches listed in §0.1 below (filled in when they report).
-- Next: merge E → F → H into `wt-LC`, `node tools/precache.mjs --write`, record `tests/ref-LC` once (lane E's recorder), the sweep
-  (`tools/sweep.sh`), two reviewers (one real engine + node sims; one Chrome for Testing incl. a contact sheet for the user), fixers
-  (failing test first), sweep, squash onto `canvas`, `tools/deploy-canvas.sh`, update ROADMAP 26 + this file.
-- Known: an old build (before LC) drops a track's combiners and their rows on load (accepted: canvas saves need no care).
+**In flight — ROADMAP 26, the LFO combiner** (contract `docs/canvas/IMPL-LC.md`, §18 the skeptic, the user's answers Q1–Q4 in it:
+Add clips flat, "Combiner n", no marks until the user picks a track, the stopped view shows how it will play):
+- **Built and integrated, NOT reviewed, NOT live**: branch `wt-LC` at **cf8adc3** = phase 0 + lanes E (engine) + F (face, `lc-view.js`)
+  + H (host), `tests/ref-LC` recorded once on the merged tree; the full sweep is green (170 files, 4440 tests). Lane notes, payload /
+  message shapes and every deviation are in IMPL-LC §17.
+- **Next**: (1) the `comb` frame-cost scene in tests/ui-bench-fps.mjs (G6 — no lane owned it); (2) two reviewers on cf8adc3 (one: the
+  real engine + node sims, the "picture = sound" 1e-6 claim, budgets / refusals; two: Chrome for Testing at the three sizes and skins,
+  a contact sheet of the face for the user, frame cost vs canvas); (3) one fixer (failing test first); (4) the sweep; (5) squash
+  `wt-LC` onto `canvas`, `node tools/precache.mjs --write`, push, `tools/deploy-canvas.sh`; (6) ROADMAP 26 + this file + memory;
+  tell the user in a few words.
+- Known: an old build (before LC) drops a track's combiners and their rows on load (accepted: canvas saves need no care);
+  `normTrack` raises a track's `nid` past its highest device number (pre-existing; numbers change once on a first load / save).
 
 **Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — a new direct cable from a lower-numbered LFO can push
 another LFO's cable out of its slot with no message (cv-graph.js ~659–681, main.js ~10578; found by the LC skeptic); (2) ROADMAP 19
@@ -47,12 +51,10 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 "still running" updates, no memories they didn't ask for.
 
 ### 0.1 Branches at handover
-- `wt-LC` — the combiner's holding branch: phase 0 (1c99d07, sweep 164 files green) + lane E (ed7aabd, branch
-  `worktree-agent-aa3b001edf7e989a3`) + lane F (5cc26e3, branch `worktree-agent-abe30ec082954e4ce`) merged at 7ab6653 (their tests green).
-  Lane H: see below. E's and F's notes (payload / message shapes, F's stand-in tests/lc-stub.mjs) are in IMPL-LC §17.
-  `tests/golden-lc.test.mjs` fails ON PURPOSE until `node --max-old-space-size=2048 tests/ref-LC/record.mjs --write` is run once on the
-  fully merged tree (E + F + H).
-- `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only).
+- `wt-LC` (cf8adc3) — the combiner, integrated. Lane branches (merged): E `worktree-agent-aa3b001edf7e989a3`, F
+  `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`. Its worktree was in the old session's scratchpad; make a
+  new one (`git worktree add <your scratchpad>/LC-wt wt-LC`).
+- `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only). Old `worktree-agent-*` branches: unmerged leftovers of past stages.
 
 ## 1. What exists
 
