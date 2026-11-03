@@ -11,7 +11,7 @@ import { RIG } from '../rig-core.js?v=9';
 import * as C from '../serum-core.js?v=9';
 
 // (stage 9, IMPL-9 §8.9) the classic-modulation models: not Serum, not the 900 Series (a patch has no classic modulation, §4.8); the drums stay in
-const CLASSIC = MODELS.filter(m => !m.custom && m.family !== 'patch');
+const CLASSIC = MODELS.filter(m => !m.custom && m.family !== 'patch' && m.id !== 'kit'); // ((DM) cv-mods' noClassic: the kit is skipped in cut 1)
 
 test('the checked-in CLASS_TABLE equals a fresh sweep (regenerate: node tools/cv-classes.mjs --write)', () => {
   const fresh = V.classTable(), diff = [];

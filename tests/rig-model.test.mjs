@@ -173,7 +173,7 @@ test('normRig (§2.1): { v: 1, cc, n } — cc ≤ 512 entries keyed /^[a-z][a-zA
 // only Serum-engine model, isSerumModel and the tray's Serum view gone; isSxId keeps main's 'serum' (an old project's device until the load
 // pass, toV1's target))
 test('models.js: `rig` appended last, custom AND family rig, named RIG.NAME, no maker, Serum\'s presets, no sections; isSxModel / isRigModel over every model; classicOf false; no Serum model, predicate or tray view', () => {
-  assert.equal(MODELS.length, 18);
+  assert.equal(MODELS.length, 19);
   assert.deepEqual(MODELS.slice(0, 17).map(m => m.id), ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606', 'tr909', 'sdsv', 'm900']);
   assert.equal(MODELS[17], rig);
   assert.deepEqual([rig.id, rig.name, rig.custom, rig.family, 'maker' in rig, rig.year, rig.sections, rig.presets === C.FACTORY_PRESETS, typeof rig.about, typeof rig.tag], ['rig', R.RIG.NAME, true, 'rig', false, 2026, [], true, 'string', 'string']);

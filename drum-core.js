@@ -1,6 +1,6 @@
 /*
- * drum-core.js — the drum machines' pure main-side model (IMPL-7a §1.2–§1.4, §3, §4.1, §4.3; lane S). Leaf ES module: no
- * imports, no DOM / timers / storage; importable from the browser, node and Workers. The worklet side is dr-seq.js
+ * drum-core.js — the drum machines' pure main-side model (IMPL-7a §1.2–§1.4, §3, §4.1, §4.3; lane S). ES module over one leaf
+ * (kit-core.js, stage DM): no DOM / timers / storage; importable from the browser, node and Workers. The worklet side is dr-seq.js
  * (`DrSeq`), which embeds identical copies of the constants it needs (compared by tests/drum-core.test.mjs).
  *
  * Memory (`dev.drum`, §3.1 / §3.2 / §6), normalised by normDrum (idempotent, exact lengths, never throws):
@@ -81,7 +81,18 @@
  * Its payload carries EMPTY_PLAN (n 0: valid, silent — engine.js routes a payload only when it has a plan), the idle clock fields
  * and `trim` (m and trim in pk); its session is { m, run: false, play, bpm }; press: map · mapReset · smp · trim ·
  * trimFromKnobs · mute / solo · the transport / bpm / panic notifications — a `send` when the record changed, nothing else.
+ *
+ * IMPL-DM §9.2 (stage DM): a fifth personality, our drum machine ('kit' only for the exact string; the four older machines'
+ * records, sessions, payloads, plans, pk and notes byte-identical — their pins). Its model is kit-core.js (KC): normDrum, press,
+ * leds, compilePlan / rollPlan, payload, initState('kit') dispatch a record with m 'kit' there; toNotes a plan carrying `vl` (the
+ * kit plan's velocities, as plan.mSh keys the 909's); drumRows(map, model, D) names a kit's rows from its record (KC.rows: the
+ * four ignore D). PERS.kit: the slot codes ka…kp as its sounds, sids 0–15, the 16-bit lane mask, neutral names (every name a
+ * person sees comes from KC.names(D)); its map has no default notes (the record holds them). isKit(D) by the record's m. (Lane S)
+ * The other machines' presses turn a kit session into theirs (the 808's guard learned 'kit'; the 606's / 909's / SDS-V's convert
+ * any foreign one), a kit's press any foreign session into its own; stepLen swings its 16ths (the host's fraction); drumRows
+ * without the record lists every mapped slot under PERS.kit's names.
  */
+import * as KC from './kit-core.js?v=9';
 
 /* ================================================================ constants (PERS.tr808; = dr-seq.js where marked) */
 
@@ -193,6 +204,8 @@ export const TRIM_DEF = deepFreeze([
 // the payload's plan: n = 0 — valid for DrSeq (dr-seq.js `valid`), silent, and what makes engine.js route the payload (a payload
 // is a drum one only when it carries a plan); plain arrays, nothing to compile or allocate
 export const EMPTY_PLAN = deepFreeze({ key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] });
+// (DM) the kit's map with no notes: a kit's notes live in its record (KIT.STARTER's for a new machine, kit-core noteFor for a new voice)
+const MAPK = deepFreeze(Object.fromEntries(KC.KIT.CODES.map(s => [s, []])));
 
 // each machine's personality in one table (§1.1: a 606 / 909 is a second table, not a fork)
 export const PERS = deepFreeze({
@@ -225,10 +238,14 @@ export const PERS = deepFreeze({
   sdsv: {
     id: 'sdsv', sounds: SOUNDS, names: NAMESV, sids: SIDSV, mask: MASKV, map: MAPV, ch: TRIM_CH, fields: TRIM_F, trim: TRIM_DEF,
   },
+  // (DM) our drum machine: its 16 slot codes as the sounds, every sid, the 16-bit lanes; names neutral (KC.names(D) names a kit's rows)
+  kit: {
+    id: 'kit', sounds: KC.KIT.CODES, names: KC.KIT.CODES.map((_, j) => 'Drum ' + (j + 1)), sids: KC.KIT.CODES.map((_, j) => j), mask: 0xFFFF, map: MAPK,
+  },
 });
-const MAPS = { tr808: [SOUNDS, DEFAULT_MAP, null], tr606: [SOUNDS, MAP606, HAS606], tr909: [SOUNDS909, MAP909, HAS909], sdsv: [SOUNDS, MAPV, HASV] }; // sounds, default map, the sounds it has
-// a machine id (7c: three-way; IMPL-8: four-way — 'tr606' / 'tr909' / 'sdsv' only for the exact string, anything else the 808)
-const mach = m => (m === 'tr606' ? 'tr606' : m === 'tr909' ? 'tr909' : m === 'sdsv' ? 'sdsv' : 'tr808');
+const MAPS = { tr808: [SOUNDS, DEFAULT_MAP, null], tr606: [SOUNDS, MAP606, HAS606], tr909: [SOUNDS909, MAP909, HAS909], sdsv: [SOUNDS, MAPV, HASV], kit: [KC.KIT.CODES, MAPK, null] }; // sounds, default map, the sounds it has
+// a machine id (7c: three-way; IMPL-8: four-way; DM: five-way — 'tr606' / 'tr909' / 'sdsv' / 'kit' only for the exact string, anything else the 808)
+const mach = m => (m === 'tr606' ? 'tr606' : m === 'tr909' ? 'tr909' : m === 'sdsv' ? 'sdsv' : m === 'kit' ? 'kit' : 'tr808');
 
 /* ================================================================ small helpers */
 
@@ -273,8 +290,11 @@ export function primaries(map, model) {
   for (let s = 0; s < 16; s++) if (m[K[s]].length) p[s] = m[K[s]][0];
   return p;
 }
-/** The roll's drum rows (§4.2): the mapped primaries in the map's order (kick first = the bottom row), { n, s, name }. */
-export function drumRows(map, model) {
+/** The roll's drum rows (§4.2): the mapped primaries in the map's order (kick first = the bottom row), { n, s, name }. (DM) D: the
+ *  device's record — a kit's rows are its present voices, named from it (KC.rows); without it (a caller not yet passing dev.drum)
+ *  every mapped slot under PERS.kit's neutral names, as the four's rows by the map; the four ignore D. */
+export function drumRows(map, model, D) {
+  if (mach(model) === 'kit' && isKit(D)) return KC.rows(D);
   const N = PERS[mach(model)].names, p = primaries(map, model), out = [];
   for (let s = 0; s < 16; s++) if (p[s] >= 0) out.push({ n: p[s], s, name: N[s] });
   return out;
@@ -331,13 +351,13 @@ export function vTrig9(v127, sound, u) {
   return Math.round(v <= 110 ? N0 + (c2 - N0) * (v - 100) / 10 : v <= 119 ? c2 + (c3 - c2) * (v - 110) / 9 : c3 + (c4 - c3) * (v - 119) / 8) + 0;
 }
 /** A machine's own (free) tempo in BPM: the 808's TEMPO + FINE, the 606's and the 909's TEMPO. */
-export function freeBpm(D) { return isV(D) ? 120 : is606(D) || is909(D) ? D.ui.tempo : tempoBpm(D.ui.tempo, D.ui.fine); }
+export function freeBpm(D) { return isV(D) || isKit(D) ? 120 : is606(D) || is909(D) ? D.ui.tempo : tempoBpm(D.ui.tempo, D.ui.fine); }
 /** (7b review 1 #4, the lead's decision) The record with its own TEMPO (the 808: TEMPO + FINE) showing `bpm` (40–300) — "→
  *  Piano roll" leaves the machine SYNC off at the project's tempo, so its stopped clock (the 606's open hat's cut after ■)
  *  reads what the synced pattern's read (D5 at a stop too); the same record when it already shows it (or bpm is no number).
  *  (7c: the 909's whole BPM, 37–290.) */
 export function withTempo(D, bpm) {
-  if (!fin(bpm) || isV(D)) return D;                                    // (the SDS-V has no tempo)
+  if (!fin(bpm) || isV(D) || isKit(D)) return D;                         // (the SDS-V has no tempo; DM: the kit always follows the song's)
   if (is606(D)) { const b = bpm606(bpm, D.ui.tempo); return b === D.ui.tempo ? D : { ...D, ui: { ...D.ui, tempo: b } }; }
   if (is909(D)) { const b = bpm909(bpm, D.ui.tempo); return b === D.ui.tempo ? D : { ...D, ui: { ...D.ui, tempo: b } }; }
   const k = bpmTempo(bpm);
@@ -397,6 +417,7 @@ export function normDrum(d, model) {
   if (M === 'tr606') return norm606(d);
   if (M === 'tr909') return norm909(d);
   if (M === 'sdsv') return normV(d);
+  if (M === 'kit') return KC.normKit(d);                               // (DM: kit-core's record)
   try {
     d = isObj(d) ? d : {};
     const keys = [], st = [], rt = new Array(RT_LEN), rtEnd = [];
@@ -424,6 +445,8 @@ function machineOf(d, model) {
 function is606(D) { try { return isObj(D) && D.m === 'tr606'; } catch (e) { return false; } }
 function is909(D) { try { return isObj(D) && D.m === 'tr909'; } catch (e) { return false; } }
 function isV(D) { try { return isObj(D) && D.m === 'sdsv'; } catch (e) { return false; } }
+/** (DM) A kit's record (its own `m`). */
+export function isKit(D) { try { return isObj(D) && D.m === 'kit'; } catch (e) { return false; } }
 
 // the 606's tracks (7b §3.1): track t's region starts at t6Start (tracks 1–7: 64 bars, 8: 256); its reach ≤ 256 bars, the
 // store's end (703) bounding it; t6Of: the region a bar lies in
@@ -524,6 +547,7 @@ export function compilePlan(mem, ui, x, S) {
   if (is606(mem)) return plan606(mem, ui, x, S);                       // (7b: before the 808's guards, review #20)
   if (is909(mem)) return plan909(mem, ui, x, S);                       // (7c: likewise)
   if (isV(mem)) return EMPTY_PLAN;                                     // (IMPL-8: no sequencer — the payload's empty plan)
+  if (isKit(mem)) return KC.compilePlan(mem, S);                       // (DM: kit-core's plan, its own ui / x)
   if (!isObj(mem) || !Array.isArray(mem.keys) || mem.keys.length !== N_KEYS || !Array.isArray(mem.st) || !Array.isArray(mem.rt)) mem = normDrum(mem);
   ui = ui ? normUi(ui) : mem.ui ? normUi(mem.ui) : normUi(null);
   x = x ? normX(x) : mem.x ? normX(mem.x) : normX(null);
@@ -653,6 +677,7 @@ export function toNotes(plan, opts = {}) {
   const out = [];
   if (!plan || !(plan.n > 0)) return out;
   if (plan.mSh) return notes909(plan, opts);                           // (7c: a 909 plan — its shuffle, flams and accents)
+  if (plan.vl) return KC.toNotes(plan, opts);                          // (DM: a kit plan — 16 lanes, slot j = bit j, its velocities)
   const t0 = Math.max(0, fin(opts.t0) ? Math.round(opts.t0) : 0), t1 = fin(opts.t1) ? Math.round(opts.t1) : t0;
   const pct = intIn(opts.swing, SWING_LO, SWING_LO, SWING_HI), sw = swOf(opts.sw);
   const prim = opts.prim && opts.prim.length === 16 ? opts.prim : primaries(opts.map);
@@ -690,6 +715,7 @@ export function payload(drum, state, at = 'now') {
   if (is606(drum)) return payload606(drum, state, at);
   if (is909(drum)) return payload909(drum, state, at);
   if (isV(drum)) return payloadV(drum, at);
+  if (isKit(drum)) return KC.payload(drum, state, at);
   const S = state || initState(), x = drum.x, ui = drum.ui;
   const plan = compilePlan(drum, ui, x), map = mapTable(drum.map), prim = primaries(drum.map), smp = slots(drum.smp);
   const s = { plan, sync: x.sync, run: !x.sync && !!S.run, bpm: tempoBpm(ui.tempo, ui.fine), swing: x.swing, at, tap: S.tap | 0,
@@ -729,6 +755,7 @@ export function initState(model) {
     held: [], wipe: false, twSel: null, dcArm: false, sgArm: false, rst: 0, rstF: -1, ds: 0, show: null, gfl: 0 };
   if (model === 'tr909') return init909();
   if (model === 'sdsv') return initV();
+  if (model === 'kit') return KC.initState();
   return { run: false, play: false, tap: 0, undo: null, pos: null, cmp: null, bpm: 120 };
 }
 export const running = (S, D) => (D.x.sync ? !!S.play : !!S.run);
@@ -745,6 +772,7 @@ export function gridPat(S, D) {
   if (is606(D)) return gridPat606(S, D);
   if (is909(D)) return gridPat909(S, D);
   if (isV(D)) return 0;                                                // (no pattern)
+  if (isKit(D)) return D.ui.pat;                                       // (DM: the selected pattern A–H)
   const ui = D.ui, P = S.pos;
   if (ui.mode <= M_W2) return editKey(ui) * 2 + editVar(S, D);
   if (running(S, D) && P && P.k >= 0) return P.k * 2 + (P.v & 1);
@@ -790,8 +818,9 @@ export function press(state, drum, input) {
   if (is606(drum)) return press606(state, drum, input);
   if (is909(drum)) return press909(state, drum, input);
   if (isV(drum)) return pressV(state, drum, input);
+  if (isKit(drum)) return KC.press(state, drum, input);
   let S = state || initState(), D = drum;
-  if (Array.isArray(S.held) || S.m === 'tr909' || S.m === 'sdsv') S = { ...initState(), run: !!S.run, play: !!S.play, pos: isObj(S.pos) ? S.pos : null, bpm: fin(S.bpm) ? S.bpm : 120 }; // (7b / 7c: a 606 or 909 session under an 808 record — its transport, position and tempo kept)
+  if (Array.isArray(S.held) || S.m === 'tr909' || S.m === 'sdsv' || S.m === 'kit') S = { ...initState(), run: !!S.run, play: !!S.play, pos: isObj(S.pos) ? S.pos : null, bpm: fin(S.bpm) ? S.bpm : 120 }; // (7b / 7c / 8 / DM: another machine's session under an 808 record — its transport, position and tempo kept)
   const cmds = [], i = isObj(input) ? input : {}, ui = D.ui, x = D.x, run = running(S, D), mode = ui.mode;
   const ek = editKey(ui), aOf = () => (run ? 'bar' : 'now');
   const done = () => ({ state: S, mem: D, cmds });
@@ -995,13 +1024,20 @@ export function stepLen(D, P) {
   if (is606(D)) return stepLen606(D, P);
   if (is909(D)) return stepLen909(D, P);
   if (isV(D)) return STEP_T[3];                                        // (no steps: a 16th, never read)
+  if (isKit(D)) return stepLenK(D, P);                                 // (DM: its swung 16ths)
   const K = P && P.k >= 0 ? D.keys[P.k] : CLEARED, T = STEP_T[K.pre], w = SWUNG[K.pre] ? swingTicks(D.x.swing, T) : 0, s = P ? P.s | 0 : 0;
   if (s >= K.l1 + K.l2 - 1) return T - (s & 1 ? w : 0);                // (the measure's last step: the next is step 1 on the beat)
   return s & 1 ? T - w : T + w;
 }
+// (DM) a kit's step: a 16th, the odd one x.swing late; the heard pattern's (P.k, else the selected) last step back on the beat
+function stepLenK(D, P) {
+  const k = P && Number.isInteger(P.k) && P.k >= 0 && P.k < D.pat.length ? P.k : D.ui.pat, L = D.pat[k].len, T = STEP_T[3], w = swingTicks(D.x.swing, T), s = P ? P.s | 0 : 0;
+  if (s >= L - 1) return T - (s & 1 ? w : 0);
+  return s & 1 ? T - w : T + w;
+}
 /** Whether DEMO's targets (basic key 1 A / B, fill 1 A; 7b: the 606's patterns I-1 and I-2) are empty (else the host
  *  confirms before loading). */
-export function demoFree(D) { return isV(D) || (is606(D) || is909(D) ? [0, 1] : [0, 1, N_BASIC * 2]).every(p => D.st[p].every(m => !m)); }
+export function demoFree(D) { return isKit(D) ? !D.pat[D.ui.pat].cells.length : isV(D) || (is606(D) || is909(D) ? [0, 1] : [0, 1, N_BASIC * 2]).every(p => D.st[p].every(m => !m)); }
 
 /** The LEDs (§3.3): step[16] 0 off · 1 on · 2 flashing · 3 the playhead over an unset step (lit) · 4 over a set one (dark);
  *  part [1st, 2nd] and vari [A, B] 0 / 1. (7b: a 606's { step, run, grp: [I, II] }, the same codes.) */
@@ -1009,6 +1045,7 @@ export function leds(S, D) {
   if (is606(D)) return leds606(S, D);
   if (is909(D)) return leds909(S, D);
   if (isV(D)) return { step: new Array(16).fill(0), run: false };      // (no steps, nothing runs)
+  if (isKit(D)) return KC.leds(S, D);
   const ui = D.ui, run = running(S, D), P = S.pos, step = new Array(16).fill(0), mode = ui.mode, ek = editKey(ui);
   let part = [0, 0], vari = ui.bvar === 2 ? [0, 1] : [1, 0];
   if (run && P) { part = [P.p ? 0 : 1, P.p ? 1 : 0]; vari = [P.v ? 0 : 1, P.v ? 1 : 0]; }
@@ -1632,6 +1669,7 @@ export function planSess(D, S) {
  *  session: TRACK WRITE's bar and key heard, its D.S.; none: the track from its first bar); the 909's as the synced sequencer
  *  plays it (no free pre-roll; TRACK WRITE the session's pointer / chosen key), its flams' ticks at the project's tempo `bpm`. */
 export function rollPlan(D, bpm, S) {
+  if (isKit(D)) return KC.compilePlan(D, S);                           // (DM: the kit's plan, always synced)
   if (is909(D)) return plan909(D, D.ui, { ...D.x, sync: true }, planSess(D, S), fin(bpm) && bpm > 0 ? bpm : 120);
   return compilePlan(D, D.ui, D.x, is606(D) ? planSess(D, S) : undefined);
 }
@@ -1640,6 +1678,7 @@ export function rollPlan(D, bpm, S) {
  *  TOTAL ACCENT. */
 export function rollOpts(D, dev) {
   if (isV(D)) return { prim: primaries(D.map, 'sdsv') };               // (IMPL-8: no plan to turn into notes — the primaries only)
+  if (isKit(D)) return { swing: D.x.swing, prim: primaries(D.map, 'kit') }; // (DM: no panel switches; its plan carries the velocities)
   if (!is909(D)) return { swing: D.x.swing, sw: isObj(dev) ? dev.vals : undefined, prim: primaries(D.map, isObj(dev) && dev.model != null ? dev.model : D.m) };
   return { prim: primaries(D.map, 'tr909') };
 }

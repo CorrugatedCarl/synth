@@ -84,6 +84,12 @@
 // (trimFromKnobs), Copy to knobs (the patch's knob writes, then memory 2)). Its memory keys are cv-panel's (a patch switch's
 // radio). The host: rec(tr, sound, v, ts) — the pads' REC branch without their note and without sel() (a Pads module's drum
 // hit, IMPL-8 §4.4; the SDS-V has no REC).
+//
+// DM (IMPL-DM §9.1; lane S — the host only: the kit's faces are kit-ui.js's): our drum machine. machOf / the host's session five-
+// way ('kit' the exact string; its session names itself — kit-core initState); its presses run through drum-core's dispatch as
+// any machine's; its HIT auditions ({ c: 'hit', sound: slot, v } / off) play through the pads' note path as the 909's keys, held
+// while the session's hits hold them (release, panic, a fresh session end them); the pads by its slot codes ka…kp. No UI table:
+// no 808-style panel is ever built for it.
 import * as DC from './drum-core.js?v=9';
 import * as wk from './wk.js?v=9';
 import { KEY_VEL, noteName } from './cv-keys.js?v=9';
@@ -210,7 +216,7 @@ export const UI = Object.freeze({
 });
 /** A machine id from a model id or a record (absent / unknown: the 808; 7c: three-way, 'tr606' / 'tr909' the exact strings; 8:
  * four-way, 'sdsv' the exact string). */
-export const machOf = x => { const m = typeof x === 'string' ? x : !!x && typeof x === 'object' ? x.m : null; return m === 'tr606' || m === 'tr909' || m === 'sdsv' ? m : 'tr808'; };
+export const machOf = x => { const m = typeof x === 'string' ? x : !!x && typeof x === 'object' ? x.m : null; return m === 'tr606' || m === 'tr909' || m === 'sdsv' || m === 'kit' ? m : 'tr808'; };
 /** (7c) The 909's grid (the 808's geometry, its 12 rows AC … RD on their lane bits): a cell { lane, row, s }, a header { head,
  * lane, row }, the step row { top, s }, the corner { corner }; null outside. */
 export function gridAt909(x, y) {
@@ -265,7 +271,7 @@ export function drumHost(deps) {
   const each = (S, ...a) => { for (const f of [...S]) { try { f(...a); } catch (err) { console.error(err); } } };
   // a fresh session of the record's machine (7b: initState(D.m); the transport and the project tempo as now)
   const fresh = tr => { const b = +call(deps.bpm), D = mem(tr); return Object.assign(DC.initState(D ? machOf(D) : undefined), { play: !!call(deps.playing), bpm: b > 0 ? b : 120 }); };
-  const sessOf = S => (S && (S.m === 'tr909' || S.m === 'sdsv') ? S.m : Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys; 7c: a 909's names itself; 8: an SDS-V's too)
+  const sessOf = S => (S && (S.m === 'tr909' || S.m === 'sdsv' || S.m === 'kit') ? S.m : Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys; 7c: a 909's names itself; 8: an SDS-V's too; DM: a kit's)
   function entry(tr) {
     const k = idOf(tr);
     let e = E.get(k);
@@ -289,9 +295,10 @@ export function drumHost(deps) {
     e.kh.set(s, n);
     call(deps.noteOn, e.tr, n, clamp(fin(c.v) ? c.v / 127 : KEY_PAD_V, 0, 1), ts);
   }
-  // (7c) a key's note the session no longer sounds (a cancelled hold's release, a panic, a fresh session): its off
+  // (7c) a key's note the session no longer sounds (a cancelled hold's release, a panic, a fresh session): its off. (DM: a kit's
+  // HIT auditions likewise — its session's hits [[lane, slot]])
   function khSync(e, ts) {
-    const S = e.S, K = S && S.m === 'tr909' && Array.isArray(S.hits) ? DC.PERS.tr909.sounds : null;
+    const S = e.S, K = S && (S.m === 'tr909' || S.m === 'kit') && Array.isArray(S.hits) ? DC.PERS[S.m].sounds : null;
     for (const [s, n] of [...e.kh]) if (!K || !S.hits.some(h => K[h[1]] === s)) { e.kh.delete(s); call(deps.noteOff, e.tr, n, ts); }
   }
   // a press's result applied to its entry: the session, the record written back, its commands — the panel's presses and the

@@ -1402,6 +1402,17 @@ class DrumP {
     extra(this, o, 'drum.');
   }
 }
+// (DM, IMPL-DM §7.1) our drum machine's panel: the 144 values in KIT.IDS order (slot-major: ka…kp × TYPE, TUNE, DECAY, LEVEL, CHOKE,
+// k1–k4; knob positions 0…1, TYPE / CHOKE values — models.js's map) in one Float64Array — one shape whatever the kit, the
+// 16-slot reads index it (kit-dsp.js's DrKit); a missing id NaN (the machine's default: TYPE 0 an empty slot). DrumP untouched (D2)
+const KIT_IDS = 'abcdefghijklmnop'.split('').flatMap(c => ['t', 'u', 'd', 'l', 'c', '1', '2', '3', '4'].map(f => 'k' + c + f));
+class KitP {
+  constructor(o) {
+    const v = new Float64Array(KIT_IDS.length);
+    for (let i = 0; i < v.length; i++) { const x = o[KIT_IDS[i]]; v[i] = x === undefined || x === null ? NaN : +x; }
+    this.v = v;
+  }
+}
 const EMPTY = {};
 class PatchP {
   constructor(o) {
@@ -1424,7 +1435,7 @@ class PatchP {
     this.serum = o.serum || null; this.serumT = o.serumT || null; this.fxr = o.fxr || null; this.fxrT = o.fxrT || null;
     this.seq = o.seq || null; this.seqT = o.seqT || null; // Serum's sequencer patch (SPEC-serum2 §4.4; read by SxSeq, M2)
     this.needs = o.needs || null;
-    this.drum = o.drum ? new DrumP(o.drum) : null; // a drum machine's panel (IMPL-7a §2.3; read by Dr808)
+    this.drum = o.drum ? (this.machine === 'kit' ? new KitP(o.drum) : new DrumP(o.drum)) : null; // a drum machine's panel (IMPL-7a §2.3; read by Dr808; (DM) the kit's by DrKit)
     const os = o.osc || [];
     this.osc = [new OscP(os[0] || EMPTY), new OscP(os[1] || EMPTY), new OscP(os[2] || EMPTY)];
     this.hpf = new HpfP(o.hpf || EMPTY); this.vcf = new VcfP(o.vcf || EMPTY);
@@ -1531,6 +1542,24 @@ const WDRUMV = [0, 1, 2, 3].map(j => {
 });
 const WPLANV = { key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] };
 const WTRIMV = [0, 1].map(k => [0, 1, 2, 3, 4].map(c => [0, 1].map(j => [0, 1, 2, 3, 4, 5].map(f => 0.13 + 0.71 * (((c + 2 * j + 3 * f + k) % 7) / 6)))));
+// (DM) the kit's round: per round sixteen voices of the six types with every knob off its integers (round 1 the drives at 0.6, the
+// bends and the Perc's strike to noise; slots 13–15 hats in choke group 1), notes 36–51 → slots 0–15; the empty plan and a two-step
+// plan with per-step velocities (DrSeq's vl branch: every lane, then the first eight)
+const WDRUMK = [0, 1].map(k => {
+  const d = {};
+  'abcdefghijklmnop'.split('').forEach((c, j) => {
+    const t = j >= 13 ? 3 : 1 + (j % 6), x = (a, b) => (k ? b : a) + 0.013 * j;
+    d['k' + c + 't'] = t; d['k' + c + 'u'] = x(0.31, 0.62); d['k' + c + 'd'] = x(0.41, 0.73); d['k' + c + 'l'] = 0.69; d['k' + c + 'c'] = j >= 13 ? 1 : 0;
+    d['k' + c + '1'] = x(0.47, 0.83); d['k' + c + '2'] = x(0.37, 0.61); d['k' + c + '3'] = x(0.29, 0.67); d['k' + c + '4'] = k && (t === 1 || t === 5) ? 0.6 : x(0.21, 0.53);
+  });
+  return { engine: 'drums', machine: 'kit', level: 1, drum: d };
+});
+const WMAPK = new Int8Array(128).fill(-1), WPRIMK = new Int8Array(16);
+for (let s = 0; s < 16; s++) { WMAPK[36 + s] = s; WPRIMK[s] = 36 + s; }
+const WPLANK = { key: 'kw0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] };
+const WPLANK2 = { key: 'kw2', shape: 'k3.2', n: 1, intro: 0, loopFrom: 0, mKey: new Int8Array([0]), mVar: new Int8Array([0]), mPre: new Uint8Array([3]),
+  mL1: new Uint8Array([2]), mOff: new Int32Array([0, 2]), mT: new Int32Array([0, 480]), st: new Uint16Array([0xFFFF, 0x00FF]), fill: null,
+  vl: Uint8Array.from({ length: 32 }, (_, i) => 64 + ((37 * i) % 64)) };
 const WPORT = { postMessage() {} };
 // IMPL-9 §3.2: family f's empty graph (a kept machine's graph cleared: nothing live) · a payload of family f (or naming none:
 // the machine judges it) — another family's waits for its own patch
@@ -2380,7 +2409,7 @@ class Inst {
   // DrSeq's or its defaults — no other machine has dm.trim); the old model's de-click tails and decimator history (output
   // units) turned into bus volts, as everything this path renders ends in the machine's output stage
   drOn(p) {
-    const D8 = globalThis.Dr808, id = p.machine, L = this.dmL;
+    const id = p.machine, D8 = id === 'kit' ? globalThis.DrKit : globalThis.Dr808, L = this.dmL; // ((DM) the factory by machine id)
     if (this.dmR !== null) this.dmR.os = this.dmOS;
     let r = null;
     for (let k = 0; k < L.length; k++) if (L[k].id === id) { r = L[k]; break; }
@@ -2409,7 +2438,7 @@ class Inst {
   // VOLUME into R191, the 909's VR28 into its output amplifier, the machine's OUT_K; dr-808's post at rest, Dr808.gain, 7b
   // §1.5) — a tail crossing a kind or machine change keeps its level
   drGain(p) {
-    const D8 = globalThis.Dr808;
+    const D8 = p && p.machine === 'kit' ? globalThis.DrKit : globalThis.Dr808; // ((DM) the kit: 1, no output stage of its own)
     if (!D8 || typeof D8.gain !== 'function') return 1;
     const g = D8.gain(p ? p.machine : 'tr808', p ? p.drum : null);
     return g > 0 ? g : 1;
@@ -3836,6 +3865,7 @@ class Track extends Facade {
       }
       this.warmDrums9(run, io, P);
       this.warmDrumsV(run, io);
+      this.warmDrumsK(run, io);
     } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; I.tp = tp; }
   }
   // 7c §1.5: the TR-909's round, twice (its own machine; the 808's and the 606's untouched) — its first create decodes the
@@ -3937,6 +3967,39 @@ class Track extends Facade {
       for (let b = 0; b < 16; b++) { this.process(null, io); this.statN = 0; ck.frame -= 128; }
       for (const n of N) this.noteOff(n);
       I.seqMsg(pay(round));
+      I.tp = tp;
+    }
+  }
+  // (DM, IMPL-DM §7.1) our drum machine's round, twice (its own machine, DrKit; the others untouched): sixteen voices of the six
+  // types (round 1 the drives, the bends, the hats' choke group), each through the note map (the payload's: notes 36–51) at v 64
+  // then v 127 (a retrigger of every ringing voice), the closed hat choking two open ones, a two-step plan with vl through DrSeq,
+  // free and synced on a stand-in clock, an OS change each round (there and back). Caller: warmDrums (its try)
+  warmDrumsK(run, io) {
+    const K = globalThis.DrKit, I = this.i0, tp = I.tp;
+    if (!K || typeof K.create !== 'function') return;
+    const pay = o => Object.assign({ m: 'kit', plan: WPLANK, sync: false, run: false, bpm: 120, swing: 50, at: 'now', tap: 0, map: WMAPK, prim: WPRIMK,
+      mute: 0, smp: null }, o);
+    for (let round = 0; round < 2; round++) {
+      I.setPatch(WDRUMK[round]);
+      if (I.dmR === null || I.dmR.id !== 'kit') return;
+      I.seqMsg(pay());
+      for (let s = 0; s < 16; s++) this.noteOn(36 + s, 64 / 127);
+      run(6);
+      for (let s = 0; s < 16; s++) { this.noteOff(36 + s); this.noteOn(36 + s, 1); }        // every ringing voice retriggered
+      run(4);
+      this.noteOn(49, 0.9); this.noteOn(50, 0.9); run(2); this.noteOn(51, 0.8); run(4); // the choke: the closed hat cuts the open two
+      for (let s = 0; s < 16; s++) this.noteOff(36 + s);
+      I.seqMsg(pay({ run: true, bpm: 287.3, swing: 62, plan: WPLANK2 }));
+      run(16);
+      I.reqOS(I.OS === 4 ? 2 : 4); // (each round: the Inst leaves at the OS it came with, 7c's rule)
+      run(8);
+      I.osPend = 0; I.osR = 1; I.osHold = 0;
+      I.seqMsg(pay({ plan: WPLANK2 }));
+      const ck = Object.assign({}, tp, { play: true, frame: this.nowF(), tick: 0, fpt: 2.03 });
+      I.tp = ck;
+      I.seqMsg(pay({ sync: true, tap: 1, plan: WPLANK2 }));
+      for (let b = 0; b < 16; b++) { this.process(null, io); this.statN = 0; ck.frame -= 128; }
+      I.seqMsg(pay());
       I.tp = tp;
     }
   }

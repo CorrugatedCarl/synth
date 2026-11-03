@@ -21,6 +21,10 @@ import './v8-guard.mjs';
 // own, the trimmers' size, hitOff, the 14 mm rule, the caption, the other machines' tokens apart, "Simmons"), its geometry (992
 // × 640; the hexagonal pads 328 × 200, MAP… · SOUNDS… · TRIM…), the trimmer art, and the memory keys' radio rendered — on a
 // fixture face (§13.1's fallback layout) over the real models.js sdsv.
+// Stage DM (IMPL-DM §9.1, §14.3 P2 11; lane S — the host part only, no widget: kit-ui is lane F's): drumHost five ways — machOf
+// ('kit' the exact string), a kit record's session (kit-core initState: the transport and tempo as now; changed() to and from
+// another machine), its presses' sends (a cell now, a pattern at the measure's end while playing), HIT auditions through the
+// pads' note path held until their off (panic / release end them), the pads by slot code, heard posts → leds.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as P from '../cv-panel.js?v=9';
@@ -30,6 +34,8 @@ import { MODELS } from '../models.js?v=9';
 import { BAR_H } from '../cv-module.js?v=9';
 import { DOT } from '../cv-world.js?v=9';
 import { fresh, all, ptr, fire, key, place as placeEl, layout as layoutEl, raf as rafQ } from './wk-dom.mjs';
+import * as KC from '../kit-core.js?v=9';
+import { GROOVE } from './kit-fixtures.mjs';
 
 const M808 = MODELS.find(m => m.id === 'tr808');
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -2453,4 +2459,62 @@ test('8 TRIM…: a trimmer row\'s tap (or TRIM…) opens the popover at that cha
     fire(T[9], 'pointerup'); assert.ok(popOf(m.doc));
     m.r.destroy(); assert.equal(popOf(m.doc), null, 'destroy closes it');
   });
+});
+
+/* ================================================================== DM: the drum host for a kit (lane S: the host part) */
+
+test('DM drumHost: five ways — machOf (\'kit\' the exact string); a kit record\'s entry a kit session (the transport and the project tempo as now); changed() to and from another machine; transport / bpm / panic; a cell sends now, a pattern while playing at the bar', () => {
+  assert.deepEqual(['kit', 'KIT', 'kit ', { m: 'kit' }, { m: 'Kit' }].map(CD.machOf), ['kit', 'tr808', 'tr808', 'kit', 'tr808']);
+  const D0 = KC.normKit({ ...clone(KC.starter()), pat: [GROOVE] });
+  const { tr, R, H, frame } = rig({ model: 'kit', D: D0 });
+  R.bpm = 128;
+  const A = H.api(tr);
+  assert.deepEqual(A.state().S, { ...KC.initState(), bpm: 128 });
+  assert.deepEqual([A.state().run, A.state().D === R.D], [false, true]);
+  A.press({ k: 'cell', lane: 1, step: 4, v: 100 });
+  assert.deepEqual([R.D.pat[0].cells.some(c => c.l === 1 && c.s === 4), R.sent], [true, ['now']]);
+  H.transport(true); R.playing = true;
+  assert.deepEqual([A.state().S.play, A.state().run], [true, true]);
+  A.press({ k: 'pat', p: 1 });
+  assert.deepEqual([R.D.ui.pat, R.sent.at(-1)], [1, 'bar'], 'playing: the next measure');
+  A.press({ k: 'start' }); assert.deepEqual(R.log.at(-1), 'stop', 'the song\'s ■');
+  H.bpm(97); assert.equal(A.state().S.bpm, 97);
+  // heard posts at their heard time → the session's step → leds
+  R.D = Object.assign({}, R.D, { ui: { pat: 0 } }); R.heard = 48000;
+  H.step(tr, 'i1', { t: 'step', s: 4, m: 0, k: 0, v: 0, p: 0, o: 960, M: 0, f: 0, F: 48000 }); frame();
+  assert.deepEqual(DC.leds(A.state().S, R.D), { step: 4, lit: 0b1111 }, 'kick, snare (the cell), clap, closed hat');
+  // another machine's record under the entry: its session; back: the kit's (the transport kept)
+  R.D = DC.normDrum(undefined, 'tr808'); H.changed(tr);
+  assert.deepEqual(Object.keys(A.state().S).sort(), Object.keys(DC.initState('tr808')).sort());
+  R.D = D0; H.changed(tr);
+  assert.deepEqual(A.state().S, { ...KC.initState(), play: true, bpm: 128 });
+  R.D = DC.normDrum(undefined, 'sdsv'); H.changed(tr); assert.equal(A.state().S.m, 'sdsv');
+  R.D = D0; H.changed(tr); assert.equal(A.state().S.m, 'kit');
+  H.transport(false); H.panic();
+  assert.deepEqual([A.state().S.play, A.state().S.hits], [false, []]);
+});
+
+test('DM drumHost: HIT (press { k: \'hit\', lane, v }) — the voice\'s primary note through the pads\' note path at v / 127, held until its off (no zero-length note); panic, release and a fresh session end a held one; the sel() gate; the pads by slot code', () => {
+  const { tr, R, H } = rig({ model: 'kit', D: KC.starter() }), A = H.api(tr);
+  A.press({ k: 'hit', lane: 2, v: 127 });
+  assert.deepEqual(R.notes, [['on', 39, 1]], 'held: no off yet');
+  A.press({ k: 'hit', lane: 0, v: 64 });
+  assert.deepEqual(R.notes, [['on', 39, 1], ['on', 36, r3(64 / 127)]]);
+  A.press({ k: 'hit', lane: 2, off: true });
+  assert.deepEqual(R.notes.at(-1), ['off', 39]);
+  H.panic();
+  assert.deepEqual(R.notes.at(-1), ['off', 36], 'panic ends the held one');
+  assert.equal(R.notes.length, 4);
+  A.press({ k: 'hit', lane: 3, v: 100 }); H.release();
+  A.press({ k: 'release' });
+  assert.deepEqual(R.notes.slice(4), [['on', 42, r3(100 / 127)], ['off', 42]], 'release');
+  A.press({ k: 'hit', lane: 4, v: 100 }); R.D = DC.normDrum(undefined, 'tr808'); H.changed(tr);
+  assert.deepEqual(R.notes.at(-1), ['off', 46], 'a fresh session (another machine) ends it');
+  R.D = KC.starter(); H.changed(tr);
+  R.sel = false; A.press({ k: 'hit', lane: 0, v: 100 }); assert.equal(R.notes.length, 8, 'a stale panel: nothing'); R.sel = true;
+  assert.deepEqual([A.pads.on('kd', 0.5, 0), A.pads.on('kj', 1, 0), A.pads.on('bd', 1, 0)], [true, false, false], 'by slot code; an empty slot and another machine\'s code: no note');
+  A.pads.off('kd');
+  assert.deepEqual(R.notes.slice(8), [['on', 42, 0.5], ['off', 42]]);
+  assert.equal(H.rec(tr, 'ka', 1, 0), false, 'no REC into the grid in cut 1');
+  assert.deepEqual(R.sent, [], 'auditions send nothing');
 });

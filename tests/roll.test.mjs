@@ -1576,3 +1576,15 @@ test('page, review R-11 / R-12 (the real engine): the key strip lights a song no
   until(1, 1.5 * BAR + 300); both(77, true, 'the pre-roll bar\'s note');
   await stopAll();
 });
+
+// (DM, IMPL-DM §3.5, §5.2; lane H) our drum machine's rows: its present voices (the record's ty) on their primaries, named from the record
+// (nm, else the type's label and an ordinal) — drumRowsOf passes dev.drum as drum-core drumRows' D; without a record, every mapped slot neutral
+test('DM drumRowsOf: a kit\'s device → its present voices\' primaries in slot order, named from its record; a removed voice has no row', async () => {
+  const KC = await import('../kit-core.js?v=9');
+  const R = KC.starter(), rows = drumRowsOf({ model: 'kit', drum: R });
+  eq(rows, KC.rows(R).map(e => ({ n: e.n, name: e.name })), 'kit-core rows');
+  eq(rows.map(e => e.n + ':' + e.name).join(), '36:Kick,38:Snare,39:Clap,42:Closed hat,46:Open hat,45:Low tom,50:High tom,37:Rim', 'the Starter\'s eight');
+  const R2 = KC.press(KC.initState(), R, { k: 'voice', slot: 1, op: 'remove' }).mem, R3 = KC.press(KC.initState(), R2, { k: 'voice', slot: 1, op: 'add', type: 5 }).mem;
+  eq([drumRowsOf({ model: 'kit', drum: R2 }).some(e => e.name === 'Snare'), drumRowsOf({ model: 'kit', drum: R3 })[1]], [false, { n: 41, name: 'Tom' }], 'the snare removed; a tom in its slot on its first free note');
+  eq(drumRowsOf({ model: 'tr808', drum: { map: DMAP() } }), drumRowsOf({ model: 'tr808' }), 'an 808 with its record: as before (drumRows ignores D)');
+});

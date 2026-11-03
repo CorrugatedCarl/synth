@@ -29,7 +29,7 @@ import * as CVM from '../cv-module.js?v=9';
 import * as TRAY from '../cv-tray.js?v=9';
 import * as WK from '../wk.js?v=9';
 
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 900 };
 // the cord layer: a real cv-cords (SVG mode — the parabola, the same drawn polyline the GL path builds) behind a recorder
 const REC = { calls: [], list: null, at: null, on: false };

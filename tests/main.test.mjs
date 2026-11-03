@@ -49,9 +49,9 @@ test('§12.6: the page boots on the IndexedDB-less fallback, a Serum track plays
   assert.equal(FXR(t).v, 2, 'v2 FX state for a new track (§2.5)');
   assert.equal(s.api.store.mode, 'ls', 'no IndexedDB here: the Phase-1 localStorage store');
   const c = s.ctx();
-  assert.equal(c.modules.length, 18, '§0.3: 17 DSP scripts (the patch family\'s two, IMPL-9 §3.7; the master meters last, IMPL-M §7) + engine.js');
-  assert.deepEqual(c.modules.slice(13, 16).map(u => u.split('?')[0]), ['mod-core.js', 'patch-dsp.js', 'moog-dsp.js']);
-  assert.ok(c.modules[17].startsWith('engine.js'));
+  assert.equal(c.modules.length, 19, '§0.3: 18 DSP scripts (the patch family\'s two, IMPL-9 §3.7; the master meters last, IMPL-M §7) + engine.js');
+  assert.deepEqual(c.modules.slice(14, 17).map(u => u.split('?')[0]), ['mod-core.js', 'patch-dsp.js', 'moog-dsp.js']);
+  assert.ok(c.modules[18].startsWith('engine.js'));
   const node = s.nodeOf(t.id);
   assert.equal(node.po.trackId, t.id, 'processorOptions.trackId (§7.9)');
   s.key('KeyA', true); await s.settle(2);

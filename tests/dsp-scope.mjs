@@ -37,7 +37,7 @@ export const ROOT = new URL('../', import.meta.url);
 export const DSP_TABLE = Object.freeze([
   ['sx-base.js', 'SxBase'], ['sx-filt2.js', 'SxFilt2'], ['sx-warp.js', 'SxWarp'], ['sx-mod.js', 'SxMod'],
   ['sx-sample.js', 'SxSample'], ['sx-gran.js', 'SxGran'], ['sx-spec.js', 'SxSpec'], ['sx-seq.js', 'SxSeq'],
-  ['serum-dsp.js', 'SerumDSP'], ['fx-mods2.js', 'FXMods2'], ['fx-dsp.js', 'FXDSP'], ['dr-808.js', 'Dr808'], ['dr-seq.js', 'DrSeq'],
+  ['serum-dsp.js', 'SerumDSP'], ['fx-mods2.js', 'FXMods2'], ['fx-dsp.js', 'FXDSP'], ['dr-808.js', 'Dr808'], ['kit-dsp.js', 'DrKit'], ['dr-seq.js', 'DrSeq'], // ((DM) our drum machine's voices)
   ['mod-core.js', 'ModCore'], ['patch-dsp.js', 'PatchDSP'], ['moog-dsp.js', 'PatchMoog'], // (IMPL-9 §3.7: the patch evaluator, the 900 Series' circuits)
   ['master-dsp.js', 'MASTERDSP'], // (IMPL-M §7: the master meters — where MASTER runs: main.js, wk.loadDSP, the sims and the bench)
 ].map(e => Object.freeze(e)));

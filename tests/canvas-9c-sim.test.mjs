@@ -13,7 +13,7 @@ import * as CMOD from '../cv-model.js?v=9';
 import * as PT from '../patch-core.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 const CORDS = { calls: [], list: null, anchors: null, on: null };
 for (const k of ['live', 'grab', 'move', 'drop', 'sel', 'resize', 'step', 'draw', 'destroy', 'dim']) CORDS[k] = (...a) => { CORDS.calls.push([k, a.length ? JSON.parse(JSON.stringify(a[0] === undefined ? null : a[0])) : null]); };

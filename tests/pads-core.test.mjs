@@ -7,6 +7,10 @@ import './v8-guard.mjs';
 // a machine without the sound, an unmapped sound → nothing and a warning; notes shared by targets once), defaultsFor (808 / 606
 // / 909 / SDS-V / a synth, the orders passed top row first), fill, bindOf / rebind (moves, never duplicates), echo('gen').
 // Pure: no DOM; only numbers / strings / plain records go into assert.
+// DM (IMPL-DM §5.2, §14.3 P2 12; lane S; after the 23 tests of 8 / P, unchanged): our drum machine through its record — soundName(s,
+// 'kit', D) by kit-core's names (no record: PERS.kit's neutral "Drum n"), drumNote (a present voice's primary; an empty slot plays
+// nothing: 'sound'; a present voice without a note: 'unmapped'), resolve's warnings and targetLabel by the voice's own name, and a
+// new module's pads by sidOrder over the present voices only (the kick bottom-left).
 // Run alone: node --max-old-space-size=2048 --test tests/pads-core.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +19,7 @@ import * as DC from '../drum-core.js?v=9';
 import * as CD from '../cv-drum.js?v=9';
 import * as K from '../cv-keys.js?v=9';
 import { BAR_H } from '../cv-module.js?v=9';
+import * as KC from '../kit-core.js?v=9';
 
 const range = n => Array.from({ length: n }, (_, i) => i);
 const M44 = () => P.newModule('pd1');
@@ -483,4 +488,50 @@ test('R1-F nearestColor(hex): the palette entry nearest in RGB; defaultsFor / fi
   assert.deepEqual(f.slice(0, 5).map(p => [p.t[0].s, p.c]), ord.map(s => [s, look.c[s]]), 'Fill from… the same');
   assert.deepEqual(P.fill(M, { k: 'drum', tr: 'trk_1', order: ord, cols: 5 }).slice(0, 5).map(p => p.c), [P.C_RED, P.C_ORANGE, P.C_AMBER, P.C_AMBER, P.C_AMBER]);
   assert.deepEqual(P.defaultsFor(tr, D, ord, 5, { c: { bd: 99, sd: 'x' } }).pads.slice(0, 2).map(p => p.c), [P.C_RED, P.C_ORANGE], 'a bad colour in a look: the family\'s');
+});
+
+/* ================================================================== DM: a kit through its record (IMPL-DM §5.2; lane S) */
+
+const kitDev = drum => ({ kind: 'synth', model: 'kit', drum });
+const kitProj = D => ({ tracks: [{ id: 'trk_k', name: 'Beat', prim: 'i1', dev: { i1: kitDev(D) } }] });
+
+test('DM soundName(s, \'kit\', D): the voice\'s name from the record (kit-core names: nm, else the type\'s label + an ordinal); an empty slot or no record: PERS.kit\'s "Drum n"; the four machines ignore D', () => {
+  const D = KC.starter();
+  assert.deepEqual(['ka', 'kc', 'kd', 'ke', 'kh', 'kj', 'kp'].map(s => P.soundName(s, 'kit', D)), ['Kick', 'Clap', 'Closed hat', 'Open hat', 'Rim', 'Drum 10', 'Drum 16']);
+  assert.deepEqual([P.soundName('ka', 'kit'), P.soundName('ka', 'kit', null), P.soundName('ka', undefined)], ['Drum 1', 'Drum 1', 'Drum 1']);
+  assert.deepEqual([P.soundName('bd', 'tr808', D), P.soundName('ht', 'sdsv', D)], ['Kick', 'Tom 1 (high)'], 'the four ignore D');
+  const T = KC.normKit({ ty: [5, 5], nm: ['', 'Floor tom (deep)'] });
+  assert.deepEqual([P.soundName('ka', 'kit', T), P.soundShort('kb', 'kit', T)], ['Tom', 'Floor tom'], 'soundShort through it');
+});
+
+test('DM drumNote / resolve / targetLabel on a kit track: a present voice plays its primary ({ n, dev, model: \'kit\' }); an empty slot plays nothing (\'sound\': "No Drum 10 on …"), a voice without a note warns \'unmapped\' by its own name; the label is the voice\'s name', () => {
+  const D = KC.starter(), p = kitProj(D), t = p.tracks[0];
+  const a = P.drumNote(t, 'kd');
+  assert.deepEqual([a.n, a.dev, a.model], [42, 'i1', 'kit']);
+  assert.deepEqual(P.drumNote(t, 'kj').why, 'sound', 'an empty slot');
+  const E = KC.normKit({ ...JSON.parse(JSON.stringify(D)), ty: [0, ...D.ty.slice(1)] });
+  assert.deepEqual([P.drumNote(kitProj(E).tracks[0], 'ka').n, P.drumNote(kitProj(E).tracks[0], 'ka').why], [-1, 'sound'], 'a slot made empty keeps its note: it plays nothing');
+  const U = KC.normKit({ ...JSON.parse(JSON.stringify(D)), map: { ...D.map, kc: [] } });
+  assert.deepEqual(P.drumNote(kitProj(U).tracks[0], 'kc').why, 'unmapped');
+  const T = (s) => ({ k: 'drum', tr: 'trk_k', s });
+  assert.deepEqual(P.resolve(P.normPad({ t: [T('ka'), T('kd')] }), p), { hits: [{ tr: 'trk_k', ns: [36, 42], at: false }], warn: [] });
+  assert.deepEqual(P.resolve(P.normPad({ t: [T('kj')] }), p).warn.map(w => w.text), ['No Drum 10 on “Beat” any more']);
+  assert.deepEqual(P.resolve(P.normPad({ t: [T('kc')] }), kitProj(U)).warn.map(w => w.text), ['Clap has no note on “Beat”']);
+  const seen = [];
+  P.resolve(P.normPad({ t: [T('kd')] }), p, (tt, k) => { seen.push(k); return D; });
+  assert.deepEqual(seen, ['i1'], 'the host\'s drumOf');
+  assert.deepEqual([P.targetLabel(T('kd'), p), P.targetLabel(T('ka'), p), P.targetLabel(T('kf'), p), P.targetLabel(T('kj'), p)], ['Closed hat', 'Kick', 'Low tom', 'Drum 10']);
+  assert.equal(P.padLabel(P.normPad({ t: [T('ke')] }), p), 'Open hat');
+});
+
+test('DM defaultsFor(track, D) on a kit (no pad order passed): its present voices in slot order, top row first on `cols` columns — the kick bottom-left; an empty slot never a pad', () => {
+  const tr = { id: 'trk_k' }, D = KC.starter();
+  const g = P.defaultsFor(tr, D, [], 4);
+  assert.deepEqual([g.rows, g.cols], [2, 4]);
+  const at = (r, c) => { const x = g.pads[r * 8 + c]; return x ? x.t[0].s : null; };
+  assert.deepEqual([[at(0, 0), at(0, 1), at(0, 2), at(0, 3)], [at(1, 0), at(1, 1), at(1, 2), at(1, 3)]], [['ka', 'kb', 'kc', 'kd'], ['ke', 'kf', 'kg', 'kh']]);
+  const S3 = KC.normKit({ ty: [1, 0, 3, 0, 0, 0, 0, 0, 0, 6] }), h = P.defaultsFor(tr, S3, null, 4);
+  assert.deepEqual([h.rows, [0, 1, 2, 3].map(c => (h.pads[c] ? h.pads[c].t[0].s : null))], [1, ['ka', 'kc', 'kj', null]]);
+  const all = KC.normKit({ ty: new Array(16).fill(1) }), q = P.defaultsFor(tr, all, undefined, 4);
+  assert.deepEqual([q.rows, q.pads[0].t[0].s, q.pads[3 * 8 + 3].t[0].s], [4, 'ka', 'kp']);
 });

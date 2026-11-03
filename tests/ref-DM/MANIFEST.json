@@ -1,0 +1,15 @@
+{
+  "note": "Frozen kit sound (IMPL-DM §8 G5, D1 / D4): verbatim copies of kit-dsp.js (our six voice types), dr-seq.js (the kit's vl branch) and engine.js at cut 1's acceptance commit. Never edit: tests/golden-kit.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "afacb558612235c00f2225d991155899311f3d18",
+  "files": {
+    "kit-dsp.js": {
+      "sha256": "d5e8f6050af2697d57d52d1f4e7b8736d2b0b92c3a6bc2b14c731a7702522b37"
+    },
+    "dr-seq.js": {
+      "sha256": "a63c61047c1797dd7d40a8b531afc432fe3c5dfc873e8e40119c073a066ff8cf"
+    },
+    "engine.js": {
+      "sha256": "05dce3500d72c082895547b27bd17f092e42610a1deee067e4b7db73dc075e85"
+    }
+  }
+}

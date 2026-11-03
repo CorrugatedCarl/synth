@@ -34,6 +34,8 @@ import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
 import { compileMods } from '../cv-graph.js?v=9'; // (IMPL-MM §6.3: the master's payload — the host's compile on a track-shaped record)
 import { normModDev } from '../song.js?v=9';
+import * as KC from '../kit-core.js?v=9'; // ((DM) our drum machine's record: the kit rows dkp / dkx)
+import { GROOVE } from './kit-fixtures.mjs'; // ((DM) the tests' fixture groove: never shipped)
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);
@@ -353,6 +355,37 @@ export function drumTrack(rows, vals, samples, model = 'tr808', o = {}) {
     song: sv ? songV(rows) : null,
     cycle: sv && o.cycle ? { frames: 4 * SR / 2, msgs: o.cycle.map(w => ({ t: 'patch', i: 'i1', p: pOf(Object.assign({}, v, w)) })) } : null,
     assets: S ? { [S.id]: S.entry } : null };
+}
+
+/* ------------------------------------------------------------------ the kit's rows (IMPL-DM §7.2, lane V) */
+// Our drum machine as a track (kind 'track', OS 4): its panel (the Starter kit, the model's defaults, vals over it) into an empty panel
+// → OUT, synced at 120 BPM from tick 0 at frame 0, the pattern a one-bar loop. dkp: the fixture groove (tests/kit-fixtures.mjs
+// GROOVE) on the Starter; dkx: 16 voices (the Starter + eight more of the six types, notes 60–67), every step of every lane at
+// v 127, every DECAY at 10. The groove plays as the kit's steps (its plan through DrSeq) once kit-core's compilePlan is in (lane S);
+// while it is phase 0's stub (an empty plan) as roll notes through the record's map — the same hits (D3), the same cost.
+const KIT = KC.KIT, KNOTES = KIT.STARTER.map(e => e.n).concat([60, 61, 62, 63, 64, 65, 66, 67]);
+export const DKX_VALS = Object.freeze(Object.assign(Object.fromEntries(KIT.CODES.map(c => [c + 'd', 10])),
+  ...[6, 1, 3, 4, 5, 2, 6, 3].map((t, i) => { const c = KIT.CODES[8 + i], T = KIT.TYPES[t]; return { [c + 't']: t, [c + 'u']: 10 * T.u.def, [c + '1']: 10 * T.k[0].def, [c + '2']: 10 * T.k[1].def, [c + '3']: 10 * T.k[2].def, [c + '4']: 10 * T.k[3].def }; })));
+export const DKX_GROOVE = Object.freeze({ len: 16, sc: 3, cells: Array.from({ length: 256 }, (_, i) => ({ l: i & 15, s: i >> 4, v: 127 })) });
+/** A kit track (kind 'track'): a pattern in the record's shape (GROOVE's), panel values over the Starter's; the record's map gives
+ *  each present voice its note (KNOTES); o.song: true forces the roll-note form. */
+export function kitTrack(groove, vals, o = {}) {
+  const m = MODELS.find(x => x.id === 'kit'), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 }); delete p.fxr; delete p.fxrT;
+  const ty = KIT.CODES.map(c => v[c + 't'] | 0);
+  const d = KC.normKit({ ty, map: Object.fromEntries(KIT.CODES.map((c, j) => [c, ty[j] > 0 ? [KNOTES[j]] : []])), pat: [groove] });
+  let s = DC.payload(d, DC.initState('kit'), 'now'), song = null;
+  if (o.song || !(s.plan && s.plan.n > 0)) { // (lane S's plan not in: roll notes; the payload carries the record's map)
+    const map = new Int8Array(128).fill(-1), prim = new Int8Array(16).fill(-1);
+    KIT.CODES.forEach((c, j) => { for (const n of d.map[c]) map[n] = j; if (d.map[c].length) prim[j] = d.map[c][0]; });
+    s = Object.assign({}, s, { plan: { key: 'k0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] }, map, prim });
+    song = { t: 'song', notes: groove.cells.flatMap(c => [240 * c.s, 120, KNOTES[c.l], c.v]), cc: [] };
+  }
+  const fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 };
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'dk' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: [], seqs: { i1: s },
+    transport: Object.assign({ play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true }, song ? { loop: true, ls: 0, le: 3840 } : null),
+    song, cycle: null, assets: null };
 }
 
 /* ------------------------------------------------------------------ 900 Series rows (IMPL-9 §3.8, §12 spike (a); lane E9) */
@@ -706,6 +739,11 @@ export function scenarios() {
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvx, DVX_VALS, false, 'sdsv') },
     { id: 'dvm', label: 'SDS-V: dvp\'s groove on memories 3 / 4 (the payload\'s trims), every memory key switched each bar', node: 0.03, ipad: 0.035,
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvp, DVM_MEM[0], false, 'sdsv', { cycle: [DVM_MEM[1], DVM_MEM[0]] }) },
+    // IMPL-DM §7.2: our drum machine (dki, the idle machine, is gated as row p is: tests/engine-track.test.mjs)
+    { id: 'dkp', label: 'Our drum machine: the Starter kit playing the fixture groove (kick, clap, closed / open hat with its choke, rim; v 64–100), 120 BPM, synced',
+      node: 0.012, ipad: 0.012, kind: 'track', build: () => kitTrack(GROOVE) },
+    { id: 'dkx', label: 'Our drum machine: 16 voices, every step of every lane at v 127, every DECAY at 10 (the worst case)', node: 0.06, ipad: 0.06,
+      kind: 'track', build: () => kitTrack(DKX_GROOVE, DKX_VALS) },
     // IMPL-9 §3.8 (spike (a)'s rows): the 900 Series (the patch evaluator over the Model 15 set)
     { id: 'm9p', label: '900 Series: Classic bass (the Model 15 set) playing an eighth-note bass line as roll notes, its defaults, 120 BPM', node: 0.025, ipad: 0.02,
       kind: 'track', build: () => patchTrack(MG.model15(), { song: true }) },

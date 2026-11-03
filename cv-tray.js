@@ -34,12 +34,17 @@
 // trace and an LFO shape with the editor's square handles, four panes) in MOD_GLYPH, the part tiles' no more.
 // Stage LC (IMPL-LC §2.1, §8.1; phase 0, lane U's folded in): the Combiner's tile after Macros in MOD_TILES (multi), its glyph (two faint waves
 // into one), the master's fifth tile (MASTER_MODS) and MASTER_NOTE naming it.
+// Stage DM (IMPL-DM §4.7; lane U): the Drums view's kit — our own drum machine's tile (a model tile, after the four machines: its own art, the display name from
+// the model) and the six drum-module tiles (KIT_TILES: Kick · Snare · Hi-hat · Clap · Tom · Perc, scope 'track'; sourcesTray o.kit, kitPick / kitDrag,
+// info.kit, data-kit; their glyphs cv-art's, in the Drum modules section: o.kitEl / o.kitSec, else a section of its own in o.secEl; setKitPlaced /
+// setKitFull grey them — KIT_FULL at 16 drums), and the view's tip.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
-import { classicOf, isRigModel } from './models.js?v=9';
+import { classicOf, isRigModel, isKitModel } from './models.js?v=9'; // ((DM phase 0) isKitModel: the kit stays out of the classic machines' section — lane U gives it its own)
 import { RIG, MODULES } from './rig-core.js?v=9';
+import { KIT } from './kit-core.js?v=9'; // ((DM) the six voices' ids and names)
 import * as MG from './moog-core.js?v=9';
 import { MAX_MODS } from './patch-core.js?v=9';
 
@@ -591,7 +596,7 @@ const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymba
   sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
 const DR_META = { sdsv: 'drum synth' };
 // ((9) CLASSIC: a classic keyboard synth — models.js classicOf, so a patch instrument (family 'patch') is never in Hardware / Simple)
-const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_MODS = 'Modulators: the Modulators view (the menu above).'; // ((MOD1 §5) Hardware / Simple's pointer; (SX0) its Serum sentence left with the Serum view)
+const CLASSIC = classicOf, DRUMS = m => m.family === 'drums' && !isKitModel(m), PATCH = m => m.family === 'patch', TO_MODS = 'Modulators: the Modulators view (the menu above).'; // ((MOD1 §5) Hardware / Simple's pointer; (SX0) its Serum sentence left with the Serum view)
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_MODS, sections: [{ id: 'synths', models: CLASSIC }] },
@@ -606,8 +611,9 @@ export const SRC_VIEWS = [
   { id: 'mods', label: 'Modulators', tip: 'LFO, Envelope, Macros and the rest, cabled to any knob',
     note: `Drop a modulator on the canvas and cable its jack to any knob. On a ${RIG.NAME} an LFO, Envelope or Macros goes into it; the others are modules of the track.`, // ((MOD1 review) only those three join a rig (main.js modTile)
     sections: [{ id: 'mods' }] },
-  { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
-    note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
+  // (DM, IMPL-DM §4.7) our own drum machine first (its tile), its six drum modules (o.kit, group 'kitmods'), then the classic machines with their real front panel
+  { id: 'drums', label: 'Drums', tip: 'Our drum machine and the classic ones', layout: 'hw',
+    note: 'More machines later.', sections: [{ id: 'kit', models: isKitModel }, { id: 'kitmods', head: 'Drum modules', tiles: 'kit' }, { id: 'drums', models: DRUMS }] },
   { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
     note: 'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', sections: [{ id: 'ctls' }] },
   // (9, IMPL-9 §4.6) the patch modules: the Model 15 tile (a model tile: the tray makes one per MODELS id), then their own row;
@@ -711,6 +717,11 @@ const PART_GLYPH = {
 const partGlyph = id => PART_GLYPH[id] || PART_GLYPH.osc;
 // (WC) the rig tile's words: what the tile gives (RIG.STARTER: a starter rig that plays; null: an Amplifier alone), no maker
 const RIG_META = 'modular synth', RIG_GIVES = () => (RIG.STARTER ? 'a small starter rig that plays' : 'an Amplifier to add modules to');
+/** (DM, IMPL-DM §4.7) The drum-module tiles: id = the voice type's id (kit-core KIT.TYPES), name = its label, type = the TYPE value the tile adds, scope 'track'
+ * (a module of the track's drum machine; on any other instrument the host starts one with it). The host passes them as o.kit (or o.kit: true). */
+export const KIT_TILES = Object.freeze(KIT.TYPES.slice(1).map((t, i) => Object.freeze({ id: t.id, name: t.label, type: i + 1, scope: 'track' })));
+/** (DM) The voice tiles' reason at 16 drums (setKitFull; the family's payload is 16 sounds wide). */
+export const KIT_FULL = '16 drums is the most';
 /** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles: id = the mod kind, scope 'project' (the wheel) or 'track', multi = any
  * number per track (its tile never greys out: setPlaced ignores it). The host passes them as o.mods (with its own names if it likes).
  * (MOD1 §5, the user's answer 3) one tile per type, LFO · Envelope · Macros first, ((LC §8.1) the Combiner after them,) then MOD_ORDER's
@@ -796,15 +807,16 @@ export function sourcesTray(el, o) {
     const b = mk(d, 'button', 'cv-tile');
     b.type = 'button';
     b.setAttribute('data-model', m.id);
-    const dr = DRUMS(m), pa = PATCH(m), rg = isRigModel(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals; (9) nor a patch set's; (WC) the rig is ours: no maker)
+    const dr = DRUMS(m), kt = isKitModel(m), pa = PATCH(m), rg = isRigModel(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals; (9) nor a patch set's; (WC) the rig is ours: no maker)
     b.title = dr ? `${meta.label} (${meta.year}) — ${DR_TIP[m.id] || 'our model of its circuits, not recordings'} — tap to use it, or drag it onto the canvas or the track list`
+      : kt ? `${meta.label} (${meta.year}) — our own drum machine: a step grid and a module for each drum, every sound synthesized, no recordings — tap to use it, or drag it onto the canvas or the track list`
       : pa ? `${meta.label} (${meta.year}) — the whole set of modules, patched with cords and ready to play (our model of its circuits) — tap to use it, or drag it onto the canvas or the track list`
       : rg ? `${meta.label} (${meta.year}) — our modular synth: modules patched with cords, ${RIG_GIVES()} — tap to use it, or drag it onto the canvas or the track list`
       : `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
-    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : pa ? `${meta.year} · modular system` : rg ? `${meta.year} · ${RIG_META}` : `${meta.year} · ${meta.maker}`);
+    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : kt ? `${meta.year} · drum machine` : pa ? `${meta.year} · modular system` : rg ? `${meta.year} · ${RIG_META}` : `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
     if (CLASSIC(m)) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
@@ -966,7 +978,7 @@ export function sourcesTray(el, o) {
   const PT = Array.isArray(o.parts) ? o.parts : o.parts === true ? RIG_TILES : null;
   const secOf = g => { for (const V of VIEWS) for (const S of V.sections || []) if (S && S.id === g) return S; return null; };
   const headOf = g => { const S = secOf(g); return (S && S.head) || g; };
-  const OWN = { rigmods: ['partsEl', 'partsSec'], rignotes: ['notesEl', 'notesSec'] }; // (the host's box and section of a group)
+  const OWN = { rigmods: ['partsEl', 'partsSec'], rignotes: ['notesEl', 'notesSec'], kitmods: ['kitEl', 'kitSec'] }; // (the host's box and section of a group)
   const hostOf = g => (OWN[g] && o[OWN[g][0]] ? { box: o[OWN[g][0]], sec: o[OWN[g][1]] || null } : null);
   // a host's section gets the group's heading (first) and label; destroy gives the section back as it was
   const headHost = (sec, g) => {
@@ -975,25 +987,25 @@ export function sourcesTray(el, o) {
     sec.setAttribute('aria-label', headOf(g));
     offs.push(() => { h.remove(); if (had == null) sec.removeAttribute('aria-label'); else sec.setAttribute('aria-label', had); });
   };
+  const boxOf = g => { // ((DM) hoisted: the drum modules' group 'kitmods' is made the same way)
+    let B = pbox.get(g);
+    if (B) return B;
+    const H = hostOf(g);
+    if (H) { B = { sec: H.sec, box: H.box, head: null }; if (H.sec) headHost(H.sec, g); }
+    else if (o.secEl) {
+      const sec = mk(d, 'section', 'cv-tsec cv-psec'), box = mk(d, 'div', 'cv-tiles cv-ptiles');
+      sec.setAttribute('data-sec', g); sec.setAttribute('aria-label', headOf(g));
+      sec.append(mk(d, 'h3', 'cv-tgrp', headOf(g)), box);
+      o.secEl.appendChild(sec);
+      offs.push(() => sec.remove());
+      B = { sec, box, head: null };
+    } else { const hd = mk(d, 'h3', 'cv-tgrp cv-phead', headOf(g)); el.appendChild(hd); offs.push(() => hd.remove()); B = { sec: null, box: el, head: hd }; }
+    pbox.set(g, B);
+    return B;
+  };
   if (PT) {
     const pick = o.partPick || o.pick, drag = o.partDrag || o.drag || {};
     const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
-    const boxOf = g => {
-      let B = pbox.get(g);
-      if (B) return B;
-      const H = hostOf(g);
-      if (H) { B = { sec: H.sec, box: H.box, head: null }; if (H.sec) headHost(H.sec, g); }
-      else if (o.secEl) {
-        const sec = mk(d, 'section', 'cv-tsec cv-psec'), box = mk(d, 'div', 'cv-tiles cv-ptiles');
-        sec.setAttribute('data-sec', g); sec.setAttribute('aria-label', headOf(g));
-        sec.append(mk(d, 'h3', 'cv-tgrp', headOf(g)), box);
-        o.secEl.appendChild(sec);
-        offs.push(() => sec.remove());
-        B = { sec, box, head: null };
-      } else { const hd = mk(d, 'h3', 'cv-tgrp cv-phead', headOf(g)); el.appendChild(hd); offs.push(() => hd.remove()); B = { sec: null, box: el, head: hd }; }
-      pbox.set(g, B);
-      return B;
-    };
     for (const m of PT) {
       const id = m && typeof m.id === 'string' ? m.id : null;
       if (!id || ptiles.has(id) || (m.cut | 0) > RIG_CUT) continue; // ((WC) a later cut's kind: no tile yet — its group may be a placeholder)
@@ -1020,12 +1032,49 @@ export function sourcesTray(el, o) {
       offs.push(() => b.remove());
     }
   }
+  // (DM, IMPL-DM §4.7) the drum modules: one button.cv-tile.cv-mtile.cv-ktile[data-kit][data-scope] per o.kit item (KIT_TILES: cv-art's glyph, the name,
+  // span.cv-treason) in the 'kitmods' section — the host's (o.kitEl / o.kitSec), else a section of its own in o.secEl, else a heading and the tiles in el;
+  // shown in a view that lists that section. A tap: (o.kitPick || o.pick)(id, mode); a drag as the rig's module tiles' through (o.kitDrag || o.drag) with
+  // info.kit = true, info.over 'canvas' | 'tracks' | null, info.at the world point (the ghost hides over the canvas while o.kitCanvasGhost() says the world
+  // draws an outline); setKitPlaced(id, reason) / setKitFull(reason) grey them (KIT_FULL at 16 drums) — then a tile neither picks nor drags
+  const ktiles = new Map(), kplaced = new Map();
+  const KT = Array.isArray(o.kit) ? o.kit : o.kit === true ? KIT_TILES : null;
+  if (KT) {
+    const pick = o.kitPick || o.pick, drag = o.kitDrag || o.drag || {}, kname = cvArt.tileMeta(KIT.ID).name;
+    for (const m of KT) {
+      const id = m && typeof m.id === 'string' ? m.id : null;
+      if (!id || ktiles.has(id)) continue;
+      const name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-mtile cv-ktile');
+      b.type = 'button';
+      b.setAttribute('data-kit', id);
+      if (m.scope) b.setAttribute('data-scope', m.scope);
+      const tip = `${name} — tap to add a ${name} drum to this track's ${kname} (or start a ${kname} with it), or drag it onto the canvas`;
+      b.title = tip;
+      const glyph = () => cvArt.glyph(id, { w: 40, h: 28 });
+      const pic = mk(d, 'span', 'cv-mglyph');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = glyph();
+      const nm = mk(d, 'span', 'cv-tname', name), rs = mk(d, 'span', 'cv-treason');
+      rs.hidden = true;
+      b.append(pic, nm, rs);
+      const off = () => kplaced.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off()) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.kit = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.kit = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.kit = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.kit = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.kitCanvasGhost }), b, id, { pic: glyph, picCls: 'cv-mglyph', cls: 'cv-mghost', off,
+        norm: r => { const v = r && typeof r === 'object' ? r.over : r; return { over: v === 'canvas' || v === 'tracks' ? v : null, key: null, near: null }; }, at: atW,
+        label: over => (over === 'canvas' ? '+ Add ' + name : over === 'tracks' ? '+ New track' : '') }));
+      boxOf('kitmods').box.appendChild(b);
+      ktiles.set(id, { b, rs, tip, name });
+      offs.push(() => b.remove());
+    }
+  }
   // the placeholder sections (a heading, a one-line note), once each, in o.secEl after the Modulators ((3) not for a group
   // the parts tiles fill; (WC) a group the host has a section for — Note tools — is that section: the heading, the note, the
   // cv-tsoon class, its empty tile box hidden; given back as it was at destroy)
   const secs = new Map();
   for (const V of VIEWS) for (const S of V.sections || []) {
-    if (!S || S.models || S.id === 'mods' || !S.head || secs.has(S.id) || pbox.has(S.id)) continue;
+    if (!S || S.models || S.tiles || S.id === 'mods' || !S.head || secs.has(S.id) || pbox.has(S.id)) continue; // ((DM) S.tiles: the drum modules' section — o.kit's, no placeholder)
     const H = hostOf(S.id);
     if (H && H.sec) {
       const sec = H.sec, p = mk(d, 'p', 'cv-tnote', S.note || ''), was = H.box.hidden;
@@ -1118,7 +1167,7 @@ export function sourcesTray(el, o) {
       const on = has(g);
       if (B.sec) B.sec.hidden = !on;
       if (B.head) B.head.hidden = !on;
-      if (!B.sec) for (const T of ptiles.values()) if (T.group === g) T.b.hidden = !on;
+      if (!B.sec) { for (const T of ptiles.values()) if (T.group === g) T.b.hidden = !on; if (g === 'kitmods') for (const T of ktiles.values()) T.b.hidden = !on; }
     }
     if (vbtn) {
       const lab = vbtn.children[0];
@@ -1163,6 +1212,16 @@ export function sourcesTray(el, o) {
     T.rs.hidden = !r;
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
+  function setKitPlaced(id, reason) {
+    const T = ktiles.get(id);
+    if (!T) return;
+    const r = reason == null || reason === '' ? null : String(reason);
+    if (r) kplaced.set(id, r); else kplaced.delete(id);
+    T.b.classList.toggle('cv-placed', !!r);
+    if (r) T.b.setAttribute('aria-disabled', 'true'); else T.b.removeAttribute('aria-disabled');
+    T.rs.textContent = r || ''; T.rs.hidden = !r;
+    T.b.title = r ? T.name + ' — ' + r : T.tip;
+  }
   return {
     /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'rig' | 'mods' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
@@ -1202,6 +1261,9 @@ export function sourcesTray(el, o) {
       T.b.title = r ? T.name + ' — ' + r : T.tip;
     },
     partPlaced: id => pplaced.get(id) || null,
+    /** (DM) the drum-module tiles (Kick … Perc); greying one with its reason (null: available again), all six at once (setKitFull(KIT_FULL) at 16 drums) */
+    kitTiles: () => [...ktiles.values()].map(T => T.b), kitTile: id => (ktiles.get(id) || {}).b || null,
+    setKitPlaced, setKitFull(reason) { for (const id of ktiles.keys()) setKitPlaced(id, reason); }, kitPlaced: id => kplaced.get(id) || null,
     setCurrent(id) {
       cur = id;
       for (const [k, b] of tiles) {

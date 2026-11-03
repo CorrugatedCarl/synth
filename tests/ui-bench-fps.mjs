@@ -59,7 +59,7 @@ export const BUDGET = Object.freeze({
   rate: 0.8,
   delivered: 0.8, // frames delivered ≥ 0.8 × the virtual display's (a starved main thread says so)
 });
-export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb']); // ((MOD1 G6) mods: a Juno's modulators; (LC G6) comb: two Combiners' faces; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
+export const SCENE_IDS = Object.freeze(['idle', 'play8', 'roll8', 'tutorial', 'mods', 'master', 'busy', 'clip', 'comb', 'kit']); // ((MOD1 G6) mods: a Juno's modulators; (LC G6) comb: two Combiners' faces; (DM G9) kit: a kit track, the Starter's 8 voices and the fixture groove, playing; (SX0) the serum scene left with Serum complete (ROADMAP 28) — bench.json's */serum/* cells stay as history
 /** The scenes whose layout + style budget (< 1 ms / s, "idle-animating") is gated: the engine on, nothing playing. The others are recorded — a
  * playing project writes the transport's text every frame (IMPL-FR §3 A1: "the recorded exception"). `--layout-gate all` gates every scene. */
 export const LAYOUT_SCENES = Object.freeze(['idle']);
@@ -133,6 +133,18 @@ export const EXPECT = Object.freeze({
   // curves (canvas.rig-ccv) repaint only on a change (§6.6): not asked here — combProbe counts them. The LFO faces are off screen
   comb: Object.freeze([
     { name: 'Combiner overlays', kind: 'canvas', sel: '[data-rig-kind="comb"] canvas.rig-cov', rate: 'eff', min: 2 },
+  ]),
+  // (DM G9) a kit track (kit-ui: the Sequencer + the Starter's 8 voices, the fixture groove playing at 128 BPM). The faces ride the drum host's heard
+  // queue, NOT the clock: nothing paints per display frame, only per heard step — a 16th at 128 BPM is 8.53 a second, whatever the cap: so the
+  // rates are absolute Hz (the playhead's one transform per step; each lamp / HIT pad a flip per hit of its lane: the groove's hits a bar of 1.875 s)
+  kit: Object.freeze([
+    { name: 'Sequencer playhead (a transform a heard step)', kind: 'attr', attr: 'style', sel: '.kit-ph', rate: 8.5 },
+    { name: 'kick lamp', kind: 'attr', attr: 'data-hit', sel: '.kit-lamp[data-slot="0"]', rate: 2.1, tol: 0.6 },
+    { name: 'clap lamp', kind: 'attr', attr: 'data-hit', sel: '.kit-lamp[data-slot="2"]', rate: 1.05, tol: 0.6 },
+    { name: 'closed hat lamp', kind: 'attr', attr: 'data-hit', sel: '.kit-lamp[data-slot="3"]', rate: 3.7, tol: 0.6 },
+    { name: 'open hat lamp', kind: 'attr', attr: 'data-hit', sel: '.kit-lamp[data-slot="4"]', rate: 0.5, tol: 0.6 },
+    { name: 'rim lamp', kind: 'attr', attr: 'data-hit', sel: '.kit-lamp[data-slot="7"]', rate: 0.5, tol: 0.6 },
+    { name: 'HIT pads', kind: 'attr', attr: 'data-hit', sel: '.kit-hit', rate: 0.5, tol: 0.6, min: 5, any: true },
   ]),
 });
 
@@ -425,6 +437,22 @@ export function benchRow(rep, meta = {}) {
   return row;
 }
 
+/** (DM G9) The kit probe's gates at a CPU throttle → [[name, value, limit]] (a value ≤ its limit passes; "≥ x" as −value ≤ −x). Pure. */
+export function KIT_GATES(th, r) {
+  const P = (r && r.per) || {}, n = x => (typeof x === 'number' && isFinite(x) ? x : Infinity), W = P.writes || {}, G = [];
+  if (th === 1) G.push(['seq frame med ≤ 0.1 ms', n(P.seq && P.seq.med), 0.1], ['playhead writes a callback ≤ 1', n(W.maxPh), 1], ['flips a callback ≤ 16', n(W.maxFlip), 16], ['other writes a callback 0', n(W.maxOther), 0], ['Sequencer frames that wrote nothing 0', n(W.quietSeq), 0], ['layout-forcing reads 0', n(P.layoutReads), 0],
+    ['playhead behind the heard step ≤ 2 frames', n(P.lag), 2], ['heard steps the playhead skipped 0', n(P.skipped), 0], ['grid repaints while playing 0', n(P.gridPaints), 0], ['no kit clock client', (r.kitClients || []).length, 0]);
+  G.push(['a tap repaints the grid once', Math.abs(n(r.tap && r.tap.gridPerEdit) - 1), 0], ['a pattern switch repaints the grid once', Math.abs(n(r.pat && r.pat.gridPerEdit) - 1), 0]);
+  if (th === 4) G.push(['tap: grid repaint frame med ≤ 2 ms', n(r.tap && r.tap.seq.med), 2], ['pattern switch: repaint frame med ≤ 2 ms', n(r.pat && r.pat.seq.med), 2]);
+  return G;
+}
+/** The kit probe's numbers as a line. Pure. */
+export function kitNote(r) {
+  const P = (r && r.per) || {}, f = (k, L) => (L ? k + ' ' + L.call.med + '/' + L.call.max + ' + frame ' + L.seq.med + '/' + L.seq.max + (L.voices.med ? ' + voices ' + L.voices.med : '') + ' worst rAF ' + L.rafMax.max + ' gap ' + L.gapMax.max : k + ' –');
+  return 'seq frame ' + (P.seq ? P.seq.med + '/' + P.seq.p95 + '/' + P.seq.max : '–') + ' voice ' + (P.voice ? P.voice.med : '–') + ' (' + P.seqCallbacks + ' + ' + P.voiceCallbacks + ' calls), ' + P.stepsPerS + ' steps/s, playhead lag ' + P.lag + ' frames (on the heard step ' + P.tracks + '), skipped ' + P.skipped + ', moved on ' + P.seqFramesMoved + ' of ' + P.seqFrames + ' Sequencer frames, ' + (P.writes ? P.writes.quietSeq + ' / ' + P.writes.quietVoice : '–') + ' Sequencer / voice frames wrote nothing' + ', writes ' + JSON.stringify(P.writes && { ph: P.writes.ph, flips: P.writes.flips, other: P.writes.other, maxPh: P.writes.maxPh, maxFlip: P.writes.maxFlip }) + ', reads ' + P.layoutReads
+    + ' | ' + [f('tap', r.tap), f('pattern', r.pat), f('add', r.add), f('remove', r.remove)].join(' | ');
+}
+
 /* ================================================================================================ the page's hooks */
 /**
  * Installed into the page BEFORE its scripts (CDP Page.addScriptToEvaluateOnNewDocument; in the iframe mode: an inline script in the app
@@ -707,6 +735,21 @@ const BUILD = {
     await audioOn(A);
     A.api.clipToTrack(t.id, chordNotes(2 * PPQ));
     await sleep(300); await startPlay(A);
+  },
+  async kit(A) { // (DM G9) a kit track (the kit tile's action on a new track: the Starter's 8 voices), the fixture groove painted cell by cell through cv.kit, framed whole, 128 BPM, playing
+    const KF = await A.win.Function('u', 'return import(u)')(new URL('tests/kit-fixtures.mjs', A.doc.baseURI).href), wk = await wkOf(A);
+    await prelude(A, 0);
+    A.win.__kitBase = wk.clock.clients(); // (the clock's clients before the kit: it must add none)
+    const id = A.cv.kit.add(null);
+    if (!id) { A.notes.push('cv.kit.add refused'); return; }
+    A.win.__kitId = id;
+    await mounted(A);
+    for (const c of KF.GROOVE.cells) if (!A.cv.kit.cell(id, c.l, c.s, c.v)) A.notes.push('cell ' + c.l + '/' + c.s + ' refused');
+    await fitCanvas(A); // (Tidy: the voices in rows of four under the Sequencer; then the camera on the lot)
+    A.cv.setProjectBpm(128);
+    await audioOn(A);
+    await sleep(300); await startPlay(A);
+    if (A.cv.kit.state(id).voices.length !== 8) A.notes.push('the kit has ' + A.cv.kit.state(id).voices.length + ' voices, not the Starter\'s 8');
   },
   async master(A) { // the master canvas: a Compressor and a Ducker in its rack, two LFOs cabled on them, the OUT; a Juno playing under it
     await prelude(A, 0);
@@ -1010,6 +1053,135 @@ export async function combProbe(win, o = {}) {
     res.errors = F.errs.slice(0, 5);
     return res;
   } finally { for (const f of undo) f(); }
+}
+
+/** (DM G9) The kit scene's faces (cv.kit.faces(): the Sequencer's View and the voices'; kit-ui's frames ride the drum host's heard queue
+ * and one wk.frame each — the harness finds them in requestAnimationFrame by their source, `kitStats.paints++`, and times each: the
+ * face's per-heard-step work), playing for `ms`: per delivered frame (sampled after every callback, in a microtask) the playhead's
+ * step against the heard one (cv.kit.state), the frames the Sequencer painted; per kit callback the DOM writes (a MutationObserver
+ * drained before and after: playhead style, lamp / HIT data-hit flips, anything else) and the layout-forcing reads
+ * (getBoundingClientRect, getComputedStyle); who writes the DOM at all (diagnostic); then a cell tap (cv.kit.cell, `reps`, alternately
+ * on / off in an empty lane), a pattern switch (press pat B / A) and a voice added and removed — each: the host call, the face frames
+ * that follow (the grid repaint: kitStats.grid), the worst rAF cost and frame gap (F.begin / F.end) over the next frames. `o.stop`:
+ * only the stopped check — ■ (cv.kit.stop), `settle` ms on, `ms` of frames: no kit callback, no paint, no grid, no canvas painted,
+ * no DOM write under the kit's modules, no kit clock client. → the numbers, ms (wall: the CPU throttle included). */
+export async function kitProbe(win, o = {}) {
+  const A = appOf(win), F = A.F, ms = o.ms || 2500, reps = o.reps || 12, now = () => win.performance.now(), id = win.__kitId, K = A.cv.kit;
+  const KU = await A.imp('kit-ui.js'), kS = KU.kitStats, wk = await wkOf(A), fc = id ? K.faces() : null, seq = fc ? Array.from(fc.seqs.values())[0] : null, vox = fc ? Array.from(fc.voices.values()) : [];
+  if (!id || !seq || !seq.el || !vox.length || vox.some(v => !v.V || !v.V.el)) return { ok: false, why: 'no kit faces (track ' + id + ')' };
+  const ph = seq.el.querySelector('.kit-ph'), cvE = seq.el.querySelector('canvas.kit-cv');
+  if (!ph || !cvE) return { ok: false, why: 'no playhead / grid canvas on the Sequencer' };
+  const c0 = K.cellRect(id, 0, 0), c1 = K.cellRect(id, 0, 1), COL = c0 && c1 ? c1.x - c0.x : 64, kitEls = [seq.el].concat(vox.map(v => v.V && v.V.el).filter(Boolean)); // (kitSeqs: key → { el, V }; kitVox: key → { V, tid })
+  const inKit = n => kitEls.some(e => e.contains(n));
+  const W = { on: false, s: [], v: [], reads: 0, nS: 0, nV: 0, wr: [] }, mo = new win.MutationObserver(() => {}), wr = new Map();
+  const mo2 = new win.MutationObserver(recs => { for (const r of recs) { const t = r.target, k = (t.nodeType === 1 ? t.tagName.toLowerCase() + (t.classList && t.classList[0] ? '.' + t.classList[0] : '') : '#text') + (r.type === 'attributes' ? '[' + r.attributeName + ']' : ':' + r.type); wr.set(k, (wr.get(k) || 0) + 1); } });
+  mo.observe(A.doc.body, { subtree: true, attributes: true, childList: true, characterData: true });
+  const tag = new WeakMap(), rafO = win.requestAnimationFrame, gcs = win.getComputedStyle, gbr = win.Element.prototype.getBoundingClientRect, ST = { ph: 0, flip: 0, other: 0, maxPh: 0, maxFlip: 0, maxOther: 0, quietS: 0, quietV: 0, kinds: {} };
+  let inK = false;
+  const run = (fn, t, kind) => {
+    if (!W.on) return fn(t);
+    mo.takeRecords();
+    inK = true;
+    const a = now();
+    try { return fn(t); } finally {
+      const e = now() - a;
+      inK = false;
+      (kind === 's' ? W.s : W.v).push(e); if (kind === 's') W.nS++; else W.nV++;
+      let p = 0, f = 0, x = 0;
+      for (const r of mo.takeRecords()) {
+        if (r.type === 'attributes' && r.attributeName === 'style' && r.target === ph) p++;
+        else if (r.type === 'attributes' && (r.attributeName === 'data-hit' || (r.attributeName === 'data-on' && r.target === ph))) f++;
+        else { x++; const k = (r.target.className && r.target.className.baseVal == null ? String(r.target.className) : r.target.nodeName) + (r.attributeName ? '[' + r.attributeName + ']' : ':' + r.type); ST.kinds[k] = (ST.kinds[k] || 0) + 1; }
+      }
+      if (!(p + f + x)) { if (kind === 's') ST.quietS++; else ST.quietV++; } // (a frame asked for, nothing written)
+      ST.ph += p; ST.flip += f; ST.other += x; ST.maxPh = Math.max(ST.maxPh, p); ST.maxFlip = Math.max(ST.maxFlip, f); ST.maxOther = Math.max(ST.maxOther, x);
+    }
+  };
+  win.requestAnimationFrame = function (fn) {
+    let k = tag.get(fn);
+    if (k === undefined) { const src = typeof fn === 'function' ? Function.prototype.toString.call(fn) : ''; k = /kitStats\.paints\+\+/.test(src) ? (/paintGrid\(\)/.test(src) ? 's' : 'v') : ''; tag.set(fn, k); }
+    return rafO.call(this, k ? t => run(fn, t, k) : fn);
+  };
+  win.getComputedStyle = function () { if (inK) W.reads++; return gcs.apply(this, arguments); };
+  win.Element.prototype.getBoundingClientRect = function () { if (inK) W.reads++; return gbr.apply(this, arguments); };
+  const phStep = () => { if (!ph.hasAttribute('data-on')) return -1; const m = /translateX\(([-\d.]+)px/.exec(ph.style.transform); return m ? Math.round(+m[1] / COL) : -2; };
+  const frames = n => new Promise(r => { let k = 0; const f = () => (++k >= n ? r() : win.requestAnimationFrame(f)); win.requestAnimationFrame(f); });
+  const clientNames = () => wk.clock.clients().filter(n => /kit|seq|drum|lamp|pad|step/i.test(n));
+  const base = Array.isArray(win.__kitBase) ? win.__kitBase : [], extra = wk.clock.clients().filter(n => base.indexOf(n) < 0);
+  const res = { ok: true, playing: !!A.api.transport().playing, COL, clients: wk.clock.clients(), kitClients: clientNames(), per: {} };
+  try {
+    if (o.stop) { // ■: the engine stays on; the kit paints nothing
+      K.stop();
+      await sleep(o.settle || 1500);
+      const body0 = kS.paints, g0 = kS.grid;
+      W.on = true; let mut = 0;
+      const mo3 = new win.MutationObserver(recs => { for (const r of recs) if (inKit(r.target)) mut++; });
+      mo3.observe(A.doc.body, { subtree: true, attributes: true, childList: true, characterData: true });
+      F.begin(); await sleep(ms); const d = F.end();
+      mut += mo3.takeRecords().filter(r => inKit(r.target)).length; mo3.disconnect();
+      W.on = false;
+      res.stopped = { playing: !!A.api.transport().playing, audio: A.api.ctx() ? A.api.ctx().state : 'none', frames: d.delivered, rafMed: q(d.raf).med, kitCallbacks: W.nS + W.nV, paints: kS.paints - body0, grid: kS.grid - g0, canvasPaints: F.cv(cvE).n, kitWrites: mut, phOn: ph.hasAttribute('data-on'), clients: clientNames(), clock: wk.clock.clients() };
+      res.pass = !res.stopped.playing && res.stopped.kitCallbacks === 0 && res.stopped.paints === 0 && res.stopped.grid === 0 && res.stopped.canvasPaints === 0 && res.stopped.kitWrites === 0 && !res.stopped.phOn && !res.stopped.clients.length;
+      return res;
+    }
+    // playing: the heard step against the playhead, per delivered frame; the writes and reads per kit callback
+    mo2.observe(A.doc.body, { subtree: true, attributes: true, childList: true, characterData: true });
+    const rec = [], sp0 = kS.paints, g0 = kS.grid, t0 = now();
+    W.on = true;
+    const sample = () => { const st = K.state(id); rec.push([phStep(), st ? st.step : -2, W.nS]); };
+    await new Promise(r => { const loop = () => { if (now() - t0 >= ms) { r(); return; } queueMicrotask(sample); win.requestAnimationFrame(loop); }; win.requestAnimationFrame(loop); });
+    W.on = false;
+    const secs = (now() - t0) / 1000;
+    // the playhead against the heard step: `lag` the longest run of frames showing another step than the heard one (the playhead is drawn in the frame after
+    // the heard queue's post: one frame behind kitState's step), `skipped` the heard steps the playhead never showed within 3 frames, `moved` the Sequencer's
+    // painted frames in which the playhead moved (a frame it painted for another reason — an edit, a record change — moves nothing)
+    let same = 0, hc = 0, pc = 0, sPaint = 0, sMoved = 0, run = 0, lag = 0, skipped = 0;
+    for (let i = 0; i < rec.length; i++) {
+      if (rec[i][0] === rec[i][1]) { same++; run = 0; } else lag = Math.max(lag, ++run);
+      if (i) {
+        const hd = rec[i][1] !== rec[i - 1][1] && rec[i][1] >= 0, pd = rec[i][0] !== rec[i - 1][0] && rec[i][0] >= 0;
+        if (hd) { hc++; if (i + 3 < rec.length && !rec.slice(i, i + 4).some(r => r[0] === rec[i][1])) skipped++; }
+        if (pd) pc++;
+        if (rec[i][2] !== rec[i - 1][2]) { sPaint++; if (pd) sMoved++; }
+      }
+    }
+    res.per = { frames: rec.length, tracks: r3(rec.length ? same / rec.length : 0), lag, skipped, heardSteps: hc, shownSteps: pc, stepsPerS: r1(hc / secs), seqFrames: sPaint, seqFramesMoved: sMoved, seqCallbacks: W.nS, voiceCallbacks: W.nV, seq: q(W.s), voice: q(W.v), paintsPerS: r1((kS.paints - sp0) / secs), gridPaints: kS.grid - g0,
+      writes: { ph: ST.ph, flips: ST.flip, other: ST.other, maxPh: ST.maxPh, maxFlip: ST.maxFlip, maxOther: ST.maxOther, quietSeq: ST.quietS, quietVoice: ST.quietV, kinds: Object.assign({}, ST.kinds) }, layoutReads: W.reads };
+    mo2.takeRecords(); mo2.disconnect();
+    res.per.writers = Array.from(wr.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, n]) => k + ' ' + r1(n / secs) + '/s');
+    // an edit: the host's call (the history step, the press, the sends, the sync), the face frames after it, the worst frame
+    const edit = async (label, fn, n, nth = 4) => {
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        await frames(2);
+        W.s.length = 0; W.v.length = 0;
+        const g = kS.grid, p = kS.paints;
+        F.begin();
+        const a = now(), r = fn(i), call = now() - a;
+        await frames(nth);
+        const d = F.end();
+        out.push({ call, grid: kS.grid - g, paints: kS.paints - p, seq: W.s.length ? Math.max(...W.s) : 0, voices: W.v.reduce((x, y) => x + y, 0), nVoices: W.v.length, rafMax: Math.max(...d.raf), gapMax: Math.max(...d.dt), r });
+      }
+      return out;
+    };
+    const sum = L => ({ call: q(L.map(x => x.call)), seq: q(L.map(x => x.seq)), voices: q(L.map(x => x.voices)), rafMax: q(L.map(x => x.rafMax)), gapMax: q(L.map(x => x.gapMax)), gridPerEdit: L.length ? r3(L.reduce((x, y) => x + y.grid, 0) / L.length) : 0, ok: L.every(x => x.r !== false) });
+    W.on = true;
+    res.tap = sum(await edit('tap', i => K.cell(id, 1, 2, i % 2 ? 0 : 100), reps));
+    if (reps % 2) K.cell(id, 1, 2, 0);
+    res.pat = sum(await edit('pat', i => K.press(id, { k: 'pat', p: i % 2 ? 0 : 1 }, 'Pattern'), reps));
+    const addL = [], remL = [];
+    for (let i = 0; i < Math.max(2, reps >> 1); i++) {
+      const before = new Set(K.state(id).voices.map(v => v.slot));
+      addL.push(...await edit('add', () => K.voice(id, 'add', 1), 1, 5));
+      const slot = K.state(id).voices.map(v => v.slot).find(s => !before.has(s));
+      remL.push(...await edit('remove', () => (slot == null ? false : K.voice(id, 'remove', slot)), 1, 5));
+    }
+    res.add = sum(addL); res.remove = sum(remL);
+    W.on = false;
+    res.errors = F.errs.slice(0, 5);
+    res.voices = K.state(id).voices.length; res.pattern = K.state(id).pattern;
+    return res;
+  } finally { win.requestAnimationFrame = rafO; win.getComputedStyle = gcs; win.Element.prototype.getBoundingClientRect = gbr; mo.disconnect(); mo2.disconnect(); }
 }
 
 /* ================================================================================================ on a device: index.html?fpsdev=1 */
@@ -1404,6 +1576,22 @@ export async function drive(o) {
             const wd = (t, w) => t + ': lc ' + w.lc + ', ' + w.per.map(p => p.k + ' frame() ' + p.frames + ' overlay ' + p.overlayPaints + ' (unmoved ' + p.samePaints + ') curves ' + p.curvePaints + (p.live ? ' live' : '')).join(' · ') + ' (rAF med ' + w.rafMed + ' ms, ' + w.frames + ' frames)';
             rep.checks.push({ id: 'comb stopped', size: sk, scene, pass: !!r.pass, value: r, note: !r.ok ? r.why : wd('■', r.stopped) + ' | ' + wd('⏻ off', r.off) });
             say('   comb stopped: ' + (r.pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
+          }
+          if (scene === 'kit') { // ((DM G9) the faces' own numbers at 1 ×, 4 × and 6 × (cap 120): the per-heard-step work, the writes, the playhead on the heard step; a tap / a pattern switch / a voice added and removed; then ■: nothing at all
+            for (const th of [1, 4, 6]) {
+              await s('Emulation.setCPUThrottlingRate', { rate: th }); lastTh = th;
+              await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap: 120, display: 120, warm: 1500, throttle: th, fast: o.fast, perf: o.perf }) + ')', 120000);
+              const r = await ev('__fpsPage.kitProbe(window, { ms: 2500, reps: 12 })', 240000);
+              const G = KIT_GATES(th, r);
+              const pass = !!r.ok && !!r.playing && G.every(([, v, lim]) => v <= lim) && !(r.errors && r.errors.length);
+              rep.checks.push({ id: 'kit probe ' + th + 'x', size: sk, scene, pass, value: r, note: !r.ok ? r.why : G.map(([n, v]) => n + ': ' + r3(Math.abs(v))).join(' · ') + ' · ' + kitNote(r) });
+              say('   kit probe @' + th + '×: ' + (pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
+            }
+            await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;
+            await ev('__fpsPage.prepare(window, ' + JSON.stringify({ scene, cap: 120, display: 120, warm: 500, throttle: 1, fast: o.fast, perf: o.perf }) + ')', 120000);
+            const r = await ev('__fpsPage.kitProbe(window, { stop: true, ms: 2000, settle: 1500 })', 120000), S = r.stopped || {};
+            rep.checks.push({ id: 'kit stopped', size: sk, scene, pass: !!r.pass, value: r, note: !r.ok ? r.why : '■ ' + S.frames + ' frames in 2 s: kit callbacks ' + S.kitCallbacks + ', face paints ' + S.paints + ', grid repaints ' + S.grid + ', canvas paints ' + S.canvasPaints + ', DOM writes under the kit ' + S.kitWrites + ', playhead ' + (S.phOn ? 'ON' : 'hidden') + ', kit clock clients ' + JSON.stringify(S.clients) + ' (rAF med ' + S.rafMed + ' ms)' });
+            say('   kit stopped: ' + (r.pass ? 'ok' : 'FAIL') + ' — ' + rep.checks.at(-1).note);
           }
           if (o.load && (scene === 'tutorial' || scene === 'master') && sk === o.sizes[0]) { // ((FR Cut B §7 G8) Δ load (on − off) ≤ max(0.005, 2 × the A/A spread)
             await s('Emulation.setCPUThrottlingRate', { rate: 1 }); lastTh = 1;

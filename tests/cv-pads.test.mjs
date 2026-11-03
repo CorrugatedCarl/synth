@@ -934,3 +934,24 @@ test('R1-F a Pads module following an SDS-V track: the sounds\' short names and 
   snd.value = 'ht'; fire(snd, 'change');
   assert.deepEqual([S.H.module('pd1').pads[0].t[0].s, S.H.module('pd1').pads[0].c], ['ht', colOf('ht')], 'the inspector\'s Sound: that sound\'s kit colour');
 });
+
+test('DM (IMPL-DM §8 G4, lane H): a Pads module following our drum machine — its present voices only (kick bottom-left, sidOrder), named from the record, each in its type\'s colour (KIT.TINT → the nearest palette entry); the inspector\'s Sound lists the present voices by name; Fill from… the same', async () => {
+  const KC = await import('../kit-core.js?v=9');
+  const R = KC.press(KC.initState(), KC.starter(), { k: 'voice', slot: 2, op: 'remove' }).mem; // (the Starter without its clap: seven voices)
+  const kt = { id: 'trk_5', name: 'Drums', prim: 'i1', dev: { i1: dev('kit', { drum: R }) }, notes: [], mods: [] };
+  const D = C.defaultsOf(kt, (t, k) => t.dev[k].drum), byS = {};
+  for (const p of D.pads) if (p) byS[p.t[0].s] = p;
+  const want = KC.KIT.CODES.filter((s, j) => R.ty[j] > 0);
+  assert.deepEqual([D.rows, D.cols, Object.keys(byS).sort().join(), byS.kc === undefined], [2, 4, want.slice().sort().join(), true], 'seven pads, no clap');
+  assert.equal(D.pads[PC.slotOf(0, 0)].t[0].s, 'ka', 'the kick bottom-left');
+  for (const s of want) assert.deepEqual([PC.padLabel(byS[s], { tracks: [kt] }), byS[s].c], [PC.soundShort(s, 'kit', R), PC.nearestColor(KC.KIT.TINT[R.ty[KC.KIT.CODES.indexOf(s)]])], s);
+  const L = C.lookOf('kit', R);
+  assert.deepEqual([Object.keys(L.c).length, C.lookOf('kit', null), C.lookOf('tr808', R)], [7, null, null], 'lookOf: the present voices only; no record, no look; the 808 none');
+  const S = setup({ extra: [kt], pads: [mod44({ 0: drum('ka', 'trk_5') })], deps: { drumOf: (t, k) => t.dev[k].drum } });
+  S.B.inspect(0);
+  const snd = all(S.B.popover()).find(n => n.localName === 'select' && n.getAttribute('aria-label') === 'Sound');
+  const opts = [...snd.children].filter(o => o.localName === 'option').map(o => o.value + ':' + o.textContent).join(',');
+  assert.equal(opts, want.map(s => s + ':' + PC.soundName(s, 'kit', R)).join(','), 'the present voices by name');
+  snd.value = 'kd'; fire(snd, 'change');
+  assert.deepEqual([S.H.module('pd1').pads[0].t[0].s, S.H.module('pd1').pads[0].c], ['kd', PC.nearestColor(KC.KIT.TINT[R.ty[3]])], 'that voice\'s colour');
+});

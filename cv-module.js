@@ -1459,8 +1459,10 @@ export function createTrackView(world, track, host) {
       td = null;
       V.trackId = T.id;
       const want = keys();
-      // ((3) a module whose jacks changed — a Serum switched between bundled and parts view — is made again)
-      for (const k of [...mods.keys()]) if (!want.includes(k) || (DEV && (mods.get(k).kind !== kindOf(k) || mods.get(k).jsig !== jsig(k)))) removeMod(k);
+      // ((3) a module whose jacks changed — a Serum switched between bundled and parts view — is made again; (DM review R2-7) its
+      // nofold too — a classic replaced by a kit's Sequencer, and back: its bar, and its jack's name)
+      const nf = k => { const e = DM.get(k) || {}; return kindOf(k) === 'pm' || !!e.nofold || !!e.compact; };
+      for (const k of [...mods.keys()]) if (!want.includes(k) || (DEV && (mods.get(k).kind !== kindOf(k) || mods.get(k).jsig !== jsig(k) || mods.get(k).nofold !== nf(k)))) removeMod(k);
       let vis = false; // a fold changed (an undo / redo restore): host.shown once, after every module is in its state
       const kept = []; // (P R2-F2) the modules that stayed: ONE world update for them after the loop (one per module ran the overlap rule over every face each: O(n³))
       for (const k of want) { // (instrument first: Tidy places the others from its new width — a model change on an untouched track)

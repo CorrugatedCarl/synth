@@ -7,6 +7,7 @@
 // or pattern ids: the same string appears many times in one document). The Moog set tiles (System 35 / 55: SET_ART, setArt / setChip) are drawn the same way.
 // Rules: plain ES module, no DOM at module top level (pure strings: node-tested); imports carry ?v=9 (models.js, read only).
 import { MODELS } from './models.js?v=9';
+import { KIT } from './kit-core.js?v=9'; // ((DM) KIT.TINT: the six voice colours of the kit tile)
 
 /** Default tile drawing size and the track-row chip size (px). */
 export const TILE = Object.freeze({ w: 96, h: 56 }), CHIP = Object.freeze({ w: 28, h: 18 });
@@ -39,6 +40,7 @@ export const SIL = Object.freeze({
   sdsv: Object.freeze({ body: 'box' }), // (8) a dark rack box (no sequencer: no steps): five knob columns with cream memory keys, two blank plates, the mixer, hexagonal pads in front
   m900: Object.freeze({ body: 'cabinet' }), // (9) the 900 Series: a small dark case of narrow module faces in two tiers over a console strip, coloured cords hanging; no keys, no steps
   rig: Object.freeze({ body: 'cabinet' }), // (WC) the rig: three charcoal faces on a dark rack (screws, knobs, cream-ringed jacks), two cords sagging between them
+  kit: Object.freeze({ body: 'box', steps: 16 }), // (DM) our drum machine: a charcoal case, the Sequencer's step grid (empty), a row of six voice faces
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -524,6 +526,33 @@ const DRAW = {
   },
 };
 
+// (DM, IMPL-DM §4.7; lane U) the kit — ours, the rig's look in miniature: a charcoal case; the Sequencer's face (a cream rule, six rows of sixteen cells —
+// EMPTY, the user's answer: no starter pattern on the tile, the beat columns a shade lighter —, a stripe of each voice's colour at its row's head,
+// one accent mark over step 1) over six small voice faces (a bar of the voice's colour, a black knob with a cream pointer, two cream jacks). Chip size
+// (as the rig's): a mid-grey case, the same seven dark faces, a run of cream cells per row, the colours kept. No text, no logo, no name.
+DRAW.kit = (th, lo) => {
+  const INK = th.ink || '#ebe6d8', A = th.accent || '#e8a33d', FACE = th.face || '#1f2023', LINE = '#2c2e32', OFF = '#2c2e32', BEAT = '#3a3d42', CAP = '#141518', TINT = KIT.TINT.slice(1);
+  let s = shadow(4, 92, 53.4) + RR(3, 3, 90, lo ? 49 : 50, 2.5, lo ? '#55585e' : th.panel || '#17181a') + (lo ? '' : R(5.5, 3.6, 85, 0.5, '#fff', OP(0.06)));
+  s += RR(6, 6, 84, 24, 1.6, FACE, ` stroke="${LINE}" stroke-width="0.5"`) + R(12.5, 7.1, 3.7, 0.9, A);
+  if (!lo) s += R(55, 7.2, 14, 0.8, INK, OP(0.85));
+  for (let r = 0; r < 6; r++) {
+    const y = 9.4 + r * 3.4;
+    s += R(9, y, 1.6, 2.6, TINT[r]);
+    if (lo) s += R(12.5, y, 74, 2.6, INK, OP(0.45));
+    else for (let c = 0; c < 16; c++) s += R(12.5 + c * 4.65, y, 3.7, 2.6, c % 4 === 0 ? BEAT : OFF);
+  }
+  let ptr = '';
+  for (let i = 0; i < 6; i++) {
+    const x = 6 + i * 14.3;
+    s += RR(x, 33, 12.4, 17, 1.2, FACE, ` stroke="${LINE}" stroke-width="0.5"`) + R(x + 1.6, 34.6, 9.2, 1.6, TINT[i]);
+    if (lo) { s += C(x + 6.2, 43, 3.2, INK); continue; }
+    s += C(x + 6.2, 41.4, 3.2, CAP, ' stroke="#3b3d41" stroke-width="0.5"') + C(x + 3.6, 47.3, 1.1, INK) + C(x + 8.8, 47.3, 1.1, INK);
+    const a = -2.3 + 4.6 * rnd(i, 17);
+    ptr += `M${f(x + 6.2)} 41.4L${f(x + 6.2 + Math.sin(a) * 2.5)} ${f(41.4 - Math.cos(a) * 2.5)}`;
+  }
+  return s + (lo ? '' : S(ptr, INK, 0.6));
+};
+
 /* ---------------------------------------------------------------- the set tiles (IMPL-9b §4.3) */
 const fz = Object.freeze;
 /** The Sources tray's set tiles (System 35, System 55, System IIIc) by set id (moog-core FAMILY.sets). outline: the silhouette's polygon in the 96 × 56 design box; rows: module faces per
@@ -646,6 +675,14 @@ const G = {
   fx: '<rect x="7" y="3" width="18" height="26" rx="3" stroke-width="2"/><circle cx="12" cy="10" r="2.2"/><circle cx="20" cy="10" r="2.2"/><rect x="11" y="18" width="10" height="6" rx="1.2" fill="currentColor" stroke="none" opacity="0.6"/>',
   out: '<path d="M5 12h5l7-6v20l-7-6H5z" stroke-width="2" stroke-linejoin="round"/><path d="M21 11c2 2.7 2 7.3 0 10M24.6 7.6c4 4.6 4 12.2 0 16.8"/>',
   pads: '<rect x="4" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="20.6" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="4" y="12.3" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="12.3" width="7.4" height="7.4" rx="1.9" fill="currentColor" stroke="none"/><rect x="20.6" y="12.3" width="7.4" height="7.4" rx="1.9"/><rect x="4" y="20.6" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="20.6" width="7.4" height="7.4" rx="1.9"/><rect x="20.6" y="20.6" width="7.4" height="7.4" rx="1.9"/>',
+  // (DM, IMPL-DM §4.7; lane U) the kit's six voices, stroked: rings spreading from a thump; a shallow drum with its snares; a pair of cymbals on a stand;
+  // two hands meeting with a burst; a deep drum with tension rods; a bell with a strike
+  kick: '<circle cx="16" cy="16" r="3.4" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="8.4" stroke-width="2.2"/><circle cx="16" cy="16" r="13.4" opacity="0.4"/>',
+  snare: '<ellipse cx="16" cy="12" rx="12.5" ry="4.2" stroke-width="2"/><path d="M3.5 12v7.5c0 2.3 5.6 4.2 12.5 4.2s12.5-1.9 12.5-4.2V12" stroke-width="2"/><path d="M7.5 20.6c2.4 1 5.2 1.5 8.5 1.5s6.1-.5 8.5-1.5" opacity="0.5"/>',
+  hat: '<path d="M3 11.5c8-3.4 18-3.4 26 0" stroke-width="2.2"/><path d="M3 17c8 3.4 18 3.4 26 0" stroke-width="2.2"/><path d="M16 3v6M16 20v9" opacity="0.5"/>',
+  clap: '<path d="M3.5 10.5 11.5 16l-8 5.5" stroke-width="2.2"/><path d="M28.5 10.5 20.5 16l8 5.5" stroke-width="2.2"/><path d="M16 4.5v5M11.2 6.6l2 3.4M20.8 6.6l-2 3.4" opacity="0.6"/>',
+  tom: '<ellipse cx="16" cy="9.5" rx="10.5" ry="3.6" stroke-width="2.2"/><path d="M5.5 9.5v12.5c0 2 4.7 3.6 10.5 3.6s10.5-1.6 10.5-3.6V9.5" stroke-width="2.2"/><path d="M11 13.2v10M16 13.8v11.4M21 13.2v10" opacity="0.4"/>',
+  perc: '<path d="M10.5 9h11l4.5 15.5H6z" stroke-width="2.2" stroke-linejoin="round"/><path d="M12.5 9 11.5 5.5h9L19.5 9" opacity="0.6"/><ellipse cx="16" cy="24.5" rx="5" ry="1.4" opacity="0.5"/><path d="M26 5l2.5-2.5M27.5 9.5H31" opacity="0.6"/>'
 };
 /** The glyph kinds (non-instrument modules and later tray sections; 'pads': the Controllers view's Pads tile). */
 export const GLYPHS = Object.freeze(Object.keys(G));

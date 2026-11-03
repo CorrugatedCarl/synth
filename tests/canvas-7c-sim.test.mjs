@@ -22,7 +22,7 @@ import { wavFile } from './smp-files.mjs';
 import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 function scriptedWorld(root) {
   const L = {};
@@ -82,7 +82,7 @@ function trigLog(t) {
 test('the lead\'s fixture check (§11 phase 2): a 909 from the Sources tray\'s Drums view; its DEMO synced from bar 3 — the step posts are the plan\'s steps at the frames its ticks say (SHUFFLE 3: the even-numbered steps 40 whole ticks late), every sounding step one trigger at its post\'s frame with its accents, the snare flam\'s second hit an event of its own 35 ticks after its step; the panel at the heard post', async () => {
   const tiles = sh.shell.tiles;
   tiles.setView('drums');
-  assert.deepEqual(tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['tr808', 'tr606', 'tr909', 'sdsv'], 'the Drums view lists the four machines (8: the SDS-V)');
+  assert.deepEqual(tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['tr808', 'tr606', 'tr909', 'sdsv', 'kit'], 'the Drums view lists the four machines (8: the SDS-V) and (DM) the kit');
   sh.srcPick('tr909', 'replace'); sim.raf(); await settle();
   const t = T(), d = I(t);
   assert.equal(d.model, 'tr909');
@@ -640,7 +640,7 @@ test('a project with all three machines (§6): Save, reopen — each track its m
   api.selectTrack(t9.id); sim.raf(); await settle();
   const tr = [t9.id, t8.id, t6.id], pk0 = tr.map(id => sent(byId(id), 'seq').at(-1).s.pk);
   const txt = await cv.projectFile(), o = JSON.parse(txt);
-  assert.deepEqual([o.schema, CM.SCHEMA], [17, 17], 'schema 17 (stage MM: the master\'s modulators; WC was 16, the rig; SC was 15, sidechain ducking; M was 14, the master; P was 13, no artificial caps; stage 9 was 12, patchable modules; stage 8 was 11, the pad controller and the SDS-V)');
+  assert.deepEqual([o.schema, CM.SCHEMA], [18, 18], 'schema 18 (stage DM: our drum machine; MM was 17: the master\'s modulators; WC was 16, the rig; SC was 15, sidechain ducking; M was 14, the master; P was 13, no artificial caps; stage 9 was 12, patchable modules; stage 8 was 11, the pad controller and the SDS-V)');
   const p = acc.loadProject(JSON.parse(txt), { file: true });
   assert.deepEqual(tr.map(id => CMOD.instOf(p.tracks.find(x => x.id === id)).model), ['tr909', 'tr808', 'tr606']);
   assert.deepEqual(tr.map(id => JSON.stringify(CMOD.instOf(p.tracks.find(x => x.id === id)).drum) === JSON.stringify(D(byId(id)))), [true, true, true], 'the three records round-trip');
@@ -652,7 +652,7 @@ test('a project with all three machines (§6): Save, reopen — each track its m
   const idb = fakeIDB(), seed = await AS.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: CM.SCHEMA });
   seed.saveProject(o); await seed.flush(); await seed.close();
   const old = await AS.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 9 });
-  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 17], 'a schema-9 build: read-only');
+  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 18], 'a schema-9 build: read-only');
   await old.close();
   assert.equal(acc.loadProject(Object.assign(JSON.parse(txt), { schema: CM.SCHEMA + 1 }), { file: true }).newerSchema, CM.SCHEMA + 1, 'a newer file opens read-only here');
   api.deleteTrack(byId(t6.id)); sim.raf(); await settle();

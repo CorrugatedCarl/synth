@@ -55,6 +55,10 @@
 //      song.normMaster), .mods (their cables onto the master rack's knobs, normMods) and .mid: additive, the identity (STEPS[16] changes nothing
 //      stored). A schema-16 build's normMaster whitelists fx and lay only: it would drop all three and autosave the loss — it opens a 17 read-only.
 //      toV1 names them in `lost` (main has no master)
+//  18  stage DM (IMPL-DM §5.6): 17 → 18: our drum machine (model 'kit', `dev.drum` in its shape: song.normDev → drum-core normDrum → kit-core
+//      normKit) — additive, the identity (STEPS[17] changes nothing stored). A schema-17 build would read 'kit' as a Minimoog (modelById's
+//      fallback), drop `drum` — every pattern — and autosave the loss: it opens an 18 read-only (kept against LC's no-step choice: a combiner
+//      survives an old build as plain data, a kit does not). toV1 keeps a kit track's notes and names it like the other drum machines
 // (SX0, IMPL-SX0 §2) No schema: Serum complete left the canvas — serumOut, a load pass inside 17 that upgrade() runs after the steps on every
 // file it does not open read-only, makes each Serum device a <NAME> (model 'rig' exists since 16 and nothing new is stored, so a schema-17 build
 // opens the result fully; a bump would only make it read-only there, IMPL-SX0 §15 P1-1). The identity on a project with no Serum
@@ -126,7 +130,7 @@ import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (sta
 import { RIG, adopt, WORDS as RIG_WORDS } from './rig-core.js?v=9'; // (stage WC: the rig's id and display name — the notes and the lost line read it; (SX0) adopt, mpeLater)
 
 export { schemaOf };
-export const SCHEMA = 17;
+export const SCHEMA = 18;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -190,6 +194,9 @@ export const STEPS = Object.freeze([
   // 16 → 17: stage MM (IMPL-MM §5): project.master.mdev / mods / mid — the master's modulator modules and their cables — are additive: the
   // identity; the bump keeps a schema-16 build from dropping them (its normMaster whitelists fx and lay only) and autosaving the loss
   p => Object.assign({}, p, { schema: 17 }),
+  // 17 → 18: stage DM (IMPL-DM §5.6): a 'kit' device and its `drum` record (kit-core normKit) — additive, the identity; the bump keeps a
+  // schema-17 build from reading the kit as a Minimoog, dropping its patterns and autosaving the loss
+  p => Object.assign({}, p, { schema: 18 }),
 ]);
 
 export function upgrade(o) {

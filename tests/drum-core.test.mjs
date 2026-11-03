@@ -14,6 +14,9 @@
 // hostile input, trim at exact bits), the four-way machine of a record and of a foreign session, mapTable / primaries / drumRows and
 // the roll's rows on GM numbers, the payload (EMPTY_PLAN, trim, pk), one test per press row (map, smp, trim, trimFromKnobs, mute /
 // solo, the notifications, the inputs it ignores), initState, the rest of the surface, and a property run of 4 000 random presses.
+// DM (IMPL-DM §9.2, §14.3 P2 9; lane S; after the 153 tests of 7d + 8, unchanged — their pins of the four machines hold): the five-way
+// dispatch's edges — a kit session under the 808's / 606's / 909's / SDS-V's record becomes theirs (the 808's guard), the kit's
+// stepLen swung, a kit plan through the family's readers (toNotes by plan.vl; the 808's reader never sees one).
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,6 +24,8 @@ import { createHash } from 'node:crypto';
 import * as C from '../drum-core.js?v=9';
 import { drumRowsOf } from '../roll.js?v=9';
 import { dspScope, source } from './dsp-scope.mjs';
+import * as K from '../kit-core.js?v=9';
+import { GROOVE } from './kit-fixtures.mjs';
 
 const arr = a => Array.from(a);
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -2926,7 +2931,7 @@ const TD = C.TRIM_DEF;
 
 test('7d + 8 PERS.sdsv (§11.2): five channels on the 808\'s sound ids 0–4 — bass drum, snare, tom 3 / 2 / 1 low to high —, every list 16 long by sound id, ids 5–15 the 808\'s keys and names kept inert; the GM map, the lane bits, the memories\' ids and our two settings per channel; the table four-way', () => {
   const T = C.PERS.sdsv;
-  assert.deepEqual(Object.keys(C.PERS), ['tr808', 'tr606', 'tr909', 'sdsv']);
+  assert.deepEqual(Object.keys(C.PERS), ['tr808', 'tr606', 'tr909', 'sdsv', 'kit']);
   for (const o of [T, T.sounds, T.names, T.sids, T.map, T.map.bd, T.ch, T.fields, T.trim, T.trim[0], T.trim[4][1]]) assert.ok(Object.isFrozen(o));
   assert.equal(T.id, 'sdsv'); assert.deepEqual(arr(T.sounds), arr(C.SOUNDS)); assert.equal(T.sounds.length, 16); assert.equal(T.names.length, 16);
   assert.deepEqual(arr(T.names).slice(0, 5), ['Bass drum', 'Snare drum', 'Tom 3 (low)', 'Tom 2 (mid)', 'Tom 1 (high)']);
@@ -3350,4 +3355,39 @@ test('7d (the phase-0 merge): drum-core\'s TRIM_DEF equals the machine\'s defaul
   const P = S.global('Dr808').proto.sdsv, T = Array.from(P.TRIMV);
   assert.equal(T.length, 60);
   for (let ch = 0; ch < 5; ch++) for (let m = 0; m < 2; m++) for (let f = 0; f < 6; f++) assert.equal(C.TRIM_DEF[ch][m][f], T[ch * 12 + m * 6 + f], `ch ${ch} mem ${m + 3} f ${f}`);
+});
+
+/* ================================================================== DM: the kit's dispatch edges (IMPL-DM §9.2; lane S) */
+
+test('DM a kit session under another machine\'s record becomes that machine\'s (its transport, position and tempo kept as each one\'s guard keeps them); an 808 / 606 / 909 / SDS-V session under a kit record the kit\'s', () => {
+  const KS = { ...K.initState(), play: true, bpm: 133, pos: { s: 3, m: 0, k: 0, o: 720, M: 2, F: 9 }, hits: [[0, 0]] };
+  const r8 = C.press(KS, DEF, { k: 'rec', v: true }).state;
+  assert.deepEqual(Object.keys(r8).sort(), Object.keys(C.initState()).sort(), 'the 808\'s session');
+  assert.deepEqual([r8.play, r8.bpm, r8.pos, 'm' in r8, 'hits' in r8], [true, 133, KS.pos, false, false]);
+  for (const m of ['tr606', 'tr909', 'sdsv']) {
+    const q = C.press(KS, C.normDrum(undefined, m), { k: 'bpm', v: 90 }).state;
+    assert.deepEqual(Object.keys(q).sort(), Object.keys(C.initState(m)).sort(), m);
+    assert.deepEqual([q.play, q.bpm], [true, 90], m);
+  }
+  const D = K.starter();
+  for (const m of [undefined, 'tr606', 'tr909', 'sdsv']) {
+    const q = C.press({ ...C.initState(m), play: true }, D, { k: 'bpm', v: 91 }).state;
+    assert.deepEqual([q.m, q.play, q.bpm, q.hits], ['kit', true, 91, []], String(m));
+  }
+});
+
+test('DM stepLen (the host\'s TAP / REC fraction) for a kit: its 16ths swung by x.swing on the odd step, the measure\'s last step back on the beat; the pattern heard (P.k) gives the length', () => {
+  const D = K.normKit({ ...JSON.parse(JSON.stringify(K.starter())), pat: [GROOVE, { len: 12 }], x: { swing: 62 } });
+  const L = (s, k = 0) => C.stepLen(D, { s, m: 0, k, o: 0, M: 0, f: 0 });
+  assert.deepEqual([L(0), L(1), L(14), L(15), L(10, 1), L(11, 1), L(12, 1)] /* (12: past LENGTH, unswung) */, [298, 182, 298, 182, 298, 182, 240]);
+  assert.deepEqual([C.stepLen(K.starter(), null), C.stepLen(K.starter(), { s: 15, k: 0 }), C.stepLen(D, { s: 3, k: 9 })], [240, 240, 182]);
+});
+
+test('DM a kit plan through drum-core\'s readers (§3.6, P1-1): toNotes keys the kit\'s branch on plan.vl — slot 0 and slots 12–15 read; the 808\'s reader (lanes 1–11, bit 0 the accent) is never handed a kit plan; planTicks reads it as any plan', () => {
+  const D = K.normKit({ ty: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5], map: { ka: [36], kp: [77] }, pat: [{ len: 2, cells: [{ l: 0, s: 0, v: 90 }, { l: 15, s: 1, v: 20 }] }] });
+  const p = C.compilePlan(D, D.ui, D.x), o = C.rollOpts(D, { model: 'kit', vals: {} });
+  assert.deepEqual(C.toNotes(p, { t0: 0, t1: 960, ...o }), [{ t: 0, d: 120, n: 36, v: 90 }, { t: 240, d: 120, n: 77, v: 20 }, { t: 480, d: 120, n: 36, v: 90 }, { t: 720, d: 120, n: 77, v: 20 }]);
+  assert.deepEqual(C.planTicks(p), { intro: 0, cycle: 480, total: 480 });
+  const p808 = C.compilePlan(DEF);
+  assert.equal(p808.vl, undefined, 'an 808 plan has no vl (its reader as today)');
 });

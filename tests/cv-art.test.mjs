@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as A from '../cv-art.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import { KIT } from '../kit-core.js?v=9';
 
 // a tiny well-formedness check: every opened element is closed in order (self-closing ones skipped)
 function balanced(svg) {
@@ -61,7 +62,7 @@ test('chip(): the CHIP size and a simpler level of detail than the tile; glyph()
     assert.ok(count(c, /<[a-z]+ /g) < count(t, /<[a-z]+ /g), m.id + ': fewer elements than the tile');
     assert.ok(balanced(c), m.id + ': well formed');
   }
-  assert.deepEqual([...A.GLYPHS].sort(), ['env', 'filter', 'fx', 'lfo', 'macro', 'noise', 'osc', 'out', 'pads', 'sub', 'velo', 'voice', 'wheel']);
+  assert.deepEqual([...A.GLYPHS].sort(), ['clap', 'env', 'filter', 'fx', 'hat', 'kick', 'lfo', 'macro', 'noise', 'osc', 'out', 'pads', 'perc', 'snare', 'sub', 'tom', 'velo', 'voice', 'wheel']);
   for (const k of A.GLYPHS) {
     const g = A.glyph(k, { w: 40, h: 24 });
     assert.match(g, /^<svg [^>]*viewBox="0 0 40 24" width="40" height="24"/, k);
@@ -317,4 +318,46 @@ test('(WC pre-deploy [chip-art]) the rig\'s chip reads on the dark chrome: its c
   // the tile (≥ 48 px wide) keeps its drawing: the rack th.panel, black knob caps with cream pointers
   assert.equal(count(A.art('rig'), /fill="#17181a"/g), 1);
   assert.equal(count(A.art('rig'), /<circle [^>]*fill="#141518"/g), 9);
+});
+
+// (DM, IMPL-DM §4.7; lane U) the kit's tile — ours: a charcoal case, the Sequencer's face (six rows of sixteen cells, EMPTY — the user's answer: no
+// starter pattern on the tile — a stripe of each voice's colour at the row's head, the beat columns lighter, one accent mark over step 1) over six
+// small voice faces (a bar of the voice's colour, a black knob with a cream pointer, two jacks); and the six voice glyphs, stroked
+const TINT = KIT.TINT.slice(1), hexOf = c => c.slice(1);
+test('(DM) the kit\'s tile: the Sequencer\'s face with six rows of sixteen EMPTY cells (72 dark, the 24 beat cells lighter — nothing lit), a stripe of each voice\'s colour at its row\'s head, six voice faces with a bar, a knob and two jacks; ours: no text, no maker, no machine name', () => {
+  assert.deepEqual([A.SIL.kit.body, A.SIL.kit.steps, A.SIL.kit.keys], ['box', 16, undefined]);
+  const t = A.art('kit'), c = A.chip('kit');
+  assert.match(t, /data-art="kit"/);
+  assert.equal(count(t, /fill="#2c2e32"/g), 72, 'the off cells');
+  assert.equal(count(t, /fill="#3a3d42"/g), 24, 'the beat cells (steps 1 5 9 13 of the six rows)');
+  assert.equal(count(t, /<rect [^>]*fill="#1f2023"/g), 7, 'the Sequencer\'s face and the six voice faces');
+  for (const col of TINT) assert.equal(count(t, new RegExp(`fill="${col}"`, 'g')), 2, col + ': the row\'s stripe and the voice face\'s bar, no lit cell');
+  assert.equal(count(t, /r="3.2" fill="#141518"/g), 6, 'six knobs');
+  assert.equal(count(t, /r="1.1" fill="#ebe6d8"/g), 12, 'two jacks a face');
+  assert.equal(count(t, /fill="#e8a33d"/g), 1, 'one accent mark: step 1');
+  // the chip: the case lighter than the chrome, the faces and the six colours kept, far fewer elements
+  assert.match(c, /fill="#55585e"/);
+  assert.equal(count(c, /<rect [^>]*fill="#1f2023"/g), 7);
+  for (const col of TINT) assert.equal(count(c, new RegExp(`fill="${col}"`, 'g')), 2, col + ': kept at chip size');
+  assert.ok(count(c, /<[a-z]+ /g) < count(t, /<[a-z]+ /g) / 3 && balanced(c) && balanced(t), 'the chip: far fewer elements; both well formed');
+  for (const s of [t, c, A.art('kit', { w: 300, h: 120 })]) assert.ok(!/808|909|606|roland|simmons|serum|xfer|wavecraft/i.test(s.replace('data-art="kit"', '')), 'no other machine\'s or maker\'s name, no product name');
+  assert.notEqual(t, A.art('rig'));
+  assert.notEqual(t, A.art('tr808'));
+});
+
+test('(DM) the six voice glyphs (kick, snare, hat, clap, tom, perc — the ids of KIT.TYPES): each drawn in currentColor strokes in the 32 × 32 box, several shapes, all different, no text, no name of another instrument', () => {
+  const ids = KIT.TYPES.slice(1).map(ty => ty.id);
+  assert.deepEqual(ids, ['kick', 'snare', 'hat', 'clap', 'tom', 'perc']);
+  assert.ok(ids.every(k => A.GLYPHS.includes(k)), 'in GLYPHS');
+  const seen = new Set();
+  for (const k of ids) {
+    const g = A.glyph(k);
+    assert.match(g, new RegExp(`data-glyph="${k}"`), k);
+    assert.match(g, /stroke="currentColor"/, k);
+    assert.ok(count(g, /<(path|circle|ellipse|rect)\b/g) >= 2, k + ': some drawing');
+    assert.ok(balanced(g) && !/<text|<image|href|url\(|#[0-9a-f]{3,6}/i.test(g), k + ': well formed; monochrome');
+    assert.ok(!/808|909|606|roland|simmons|serum|xfer/i.test(g), k);
+    assert.ok(!seen.has(g.replace(`data-glyph="${k}"`, '')), k + ': differs from the others');
+    seen.add(g.replace(`data-glyph="${k}"`, ''));
+  }
 });

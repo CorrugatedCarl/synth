@@ -4,7 +4,7 @@
 // (every track's Effects panel on the canvas, the FX look) lay their faces on it — one family, one set of numbers.
 //   GRID            unit 8 · column 64 · side padding 16 (width 64·n + 32) · top 12 / bottom 16 · row gap 12 · rows head 32,
 //                   screen 112 | 128, knobs 76, switches 32, jacks 56 · the knob cell 64 × 76 · a box 28 · hits 44 · the font minima ·
-//                   the fill band G11 measures
+//                   the fill band G11 measures · (DM §4.1) steps: a step-grid row 48 · its ruler 24 (the drum machine's Sequencer, kit-ui)
 //   rowH(t, h) · faceW(n) · layoutOf(recipe) → { w, h, cols, rows: [{ t, top, h, cells: [{ alts, span, grow, jack, col, cx }] }] }
 //                   (recipe.mid: a short row centred exactly — col may be a half; the FX faces)
 //   gridVars()      the --rig-* declarations (a rule body) · cssText() the grid CSS · ensureRigCSS(doc) (once per document, #rig-css)
@@ -17,6 +17,7 @@ export function deepFreeze(o) { if (o && typeof o === 'object' && !Object.isFroz
 export const GRID = deepFreeze({
   u: 8, col: 64, pad: 16, top: 12, bottom: 16, gap: 12,
   rows: { head: 32, screen: 112, screenL: 128, knobs: 76, switches: 32, jacks: 56 },
+  steps: { cell: 48, ruler: 24 },                              // (DM §4.1) the step grid: a row (a cell 64 × 48), the step numbers' ruler
   knob: 40, knobTop: 4, labGap: 6, lab: 14, val: 12,           // the knob cell (64 × 76)
   box: 28, boxW: 40, boxMax: 56, sw: 56,                       // a num / toggle / menu box at the knob's centre line; a switch
   jack: 28, jackTop: 4, jackGap: 6, jackLab: 12, hit: 44,      // the jack cell (64 × 56): 4 · jack 28 · 6 · label 12 · 6; every hit ≥ 44

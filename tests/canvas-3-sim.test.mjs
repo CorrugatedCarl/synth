@@ -32,7 +32,7 @@ import * as RU from '../rig-ui.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once — a pending one would hold each
 // destroyed host for wk.js's give-up timer (the fixture check's lesson)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
   const L = {};
@@ -131,7 +131,7 @@ test('the sim\'s null DSP globals cover main.js\'s whole DSP list (IMPL-9 §3.7\
   const r = await Promise.race([wk.loadDSP(list), new Promise(res => { tm = setTimeout(() => res('waited'), 1500); })]);
   clearTimeout(tm);
   assert.notEqual(r, 'waited', 'a script with no defined global is injected and never loads in this DOM: the load waits for its give-up timer');
-  assert.deepEqual([list.length, Object.keys(r).length, Object.values(r).every(v => v === null)], [17, 17, true]); // ((M) master-dsp.js: MASTERDSP
+  assert.deepEqual([list.length, Object.keys(r).length, Object.values(r).every(v => v === null)], [18, 18, true]); // ((M) master-dsp.js: MASTERDSP; (DM) kit-dsp.js: DrKit
 });
 
 // ((SX0) the Serum half — a Serum carrying the parts flag stays the whole panel; the model swap keeps the host — left with the bundled model;

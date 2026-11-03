@@ -15,11 +15,19 @@
 // 7d + 8 (IMPL-8 §15.4, lane S5; after the 41 tests of 7c, unchanged): the SDS-V's EMPTY_PLAN — valid, silent through every clock
 // path (free, synced, a start / seek / loop wrap / stop, a swap to and from a real plan), events() past every span, no allocation —
 // and `trim` kept by set() as `smp` is (and absent from the other machines' payloads).
+// DM (IMPL-DM §3.6, §8 G4, §14.2 P1-1; lane S; after the 47 tests of 7d + 8, unchanged): our drum machine's plan — 16 lanes, slot j
+// = bit j, no accent bit, `vl` its velocities: valid() checks vl (a Uint8Array of 16 a step); fire's kit branch (fireK) —
+// dm.trig(mask, vl, 16 · o), a slot-0-only step and slots 12–15 fire, drStep (the lowest primary, the highest velocity / 127),
+// drNote once per lane (its primary, its velocity / 127: a Ducker keyed by the kick's note ducks on each kick step); the fixture
+// groove's steps ≡ the same hits as roll notes through the song path (D3) at swing 50 / 62 / 75; a pattern swap and a LENGTH change
+// at the measure's end, a mute in place; no allocation.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as C from '../drum-core.js?v=9';
+import * as K from '../kit-core.js?v=9';
 import { dspScope, noAlloc, source } from './dsp-scope.mjs';
+import { GROOVE } from './kit-fixtures.mjs';
 
 const clone = x => JSON.parse(JSON.stringify(x));
 const SCOPE = dspScope({ files: [] });
@@ -1266,4 +1274,117 @@ test('7d + 8 trim (§11.3): set() keeps the payload\'s `trim` as it keeps `smp` 
     assert.ok(!('trim' in s), String(m)); q2.set(s);
   }
   assert.equal(q2.trim, null);
+});
+
+/* ================================================================== DM: our drum machine's plan (IMPL-DM §3.6, G4; lane S) */
+
+// the Starter machine with the fixture groove; o: fields over the record
+const kitD = (o = {}) => K.normKit({ ...clone(K.starter()), pat: [GROOVE], ...o });
+// every hit of a kit step [F, slot, velocity] from the logged trig(mask, vl, o) calls; the same from the song path's notes
+const kitTrig = T => T.targs.flatMap(([F, mask, vl, o]) => { const out = []; for (let j = 0; j < 16; j++) if (mask >> j & 1) out.push([F, j, vl[o + j]]); return out; })
+  .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+test('DM valid() (§3.6, P2 8): a kit plan is valid; `vl` must be a Uint8Array of ≥ 16 a step — short, another type, a plain array: refused with one warning, the playing plan kept; an 808 / 606 / 909 / SDS-V plan has none and is as before', () => {
+  const S = dspScope({ files: [] }); S.run(source('dr-seq.js'), 'dr-seq.js');
+  const D = S.global('DrSeq'), p = K.compilePlan(kitD());
+  assert.ok(D.valid(p), 'the kit\'s plan');
+  const L12 = K.compilePlan(kitD({ pat: [{ ...GROOVE, len: 12 }] }));
+  assert.ok(D.valid(L12) && L12.vl.length === 192);
+  const q = D.create({ base: 48000, tp: { play: false } });
+  q.set({ plan: p });
+  for (const vl of [new Uint8Array(255), new Uint8Array(0), new Uint16Array(256), new Float32Array(256), Array.from(p.vl), 'x', 7, {}, new Int8Array(256)]) {
+    assert.equal(D.valid({ ...p, vl }), false, String(vl && vl.constructor && vl.constructor.name));
+    q.set({ plan: { ...p, key: 'bad', vl }, at: 'now' });
+  }
+  assert.equal(D.valid({ ...L12, vl: new Uint8Array(191) }), false);
+  assert.equal(q.pl, p);
+  assert.equal(S.logs.filter(l => l.level === 'warn').length, 1, 'one warning');
+  assert.equal(D.valid({ ...p, vl: null }), true, 'vl null: no kit plan (the family\'s reading)');
+});
+
+test('DM fireK (§3.6, P1-1): a kit step fires dm.trig(mask, vl, 16 · o) with all 16 lanes — a kick-only step on slot 0 fires, slots 12–15 fire; drStep(the lowest primary, the highest velocity / 127); drNote once per sounding lane with that lane\'s primary and velocity / 127', () => {
+  const ty = [1, 2, 4, 3, 3, 5, 5, 6, 0, 0, 0, 0, 1, 2, 3, 6], map = { ka: [36], kb: [38], kc: [39], kd: [42], ke: [46], kf: [45], kg: [50], kh: [37], km: [60], kn: [61], ko: [62], kp: [63] };
+  const cells = [{ l: 0, s: 0, v: 100 }, { l: 12, s: 1, v: 30 }, { l: 13, s: 1, v: 31 }, { l: 14, s: 1, v: 127 }, { l: 15, s: 1, v: 33 }, { l: 3, s: 2, v: 64 }, { l: 7, s: 2, v: 90 }];
+  const D = K.normKit({ ty, map, pat: [{ len: 4, cells }] }), s = K.payload(D, K.initState());
+  const T = rig(), notes = [];
+  T.inst.drNote = (q, v) => notes.push([T.spanF, q, v]);
+  T.q.set(s); T.play(0, 0, 120); T.until(Math.ceil(960 * 2 * T.fptOf(120)) + 128);
+  const fpt = T.fptOf(120), tr = T.targs.slice(0, 6);
+  assert.deepEqual(tr.map(e => [e[1], e[2] === s.plan.vl, e[3]]), [[1, true, 0], [0xF000, true, 16], [0b10001000, true, 32], [1, true, 0], [0xF000, true, 16], [0b10001000, true, 32]], 'trig(mask, vl, 16 · o): step 1 slot 0 alone, step 2 slots 12–15, step 3; the 4-step loop');
+  tr.forEach((e, j) => near4(e[0], [0, 240, 480, 960, 1200, 1440][j] * fpt, 'step ' + j));
+  assert.deepEqual(T.stepPosts().slice(0, 4).map(q => [q.s, q.m, q.k, q.v, q.p, q.M]), [[0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0], [3, 0, 0, 0, 0, 0]], 'a post at every step (step 4 empty)');
+  assert.deepEqual(T.steps.slice(0, 3).map(e => [e[0], e[1], e[2]]), [[tr[0][0], 36, 100 / 127], [tr[1][0], 60, 127 / 127], [tr[2][0], 37, 90 / 127]], 'drStep: the lowest primary, the highest velocity / 127');
+  assert.deepEqual(notes.slice(0, 7), [[tr[0][0], 36, 100 / 127], [tr[1][0], 60, 30 / 127], [tr[1][0], 61, 31 / 127], [tr[1][0], 62, 127 / 127], [tr[1][0], 63, 33 / 127], [tr[2][0], 42, 64 / 127], [tr[2][0], 37, 90 / 127]],
+    'drNote per lane: its primary, its velocity');
+  assert.ok(!T.targs.some(e => e[1] === 0), 'an empty step triggers nothing');
+  // a Ducker keyed by the kick's note: one drNote(36) per kick step of the groove
+  const G = rig(), kick = [];
+  G.inst.drNote = (q, v) => { if (q === 36) kick.push([G.spanF, v]); };
+  const gp = K.payload(kitD(), K.initState());
+  G.q.set(gp); G.play(0, 0, 120); G.until(Math.ceil(3840 * 2 * G.fptOf(120)) - 128);
+  assert.deepEqual(kick.map(e => e[1]), new Array(8).fill(100 / 127), 'the kick on 1 · 5 · 9 · 13 of two bars');
+  kick.forEach((e, j) => near4(e[0], j * 960 * G.fptOf(120), 'kick ' + j));
+  // an unmapped slot: its lanes still fire (the machine's trig), no drNote / no lastNote for it
+  const U = rig(), un = [];
+  U.inst.drNote = (q, v) => un.push(q);
+  const s2 = K.payload(K.normKit({ ty: [1], map: {}, pat: [{ len: 1, cells: [{ l: 0, s: 0, v: 100 }] }] }));
+  U.q.set(s2); U.play(0, 0, 120); U.until(1024);
+  assert.deepEqual([U.targs[0][1], un, U.steps[0][1]], [1, [], -1]);
+});
+
+test('DM D3 (§3.6, G4): the fixture groove as steps ≡ the same hits as roll notes (kit-core toNotes through drum-core\'s rollPlan / rollOpts: LC\'s marks) through the song path — bit-identical frames and velocities at 120 BPM / 48 kHz, swing 50 / 62 / 75; at 97 BPM on the same 4-frame grid point or the next; a 12-step pattern too', () => {
+  for (const len of [16, 12]) for (const [bpm, pct, exact] of [[120, 50, true], [120, 62, true], [120, 75, true], [97, 62, false]]) {
+    const D = kitD({ pat: [{ ...GROOVE, len }], x: { ...K.starter().x, swing: pct } }), s = K.payload(D, K.initState());
+    const bars = 6, t1 = 3840 * bars, Fend = Math.floor((t1 * (48000 * 60 / (bpm * 960))) / 128 - 1) * 128, msg = `len ${len} ${bpm}/${pct}`;
+    const A = rig(); A.q.set(s); A.play(0, 0, bpm); A.until(Fend);
+    const notes = C.toNotes(C.rollPlan(D, bpm, K.initState()), { t0: 0, t1, ...C.rollOpts(D, { model: 'kit', vals: {} }) });
+    const B = rig(); B.setNotes(notes); B.play(0, 0, bpm); B.until(Fend);
+    const a = kitTrig(A), b = noteHits(B, s.map);
+    assert.ok(a.length > 80, msg + ': a busy pattern');
+    assert.equal(b.length, a.length, msg + ': the same number of hits');
+    if (exact) assert.deepEqual(b, a, msg + ': bit-identical');
+    else b.forEach((h, j) => { const q = a[j]; assert.deepEqual([h[1], h[2]], [q[1], q[2]], msg); assert.ok(Math.abs(h[0] - q[0]) <= 4 && h[0] % 4 === 0 && q[0] % 4 === 0, `${msg} hit ${j}: ${h[0]} vs ${q[0]}`); });
+  }
+});
+
+test('DM synced like the family (§3.3): a start at bar 9 lands where the machine would be from bar 1; a pattern swap (\'bar\') and a LENGTH change wait for the measure\'s end; a cell edit and a mute (\'now\', the same shape) in place', () => {
+  const D = kitD(), S0 = K.initState(), fpt = 48000 * 60 / (120 * 960);
+  // bar 9 mid-measure: the cursor at the first step at or after the position, M counting from tick 0
+  const A = rig(); A.q.set(K.payload(D, S0)); A.play(0, 3840 * 8 + 1000, 120); A.until(128 * 100);
+  assert.deepEqual(A.stepPosts().slice(0, 2).map(q => [q.s, q.M]), [[5, 8], [6, 8]], '1000 ticks into bar 9: step 6 (1200) next');
+  // a swap to pattern B at 'bar' while playing; then a 12-step LENGTH at 'bar' (another shape)
+  const B = rig(); B.q.set(K.payload(D, S0)); B.play(0, 0, 120);
+  B.until(Math.ceil(1000 * fpt));
+  const toB = K.press({ ...S0, play: true }, K.press(S0, D, { k: 'cell', lane: 1, step: 0, v: 99 }).mem, { k: 'pat', p: 1 });
+  assert.deepEqual(toB.cmds, [{ c: 'send', at: 'bar' }]);
+  const Db = K.press(S0, toB.mem, { k: 'cell', lane: 1, step: 0, v: 99 }).mem; // (B's own first step: the snare)
+  B.q.set(K.payload(Db, toB.state, 'bar'));
+  B.until(Math.ceil(3840 * 2 * fpt) + 128);
+  const ks = B.stepPosts().map(q => [q.k, q.M, q.s]);
+  assert.ok(ks.filter(e => e[1] === 0).every(e => e[0] === 0) && ks.filter(e => e[1] === 1).every(e => e[0] === 1), 'A to its end, then B');
+  assert.deepEqual(B.targs.filter(e => e[0] >= Math.ceil(3840 * fpt) - 4).slice(0, 1).map(e => e[1]), [2], 'B\'s step 1: its snare');
+  const L = K.press({ ...S0, play: true }, Db, { k: 'len', n: 12 });
+  assert.deepEqual(L.cmds, [{ c: 'send', at: 'bar' }]);
+  B.q.set(K.payload(L.mem, L.state, 'bar'));
+  B.until(Math.ceil(3840 * 4 * fpt) + 128);
+  const after = B.stepPosts().filter(q => q.M === 3);
+  assert.equal(after.length, 12, 'the measure after the change: 12 steps');
+  // a mute ('now', the same shape): in place — the very next kick step is silent
+  const M = rig(); M.q.set(K.payload(D, S0)); M.play(0, 0, 120); M.until(Math.ceil(500 * fpt));
+  const mu = K.press({ ...S0, play: true }, D, { k: 'mute', lane: 0 });
+  assert.deepEqual(mu.cmds, [{ c: 'send', at: 'now' }]);
+  M.q.set(K.payload(mu.mem, mu.state, 'now')); M.until(Math.ceil(3840 * fpt));
+  assert.deepEqual(M.targs.map(e => e[1] & 1), [1, 0, 0, 0, 0, 0, 0, 0, 0], 'the kick on step 1 only (the mute in place before step 5)');
+});
+
+test('DM no allocation in events() with kit plans (fireK, drStep, drNote, swaps, re-anchors) over many spans', () => {
+  const T = rig(); T.inst.drNote = () => {};
+  const D = kitD({ x: { ...K.starter().x, swing: 62 } }), S0 = K.initState();
+  T.q.set(K.payload(D, S0)); T.play(0, 0, 160); T.run(256);
+  const p2 = K.payload(kitD({ pat: [{ ...GROOVE, len: 12 }] }), S0, 'bar'), p3 = K.payload(K.press(S0, D, { k: 'mute', lane: 3 }).mem, S0, 'now');
+  noAlloc(SCOPE, () => {
+    T.run(48000 * 2); T.q.set(p2); T.run(48000); T.q.set(p3); T.run(48000);
+    T.play(T.frames + 64, 3840 * 7 + 11, 140); T.run(48000);
+  });
+  assert.ok(T.stepPosts().length > 40 && T.targs.length > 20, T.stepPosts().length + ' / ' + T.targs.length);
 });

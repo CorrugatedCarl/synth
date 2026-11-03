@@ -21,7 +21,7 @@ import * as COSTM from '../cv-cost.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 // the cord layer's stand-in (IMPL-9 §7.4's interface): every call recorded, the last set / anchors kept
 const CORDS = { calls: [], list: null, anchors: null, on: null };
@@ -435,7 +435,7 @@ test('§1.1 / §6: Save / reload identical (schema 16 since stage WC, 15 at SC, 
   const t = T(), d = dev(t), m993 = midOf('993');
   cv.patch.knobSet(t, d, m993, 'e1', 1); await settle();
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.equal(p2.schema, 17); // ((MM) 17 since the master's modulators)
+  assert.equal(p2.schema, 18); // ((MM) 17 since the master's modulators)
   for (const x of P().tracks) {
     const u = p2.tracks.find(y => y.id === x.id), k = CMOD.primId(x);
     if (!cv.isPatchDev(x, k)) continue;

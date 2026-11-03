@@ -98,6 +98,20 @@ test('IMPL-8 §12.7: the SDS-V is costed by its bench row dvp the same way — m
   assert.equal(C.label(e), '~1 %');
 });
 
+// (DM, IMPL-DM §7.2; lane V's measured dkp 0.0066–0.0067, the node target 0.012) our drum machine the family's way: mono, its bench row dkp,
+// under the target, under the 808; the notes never add (its voices are the machine's, not a note's)
+test('IMPL-DM §7.2: our drum machine is costed by its bench row dkp — mono, under the node target, under the 808', () => {
+  const c = C.COST.synth.kit, e = C.estimate('kit');
+  assert.deepEqual([c.row, c.family, c.poly], ['dkp', 'drums', 1]);
+  assert.deepEqual(BENCH.targets.dkp, { node: 0.012, ipad: 0.012 });
+  assert.ok(e >= 0.4 * BENCH.targets.dkp.node && e <= BENCH.targets.dkp.node, 'kit ' + e + ' vs dkp ' + BENCH.targets.dkp.node);
+  near(e, 0.0067, 0.02, 'kit vs the measured dkp');
+  assert.ok(e < C.estimate('tr808'), 'under the 808');
+  assert.equal(C.estimate('kit', 1, { notes: 8 }), e);
+  assert.equal(C.estimate(syn('kit', {}), 2), 2 * e);
+  assert.equal(C.label(e), '~1 %');
+});
+
 // IMPL-9 §3.8: no voices — the patch itself: base (the Inst's decimators + the Track, spike (a)) + every module with a cord at lane
 // V9b's measured cost (a section's where it splits: the 995, the controller); MAIN OUT unpatched → idle; no record → Classic bass
 test('IMPL-9 §3.8: the 900 Series is costed by its patch — base + each module (or section) with a cord at V9b\'s costs, MAIN OUT unpatched idle, no record = Classic bass under its row m9p; mono, linear in the factor', async () => {
@@ -434,12 +448,12 @@ test('the Worker body renders the rows (vm worker): DSP scripts + engine.js load
   for (const [id, x] of Object.entries(last.loads)) assert.ok(Number.isFinite(x) && x > 0 && x < 5, id + ' ' + x);
   const files = W.urls.map(u => u.slice('https://synth.test/app/'.length, -4));
   assert.deepEqual(files, ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'engine.js']);
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'kit-dsp.js', 'dr-seq.js', 'mod-core.js', 'engine.js']);
   assert.equal(W.g.SxBase.getAsset('msmp:bench'), null, 'the row assets are dropped after the row');
   // a second run in the same worker loads nothing again; a silent row (no notes) is an error, not a load
   const c1 = C.deviceRows()[0];
   W.send({ t: 'run', rows: [Object.assign({}, c1, { notes: [] })], runs: 1, seconds: 0.02 });
-  assert.equal(W.urls.length, 15);
+  assert.equal(W.urls.length, 16);
   assert.equal(JSON.stringify(W.posted[W.posted.length - 1]), JSON.stringify({ t: 'error', err: 'row c1 rendered silence' }));
   const n = W.posted.length;
   W.g.onmessage({ data: { t: 'other' } });

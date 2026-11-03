@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fresh, raf, ptr, fire, key, place, advance } from './wk-dom.mjs';
 import * as T from '../cv-tray.js?v=9';
 import { MODELS, classicOf } from '../models.js?v=9';
+import { KIT } from '../kit-core.js?v=9';
 import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
 import * as cvArt from '../cv-art.js?v=9';
@@ -841,13 +842,13 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), got = [], picks = [];
   const S = T.sourcesTray(list, { models: MODELS, pick: (id, m) => picks.push([id, m]), drag: {}, layoutEl: host, secEl: sec, noteEl: note, view: 'drums', onView: v => got.push(v) });
   const [btn, menu] = host.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  const drums = MODELS.filter(m => m.family === 'drums').map(m => m.id), tile = S.tiles().find(b => b.getAttribute('data-model') === 'tr808'), tile6 = S.tiles().find(b => b.getAttribute('data-model') === 'tr606'), tile9 = S.tiles().find(b => b.getAttribute('data-model') === 'tr909'), tileV = S.tiles().find(b => b.getAttribute('data-model') === 'sdsv');
+  const drums = MODELS.filter(m => m.family === 'drums' && m.id !== 'kit').map(m => m.id), tile = S.tiles().find(b => b.getAttribute('data-model') === 'tr808'), tile6 = S.tiles().find(b => b.getAttribute('data-model') === 'tr606'), tile9 = S.tiles().find(b => b.getAttribute('data-model') === 'tr909'), tileV = S.tiles().find(b => b.getAttribute('data-model') === 'sdsv');
   assert.deepEqual(drums, ['tr808', 'tr606', 'tr909', 'sdsv']);
   assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
-    ['drums', 'hw', ['tr808', 'tr606', 'tr909', 'sdsv'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
+    ['drums', 'hw', ['tr808', 'tr606', 'tr909', 'sdsv', 'kit'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw); (DM) the kit\'s tile after the four machines');
   assert.equal(note.textContent, 'More machines later.');
   assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', RIG.NAME, 'Modulators', 'Drums', 'Controllers', 'Moog modules']);
-  assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
+  assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Our drum machine and the classic ones'); // ((DM, IMPL-DM §4.7) was 'Drum machines with their real front panel')
   // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
   assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
     [['cv-tart', 'cv-tname', 'cv-tmeta'], '1980 · drum machine', null]);
@@ -880,7 +881,7 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   }
   S.setView(RIG.VIEW); assert.deepEqual(shown(), [RIG.ID]); // ((SX0) a view of one model tile: the rig's, where the Serum's was
   btn.click(); menu.children[4].click(); // ((SX0) Drums, one lower)
-  assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606', 'tr909', 'sdsv']], 'picked: layout hw (a drum machine has no Simple layout)');
+  assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606', 'tr909', 'sdsv', 'kit']], 'picked: layout hw (a drum machine has no Simple layout)');
   tile.click(); tile6.click(); tile9.click(); tileV.click();
   assert.deepEqual(picks, [['tr808', 'replace'], ['tr606', 'replace'], ['tr909', 'replace'], ['sdsv', 'replace']], 'a tap picks any of them as any instrument');
   S.destroy();
@@ -2120,4 +2121,178 @@ test('index.html / style.css (MM, IMPL-MM §7.3): the .cv-mside rule is narrowed
   assert.ok(css.indexOf('\n.cv-mnote {') > css.indexOf('#srcTray.cv-mside #srcLayout') && css.indexOf('\n.cv-mnote {') < css.indexOf('the rig\'s modules (stage WC'), 'next to the rule, before the rig\'s block');
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(html, /<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>/, 'the section\'s heading is the HTML\'s: "Modulators" on the master too');
+});
+
+/* ---------------------------------------------------------------- stage DM: the kit's tile and the six drum modules (IMPL-DM §4.7, lane U) */
+const KIT_NAME = RIG.NAME + ' ' + KIT.WORD, KIT_IDS = ['kick', 'snare', 'hat', 'clap', 'tom', 'perc'], BAD = /\b(808|909|606)\b|roland|simmons|serum|xfer/i;
+// the Drums view's rig: the host's section and box for the voice tiles (o.kit true: KIT_TILES), every drag callback logged (info.kit, the world point)
+function kitRig(o = {}) {
+  const d = fresh();
+  raf.install();
+  const tray = mkEl(d, 'aside', 'srcTray'), list = d.createElement('div'), sec = d.createElement('section'), box = d.createElement('div'), layer = mkEl(d, 'div', 'ov');
+  sec.hidden = true; sec.append(box);
+  tray.append(list, sec);
+  place(tray, 0, 100, 284, 600);
+  const log = [], picks = [];
+  const S = T.sourcesTray(list, Object.assign({
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), kit: true, kitEl: box, kitSec: sec, view: 'drums',
+    overOf: (t, x, y) => (y < 100 ? 'tracks' : x > 300 ? 'canvas' : null), canvasGhost: () => true, toWorld: (x, y) => ({ x: x * 2, y: y - 100 }),
+    drag: {
+      begin: (id, i) => log.push('begin ' + id + ' ' + i.over + (i.kit ? ' kit' : '')),
+      move: (id, i) => log.push('move ' + i.over),
+      drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.kit ? ' kit' : '') + (i.at ? ' @' + i.at.x + ',' + i.at.y : '')); return !!i.over; },
+      cancel: id => log.push('cancel ' + id),
+    },
+  }, o));
+  return { d, tray, list, sec, box, layer, S, log, picks };
+}
+
+test('sourcesTray (DM): KIT_TILES — the six voices by the ids and names of KIT.TYPES (Kick · Snare · Hi-hat · Clap · Tom · Perc), scope "track", frozen; KIT_FULL; the Drums view\'s sections — the kit tile, the Drum modules, the classic machines — and its tip', () => {
+  assert.deepEqual(T.KIT_TILES.map(t => [t.id, t.name, t.scope]), KIT_IDS.map((id, i) => [id, KIT.TYPES[i + 1].label, 'track']));
+  assert.deepEqual(T.KIT_TILES.map(t => t.name), ['Kick', 'Snare', 'Hi-hat', 'Clap', 'Tom', 'Perc']);
+  assert.deepEqual(T.KIT_TILES.map(t => t.type), [1, 2, 3, 4, 5, 6], 'the TYPE value a tile adds');
+  assert.ok(Object.isFrozen(T.KIT_TILES) && T.KIT_TILES.every(Object.isFrozen));
+  assert.equal(T.KIT_FULL, '16 drums is the most');
+  const V = T.SRC_VIEWS.find(v => v.id === 'drums');
+  assert.deepEqual([V.label, V.tip, V.layout, V.note], ['Drums', 'Our drum machine and the classic ones', 'hw', 'More machines later.']);
+  assert.deepEqual(V.sections.map(x => x.id), ['kit', 'kitmods', 'drums']);
+  assert.deepEqual([V.sections[1].head, typeof V.sections[0].models, typeof V.sections[2].models], ['Drum modules', 'function', 'function']);
+  const kit = MODELS.find(m => m.id === 'kit'), t808 = MODELS.find(m => m.id === 'tr808');
+  assert.deepEqual([V.sections[0].models(kit), V.sections[0].models(t808), V.sections[2].models(kit), V.sections[2].models(t808)], [true, false, false, true], 'the kit has a section of its own; the classic machines\' filter excludes it');
+});
+
+test('sourcesTray (DM): the kit\'s tile — a model tile in the Drums view after the four machines, named from the model (the display name, one line), its own art, "2026 · drum machine", no SIMPLE badge, no aria text; our words in the tip, no other machine\'s name; a tap picks "kit" in the tray\'s mode; not in the other views', () => {
+  const R = kitRig(), tile = R.S.tiles().find(b => b.getAttribute('data-model') === 'kit');
+  assert.ok(tile, 'a tile');
+  assert.deepEqual(R.S.tiles().map(b => b.getAttribute('data-model')).at(-1), 'kit', 'MODELS order: the kit tile last, after the four machines');
+  assert.deepEqual([tile.children.map(c => c.className), tile.children[1].textContent, tile.children[2].textContent, tile.getAttribute('aria-description'), tile.hidden],
+    [['cv-tart', 'cv-tname', 'cv-tmeta'], KIT_NAME, '2026 · drum machine', null, false]);
+  assert.match(tile.children[0].innerHTML, /data-art="kit"/);
+  assert.equal(tile.title, `${KIT_NAME} (2026) — our own drum machine: a step grid and a module for each drum, every sound synthesized, no recordings — tap to use it, or drag it onto the canvas or the track list`);
+  assert.ok(!BAD.test(tile.title + tile.textContent + tile.children[0].innerHTML), tile.title);
+  assert.ok(!/undefined|null/.test(tile.title + tile.textContent), 'no maker word to fall back to');
+  tile.click();
+  R.S.setMode('track');
+  tile.click();
+  assert.deepEqual(R.picks, ['kit:replace', 'kit:track']);
+  for (const v of ['hw', 'flow', RIG.VIEW, 'mods', 'ctl', 'moog']) { R.S.setView(v); assert.equal(tile.hidden, true, v); }
+  R.S.setView('drums');
+  assert.deepEqual(R.S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['tr808', 'tr606', 'tr909', 'sdsv', 'kit']);
+  R.S.destroy();
+});
+
+test('sourcesTray (DM): o.kit — the six drum-module tiles in the host\'s box and section, headed "Drum modules", shown in the Drums view only; markup as the rig\'s module tiles (an original stroked glyph of cv-art, the name, a hidden reason), data-kit and data-scope "track"; tiles() stays the models\'; a tap picks in the tray\'s mode (kitPick, else pick)', () => {
+  const R = kitRig(), S = R.S;
+  assert.deepEqual([R.sec.hidden, S.kitTiles().map(b => b.getAttribute('data-kit')), R.box.children.length, S.tiles().length], [false, KIT_IDS, 6, MODELS.length]);
+  assert.deepEqual([R.sec.children[0].tagName, R.sec.children[0].className, R.sec.children[0].textContent, R.sec.getAttribute('aria-label')], ['H3', 'cv-tgrp', 'Drum modules', 'Drum modules'], 'the heading written into the host\'s section');
+  for (const [i, id] of KIT_IDS.entries()) {
+    const b = S.kitTile(id), name = T.KIT_TILES[i].name;
+    assert.deepEqual([b.tagName, b.className, b.type, b.getAttribute('data-scope'), b.children.map(c => c.className), b.children[1].textContent, b.children[2].hidden, b.children[0].getAttribute('aria-hidden')],
+      ['BUTTON', 'cv-tile cv-mtile cv-ktile', 'button', 'track', ['cv-mglyph', 'cv-tname', 'cv-treason'], name, true, 'true'], id);
+    assert.equal(b.children[0].innerHTML, cvArt.glyph(id, { w: 40, h: 28 }), id + ': cv-art\'s glyph');
+    assert.equal(b.title, `${name} — tap to add a ${name} drum to this track's ${KIT_NAME} (or start a ${KIT_NAME} with it), or drag it onto the canvas`, id);
+    assert.ok(!BAD.test(b.title + b.textContent + b.children[0].innerHTML), id);
+  }
+  assert.deepEqual([S.kitTile('nope'), S.kitTiles().length], [null, 6]);
+  for (const v of ['hw', 'flow', RIG.VIEW, 'mods', 'ctl', 'moog']) { S.setView(v); assert.equal(R.sec.hidden, true, v + ': no drum modules'); }
+  S.setView('drums');
+  assert.equal(R.sec.hidden, false);
+  S.kitTile('snare').click();
+  S.setMode('track');
+  S.kitTile('perc').click();
+  assert.deepEqual(R.picks, ['snare:replace', 'perc:track']);
+  S.destroy();
+  assert.deepEqual([R.box.children.length, R.sec.children.length], [0, 1], 'destroy takes the tiles and the heading (the box stays: the host\'s)');
+  const mp = [], l = fresh().createElement('div'), S2 = T.sourcesTray(l, { models: MODELS.slice(0, 1), kit: true, pick: () => mp.push('pick'), kitPick: id => mp.push('kitPick ' + id), drag: {}, view: 'drums' });
+  S2.kitTile('kick').click();
+  assert.deepEqual(mp, ['kitPick kick'], 'kitPick wins');
+  S2.destroy();
+});
+
+test('sourcesTray (DM): the drum modules drag out as the rig\'s module tiles — over the canvas or the track list, info.kit, info.at in world px; the ghost is the glyph, hidden over the canvas while kitCanvasGhost says the world draws an outline; kitDrag wins over drag; a flick cancels', () => {
+  const R = kitRig(), t = R.S.kitTile('hat'), tp = { pointerType: 'touch' };
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 112, 302, at(tp));
+  assert.deepEqual([R.log, R.layer.children[0].className], [['begin hat null kit', 'move null'], 'cv-tghost touch cv-mghost']);
+  assert.equal(R.layer.children[0].children[0].innerHTML, cvArt.glyph('hat', { w: 40, h: 28 }), 'the ghost wears the glyph');
+  ptr(t, 'pointermove', 400, 300, at(tp));
+  assert.deepEqual([R.log.at(-1), R.layer.children[0].classList.contains('off'), R.layer.children[0].children[1].textContent], ['move canvas', false, '+ Add Hi-hat']);
+  TS += 150;
+  ptr(t, 'pointermove', 402, 301, at(tp)); ptr(t, 'pointerup', 402, 301, at(tp));
+  assert.equal(R.log.at(-1), 'drop hat canvas kit @804,201');
+  assert.equal(R.layer.children.length, 0);
+  R.log.length = 0;
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 120, 300, at(tp)); ptr(t, 'pointermove', 200, 50, at(tp));
+  assert.equal(R.layer.children[0].children[1].textContent, '+ New track', 'over the track list: a new track with it');
+  TS += 150;
+  ptr(t, 'pointermove', 202, 51, at(tp)); ptr(t, 'pointerup', 202, 51, at(tp));
+  assert.equal(R.log.at(-1), 'drop hat tracks kit @404,-49');
+  R.log.length = 0;
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 120, 300, at(tp)); ptr(t, 'pointermove', 500, 300, at(tp)); ptr(t, 'pointerup', 500, 300, at(tp));
+  assert.deepEqual(R.log.slice(-1), ['cancel hat'], 'flicked');
+  R.S.destroy();
+  const R2 = kitRig({ kitCanvasGhost: () => true, canvasGhost: () => false }), t2 = R2.S.kitTile('kick');
+  ptr(t2, 'pointerdown', 100, 300, at(tp)); ptr(t2, 'pointermove', 112, 302, at(tp)); ptr(t2, 'pointermove', 400, 300, at(tp));
+  assert.equal(R2.layer.children[0].classList.contains('off'), true);
+  ptr(t2, 'pointercancel', 400, 300, at(tp));
+  R2.S.destroy();
+  const own = [], R3 = kitRig({ kitDrag: { begin: (id, i) => own.push('kit begin ' + id + (i.kit ? ' kit' : '')), move() {}, drop: () => true, cancel() {} } });
+  ptr(R3.S.kitTile('tom'), 'pointerdown', 100, 300, at(tp)); ptr(R3.S.kitTile('tom'), 'pointermove', 112, 302, at(tp));
+  assert.deepEqual(own, ['kit begin tom kit']);
+  ptr(R3.S.kitTile('tom'), 'pointercancel', 112, 302, at(tp));
+  R3.S.destroy();
+});
+
+test('sourcesTray (DM): setKitPlaced greys one voice tile with its reason and setKitFull all six ("16 drums is the most": aria-disabled, cv-placed, the reason shown, the title) — then they neither pick nor drag; null gives them back; the tiles are never multi-only', () => {
+  const R = kitRig(), S = R.S, k = S.kitTile('clap'), tp = { pointerType: 'touch' };
+  S.setKitFull(T.KIT_FULL);
+  assert.deepEqual(S.kitTiles().map(b => [b.classList.contains('cv-placed'), b.getAttribute('aria-disabled'), b.children[2].textContent]), KIT_IDS.map(() => [true, 'true', '16 drums is the most']));
+  assert.deepEqual([k.children[2].hidden, k.title, S.kitPlaced('clap')], [false, 'Clap — 16 drums is the most', '16 drums is the most']);
+  k.click();
+  ptr(k, 'pointerdown', 100, 300, at(tp)); ptr(k, 'pointermove', 112, 302, at(tp)); ptr(k, 'pointermove', 400, 300, at(tp));
+  TS += 150;
+  ptr(k, 'pointermove', 402, 301, at(tp)); ptr(k, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual([R.picks, R.log, R.layer.children.length], [[], [], 0], 'no pick, no drag, no ghost');
+  S.setKitFull(null);
+  assert.deepEqual([k.classList.contains('cv-placed'), k.hasAttribute('aria-disabled'), k.children[2].hidden, k.title, S.kitPlaced('clap')], [false, false, true, `Clap — tap to add a Clap drum to this track's ${KIT_NAME} (or start a ${KIT_NAME} with it), or drag it onto the canvas`, null]);
+  S.setKitPlaced('tom', 'x');
+  assert.deepEqual(S.kitTiles().map(b => b.classList.contains('cv-placed')), [false, false, false, false, true, false], 'one alone');
+  S.setKitPlaced('tom', null); S.setKitPlaced('nope', 'x');
+  k.click();
+  assert.deepEqual(R.picks, ['clap:replace']);
+  S.destroy();
+});
+
+test('sourcesTray (DM): without the host\'s box — with secEl a section "kitmods" of its own (heading, tiles), else a heading and the tiles after the models in the list; hidden outside the Drums view; the master canvas hides them; no o.kit: the tray as it was (no section, no tile)', () => {
+  const d = fresh(), list = d.createElement('div'), sc = d.createElement('div');
+  d.body.append(list, sc);
+  const S = T.sourcesTray(list, { models: MODELS.slice(0, 2), kit: true, secEl: sc, pick() {}, drag: {}, view: 'drums' });
+  const sec = sc.children.find(c => c.getAttribute('data-sec') === 'kitmods');
+  assert.deepEqual([sc.children.length /* the rig's two placeholders and this one */, sec.className, sec.getAttribute('aria-label'), sec.children.map(c => c.tagName + ':' + c.className), sec.children[0].textContent, sec.children[1].children.length, sec.hidden],
+    [3, 'cv-tsec cv-psec', 'Drum modules', ['H3:cv-tgrp', 'DIV:cv-tiles cv-ptiles'], 'Drum modules', 6, false]);
+  S.setView('hw'); assert.equal(sec.hidden, true);
+  S.setView('drums'); assert.equal(sec.hidden, false);
+  S.setMaster(true); assert.equal(sec.hidden, true, 'the master: no drum modules');
+  S.setMaster(false); assert.equal(sec.hidden, false);
+  S.destroy();
+  assert.equal(sc.children.length, 0, 'destroy takes the section');
+  const l2 = d.createElement('div'), S2 = T.sourcesTray(l2, { models: MODELS.slice(0, 2), kit: true, pick() {}, drag: {}, view: 'drums' });
+  assert.deepEqual(l2.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-kit'))), [MODELS[0].id, MODELS[1].id, '#Drum modules', ...KIT_IDS]);
+  assert.deepEqual(l2.children.map(n => n.hidden), [true, true, false, false, false, false, false, false, false]);
+  S2.setView('hw');
+  assert.deepEqual(l2.children.map(n => n.hidden), [false, false, true, true, true, true, true, true, true]);
+  S2.destroy();
+  const l3 = d.createElement('div'), sc3 = d.createElement('div'), S3 = T.sourcesTray(l3, { models: MODELS.slice(0, 2), secEl: sc3, pick() {}, drag: {} });
+  assert.deepEqual([l3.children.length, sc3.children.length, S3.kitTiles().length, S3.kitTile('kick')], [2, 2, 0, null], 'no o.kit: only the rig\'s two placeholders (as before)');
+  S3.destroy();
+});
+
+test('sourcesTray (DM, G11): our own — no other machine\'s name or maker ("808", "909", "606", Roland, Simmons, Serum, Xfer) in the kit tile\'s title / text / art, the six voice tiles, the Drums tip, KIT_FULL, or in cv-tray.js\'s kit code (the display name only through the model)', () => {
+  const R = kitRig();
+  const all = [R.S.tiles().find(b => b.getAttribute('data-model') === 'kit'), ...R.S.kitTiles()].map(b => b.title + b.textContent + b.children[0].innerHTML).join('\n');
+  assert.ok(!BAD.test(all), 'tiles');
+  assert.ok(!BAD.test(T.SRC_VIEWS.find(v => v.id === 'drums').tip + T.KIT_FULL + T.KIT_TILES.map(t => t.name).join()));
+  R.S.destroy();
+  const code = readFileSync(new URL('../cv-tray.js', import.meta.url), 'utf8').split('\n').map(l => l.replace(/\/\/.*$/, '')).filter(l => /kit/i.test(l)).join('\n');
+  assert.ok(code.length > 300, 'the kit code was found');
+  assert.ok(!BAD.test(code) && !/wavecraft/i.test(code), 'no literal name in the kit code');
 });

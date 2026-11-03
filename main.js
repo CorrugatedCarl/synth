@@ -1,4 +1,4 @@
-import { MODELS, DX_ALGS, patchFor, groupSong, classicOf as isClassicModel, isSxModel, isRigModel, isSxId } from './models.js?v=9'; // ((9) classicOf as isClassicModel: main's classicOf is the classic-panel lookup)
+import { MODELS, DX_ALGS, patchFor, groupSong, classicOf as isClassicModel, isSxModel, isRigModel, isSxId, isKitModel } from './models.js?v=9'; // ((9) classicOf as isClassicModel: main's classicOf is the classic-panel lookup)
 import * as S from './song.js?v=9';
 import { PianoRoll, drumRowsOf } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
@@ -32,7 +32,7 @@ import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas, menuOpen as wkMenuOpen, contextMenu as wkContextMenu, discBox as wkDiscBox, clock as wkClock, popSkin as wkPopSkin, rescaleCanvases as wkRescale, reducedMotion as wkReduced } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom; a kit menu open: the canvas Delete key; (IMPL-FR §1) the frame clock)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
-import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf, numsOf as modNumsOf, modBarSub } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units; (MOD1 §2.2) a track's own device numbers of a kind; (review 2) a bar's sub-label by its face's columns)
+import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf, numsOf as modNumsOf, modBarSub, NOMOD_KIT } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units; (MOD1 §2.2) a track's own device numbers of a kind; (review 2) a bar's sub-label by its face's columns)
 import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-modlayer.js?v=9';
 // milestone 3 (IMPL-3 §2.4–2.7, lane D): a Serum taken apart — its parts as modules of one host (sx-host / sx-ui-mod, loaded
 // with the panels), its internal cables as views of its state (sx-edges)
@@ -56,6 +56,10 @@ import * as cvPads from './cv-pads.js?v=9';
 import * as PT from './patch-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
 import * as cvPatch from './cv-patch.js?v=9';
+// stage DM (IMPL-DM §4.6, §5; lane H): our drum machine — kit-core's record and rules (KC: starter, reconcile, names), kit-ui's faces
+// (kitHost: the Sequencer, the voices as 'pm' modules, their sizes and Tidy's rack)
+import * as KC from './kit-core.js?v=9';
+import { kitHost } from './kit-ui.js?v=9';
 // stage M (IMPL-M §3, §5.1, §5.3; lane U): the master OUT (scope, loudness, true peak, correlation, A/B, Mono) and the Master row
 import * as MUI from './master-ui.js?v=9';
 import * as MOTION from './motion.js?v=9'; // ((FR Cut B, IMPL-FR-B §3) the heard-time anchor ring: the fast lane's consumers (§5.3)
@@ -174,6 +178,7 @@ function defaults(m) {
 function loadVals(m) {
   if (isSxModel(m)) return defaults(m);
   if (m.family === 'patch') return defaults(m); // ((9) no last-used values: a patch's knobs belong to its record — save() keeps none)
+  if (isKitModel(m)) return defaults(m); // ((DM §1.2) a new kit is the Starter kit: its voices belong with its record — save() keeps none
   return Object.assign(defaults(m), store.get('synth.v.' + m.id, {}));
 }
 // (milestone 3, R2) a track's instruments are read as devices — instOf(t, dev) (cv-model: the primary by default), a device
@@ -194,6 +199,10 @@ const isRigDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return 
 // record ((7c §6) the record's m — an 808's has none — against the model: three ways, never the binary 606 test)
 const isDrumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && S.isDrum(d.model); };
 const drumDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isDrumDev(t, k)) : []);
+// (DM, IMPL-DM §5) our drum machine (model 'kit'): a drum machine of the family (isDrumDev holds) whose voices are vals (TYPE > 0) and
+// whose record dev.drum is kit-core's — its Sequencer the instrument's module, its voices 'pm' modules 'iN/k<s>' (kitHost)
+const isKitDev = (t, dev) => isDrumDev(t, dev) && t.dev[dev].model === KC.KIT.ID;
+const kitDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isKitDev(t, k)) : []);
 // (9, IMPL-9 §1.2, §6) a 900 Series (models.js family 'patch', model m900) is a device too: its modules and cords in dev.patch
 // (patch-core's record — normPatch: a fresh one, the controller alone, when missing), its knobs in vals (the controller's flat
 // ids; vals.p the modules', `_t`-tagged); the track's notes play its controller (the engine's kind 'patch')
@@ -323,6 +332,7 @@ function loadProject(json, lo = {}) {
   adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
   for (const t of p.tracks) normDevs(t); // (SPEC-serum2 §12.6, §15.1 item 6: every device normalised; saved with v2 racks)
   for (const t of p.tracks) for (const k of patchDevs(t)) t.dev[k].vals = PT.pruneVals(t.dev[k].vals, patchOf(t, k)); // ((9, §1.2) a 900 Series' orphan knobs go at a load only — History's restores keep them, §1.5)
+  for (const t of p.tracks) for (const k of kitDevs(t)) kitRec(t, k); // ((DM §5.4) a kit's record reconciled with its vals: a file's ty that disagrees, a missing note
   CMOD.prunePads(p); // ((8, review #28) a row whose Pads module or mod pad is gone — a partial or hostile file —, a lay entry of a missing module)
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
@@ -414,7 +424,7 @@ function save(now) {
   // the per-model value memory (R6: the current instrument's view, written per model as before — a new instrument of the
   // model starts there, loadVals)
   const iv = curView(), m = modelById(iv.model);
-  if (!isSxModel(m) && m.family !== 'patch' && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals); // ((9) a patch's knobs belong to its record: none kept)
+  if (!isSxModel(m) && m.family !== 'patch' && !isKitModel(m) && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals); // ((9) a patch's knobs belong to its record: none kept)
   // = song.serialize; never carries embedded wavetables (only saved files do, §7.10). Read-only (schema gate: the store
   // locked, or a newer file's project current): no project autosave — saveNow still writes the pending keys
   const ro = roNow();
@@ -926,7 +936,7 @@ const trackOS = (tr, sr) => { const d = instOf(tr); return isSxRec(d) ? sxOSFor(
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
 // injected on the main thread (wk.loadDSP) for the panels' displays.
 const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js', 'master-dsp.js']; // ((M) the master meters, last)
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'kit-dsp.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js', 'master-dsp.js']; // ((M) the master meters, last; (DM) our drum machine's voices after dr-808.js)
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
   const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));
@@ -1960,7 +1970,7 @@ function keepDevs(t, cur) {
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id], c = cur.dev[id];
     if (!d || !c || typeof d !== 'object' || typeof c !== 'object' || d.kind !== c.kind) continue;
-    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; if (c.drum) d.drum = c.drum; } if (c.seq) d.seq = c.seq; } // ((7a §6) a drum machine's pattern memory as the 303's)
+    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; if (c.drum && d.model !== KC.KIT.ID) d.drum = c.drum; } if (c.seq) d.seq = c.seq; } // ((7a §6) a drum machine's pattern memory as the 303's; (DM §5.5) never a kit's: ↶ / ↷ move its pattern — its knobs kept)
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
   const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
@@ -1976,9 +1986,10 @@ function applyRestore(p, keepSound = false) {
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
   const ptSeq = keepSound && p.uid === project.uid && ptBack && Array.isArray(ptBack.mv.seq) && ptBack.mv.seq.length ? ptBack.mv : null; // ((9b, review 2 F1) a preset step's sequencers)
-  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); keepMaster(p, project); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5; (M) the master rack, §2.3)
+  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); keepMaster(p, project); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); if (kitBack) kitBackApply(p, kitBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5; (M) the master rack, §2.3)
   else { for (const t of p.tracks) seedPend.add(t.id); seedPend.add(MASTER); if (p !== project) abEnd(); } // a loaded project re-seeds the racks' LFO phases (the master's too); (M, R1-3) and ends the A/B (its match belongs to the old master)
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
+  for (const t of p.tracks) for (const k of kitDevs(t)) kitRec(t, k); // ((DM §5.4) every kit's record from its vals (its voices): after the knobs kept, kitBack
   recCutMark(p); // ((R review R-1) the notes of keys still down, found again in the restored tracks: kept out of the songs sent below)
   const prevSel = project.selTrack;
   project = p;
@@ -1993,6 +2004,7 @@ function applyRestore(p, keepSound = false) {
   for (const t of project.tracks) { sendPatch(t); sendSong(t, true); for (const k of drumDevs(t)) drumSend(t, k); for (const k of patchDevs(t)) patchSend(t, k); } // ((7a) its payload, when it changed; (9) a 900 Series' graph)
   if (ptSeq) { const t = project.tracks.find(x => x.id === ptSeq.trackId); if (t && isPatchDev(t, ptSeq.dev)) ptStart(t, ptSeq.dev, ptSeq.seq); } // ((9b, review 2 F1) the clocks as the restored knobs say)
   renderAll(!keepSound || prevSel !== project.selTrack);
+  kitSyncAll(); // ((DM) the voice faces re-read their vals (a TYPE back) and records
   ptShow(); // ((9) the cords from the restored record, the faces' knobs)
   if (T.playing) reanchor(false);
   roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
@@ -2004,15 +2016,15 @@ function undo(own) {
   PATCH.cancel();
   if (own !== true && T.rec && T.step !== T.pass && recDropPass()) { updateUndoUI(); return; } // ((R review R-2) the pass in progress held its only content)
   const p = hist.undo(project), rec = !!p && recHold(); // ((R-5) an undo that finds nothing changes nothing)
-  modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false);
-  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; if (rec) recResume(); }
+  modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false); kitBack = p && kitBackOf(hist.r[hist.r.length - 1], false);
+  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; kitBack = null; if (rec) recResume(); }
   updateUndoUI();
 }
 function redo() {
   PATCH.cancel();
   const p = hist.redo(project), rec = !!p && recHold();
-  modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true);
-  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; if (rec) recResume(); }
+  modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true); kitBack = p && kitBackOf(hist.u[hist.u.length - 1], true);
+  try { if (rec) keepArm(p); applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; kitBack = null; if (rec) recResume(); }
   updateUndoUI();
 }
 // (R) an undo / redo while recording: the notes held now are the undone pass's — dropped, never committed (the restore's own
@@ -2604,7 +2616,7 @@ function setTrackModel(tr0, id, o = null) {
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'instrument'); // ((U10) the device being replaced, by its name)
-  const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev), wasRig = isRigDev(tr, dev);
+  const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev), wasRig = isRigDev(tr, dev), wasKit = isKitDev(tr, dev);
   if (wasPatch) { PATCH.cancel(); PATCH.lamps(tr, dev, null); } // ((9b) its lamps' queue goes with it)
   const rigM = isRigModel(m), keep = rigM && !!o && !!o.keepLay && !!o.vals;
   const sm = CMOD.setModel(tr, dev, id, keep ? { vals: o.vals, preset: o.preset == null ? null : o.preset } : { vals: rigM && o && o.module ? { s: RC.rigBlank() } : loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
@@ -2613,7 +2625,9 @@ function setTrackModel(tr0, id, o = null) {
   // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
   // too: a switch away and to, the new machine's own record (normDrum(·, id)), its payload forced after the patch below (the
   // engine keeps one that overtakes the patch in drPend: its m names the machine)
-  if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (S.isDrum(id)) d.drum = DC.normDrum(undefined, id); else delete d.drum; drumForget(tr, dev); }
+  if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (id === KC.KIT.ID) kitNew(d, o && o.kv); else if (S.isDrum(id)) d.drum = DC.normDrum(undefined, id); else delete d.drum; drumForget(tr, dev); } // ((DM §1.2) a kit: the Starter's voices on an empty grid, or (a voice tile) that one voice
+  // ((DM §4.5) a kit leaves with its voices' places, one arrives with its rack under the Sequencer's place (Tidy's when it has none)
+  if (wasKit || id === KC.KIT.ID) { if (tr.lay && typeof tr.lay === 'object') { const lay = Object.assign({}, tr.lay); for (const k of Object.keys(lay)) if (k.startsWith(dev + '/')) delete lay[k]; tr.lay = lay; } if (id === KC.KIT.ID) kitRelay(tr, dev, null); }
   // (9, §1.4, §6) a 900 Series arrives with the Model 15 set as Classic bass — or (o.pm: a module tile) the controller and that
   // module —, its payload forced after the patch below; one leaves with its record, its knobs (vals.p) and its modules' places
   if (wasPatch || PT.isPatchModel(id)) {
@@ -2633,7 +2647,7 @@ function setTrackModel(tr0, id, o = null) {
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
     renderPanel(tr, dev);
-    if (PT.isPatchModel(id) && cvView && cvView.trackId === tr.id) cvCamRestore(tr); // ((9, §4.5) its rack framed — unless the user's camera is stored for the track)
+    if ((PT.isPatchModel(id) || id === KC.KIT.ID) && cvView && cvView.trackId === tr.id) cvCamRestore(tr); // ((9, §4.5) its rack framed — unless the user's camera is stored for the track; (DM §4.5) a kit's Sequencer)
     if (wasPatch || PT.isPatchModel(id) || wasRig || isRigModel(m)) ptShow(); // ((9) its cords, or none; (WC) a rig's buffer, or none)
   }
   sendPatch(tr);
@@ -2844,6 +2858,7 @@ function renderPanel(t = trk(), dev = curOf(t)) {
   const iv = instView(t, dev), m = modelById(iv.model), key = t.id + '/' + dev, el = instEl(t, dev);
   const old = classicPanels.get(key);
   if (old) { old.destroy(); classicPanels.delete(key); }
+  kitSeqDrop(key); // ((DM) a kit's Sequencer face: built again below, or gone with the model
   if (!el) return;
   for (const [k, P] of classicPanels) if (P.root === el) { P.destroy(); classicPanels.delete(k); } // (a panel built there under another key)
   for (const a of ['style', 'data-hw', 'data-ptr', 'data-knurl', 'data-cap']) el.removeAttribute(a); // (a hardware panel's size and --hw-* go)
@@ -2851,6 +2866,7 @@ function renderPanel(t = trk(), dev = curOf(t)) {
   const cur = t === trk() && dev === curOf(t);
   if (isSxModel(m)) { renderCustom(el, t, dev); cvPanelDone(); return; }
   sxDropEl(el);
+  if (isKitDev(t, dev)) { el.className = 'inst custom m-kit'; kitSeqs.set(key, { el, V: KITUI.face('seq', el, { t, dev }) }); if (cur) aboutUI(m); cvPanelDone(); return; } // ((DM §4.2) our drum machine: its Sequencer (kit-ui), no hardware panel; (review R2-1 / R2-9) the rig's host classes — no .inst padding, no old panel's
   const L = instUi(t, dev) === 'hw' ? hwLayoutOf(m) : null;
   classicPanels.set(key, new ClassicPanel(el, { track: iv, model: m, layout: L, host: classicHost })); // (Hardware: presets through the chip and the ⋯ menu)
   if (t.dev && CG.modRowsFor(t, dev).length) cpHalos(t, dev); // (2b: its halos, the monitor subscription)
@@ -4662,6 +4678,7 @@ function ptErr(t, d) {
 // a synced machine with a step that sounds plays with no notes (the bounce's "audible", §4.4 — the 303's syncedOf)
 function drumAudible(t, dev) {
   const D = drumOf(t, dev);
+  if (D && DC.isKit(D)) { const p = DC.compilePlan(D, D.ui, D.x); return !!p.vl && p.st.some(m => m !== 0); } // ((DM §3.6, P1-1) a kit's plan: 16 lanes, slot 0 = bit 0, no accent bit
   return !!D && D.x.sync && DC.compilePlan(D, D.ui, D.x).st.some(m => (m & 0xFFE) !== 0);
 }
 // TEMPO / FINE while synced set the project tempo (§13 answer 1) — the tempo box's path, one History step per gesture
@@ -5008,6 +5025,7 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   if (o && o.ui === 'flow' && isClassicModel(m)) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
   adopt(project);
+  if (isKitModel(m)) kitNew(t.dev[CMOD.primId(t)], o && o.kv); // ((DM §1.2) the Starter's voices on an empty grid, or (a voice tile on the track list) that voice
   if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults; 7b: its machine's)
   if (m.family === 'patch') patchNew(t, CMOD.primId(t), o && o.pm, o && o.set); // ((9, §1.4) the Model 15 set as Classic bass, or (a module tile) the controller and that module; (9b) a set tile's set
   if (isRigModel(m) && o && o.module) rigFirst(t, CMOD.primId(t), o.module); // ((WC, integration fixer L — review WC-int B4) a module tile's new track: the blank and that module, as its Replace (setTrackModel o.module)
@@ -6574,6 +6592,7 @@ function srcPick(id, mode) {
   if (mode === 'track') { addTrack(modelById(id), null, { ui }); srcModeUI('replace'); return; }
   if (PT.isPatchModel(id) && ptSet()) return; // ((9, §1.4) the Model 15 tile on a 900 Series: Classic bass as a preset, never a same-model Replace)
   if (rigTile(id)) return; // ((WC, §3.5) the rig tile on a rig: its starter as a preset-style load
+  if (kitTile(id)) return; // ((DM §1.2) the kit tile on a kit: the Starter's sounds as a preset, the patterns kept
   if (!cvDropInstrument(id, null, { ui }, v)) setTrackModel(v, id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
@@ -6609,6 +6628,7 @@ const srcDrag = {
     if (cvMaster) { notice(MASTER_SRC, 4000); return true; } // ((M, §5.2) refused, said
     if (PT.isPatchModel(id) && ptSet()) return true; // ((9) the Model 15 tile dropped on a 900 Series: as its tap)
     if (rigTile(id)) return true; // ((WC) the rig tile dropped on a rig: as its tap
+    if (kitTile(id)) return true; // ((DM) the kit tile dropped on a kit: as its tap
     if (!cvDropInstrument(id, rect, { ui })) setTrackModel(curView(), id, { ui }); // (the same model: only the layout, if asked)
     return true;
   },
@@ -6703,7 +6723,10 @@ function initShell() {
     // (9b, IMPL-9b §4.3) the set tiles System 35 / System 55 after the Model 15 tile: a tap / a drop loads the set on the shown
     // 900 Series (laid out), else makes one (a Replace, + Track); greyed by ptTray when the patch cannot hold the set
     // (review 2 N1: the rack outline is pinned to the instrument, never under the finger — mostly off screen over the default Minimoog —, so the tile's own ghost stays with the finger over the canvas too)
-    sets: cvTray.SET_TILES, setPick: (id, mode) => setPick(id, mode), setDrag, setCanvasGhost: () => false, setCost: id => setCost(id) });
+    sets: cvTray.SET_TILES, setPick: (id, mode) => setPick(id, mode), setDrag, setCanvasGhost: () => false, setCost: id => setCost(id),
+    // (DM, IMPL-DM §1.2, §4.7) the Drums view's drum modules (Kick … Perc): a tap / a drop adds the voice to the shown kit, else makes one (a Replace,
+    // + Track); greyed at 16 drums (kitTray)
+    kit: true, kitPick: (id, mode) => kitPick(id, mode), kitDrag, kitCanvasGhost: () => !!world && !$('#tab-inst').hidden });
   srcModeUI('replace');
   costLabels();
   // ⚙ → Measure this device (its line in the Canvas section): the Sources tiles' and the "+" menus' load labels follow this device's speed
@@ -6902,7 +6925,7 @@ const andList = L => (L.length > 1 ? L.slice(0, -1).join(', ') + ' and ' + L[L.l
 function cvDelOf(t, key) {
   const kind = kindOfKey(t, key);
   if (kind === 'mod') return () => modDelete(key);
-  if (kind === 'pm') { const q = pmOf(t, key); return () => PATCH.remove(q.mid); }
+  if (kind === 'pm') { const kq = kitOf(t, key); if (kq) return () => kitRemove(t, kq.dev, kq.slot); const q = pmOf(t, key); return () => PATCH.remove(q.mid); } // ((DM) a kit voice: its Remove
   if (kind === 'part') return () => sxRemovePart(key);
   return null;
 }
@@ -6947,10 +6970,13 @@ function cvDeleteSel(ids) {
 function histFold(mk, label) {
   const r = mk && hist.fold(mk);
   if (!r) return null;
-  const st = r.step, partMeta = m => !!m && Array.isArray(m.f) && !!m.dev;
-  const sx = [...(st.meta !== mk.meta && partMeta(st.meta) ? [st.meta] : []), ...r.metas.filter(partMeta)]; // (on the kept step: set in this press — a path's)
+  const st = r.step, ms = [...(st.meta !== mk.meta && st.meta ? [st.meta] : []), ...r.metas]; // (on the kept step: set in this press — a path's)
+  const partMeta = m => !!m && Array.isArray(m.f) && !!m.dev && m.kit !== 1, kitMeta = m => !!m && m.kit === 1 && Array.isArray(m.f);
+  const sx = ms.filter(partMeta), kx = ms.filter(kitMeta); // ((DM) a kit's voices: kitBack's own shape, every field, the first step's preset before and the last's after)
   if (sx.length === 1) st.meta = sx[0];
   else if (sx.length > 1) st.meta = { trackId: sx[0].trackId, dev: sx[0].dev, parts: sx.map(m => m.part), f: sx.flatMap(m => m.f) };
+  else if (kx.length === 1) st.meta = kx[0];
+  else if (kx.length > 1) st.meta = { kit: 1, trackId: kx[0].trackId, dev: kx[0].dev, f: kx.flatMap(m => m.f), p: [kx[0].p ? kx[0].p[0] : null, kx.at(-1).p ? kx.at(-1).p[1] : null] };
   st.label = label;
   return st;
 }
@@ -7013,7 +7039,7 @@ function cvLive(key) {
 }
 const kindOfKey = (t, key) => {
   if (PC.PAD_ID.test(key)) return padMod(key) ? 'mod' : null; // ((8, §1.1) a Pads module: the project's, a modulator-kind module on every track)
-  if (pmOf(t, key)) return 'pm'; // ((9, §4.1) a 900 Series' module 'iN/m<k>': a part of its instrument, no device of its own)
+  if (pmOf(t, key) || kitOf(t, key)) return 'pm'; // ((9, §4.1) a 900 Series' module 'iN/m<k>': a part of its instrument, no device of its own; (DM §4.5) a kit's voice 'iN/k<s>')
   const q = CMOD.partOf(key);
   if (q) return isSxDev(t, q.dev) ? 'part' : null; // ((3) a Serum part 'iN/oscB': a module of its Serum's host, no device)
   const d = t && t.dev ? t.dev[key] : null;
@@ -7040,7 +7066,7 @@ function cvBodyEl(t, key) {
 // A press in an instrument's body makes it the current one (setCur)
 function cvMountBody(key, b) {
   if (kindOfKey(trk(), key) === 'mod') { modMount(key, b); return; } // (stage 2a: a modulator's body, cv-mods-ui)
-  if (kindOfKey(trk(), key) === 'pm') { pmMount(key, b); return; } // ((9) a patch module's face: cv-patch moduleBody over vals.p)
+  if (kindOfKey(trk(), key) === 'pm') { if (kitOf(trk(), key)) kitMount(key, b); else pmMount(key, b); return; } // ((9) a patch module's face: cv-patch moduleBody over vals.p; (DM) a kit voice's: kit-ui)
   const t = trk(), kind = kindOfKey(t, key), el = cvBodyEl(t, key);
   if (kind === 'out') b.classList.add('cv-out');
   b.append(el);
@@ -7056,7 +7082,7 @@ function cvMountBody(key, b) {
 // host.bodies.unmount: the module went (removed, its kind changed, the view rebuilt for another track): the scope goes home;
 // a device's own element takes its panel with it (R6: the primary's too — a same-track change is a sync, never a rebuild)
 function cvUnmountBody(key) {
-  if (modUnmount(key) || pmUnmount(key)) return;
+  if (modUnmount(key) || pmUnmount(key) || kitUnmount(key)) return;
   const M = cvMounted.get(key);
   cvMounted.delete(key); cvDue.delete(key);
   if (!M) return;
@@ -7077,6 +7103,8 @@ function cvDropBody(key, M) { // a device's own element and its panel go
   if (C && C.root === el) { C.destroy(); classicPanels.delete(k); cpMonOff(k); } // ((2b) its halo subscription goes with it)
   if (R && R.el === el) { sxDrop(R); serumPanels.delete(k); }
   if (F && F.el === el) { fxDrop(F); fxPanels.delete(k); }
+  const Q = kitSeqs.get(k);
+  if (Q && Q.el === el) kitSeqDrop(k); // ((DM) a kit's Sequencer face
   if (typeof el.remove === 'function') el.remove();
 }
 // the bodies mounted without their panel: built now (not while a track switch mounts them over frames) → any built
@@ -7119,6 +7147,7 @@ function cvRender() {
   sxSettleSoon(); // ((3) parts placed with Tidy's height guesses: moved clear once measured)
   sxHeavySoon(); // ((3) touch: a Serum in parts past sx1's painted elements says so once, at rest; (9) a 900 Series' modules too)
   ptTray(); // ((9) the Moog tiles greyed at the patch's PT.MAX_MODS modules — 512 since P, was 48)
+  kitTray(); // ((DM) the drum-module tiles greyed at 16 drums
 }
 // (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
 // Serum, a model without hardware keys). The default camera keeps it on screen
@@ -7130,6 +7159,7 @@ function cvBedBox(t, dev = curOf(t)) {
 // layout its panel's (cv-panel sizeOf), in its Simple layout (or a model whose panel is not drawn yet) its model's
 // width (cvModule.FLOW_W: everything fits; the height measured), a rig its Amplifier's face
 function cvInstSize(t, dev = curOf(t)) {
+  if (isKitDev(t, dev)) return KITUI.size(t, dev, dev); // ((DM §4.2) the Sequencer: 19 columns, its height by its rows
   if (sxParts(t, dev)) return { fixed: { w: rigW('amp') } }; // ((3) VOICE, the height measured; (WC) the Amplifier's face)
   const m = modelById(instView(t, dev).model), L = isSxModel(m) || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m);
   return { fixed: L ? cvPanel.sizeOf(L, m) : { w: cvModule.defaultW(cvModule.ID.inst, m.id) } };
@@ -7217,10 +7247,10 @@ function cvHost() {
       route: (c, A, B) => rigRoute(c, A, B) }, // ((WC, integration fixer L — P3-11) a rig's Amplifier → Effects line round the Amplifier on the upright wrap
     title: cvTitle,
     menu: cvMenu,
-    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), pm = pmOf(t, key); if (pm) return PATCH.size(t, pm.dev, key); const q = CMOD.partOf(key); return q ? { fixed: { w: rigW(q.part) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint; (9) a patch module: its type's MU; (WC) a rig module: its face's (rig-ui, the RIG grid)
+    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), pm = pmOf(t, key); if (pm) return PATCH.size(t, pm.dev, key); const kq = kitOf(t, key); if (kq) return KITUI.size(t, kq.dev, key); const q = CMOD.partOf(key); return q ? { fixed: { w: rigW(q.part) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint; (9) a patch module: its type's MU; (WC) a rig module: its face's (rig-ui, the RIG grid)
     // (9, IMPL-9 §4.4–§4.5) a 900 Series' rack (Tidy: patch-core rackLayout above its controller), a driver's driven modules
     // outlined with it, every relayout's ports to the cord layer (its plugs' anchors)
-    rackLayout: key => PATCH.rack(trk(), key),
+    rackLayout: key => kitRack(trk(), key), // ((DM §4.5) a kit's voices: rows of four under its Sequencer
     tidyOpts: t => rigTidyOpts(t), // ((WC, review 2 P2-5) a rig's Tidy: its modulators' targets, the canvas's shape
     members: key => { const t = trk(), q = pmOf(t, key); return q ? PATCH.members(t, q.dev, key) : []; },
     onRelay: ports => { const C = ptShown() ? cvCords() : null; if (C && typeof C.anchors === 'function') C.anchors(ports); }, // ((WC) the patch canvas's only: a rig's anchors are its records' (rigRecords, after cables.layout)
@@ -7230,7 +7260,7 @@ function cvHost() {
     patch: false,
     select: key => { const t = trk(); if (CMOD.instOf(t, key)) setCur(t, key); },
     lay: cvLay,
-    shown: key => { PADS.resync(); monitors.sync(); sxReshow(); if (key) PATCH.shown(key); }, // ((8) a Pads module on / off screen: its lights' subscriptions first; (9b) a patch face back on screen: its lamps from what was heard)
+    shown: key => { PADS.resync(); monitors.sync(); sxReshow(); if (key) { PATCH.shown(key); kitShownKey(key); } }, // ((DM) a kit face back on screen: caught up // ((8) a Pads module on / off screen: its lights' subscriptions first; (9b) a patch face back on screen: its lamps from what was heard)
   };
 }
 // (review 2 P1-2) a part module on screen again (or unfolded, or the CANVAS tab back): a Serum view a paint skipped while it
@@ -7248,8 +7278,9 @@ function cvTitle(key, t0) {
   const kind = kindOfKey(t, key), d = t.dev && t.dev[key];
   if (kind === 'part') { const q = CMOD.partOf(key), rig = isRigDev(t, q.dev); return { title: rig ? RC.barOf(q.part, t.dev[q.dev].rig) : rigLabel(t, q.dev, q.part), sub: rig ? '' : cvDevName(t, q.dev), chip: null }; } // ((3) a part of …; (WC) the rig's own names, the ordinals of dev.rig.n — "Envelope 2"; (review 2 P3-2) no "<NAME>" under each — the Amplifier says it once — and a title the bar holds ("Sub osc"))
   if (kind === 'inst' && sxParts(t, key)) return { title: RC.MODULES.amp.label, sub: cvDevName(t, key), chip: null }; // ((WC) the Amplifier: the rig's hub (no preset strip in WC-1, §3.7)
+  if (kind === 'inst' && isKitDev(t, key)) return { title: KIT_SEQ, sub: cvDevName(t, key), chip: null }; // ((DM §1.1) the kit's hub: KIT ▾ is on its face
   if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; } // ((9) a 900 Series' controller: its chip the patch's name)
-  if (kind === 'pm') { const q = pmOf(t, key); return PATCH.title(t, q.dev, q.mid); } // ((9) "921B 2", a driven one's "on 921A 1")
+  if (kind === 'pm') { const kq = kitOf(t, key); if (kq) return kitTitle(t, kq.dev, key); const q = pmOf(t, key); return PATCH.title(t, q.dev, q.mid); } // ((9) "921B 2", a driven one's "on 921A 1")
   if (kind === 'mod' && PC.PAD_ID.test(key)) { const M = padMod(key); return { title: M ? M.name : key, sub: 'every track', chip: cvPads.chipText(M) }; } // ((8) "Pads 1", its grid "4 × 4")
   if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d || { kind: mk }) : key, sub: !modBarSub(mk) ? '' : key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say; (MOD1 review 2) the project wheel (no device): "Mod Wheel"; a 3-column face's bar its title alone)
   if (kind === 'fx') {
@@ -7322,6 +7353,8 @@ function cvMenu(a, b) {
     // ((9, §6) a 900 Series' controller: Patches ▸ (the starting patches, Init patch) and Tidy patch — no classic sound or layout
     // items (they would save the controller's knobs alone), no fold)
     if (isPatchDev(t, key)) return [...head, { sep: true }, ...PATCH.items(t, key, PT.CTL), { sep: true }, front, { sep: true }, tidyI];
+    // ((DM §1.2) the Sequencer: Clear all patterns (its face's items), the sound items (Init sound: the Starter kit, patterns kept); no fold, no layout
+    if (isKitDev(t, key)) return [...head, { sep: true }, ...kitSeqItems(t, key), { sep: true }, { label: 'Save sound…', action: () => presetSave(iv) }, { label: 'Delete saved sound', action: () => presetDelete(iv), disabled: !presetSaved(iv) }, { label: 'Init sound', action: () => kitLoad(trk(), key, presetList(mdl)[0]) }, { sep: true }, front, { sep: true }, tidyI];
     if (isRigDev(t, key)) { // ((WC, §8.2) the Amplifier: About, Replace with…, Init (the raw oscillator), its panel's items (Preferences…, Info…); no Remove
       const own = sxViewItems(t, key);
       return [...head, { sep: true }, { label: 'Init', action: () => rigInitDev(key) }, { label: 'Modulation list…', action: () => modList() },
@@ -7345,7 +7378,7 @@ function cvMenu(a, b) {
     const B = modBodies.get(key), own = B && B.kind === 'comb' && typeof B.menuItems === 'function' ? B.menuItems() || [] : [];
     return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
   }
-  if (kind === 'pm') { const q = pmOf(t, key); return [...PATCH.items(t, q.dev, q.mid), { sep: true }, front, { sep: true }, tidyI]; } // ((9, §4.5) Duplicate, Driver ▸, Delete; no fold
+  if (kind === 'pm') { const kq = kitOf(t, key); if (kq) return [...kitVoiceItems(t, kq.dev, kq.slot), { sep: true }, front, { sep: true }, tidyI]; const q = pmOf(t, key); return [...PATCH.items(t, q.dev, q.mid), { sep: true }, front, { sep: true }, tidyI]; } // ((DM) a kit voice: Reset sound, Remove // ((9, §4.5) Duplicate, Driver ▸, Delete; no fold
   if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove ((WC) no Bundle: §6; the amp Envelope's Init: envFromAmp, rigEnvInit)
     const q = CMOD.partOf(key), own = sxViewItems(t, key).map(it => (q.part === 'env1' && /^Init\b/.test(it.label || '') && isRigDev(t, q.dev) ? Object.assign({}, it, { action: () => rigEnvInit(trk(), q.dev) }) : it));
     return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Remove', action: () => sxRemovePart(key) }, { sep: true }, fold, front, { sep: true }, tidyI];
@@ -7750,6 +7783,13 @@ function cvCamRestore(t) {
     W.setCamera(d, { animate: false });
     return;
   }
+  if (isKitDev(t, curOf(t))) { // ((DM §1.2, §4.5) our drum machine: the Sequencer at 100 % when its 1248 px fit the band, else at the fit width (never below READ_K), its top-left framed
+    const k = Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.w))), ox = o.x - cam.tx, oy = o.y - cam.ty;
+    const d = { k, tx: Math.round(b.left - ox + P - r.x * k), ty: Math.round(b.top - oy + P - r.y * k) };
+    cvCamLast = { key, cam: d };
+    W.setCamera(d, { animate: false });
+    return;
+  }
   // (U3) the left edge framed is the key-zone pill's (outside the instruments' left edge: Tidy stacks them at one x), so it
   // never sits under the rail; the instrument alone fits with it (its bar's ⋯ / ▾ stay inside the band)
   const x0 = r.x - Math.max(0, ...CMOD.instIds(t).map(id => { const q = cvView.modules.get(id); return q && Math.abs(q.x - r.x) < 1 ? q.zoneW || 0 : 0; }));
@@ -7866,7 +7906,7 @@ function cvTidy() {
   if (cvMaster) { mTidy(); return; } // ((M, §5.2) the master's lay, the same History step
   const t = trk();
   if (!cvView) return;
-  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => PATCH.rack(t, k), rigTidyOpts(t)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5; (WC) a rig's band, review 2 P2-5)
+  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => kitRack(t, k), rigTidyOpts(t)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5; (WC) a rig's band, review 2 P2-5)
   const other = cvOtherFx;
   for (const k in td) {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
@@ -8424,7 +8464,10 @@ let sxHeavyT = 0, sxHeavySig = '', sxHeavyDone = false;
 // on; the consolidated iPad pass re-decides (the user's iPad ran stage 9's m30 P+ at 4 423 in the old unit: "ui-m9")
 const PT_HEAVY = 2048, PT_HEAVY_TXT = 'This many modules may stutter when zooming on this device.';
 let ptHeavyDone = false;
-const heavyOf = t => (sxIds(t).some(d => sxParts(t, d)) ? (sxHeavyDone ? null : 'sx') : patchDevs(t).length && !ptHeavyDone ? 'pt' : null);
+// (DM §7.3) a kit the same way (PT_HEAVY's line and words, once a session): lane F measured a 16-voice kit at ≈ 1 600 painted — under the line,
+// so the Starter and a full kit stay quiet; the notice speaks only when a kit's canvas also carries enough other modules to pass it
+let kitHeavyDone = false;
+const heavyOf = t => (sxIds(t).some(d => sxParts(t, d)) ? (sxHeavyDone ? null : 'sx') : patchDevs(t).length && !ptHeavyDone ? 'pt' : kitDevs(t).length && !kitHeavyDone ? 'kit' : null);
 // ui-bench-m3's rule: an element with a layout box (a folded module's body, a hidden page have none: skipped whole). skipFaces
 // ((9b, review 2 F6) the 900 Series' unit): not the SVG of a face that is a GL texture (module data-cv-face="gl", its `.hw-decor > svg`
 // visibility: hidden — cv-face setMode): the picture is a texture, free to paint, yet ≈ 2/3 of a System 55's boxed elements. A face
@@ -8451,8 +8494,9 @@ function sxHeavyRun() {
   sxHeavySig = sxHeavySigOf(t);
   let n = 0;
   try { n = sxHeavyCount(k === 'pt'); } catch (err) { console.warn(err); }
-  if (n <= (k === 'pt' ? PT_HEAVY : SX_HEAVY)) return;
+  if (n <= (k === 'sx' ? SX_HEAVY : PT_HEAVY)) return;
   if (k === 'pt') { ptHeavyDone = true; notice(PT_HEAVY_TXT, 9000); return; }
+  if (k === 'kit') { kitHeavyDone = true; notice(PT_HEAVY_TXT, 9000); return; }
   sxHeavyDone = true;
   notice(SX_HEAVY_TXT, 9000);
 }
@@ -8770,7 +8814,7 @@ function rigMark() {
   const t = trk();
   for (const [k, m] of cvView.modules) {
     if (!m.el || typeof m.el.setAttribute !== 'function') continue;
-    const q = CMOD.partOf(k), on = !cvMaster && (q ? isRigDev(t, q.dev) : isRigDev(t, k));
+    const q = CMOD.partOf(k), on = !cvMaster && (q ? isRigDev(t, q.dev) : isRigDev(t, k) || isKitDev(t, k) || !!kitOf(t, k)); // ((DM §4.8) a kit's Sequencer and voices wear the rig's skins
     if (on !== m.el.hasAttribute('data-cv-rig')) { if (on) m.el.setAttribute('data-cv-rig', ''); else m.el.removeAttribute('data-cv-rig'); }
   }
 }
@@ -9779,6 +9823,13 @@ function cvDevices(t) {
     if (e) Object.assign(e, { jacks: ptCtlJacks(t, dev), nofold: true });
     L.push(...PATCH.devices(t, dev));
   }
+  // (DM, IMPL-DM §4.5) a kit: its Sequencer — the instrument's own module — no fold; then its voices, one 'pm' module each (kit-ui devices:
+  // compact bar, no fold, 288 × the face + the bar)
+  for (const dev of kitDevs(t)) {
+    const e = L.find(x => x.key === dev);
+    if (e) e.nofold = true;
+    L.push(...KITUI.devices(t, dev));
+  }
   return L;
 }
 /* ---- the 900 Series' modules (stage 9, IMPL-9 §4, §6; cv-patch's host) */
@@ -10044,6 +10095,261 @@ function ptTray() {
 // as the Model 15 tile's (the tile's estimate of its starter) — refreshed with the others (costLabels → refreshMoog)
 function setCost(id) { const r = MG.makeSet(id, {}), m = ptModel(); return r && m ? COSTM.label(COSTM.estimate({ kind: 'synth', model: m.id, patch: r.rec, vals: r.vals }, devFactor())) : ''; }
 function moogCost(type) { const c = COSTM.COST.patch ? COSTM.COST.patch[type] : null, x = Array.isArray(c) ? c.reduce((a, b) => a + (+b || 0), 0) : +c || 0; return x > 0 ? COSTM.label(x * devFactor()) : ''; }
+/* ---- our drum machine (stage DM, IMPL-DM §1.2, §4.5–§4.6, §5.4–§5.5, §6.1; lane H) */
+// KITUI (kit-ui kitHost): the shown kit's faces — the Sequencer in its instrument body (renderPanel: kitSeqs), one voice face per 'pm'
+// module 'iN/k<s>' (kitMount: kitVox) — and their sizes and Tidy's rack. Every dep resolves the track by id (a face mounted before an undo
+// holds the old track object). The writes: a knob → kitKnob (vals at once, the {t:'patch'} throttled, no step: the app's knob policy); a
+// grid gesture, a pattern / LENGTH / SWING pick, CLEAR, mute, solo → kitEdit { press } (ONE History step: the press through the drum
+// host, its sends); a structural edit — add, Remove, TYPE, Reset sound, a kit — kitEdit { vals, press?, kit? } (ONE step carrying kitBack:
+// the vals it changed, written back on ↶ / ↷ — keepDevs keeps a kit's vals, never its record), then kit-core reconcile (ty = the vals'
+// TYPEs, a note for a new voice) and the rack's places (kitRelay)
+const KIT_SEQ = 'Sequencer', KIT_IDS = new Set(KC.KIT.IDS);
+const kitSeqs = new Map(); // 'trackId/dev' → { el: the instrument body, V: its Sequencer face }
+const kitVox = new Map(); // a voice module's key 'iN/k<s>' → { V, tid } (the shown track's)
+const kitVal = (t, dev, id) => { const x = ptT(t); return x && isKitDev(x, dev) ? x.dev[dev].vals[id] : NaN; };
+const KITUI = kitHost({
+  doc: document, barH: cvModule.BAR_H, get: kitVal,
+  set: (t, dev, id, v, ph) => kitKnob(ptT(t), dev, id, v, ph),
+  drum: (t, dev) => { const x = ptT(t); return x && isKitDev(x, dev) ? DRUM.api(instView(x, dev)) : null; },
+  rec: (t, dev) => { const x = ptT(t); return x && isKitDev(x, dev) ? drumOf(x, dev) : null; },
+  edit: (t, dev, label, r) => kitEdit(ptT(t), dev, label, r),
+  notice: (text, ms) => notice(text, ms),
+  // KIT ▾: the four kits and the user's (the model's preset store: ⋯ Save sound… / Delete saved sound)
+  presets: (t, dev) => { const x = ptT(t); return x && isKitDev(x, dev) ? presetList(modelById(KC.KIT.ID)).map(p => ({ label: p.name, action: () => kitLoad(ptT(t), dev, p) })) : null; },
+  presetName: (t, dev) => { const x = ptT(t); return x && isKitDev(x, dev) ? x.dev[dev].preset || '' : ''; },
+});
+const kitPresent = (d, j) => Math.round(+d.vals[KC.KIT.CODES[j] + 't']) > 0; // (a voice exists iff its TYPE > 0: §5.2)
+// an 'iN/k<s>' module key of track t → { dev, slot } (a present voice of its kit), else null
+function kitOf(t, key) {
+  const i = typeof key === 'string' ? key.indexOf('/') : -1, dev = i > 0 ? key.slice(0, i) : null;
+  if (!dev || !t || !isKitDev(t, dev)) return null;
+  const slot = KC.KIT.CODES.indexOf(key.slice(i + 1));
+  return slot >= 0 && kitPresent(t.dev[dev], slot) ? { dev, slot } : null;
+}
+const kitRack = (t, key) => (isKitDev(t, key) ? KITUI.rack(t, key) : PATCH.rack(t, key)); // (Tidy's rack: a kit's voices, a 900 Series' modules)
+function kitTitle(t, dev, key) { const e = KITUI.devices(t, dev).find(x => x.key === key); return { title: e ? e.title : key, sub: e ? e.sub : '', chip: null }; }
+function kitMount(key, b) {
+  kitUnmount(key);
+  const t = trk(), q = kitOf(t, key), V = q ? KITUI.face('voice', b, { t, dev: q.dev, slot: q.slot }) : null;
+  if (V) kitVox.set(key, { V, tid: t.id });
+}
+function kitUnmount(key) { const F = kitVox.get(key); if (!F) return false; kitVox.delete(key); F.V.destroy(); return true; }
+function kitSeqDrop(k) { const E = kitSeqs.get(k); if (E) { kitSeqs.delete(k); E.V.destroy(); } }
+// the faces re-read the vals (kit-ui: sync after any vals change) — of one kit, or every one (a restore)
+function kitSync(t, dev) {
+  const E = kitSeqs.get(t.id + '/' + dev);
+  if (E) E.V.sync();
+  for (const [k, F] of kitVox) if (F.tid === t.id && k.startsWith(dev + '/')) F.V.sync();
+}
+function kitSyncAll() { for (const E of kitSeqs.values()) E.V.sync(); for (const F of kitVox.values()) F.V.sync(); }
+function kitShownKey(key) { const t = trk(), F = kitVox.get(key), E = t && kitSeqs.get(t.id + '/' + key); if (F) F.V.shown(true); if (E) E.V.shown(true); }
+// the record from the vals (kit-core reconcile, §5.4: ty = the TYPEs, a note for a voice made present without one) → changed?
+function kitRec(t, dev) {
+  const d = t.dev[dev], D = drumOf(t, dev), R = KC.reconcile(d.vals, D);
+  if (R === D) return false;
+  d.drum = R;
+  return true;
+}
+// a voice's vals at its type's defaults (kit-ui's: positions × 10, two decimals; LEVEL its reference, CHOKE none) — keep: the fields kept
+const kitR2 = x => Math.round(x * 1000) / 100;
+function kitVoiceVals(code, type, keep = null) {
+  const T = KC.KIT.TYPES[type], v = {};
+  if (!keep || keep.t) v[code + 't'] = type;
+  v[code + 'u'] = kitR2(T.u.def); v[code + 'd'] = kitR2(T.d.def);
+  if (!keep || keep.l) v[code + 'l'] = kitR2(KC.KIT.LAW.lRef);
+  if (!keep) v[code + 'c'] = 0;
+  T.k.forEach((L, i) => { v[code + (i + 1)] = kitR2(L.def); });
+  return v;
+}
+// (§1.2) a new machine on device d: the Starter kit's vals and KIT.STARTER's voices on an empty grid (kit-core starter()), or (a voice tile
+// off a kit) the Sequencer and that one voice in slot a, pattern A empty
+function kitNew(d, type) {
+  d.vals = defaults(modelById(KC.KIT.ID));
+  if (!(type >= 1 && type < KC.KIT.TYPES.length)) { d.drum = KC.starter(); d.preset = KC.KIT.KITS[0].name; return; }
+  for (const s of KC.KIT.CODES) d.vals[s + 't'] = 0;
+  Object.assign(d.vals, kitVoiceVals(KC.KIT.CODES[0], type));
+  d.drum = KC.press(KC.initState(), KC.normKit(undefined), { k: 'voice', slot: 0, op: 'add', type }).mem;
+  d.preset = null;
+}
+// (§4.5) the voices' places when the Sequencer has one of its own (a user's place, a pinned layout): a voice still at its rack place
+// (R0: the rack before the edit; null: none kept) or without one moves to the rack's new place under it — the Sequencer grows 48 px a
+// row, a voice the user put elsewhere stays; an empty slot's place goes. No Sequencer place: Tidy's rack (cv-module) does it all
+function kitRelay(t, dev, R0) {
+  const L = t.lay && typeof t.lay === 'object' ? t.lay : null, o = L ? L[dev] : null;
+  if (!o || !isFinite(o.x) || !isFinite(o.y)) return;
+  const R1 = KITUI.rack(t, dev), lay = Object.assign({}, L);
+  let ch = false;
+  for (const s of KC.KIT.CODES) {
+    const k = dev + '/' + s, e = lay[k], r1 = R1[k], r0 = R0 ? R0[k] : null;
+    if (!r1) { if (e) { delete lay[k]; ch = true; } continue; }
+    if (e && !(r0 && e.x === o.x + r0.x && e.y === o.y + r0.y)) continue;
+    const x = o.x + r1.x, y = o.y + r1.y;
+    if (!e || e.x !== x || e.y !== y) { lay[k] = Object.assign({}, e || {}, { x, y }); ch = true; }
+  }
+  if (ch) t.lay = lay;
+}
+// (§4.6, §5.5) kit-ui's edit: ONE History step labelled `label` — r.press (lane S's press input) through the drum host (the record put, its
+// sends), r.vals the voices' fields written (meta kitBack: { kit: 1, trackId, dev, f: [[id, before, after]], p: [preset before, after] }),
+// r.kit the loaded kit's name, r.at { key, at } a dropped voice's place; reconciled, posted (the patch before the payload's map plays it),
+// the faces and the canvas after. Nothing changed (a refused press): no step → done?
+function kitEdit(t, dev, label, r) {
+  if (!t || !isKitDev(t, dev) || !r || typeof r !== 'object') return false;
+  flush();
+  const d = t.dev[dev], D0 = drumOf(t, dev), v0 = d.vals, p0 = d.preset == null ? null : d.preset, R0 = KITUI.rack(t, dev);
+  const nv = r.vals && typeof r.vals === 'object' ? r.vals : null, kit = typeof r.kit === 'string' ? r.kit : null;
+  const f = nv ? Object.keys(nv).filter(id => KIT_IDS.has(id) && isFinite(+nv[id]) && v0[id] !== +nv[id]).map(id => [id, v0[id] === undefined ? null : v0[id], +nv[id]]) : [];
+  const back = f.length > 0 || (kit !== null && kit !== p0), pr = r.press && typeof r.press === 'object' ? r.press : null;
+  if (!back) { let q = null; try { q = pr && DC.press(drumSess(t, dev), D0, pr); } catch (err) { q = null; } if (!q || q.mem === D0) return false; } // ((review R1-2) a no-op decided before recording (drum-core's press is pure): record() would drop the redo stack
+  hist.record(project, label, back);
+  const step = hist.u[hist.u.length - 1];
+  let did = false;
+  if (pr) { const q = DRUM.press(instView(t, dev), pr); did = !!q && q.mem !== D0; }
+  if (back) {
+    const v = Object.assign({}, d.vals);
+    for (const [id, , b] of f) v[id] = b;
+    d.vals = v;
+    d.preset = kit !== null ? kit : null;
+    if (step) step.meta = { kit: 1, trackId: t.id, dev, f, p: [p0, d.preset] };
+    did = true;
+  }
+  if (!did) { hist.prune(project); updateUndoUI(); return false; }
+  const mapped = drumOf(t, dev).map;
+  kitRec(t, dev);
+  kitRelay(t, dev, R0);
+  if (r.at && r.at.key && r.at.at && isFinite(r.at.at.x) && isFinite(r.at.at.y) && kitOf(t, r.at.key)) { // (a dropped voice: where it landed, centred on the point)
+    const sz = KITUI.size(t, dev, r.at.key).fixed;
+    t.lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}, { [r.at.key]: { x: cvDot(r.at.at.x - sz.w / 2), y: cvDot(r.at.at.y - cvModule.BAR_H / 2) } });
+  }
+  if (back) sendPatch(t);
+  drumSend(t, dev);
+  DRUM.changed(instView(t, dev));
+  if (t.id === project.selTrack && roll && drumOf(t, dev).map !== mapped) { roll.refreshRows(); rollDrumUI(); } // (a voice's note came or went: the roll's rows)
+  if (back) { kitSync(t, dev); padsRefresh(); }
+  if (t === trk()) cvRender();
+  renderHeads(); persist(); updateUndoUI();
+  return true;
+}
+// (§5.5) a structural step's vals written back on ↶ (redo: its after-values) while each field still holds the other side (a knob turned
+// since stays: the knob policy), its preset name with them — read after hist.undo / hist.redo, as ptBack
+let kitBack = null; // { mv: the step's meta, redo }
+const kitBackOf = (e, redo) => (e && e.meta && e.meta.kit === 1 && Array.isArray(e.meta.f) ? { mv: e.meta, redo } : null);
+function kitBackApply(p, { mv, redo }) {
+  const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null;
+  if (!d || d.kind !== 'synth' || d.model !== KC.KIT.ID || !d.vals) return;
+  const v = Object.assign({}, d.vals);
+  for (const e of mv.f) {
+    if (!Array.isArray(e) || !KIT_IDS.has(e[0])) continue;
+    const from = redo ? e[1] : e[2], to = redo ? e[2] : e[1], cur = v[e[0]] === undefined ? null : v[e[0]];
+    if (cur === from) { if (to === null) delete v[e[0]]; else v[e[0]] = to; }
+  }
+  d.vals = v;
+  if (Array.isArray(mv.p)) d.preset = redo ? mv.p[1] : mv.p[0];
+}
+// (§4.3) a voice knob (kit-ui set: ph 'move' | 'end'): the value at once (the face reads it back), the {t:'patch'} at most every
+// PT_KNOB_MS while dragging, at once at its lift — no step (keepDevs keeps it through ↶ / ↷); the faces re-read at the lift
+function kitKnob(t, dev, id, v, ph) {
+  if (!t || !isKitDev(t, dev) || !KIT_IDS.has(id) || !isFinite(+v)) return;
+  const d = t.dev[dev];
+  if (d.vals[id] !== +v) { d.vals[id] = +v; if (d.preset != null) d.preset = null; }
+  persist();
+  if (ph === 'end') kitSync(t, dev);
+  const N = nodes.get(t.id), now = performance.now();
+  if (!N) return;
+  if (N.kitKT) { clearTimeout(N.kitKT); N.kitKT = 0; }
+  if (ph === 'end' || !(now - (N.kitKAt || 0) < PT_KNOB_MS)) { N.kitKAt = now; queuePatch(t); return; }
+  N.kitKT = setTimeout(() => { N.kitKT = 0; N.kitKAt = performance.now(); const x = ptT(t); if (x && nodes.get(x.id) === N) queuePatch(x); }, Math.max(1, PT_KNOB_MS - (now - N.kitKAt)));
+}
+// a kit (KIT ▾, ⋯ Init sound, the kit tile on a kit): its vals — which voices exist, their sounds — as one step, the patterns kept (§5.7)
+function kitLoad(t, dev, p) {
+  if (!p || !kitEdit(t, dev, 'Load kit ' + p.name, { vals: Object.assign(defaults(modelById(KC.KIT.ID)), p.v), kit: p.name })) return false;
+  cvUndoNotice('Loaded the ' + p.name + ' kit · tap to undo', hist.u[hist.u.length - 1], () => null);
+  return true;
+}
+const kitNames = (t, dev) => KC.names(drumOf(t, dev));
+// (§1.2) a voice added in the first empty slot (one step "Add <Type>"; at: the world point it was dropped on); 16: refused, said → added?
+function kitAdd(t, dev, type, at = null) {
+  const d = t.dev[dev];
+  let j = -1;
+  for (let i = 0; i < KC.KIT.SLOTS && j < 0; i++) if (!kitPresent(d, i)) j = i;
+  if (j < 0) { notice(cvTray.KIT_FULL, 4000); return false; }
+  const s = KC.KIT.CODES[j];
+  return kitEdit(t, dev, 'Add ' + KC.KIT.TYPES[type].label, { vals: kitVoiceVals(s, type), press: { k: 'voice', slot: j, op: 'add', type }, at: at ? { key: dev + '/' + s, at } : null });
+}
+function kitRemove(t, dev, j) { // (§1.2) its cells in every pattern, its note freed — one step
+  const s = KC.KIT.CODES[j];
+  return !!t && isKitDev(t, dev) && kitPresent(t.dev[dev], j) && kitEdit(t, dev, 'Remove ' + (kitNames(t, dev)[j] || KC.KIT.TYPES[Math.round(t.dev[dev].vals[s + 't'])].label), { vals: { [s + 't']: 0 }, press: { k: 'voice', slot: j, op: 'remove' } });
+}
+function kitType(t, dev, j, type) { // (§1.2 TYPE ▾) TUNE, DECAY, k1–k4 the new type's defaults, LEVEL / CHOKE kept, the automatic name follows
+  const s = KC.KIT.CODES[j];
+  if (!t || !isKitDev(t, dev) || !kitPresent(t.dev[dev], j) || !KC.KIT.TYPES[type] || Math.round(t.dev[dev].vals[s + 't']) === type) return false;
+  return kitEdit(t, dev, (kitNames(t, dev)[j] || 'Drum') + ' → ' + KC.KIT.TYPES[type].label, { vals: kitVoiceVals(s, type, { t: true }) });
+}
+// the ⋯ items (cvMenu): the Sequencer's (its face's: Clear all patterns, Demo beat while KIT.DEMO), a voice's (kit-ui's own two)
+function kitSeqItems(t, dev) { const E = kitSeqs.get(t.id + '/' + dev); return E ? E.V.menuItems() : [{ label: 'Clear all patterns', action: () => kitEdit(trk(), dev, 'Clear all patterns', { press: { k: 'clearAll' } }) }]; }
+function kitVoiceItems(t, dev, j) {
+  const s = KC.KIT.CODES[j], nm = kitNames(t, dev)[j] || 'drum';
+  return [{ label: 'Reset sound', action: () => { const x = trk(); if (kitPresent(x.dev[dev], j)) kitEdit(x, dev, 'Reset ' + nm, { vals: kitVoiceVals(s, Math.round(x.dev[dev].vals[s + 't']), { l: true }) }); } },
+    { label: 'Remove', action: () => kitRemove(trk(), dev, j) }];
+}
+function kitShown() { if (cvMaster) return null; const t = trk(), dev = curOf(t); return isKitDev(t, dev) ? { t, dev } : null; } // ((M) none on the master canvas
+// (§1.2) the kit tile on a shown kit: the Starter kit's sounds as a preset — the patterns kept, never a same-model Replace
+function kitTile(id) {
+  const K = id === KC.KIT.ID ? kitShown() : null;
+  if (!K) return false;
+  kitLoad(K.t, K.dev, presetList(modelById(id))[0]);
+  return true;
+}
+// the drum-module tiles (cv-tray KIT_TILES: the TYPE id → its value): a tap / a drop on a kit canvas adds the voice; on another canvas a
+// Replace with a kit holding the Sequencer and that voice (its "Replaced … · tap to undo"); mode 'track' / the track list: a new kit track
+const kitTypeOf = id => { const e = cvTray.KIT_TILES.find(x => x.id === id); return e ? e.type : 0; };
+function kitPick(id, mode, at = null) {
+  const ty = kitTypeOf(id), m = modelById(KC.KIT.ID);
+  if (!ty) return false;
+  if (mode === 'track') { addTrack(m, null, { ui: 'hw', kv: ty }); srcModeUI('replace'); return true; }
+  if (cvMaster) { notice(MASTER_SRC, 4000); return true; }
+  const K = kitShown();
+  if (K) return kitAdd(K.t, K.dev, ty, at);
+  cvDropInstrument(m.id, null, { ui: 'hw', kv: ty });
+  return true;
+}
+const kitDrag = { // a drum-module tile dragged out: its true-size outline under the pointer over the canvas, the track list (a new kit track)
+  move(id, i) {
+    const tracks = i.over === 'tracks', W = cvW();
+    $('#topTray').classList.toggle('cv-dropt', tracks);
+    if (!W) return;
+    const L = KITUI.layoutOf(KITUI.FACE.voice), T0 = KC.KIT.TYPES[kitTypeOf(id)];
+    if (i.over === 'canvas' && !cvMaster) shell.drop = W.ghost({ x: i.x, y: i.y, w: L.w, h: L.h + cvModule.BAR_H, label: '+ ' + (T0 ? T0.label : id) + (kitShown() ? '' : ' · a ' + modelById(KC.KIT.ID).name) });
+    else { W.ghost(null); shell.drop = null; }
+    W.dragPointer(tracks || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
+  },
+  begin(id, i) { const W = cvW(); if (W) W.setDragging(true); kitDrag.move(id, i); },
+  drop(id, i) {
+    srcDragEnd();
+    if (i.over === 'tracks') return kitPick(id, 'track');
+    if (i.over !== 'canvas') return false;
+    kitPick(id, 'replace', i.at || null);
+    return true;
+  },
+  cancel() { srcDragEnd(); },
+};
+// the drum-module tiles greyed at 16 drums on the shown kit (cv-tray setKitFull; null when a slot is free or no kit is shown)
+function kitTray() {
+  if (!shell.tiles || typeof shell.tiles.setKitFull !== 'function') return;
+  const K = kitShown();
+  let n = 0;
+  if (K) for (let j = 0; j < KC.KIT.SLOTS; j++) if (kitPresent(K.t.dev[K.dev], j)) n++;
+  shell.tiles.setKitFull(n >= KC.KIT.SLOTS ? cvTray.KIT_FULL : null);
+}
+// (§6.1) the test hook's copy of a kit's state: { pattern, len, swing, playing, step (the heard step, −1 stopped), voices: [{ slot, type,
+// name, note, cells: { step: v } }] } — the selected pattern's cells
+function kitState(id) {
+  const t = trackById(id), dev = t ? kitDevs(t)[0] : null;
+  if (!dev) return null;
+  const D = drumOf(t, dev), S = drumSess(t, dev), N = KC.names(D), P0 = D.pat[D.ui.pat], d = t.dev[dev];
+  const voices = KC.KIT.CODES.map((s, j) => (kitPresent(d, j) ? { slot: j, type: Math.round(d.vals[s + 't']), name: N[j], note: D.map[s].length ? D.map[s][0] : -1, cells: Object.fromEntries(P0.cells.filter(c => c.l === j).map(c => [c.s, c.v])) } : null)).filter(Boolean);
+  return { pattern: D.ui.pat, len: P0.len, swing: D.x.swing, playing: !!T.playing, step: KC.leds(S, D).step, voices };
+}
+
 /* ---- the bodies and their live values */
 const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
 const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
@@ -10307,7 +10613,7 @@ function cmbMarkList() {
     out.push({ value: { t: tr.id, n: -1 }, label: nm });
     for (const dev of CMOD.instIds(tr)) {
       const D = isDrumDev(tr, dev) ? drumOf(tr, dev) : null;
-      if (D) for (const q of DC.drumRows(D.map, tr.dev[dev].model)) out.push({ value: { t: tr.id, n: q.n }, label: nm + ' · ' + q.name });
+      if (D) for (const q of drumRowsOf(tr.dev[dev])) out.push({ value: { t: tr.id, n: q.n }, label: nm + ' · ' + q.name }); // ((DM §6.2) roll.js's reader: a kit's rows named from its record
     }
   }
   return out;
@@ -10722,6 +11028,7 @@ function modCan(src, dst) {
   const no = (code, x) => ({ ok: false, why: modRefusal(code, Object.assign({ src: modLabel(src), dst: modLabel(dst) }, x)) });
   if (!d) return no('nomod');
   const r = CMOD.destOk(d, D.pid); // (2b: classic sm / apply / proc and panel knobs open; chunk → stage 5; a switched-off oscillator's level says so)
+  if (!r.ok && r.why === NOMOD_KIT) return { ok: false, why: r.why }; // ((DM §10) a kit's knob: its own words
   if (!r.ok) return r.stage ? no('stage', { stage: r.stage }) : /oscillator/.test(r.why || '') ? { ok: false, why: r.why } : no('nomod');
   if (isSxDev(t, D.dev)) { const b = CG.modBudget(t, D.dev, project); if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max }); }
   return { ok: true, why: '' };
@@ -11368,6 +11675,23 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
       bodies: modBodies, sel: modCableSel, act: modCableAct, cmenu: modCableMenu, list: modList, label: modLabel, descs: modDescs, decor: cvModDecor, cableDrag: () => modDrag,
       comb: key => Object.assign(modBase(key, 'comb'), cmbHost(key, mOwn().id)), feed: cmbFeed, // ((LC, tests/canvas-LC-sim) a combiner's body host o, as modMount builds it
       hintReset: () => { modHinted = false; } }, // ((SX0) the 24+ hint's session flag: a rig's own rows drawn as cords say it earlier in canvas-2a-sim)
+  };
+  // (DM, IMPL-DM §6.1: tests/canvas-DM-sim, lane G's scenes, row 20) our drum machine's host: add (the kit tile's action on track id — its
+  // id; null: a new kit track), state(trackId) (kitState), cellRect(trackId, lane, step) (a cell's box in world px: one canvas, no element),
+  // and the faces' own writes for the sims — cell (a tap, a velocity drag: one step), press (any press input: one step), voice ('add', type |
+  // 'remove', slot | 'type', slot, type), knob (kitKnob), load (a kit by name), play / stop (the song's ▶ / ■), the tiles' drag and pick, the host
+  const kitAt = id => { const t = trackById(id), dev = t ? kitDevs(t)[0] : null; return dev ? { t, dev } : null; };
+  globalThis.__synthTest.cv.kit = {
+    add: id => { if (id == null) { const t = addTrack(modelById(KC.KIT.ID), null, { ui: 'hw' }); return t ? t.id : null; } if (id !== project.selTrack) selectTrack(id); srcPick(KC.KIT.ID, 'replace'); return project.selTrack; },
+    state: kitState,
+    cellRect: (id, lane, step) => { const K = kitAt(id), m = K && cvView && cvView.trackId === id ? cvView.modules.get(K.dev) : null, r = m ? KITUI.cellRect(K.t, K.dev, lane, step) : null; return r ? { x: m.x + r.x, y: m.y + r.y, w: r.w, h: r.h } : null; },
+    cell: (id, lane, step, v) => { const K = kitAt(id); return !!K && kitEdit(K.t, K.dev, 'Edit pattern', { press: { k: 'cell', lane, step, v } }); },
+    press: (id, input, label) => { const K = kitAt(id); return !!K && kitEdit(K.t, K.dev, label || 'Edit pattern', { press: input }); },
+    voice: (id, op, a, b) => { const K = kitAt(id); return !K ? false : op === 'add' ? kitAdd(K.t, K.dev, a) : op === 'remove' ? kitRemove(K.t, K.dev, a) : op === 'type' ? kitType(K.t, K.dev, a, b) : false; },
+    knob: (id, cid, v, ph) => { const K = kitAt(id); if (K) kitKnob(K.t, K.dev, cid, v, ph); },
+    load: (id, name) => { const K = kitAt(id), p = K ? presetList(modelById(KC.KIT.ID)).find(x => x.name === name) : null; return !!p && kitLoad(K.t, K.dev, p); },
+    play: () => { if (!T.playing) play(); }, stop: () => { if (T.playing) stop(); },
+    drag: kitDrag, pick: kitPick, host: KITUI, faces: () => ({ seqs: kitSeqs, voices: kitVox }), heavy: () => ({ kind: heavyOf(trk()), line: PT_HEAVY, done: kitHeavyDone }),
   };
   // (stage M: tests/canvas-M-sim) the master: its record and graph, the canvas, the rack's host, the listening controls, the bounce's helpers
   globalThis.__synthTest.master = {

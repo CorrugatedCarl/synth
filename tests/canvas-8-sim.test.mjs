@@ -24,7 +24,7 @@ import { MODELS } from '../models.js?v=9';
 import { wavFile } from './smp-files.mjs';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 function scriptedWorld(root) {
   const L = {};
@@ -108,7 +108,7 @@ test('the lead\'s fixture check (§14.3 phase 2): a Pads module on track 2 plays
   // an SDS-V from the Drums view (a third track): the roll's five named rows, each played by its note
   api.addTrack(MODEL('minimoog')); sim.raf(); await settle();
   sh.shell.tiles.setView('drums');
-  assert.deepEqual(sh.shell.tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['tr808', 'tr606', 'tr909', 'sdsv']);
+  assert.deepEqual(sh.shell.tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['tr808', 'tr606', 'tr909', 'sdsv', 'kit']);
   sh.srcPick('sdsv', 'replace'); sim.raf(); await settle();
   const t3 = T(), rows = drumRowsOf(I(t3));
   assert.deepEqual(rows.map(r => r.n + ' ' + r.name), ['36 Bass drum', '38 Snare drum', '41 Tom 3 (low)', '45 Tom 2 (mid)', '48 Tom 1 (high)'], 'the roll\'s five named rows');
@@ -402,7 +402,7 @@ test('nothing left sounding (D9, review #7): Undo, the pad cleared / the module 
 
 test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical — project.pads, its places, its rows on every track; a row of a missing module and its place dropped at load (review #28); a schema-17 file opens read-only (WC: schema 16; SC: 15; M: 14; P: 13); a track without pad rows compiles byte-identically with or without the project\'s Pads modules (D5)', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [17, 17, true], 'project.pads through the file');
+  assert.deepEqual([p2.schema, CM.SCHEMA, JSON.stringify(p2.pads) === JSON.stringify(P().pads)], [18, 18, true], 'project.pads through the file');
   const padRows = t => JSON.stringify((t.mods || []).filter(r => /^pd/.test(r.src)));
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id);
@@ -414,8 +414,8 @@ test('the project (§10, schema 11 → 12 at stage 9): a save reloads identical 
   const u3 = cv.loadProject(JSON.stringify(o)).tracks.find(x => x.id === ID.t2);
   assert.deepEqual([u3.mods.some(r => r.src === 'pd5.p0'), !!u3.lay.pd5, u3.mods.some(r => r.src === 'pd1.p2')], [false, false, true], 'pruned: pd5 is not in the file');
   const n = JSON.parse(json);
-  n.schema = 18;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 18, 'a schema-18 file: read-only');
+  n.schema = 19;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 19, 'a schema-19 file: read-only');
   const opts = { smooth: api.prefs().smooth, qr: null, ultra: 0 };
   for (const id of [ID.t1, ID.t3]) {
     const t = byId(id);

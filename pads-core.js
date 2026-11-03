@@ -1,5 +1,7 @@
 // pads-core.js — the pad controller's pure model (IMPL-8 §1.3, §2.2, §3, §5.2, §6.4, §8, §10.1; lane K). Leaf ES module: imports
-// only drum-core (song.js imports it as it imports drum-core); no DOM / timers / storage; node-tested (tests/pads-core.test.mjs).
+// only drum-core and (DM) kit-core, itself a leaf (song.js imports it as it imports drum-core); no DOM / timers / storage; node-tested
+// (tests/pads-core.test.mjs). (DM, IMPL-DM §5.2: our drum machine's slots ka…kp are named from its record — kit-core names(D) —, and
+// only its present voices play, get a pad or a default; soundName / soundShort take the record as a third argument.)
 //
 // project.pads (§10.1), normalised by normPads (exact lengths, every field bounded, ids unique in pd1…pd64, a hardware binding unique
 // across the project — later duplicates dropped —, unknown fields dropped; idempotent, never throws; anything else → []):
@@ -21,6 +23,7 @@
 // look { c: { sound: colour } } a machine's own pad colours), fill(M, how), newModule. Modulation (§5.2): modValue, modBright.
 // Colours (§6.4): COLORS, colorFor, nearestColor. Hardware (§8): bindOf, rebind, echo('gen', pad, state).
 import { PERS, normDrum } from './drum-core.js?v=9';
+import { names as kitNames } from './kit-core.js?v=9';
 
 /* ---------------------------------------------------------------- bounds and tables */
 // IMPL-P §3.1: 64 Pads modules a project (was 8) — a safety bound, not a product cap; PAD_ID below is pd1…pd<MAX_MODS>
@@ -198,22 +201,29 @@ function insts(t) {
   return own(d, t.prim) && syn.includes(t.prim) ? [t.prim, ...syn.filter(k => k !== t.prim)] : syn;
 }
 const persOf = m => (typeof m === 'string' && own(PERS, m) ? PERS[m] : null);
-/** A sound key's name: on machine `model` (PERS names by sound id), else the first machine that has the key, else the key. */
-export function soundName(s, model) {
+/** A sound key's name: on machine `model` (PERS names by sound id), else the first machine that has the key, else the key. (DM) D:
+ *  the device's record — a kit's voice by its own name (kit-core names: an empty slot, or no record, PERS.kit's "Drum n"); the four
+ *  ignore it. */
+export function soundName(s, model, D) {
   const P = persOf(model);
-  if (P) { const j = P.sounds.indexOf(s); if (j >= 0 && P.sids.includes(j)) return P.names[j]; }
+  if (P) {
+    const j = P.sounds.indexOf(s);
+    if (j >= 0 && P.sids.includes(j)) return (model === 'kit' && isObj(D) && kitNames(D)[j]) || P.names[j];
+  }
   for (const m of Object.keys(PERS)) { const j = PERS[m].sounds.indexOf(s); if (j >= 0 && PERS[m].sids.includes(j)) return PERS[m].names[j]; }
   return String(s).toUpperCase();
 }
 /** A sound key's name for a pad's label: soundName without its trailing parenthetical ("Tom 1 (high)" → "Tom 1": a pad is too
  * narrow for it; the roll, the inspector's list and the warnings keep the full name). */
-export function soundShort(s, model) { return soundName(s, model).replace(/\s*\([^)]*\)\s*$/, ''); }
+export function soundShort(s, model, D) { return soundName(s, model, D).replace(/\s*\([^)]*\)\s*$/, ''); }
 const defDrumOf = (t, k) => { const d = t.dev[k]; return persOf(d.model) ? normDrum(d.drum, d.model) : null; };
 /** A drum target's note on track t (§3.3): the first drum machine of t (primary first) that has sound s → its map primary
  * D.map[s][0] (= drum-core primaries; the record by drumOf(t, devId), main.js's; default normDrum) — { n, dev, model } | { n: −1,
- * why: 'sound' (no machine with it: a Replace, a synth) | 'unmapped' (MAP… left it no note) }. */
+ * why: 'sound' (no machine with it: a Replace, a synth) | 'unmapped' (MAP… left it no note) }. (DM) A kit has slot s only while
+ * its voice is present (ty > 0: an empty slot's kept note plays nothing — 'sound'); a kit's result adds its record D (the warning
+ * names the voice by it). */
 export function drumNote(t, s, drumOf) {
-  let why = 'sound';
+  let why = 'sound', kit = null;
   if (!isObj(t) || !SND.test(s)) return { n: -1, why };
   const of = typeof drumOf === 'function' ? drumOf : defDrumOf;
   for (const k of insts(t)) {
@@ -223,11 +233,12 @@ export function drumNote(t, s, drumOf) {
     if (j < 0 || !P.sids.includes(j)) continue;
     const D = of(t, k);
     if (!isObj(D)) continue;
+    if (dev.model === 'kit') { kit = kit || D; if (!(Array.isArray(D.ty) && D.ty[j] > 0)) continue; } // (an empty slot: no sound)
     const m = isObj(D.map) && own(D.map, s) ? D.map[s] : null, n = Array.isArray(m) ? m[0] : -1;
-    if (Number.isInteger(n) && n >= 0 && n <= 127) return { n, dev: k, model: dev.model };
+    if (Number.isInteger(n) && n >= 0 && n <= 127) return dev.model === 'kit' ? { n, dev: k, model: 'kit', D } : { n, dev: k, model: dev.model };
     why = 'unmapped';
   }
-  return { n: -1, why };
+  return kit ? { n: -1, why, model: 'kit', D: kit } : { n: -1, why };
 }
 const trackOf = (project, id) => (isObj(project) && Array.isArray(project.tracks) ? project.tracks.find(t => isObj(t) && t.id === id) || null : null);
 const tname = t => (typeof t.name === 'string' && t.name ? t.name : 'this track');
@@ -252,7 +263,7 @@ export function resolve(pad, project, drumOf) {
     const t = trackOf(project, x.tr);
     if (!t) { warn.push({ i, tr: x.tr, why: 'track', text: 'Its track was deleted' }); return; }
     if (x.k === 'drum') {
-      const d = drumNote(t, x.s, drumOf), name = soundName(x.s, d.model);
+      const d = drumNote(t, x.s, drumOf), name = soundName(x.s, d.model, d.D);
       if (d.n >= 0) add(t.id, [d.n], false);
       else warn.push({ i, tr: t.id, why: d.why, text: d.why === 'unmapped' ? `${name} has no note on “${tname(t)}”` : `No ${name} on “${tname(t)}” any more` });
       return;
@@ -266,7 +277,7 @@ export function resolve(pad, project, drumOf) {
 /** A target's short label (§3.1): "Kick" (by its track's machine), "C3", "Cm7", "C3 +2" (a custom list); '' for none. */
 export function targetLabel(x, project) {
   if (!isObj(x)) return '';
-  if (x.k === 'drum') { const t = trackOf(project, x.tr); return soundShort(x.s, t ? modelOfDrum(t, x.s) : null); }
+  if (x.k === 'drum') { const t = trackOf(project, x.tr), m = t ? modelOfDrum(t, x.s) : null; return soundShort(x.s, m, m === 'kit' ? kitOf(t) : undefined); }
   if (x.k === 'note') return Number.isInteger(x.n) ? noteName(x.n) : '';
   if (x.k === 'chord') return NAMES[intIn(x.root, 60, 0, 127) % 12] + (Q_SUFFIX[own(Q_SUFFIX, x.q) ? x.q : 'maj']);
   if (x.k === 'notes') { const ns = targetNotes(x); return ns.length ? noteName(ns[0]) + (ns.length > 1 ? ' +' + (ns.length - 1) : '') : ''; }
@@ -284,6 +295,8 @@ function modelOfDrum(t, s) {
   }
   return first;
 }
+// (DM) the track's first kit's record as stored (names read it with bounds: no normalising per label)
+function kitOf(t) { for (const k of insts(t)) if (t.dev[k].model === 'kit') return t.dev[k].drum; return undefined; }
 /** A pad's shown label: its own l, else its first target's, else "Mod" (a mod-only pad), else ''. */
 export function padLabel(pad, project) {
   if (!isObj(pad)) return '';
@@ -394,7 +407,8 @@ const notePad = (tr, n) => ({ c: C_VIOLET, l: '', t: [{ k: 'note', tr, n }], mod
 const isSound = s => typeof s === 'string' && SND.test(s) && s !== 'ac';  // ('ac': the 606's / 909's accent hold — no sound)
 // a machine's sounds by sound id (kick first), as a top-row-first order of `cols` (a machine without its pad order)
 function sidOrder(D, cols) {
-  const P = persOf(isObj(D) && typeof D.m === 'string' ? D.m : 'tr808') || PERS.tr808, list = P.sids.map(j => P.sounds[j]), rows = [];
+  const P = persOf(isObj(D) && typeof D.m === 'string' ? D.m : 'tr808') || PERS.tr808, rows = [];
+  const list = P.sids.filter(j => P !== PERS.kit || (Array.isArray(D.ty) && D.ty[j] > 0)).map(j => P.sounds[j]); // ((DM) a kit: its present voices)
   for (let j = 0; j < list.length; j += cols) rows.push(list.slice(j, j + cols));
   const top = rows[rows.length - 1];
   while (top && top.length < cols) top.push('');                       // (the top row padded: the kick stays bottom-left)

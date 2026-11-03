@@ -49,6 +49,7 @@ import * as wk from './wk.js?v=9';
 import { bed } from './cv-keys.js?v=9';
 import { UI as DRUM_UI, COLORV } from './cv-drum.js?v=9';
 import { PERS } from './drum-core.js?v=9';
+import { KIT } from './kit-core.js?v=9'; // ((DM) our drum machine's type colours (KIT.TINT): its pads' default colours
 
 /** The module's bar stripe (a teal of the pad palette: no track's colour — it is the project's). */
 export const PADS_COLOR = PC.COLORS[PC.C_TEAL].lit;
@@ -112,8 +113,15 @@ function insts(t) {
 /** The first drum machine of a track (primary first): its device id, or null. */
 export function drumDev(t) { for (const k of insts(t)) if (persOf(t.dev[k].model)) return k; return null; }
 /** A machine's own pad colours by sound key (§6.4): the SDS-V's — its hex kit's (cv-drum COLORV by sound id) as the nearest palette
- * entries —; null for the others (the family colours). → { c: { sound key: colour } } for pads-core defaultsFor / fill. */
-export function lookOf(model) {
+ * entries —; (DM) a kit's — each present voice's type colour (KIT.TINT by D.ty) as the nearest entry; D its record —; null for the
+ * others (the family colours). → { c: { sound key: colour } } for pads-core defaultsFor / fill. */
+export function lookOf(model, D) {
+  if (model === KIT.ID) {
+    if (!isObj(D) || !Array.isArray(D.ty)) return null;
+    const c = {};
+    KIT.CODES.forEach((s, j) => { const x = KIT.TINT[D.ty[j]]; if (typeof x === 'string') c[s] = PC.nearestColor(x); });
+    return { c };
+  }
   const P = model === 'sdsv' ? persOf(model) : null;
   if (!P || !Array.isArray(COLORV)) return null;
   const c = {};
@@ -127,8 +135,10 @@ export function defaultsOf(track, drumOf) {
   const k = drumDev(track);
   if (!k) return PC.defaultsFor(track, null);
   const dv = track.dev[k], D = typeof drumOf === 'function' ? drumOf(track, k) : null, O = orderOf(dv.model) || { order: null, cols: 4 };
-  return PC.defaultsFor(track, isObj(D) ? D : { m: dv.model }, O.order, O.cols, lookOf(dv.model));
+  return PC.defaultsFor(track, isObj(D) ? D : { m: dv.model }, O.order, O.cols, lookOf(dv.model, D)); // ((DM) a kit: its present voices (sidOrder), kick bottom-left, in their type colours
 }
+// (DM) a machine's sound ids for the inspector's lists (a trackList entry t): a kit's present voices (its record's ty), else every one
+const kitSids = (t, P) => (t && t.drum === KIT.ID ? P.sids.filter(j => !!t.rec && Array.isArray(t.rec.ty) && t.rec.ty[j] > 0) : P.sids);
 // a track whose primary sound is a drum machine: its pads light from the monitor only (§6.2: no double light)
 const drumTrack = t => { const L = insts(t); return !!L.length && !!persOf(t.dev[L[0]].model); };
 // a pad that plays notes (latch: note / chord targets only, §3.1)
@@ -580,8 +590,9 @@ export function padsHost(deps) {
   /** The project's tracks for the inspector: [{ id, name, model (the primary's), drum (its first drum machine's model) }]. */
   function trackList() {
     return tracks().filter(isObj).map(t => {
-      const L = insts(t), k = drumDev(t);
-      return { id: t.id, name: typeof t.name === 'string' && t.name ? t.name : t.id, model: L.length ? t.dev[L[0]].model : null, drum: k ? t.dev[k].model : null };
+      const L = insts(t), k = drumDev(t), kit = !!k && t.dev[k].model === KIT.ID;
+      return { id: t.id, name: typeof t.name === 'string' && t.name ? t.name : t.id, model: L.length ? t.dev[L[0]].model : null, drum: k ? t.dev[k].model : null,
+        rec: kit && typeof D.drumOf === 'function' ? call(D.drumOf, t, k) || null : null }; // ((DM) a kit's record: its present voices and their names
     });
   }
   return {
@@ -672,7 +683,7 @@ export function padsBody(o) {
   const modRoot = () => { for (let n = el.parentNode; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (n.getAttribute('data-cv-mod') != null) return n; return null; };
   const trName = tr => { const t = HS.tracks().find(x => x.id === tr); return t ? t.name : 'a deleted track'; };
   // a target's default colour: the family's (colorFor); a drum on an SDS-V track in that sound's kit colour (R1-F)
-  const colFor = (x, mod) => { const t = isObj(x) && x.k === 'drum' ? HS.tracks().find(y => y.id === x.tr) : null, L = t ? lookOf(t.drum) : null; return L && own(L.c, x.s) ? L.c[x.s] : PC.colorFor(x, mod); };
+  const colFor = (x, mod) => { const t = isObj(x) && x.k === 'drum' ? HS.tracks().find(y => y.id === x.tr) : null, L = t ? lookOf(t.drum, t.rec) : null; return L && own(L.c, x.s) ? L.c[x.s] : PC.colorFor(x, mod); };
   /* ---- render: the geometry from the record (pads-core footprint), the cells when the grid's shape changed */
   function render() {
     if (dead) return;
@@ -1031,7 +1042,7 @@ export function padsBody(o) {
       const n0 = PC.targetNotes(y)[0], n = n0 == null ? PC.CHROM_FROM : n0;
       if (v === 'note') q.t[j] = { k: 'note', tr: y.tr, n };
       else if (v === 'chord') q.t[j] = { k: 'chord', tr: y.tr, root: n, q: 'maj', inv: 0, oct: 0, spread: 'close' };
-      else { const tt = T.find(z => z.id === y.tr), P = tt && persOf(tt.drum); q.t[j] = { k: 'drum', tr: y.tr, s: P ? P.sounds[P.sids[0]] : 'bd' }; }
+      else { const tt = T.find(z => z.id === y.tr), P = tt && persOf(tt.drum), L0 = P ? kitSids(tt, P) : []; q.t[j] = { k: 'drum', tr: y.tr, s: L0.length ? P.sounds[L0[0]] : P ? P.sounds[P.sids[0]] : 'bd' }; }
       if (j === 0) q.c = colFor(q.t[0], q.mod);
     })));
     r.append(sel('Track', (t ? [] : [[x.tr, trName(x.tr)]]).concat(trOpts), x.tr, v => setT(y => { y.tr = v; })));
@@ -1060,7 +1071,7 @@ export function padsBody(o) {
       r.append(inp, sel('Quality', [['custom', 'Custom…']].concat(PC.Q_ORDER.map(q => [q, Q_LABEL[q] || q])), 'custom', v => { if (v !== 'custom') setT((y, q) => { q.t[j] = { k: 'chord', tr: y.tr, root: y.ns[0], q: v, inv: 0, oct: 0, spread: 'close' }; }); }));
     } else if (x.k === 'drum') {
       const P = t && persOf(t.drum);
-      if (P) r.append(sel('Sound', P.sids.map(sid => [P.sounds[sid], P.names[sid]]), x.s, v => setT((y, q) => { y.s = v; if (j === 0) q.c = colFor(y, q.mod); })));
+      if (P) r.append(sel('Sound', kitSids(t, P).map(sid => [P.sounds[sid], PC.soundName(P.sounds[sid], t.drum, t.rec)]), x.s, v => setT((y, q) => { y.s = v; if (j === 0) q.c = colFor(y, q.mod); }))); // ((DM) a kit: its present voices by name
       else { const s0 = sel('Sound', [[x.s, PC.soundName(x.s, null)]], x.s, () => {}); s0.disabled = true; r.append(s0, mk('span', 'pd-note', 'no drum machine on this track')); }
     }
     return r;
@@ -1129,8 +1140,8 @@ export function padsBody(o) {
       body.append(row('Track', sel('Track', T.map(x => [x.id, x.name]), t.id, v => { st.tr = v; if (POP) POP.sync(); })));
       const go = how => edMod('Fill ' + nm() + ' from ' + t.name, m => { m.pads = PC.fill(m, how); }, { undo: true });
       if (t.drum) {
-        const O2 = orderOf(t.drum) || { order: null, cols: 4 }, P = persOf(t.drum), order = O2.order || (P ? P.sids.map(j => P.sounds[j]) : []);
-        body.append(row(null, btn('pd-tb pd-go', 'Its drum sounds', 'Fill with the drum machine’s sounds', () => go({ k: 'drum', tr: t.id, order, cols: O2.cols, look: lookOf(t.drum) }))));
+        const O2 = orderOf(t.drum) || { order: null, cols: 4 }, P = persOf(t.drum), order = O2.order || (P ? kitSids(t, P).map(j => P.sounds[j]) : []);
+        body.append(row(null, btn('pd-tb pd-go', 'Its drum sounds', 'Fill with the drum machine’s sounds', () => go({ k: 'drum', tr: t.id, order, cols: O2.cols, look: lookOf(t.drum, t.rec) })))); // ((DM) a kit: its present voices, their colours
       }
       body.append(row('Scale', sel('Scale', SCALE_L, st.scale, v => { st.scale = v; })), row('From', stepper('Root', PC.noteName(st.root), () => { st.root = clamp(st.root - 1, 0, 127); if (POP) POP.sync(); }, () => { st.root = clamp(st.root + 1, 0, 127); if (POP) POP.sync(); })));
       body.append(row(null, btn('pd-tb pd-go', 'Fill notes', 'Fill the visible pads with notes', () => go({ k: 'scale', tr: t.id, scale: st.scale, root: st.root }))));

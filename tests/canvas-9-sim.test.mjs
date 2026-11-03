@@ -21,7 +21,7 @@ import { MODELS } from '../models.js?v=9';
 import * as cvWorld from '../cv-world.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 // the cord layer's stand-in (§7.4's interface): every call recorded, the last set / anchors kept
 const CORDS = { calls: [], list: null, anchors: null, on: null };
@@ -433,7 +433,7 @@ test('§1.4 review #25: every other way to a 900 Series gives the Model 15 set a
 
 test('§1.6: Save / reload identical (schema 16 since stage WC, 15 since SC, 14 since M, 13 since P; the orphan knobs pruned at load, never by History); a schema-17 file opens read-only; Save as classic names the patch it loses', async () => {
   const json = JSON.stringify(P()), p2 = cv.loadProject(json);
-  assert.deepEqual([p2.schema, CM.SCHEMA], [17, 17]);
+  assert.deepEqual([p2.schema, CM.SCHEMA], [18, 18]);
   for (const t of P().tracks) {
     const u = p2.tracks.find(x => x.id === t.id), k = CMOD.primId(t);
     if (!cv.isPatchDev(t, k)) continue;
@@ -443,8 +443,8 @@ test('§1.6: Save / reload identical (schema 16 since stage WC, 15 since SC, 14 
   }
   assert.equal(Object.keys(vals(byId(ID.t1)).p).some(k => !rec(byId(ID.t1)).mods[k]), true, 'the session still holds its orphans (§1.5)');
   const n = JSON.parse(json);
-  n.schema = 18;
-  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 18, 'a schema-18 file: read-only');
+  n.schema = 19;
+  assert.equal(cv.loadProject(JSON.stringify(n), { file: true }).newerSchema, 19, 'a schema-19 file: read-only');
   const was = globalThis.confirm;
   let asked = '';
   globalThis.confirm = m => { asked = m; return false; };

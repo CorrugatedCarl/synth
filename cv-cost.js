@@ -53,6 +53,9 @@
 //   sdsv      5 voice cards          dvp       1    0.0101  0.0030  0.0131   (IMPL-8 §12.7: as the 808, its row dvp — roll
 //             notes, no sequencer; the gate's 0.0131 calibrated (V5's machine 0.0065 + the Track); dvx 0.0194, dvm 0.0092,
 //             idle dvi 0.0002)
+//   kit       6 synthesized types    dkp       1    0.0037  0.0030  0.0067   (IMPL-DM §7.2: as the 808, its row dkp — the
+//             Starter kit on the fixture groove; the gate's 0.0067 calibrated (the voices ≈ 0.0003–0.0026 an instance, the
+//             rest the Track); dkx 0.025 (16 voices, every step at v 127), idle dki 0.0002)
 //   m900      patched modules        m9p       1    0.0055  0         —        (IMPL-9 §3.8: no voices — base = the Inst's
 //             decimators + the Track (spike (a); V9b ≈ 0.0053), + COST.patch[type] per live node — a module (section) MAIN
 //             OUT is reachable from; the engine runs no other — + COST.loop (≈ 6–9 ns a sample) per member of a loop step,
@@ -103,6 +106,7 @@ export const COST = Object.freeze({
     ms20: C('c3', 'Korg 35 Sallen-Key', 1, 0.0055, 0.0089), tb303: C('c3', 'diode ladder + sequencer', 1, 0.0055, 0.0137),
     tr808: C('d8p', 'drums', 1, 0.0175, 0.0030), tr606: C('d6p', 'drums', 1, 0.0143, 0.0030),
     tr909: C('d9p', 'drums', 1, 0.0142, 0.0030), sdsv: C('dvp', 'drums', 1, 0.0101, 0.0030),
+    kit: C('dkp', 'drums', 1, 0.0037, 0.0030), // ((DM, IMPL-DM §7.2) lane V's measured dkp: 0.0067 calibrated, under its 0.012 target)
     m900: C('m9p', 'patch', 1, 0.0055, 0),
     serum: SX, rig: SX, // ((WC) estimate() costs a rig device by serumLoad once lane S's sweep routes it by isSxModel)
   }),
@@ -343,7 +347,7 @@ const abortErr = () => { const e = new Error('Measuring was cancelled'); e.name 
 export function workerMain(G) {
   'use strict';
   const DSP = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js'];
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'kit-dsp.js', 'dr-seq.js', 'mod-core.js']; // ((DM) kit-dsp.js after dr-808.js)
   const SR = 48000, Q = 128;
   let Proc = null;
   function load(base, sfx) {

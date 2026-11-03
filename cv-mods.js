@@ -40,7 +40,7 @@
 //   classOf(modelId, ctlId) → class | null      counts(table) → { none, sm, apply, proc, chunk, struct }
 //   fieldClass(path, engine)                     classTable() → { modelId: { ctlId: class } }
 //   sweepControl(model, ctl) → { cls, fields }   the fields: normalised patch paths ('osc.lev', 'ops.R', 'mod3?' = presence)
-import { MODELS, isSxModel, isSxId } from './models.js?v=9'; // ((WC) isSxModel / isSxId: the Serum-engine models — the Serum and the rig — take the Serum's destinations and link sources)
+import { MODELS, isSxModel, isSxId, isKitModel } from './models.js?v=9'; // ((WC) isSxModel / isSxId: the Serum-engine models — the Serum and the rig — take the Serum's destinations and link sources; (DM) isKitModel: none in cut 1)
 import { DESTS, FXP_TAB } from './serum-core.js?v=9';
 import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS, PAD_ID } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
 import { RIG, labelOf as rigLabelOf, partKeys as rigPartKeys } from './rig-core.js?v=9'; // ((MOD1 §2.2) a rig's own LFOs / Envelopes by its own numbering (dev.rig.n); (review 1 P2) the ones standing
@@ -101,8 +101,10 @@ export function fieldClass(path, engine) {
 const G = { drift: 0.5, hiss: 0, sr: 48000, bpm: 120, smooth: 1, fx: null, qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0 };
 const modelOf = m => (typeof m === 'string' ? MODELS.find(x => x.id === m) : m);
 // no classic modulation: Serum (its own matrix) and, from stage 9, a patch model (the 900 Series: its controller's knobs are flat ids of another engine, its modules' are vals.p;
-// a cable on a patch is a later stage — IMPL-9 §4.8). The drums stay in: their knobs are classic ones (proc).
-const noClassic = m => !m || isSxModel(m) || m.family === 'patch';
+// a cable on a patch is a later stage — IMPL-9 §4.8). The drums stay in: their knobs are classic ones (proc). (DM, IMPL-DM §10) Our drum
+// machine is out in cut 1: its knobs mean what each slot's TYPE says (KIT.TYPES), not a fixed patch field — its row of the class table
+// is cut 2's, and destOk refuses its knobs with NOMOD_KIT meanwhile.
+const noClassic = m => !m || isSxModel(m) || m.family === 'patch' || isKitModel(m);
 const isObj = x => x !== null && typeof x === 'object';
 // the model's map of panel values v (as patchFor: P = each control's converted value)
 export function patchOf(model, v) {
@@ -645,12 +647,15 @@ export const plainSwitch = id => typeof id === 'string' && PLAIN_SW.test(id);
 // its controls carry data-dest ids like a Serum's — are never a cable's end: Serum lets an LFO modulate another LFO's rate,
 // the canvas keeps 2b's refusal (an allowed difference, told to the user)
 export const NOMOD_MOD = 'A modulator’s own knobs can’t be modulated';
+// (DM, IMPL-DM §9.0, §10) a kit's knobs: no modulation in cut 1 (its class table row and halos are cut 2's), said in the stage's words
+export const NOMOD_KIT = 'The drum machine’s knobs take modulation in its next update';
 export function destOk(dev, id, keep) {
   const no = (why, stage = null) => ({ ok: false, why, stage }), ok = { ok: true, why: '', stage: null };
   if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
   if (MOD_LABEL[dev.kind]) return dev.kind === 'comb' && id === 'in' ? ok : no(NOMOD_MOD); // ((LC §2.2) a combiner's IN: the one modulator destination — its sources cmbSrcOk's)
   if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
   if (dev.kind !== 'synth') return no(NOMOD);
+  if (isKitModel(modelOf(dev.model))) return no(NOMOD_KIT); // ((DM) before the class table: the kit has no row)
   if (!isSxId(dev.model)) {
     const c = classOf(dev.model, id);
     if (c === null || c === 'struct' || c === 'none') return no(NOMOD);

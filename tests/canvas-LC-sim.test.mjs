@@ -25,7 +25,7 @@ import * as RU from '../rig-ui.js?v=9';
 import * as S from '../song.js?v=9';
 import { createCords } from '../cv-cords.js?v=9';
 
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 900 };
 let LAYER = null;
 const cordsOf = root => new Proxy({}, { get: (o, k) => { if (!LAYER) LAYER = createCords(root, { world: root, doc: globalThis.document, mode: 'svg' }); const f = LAYER[k]; return typeof f === 'function' ? f.bind(LAYER) : f; } });

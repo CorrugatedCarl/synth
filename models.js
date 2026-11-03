@@ -7,12 +7,14 @@
  * Models with `family` ('drums', 'patch') ride their own Inst kinds; the 900 Series' sections are moog-core's controller table.
  * (Stage WC) `rig` — our own modular on the Serum engine, rig-core RIG.NAME — is custom AND family 'rig': a Serum state under its own
  * modules (rig-core.js). isSxModel (the Serum-engine models: the rig alone since SX0) / isRigModel tell them apart.
+ * (Stage DM) `kit` — our own drum machine, family 'drums' (machine 'kit', kit-core KIT): isKitModel.
  * patchFor(model, vals, fx, opts) = the complete engine patch of a track (SPEC-serum2 §12.7): the model's map + the
  * track's FX rack (FXP v2) — shared by main.js (which adds only live-session fields), bounces and the tests.
  */
 import * as SC from './serum-core.js?v=9';
 import * as MG from './moog-core.js?v=9';
 import { RIG, rigStarter } from './rig-core.js?v=9';
+import { KIT } from './kit-core.js?v=9'; // ((DM) our drum machine's data: the slots, the types, the kits — a leaf)
 
 const { compileSerum, FACTORY_PRESETS } = SC;
 
@@ -888,13 +890,42 @@ const rig = {
   presets: FACTORY_PRESETS, // (serum-core's factory presets: program change and the preset preview read them, main.js SXM)
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, tr808, tr606, tr909, sdsv, m900, rig]; // ((SX0) the bundled wavetable model left canvas: every index past dx7 one lower — no site code reads them)
+/* ================================================================ 2026 (our own drum machine) */
+// The kit (stage DM, IMPL-DM §5.1): our drum machine — family 'drums' (Inst kind 'drums', machine 'kit': kit-dsp.js's DrKit), its
+// sequencer kit-core's record (dev.drum, drum-core dispatching m 'kit'). Sixteen slots of nine controls (§5.2: k<s>t TYPE 0 empty ·
+// 1–6 the types of KIT.TYPES, u TUNE, d DECAY, l LEVEL, c CHOKE 0–4, 1–4 the type's character knobs; knobs 0–10, the drum models'
+// convention): a voice exists iff its TYPE > 0. The defaults are the Starter kit (KIT.KITS[0]), the presets the four kits. The
+// character knobs' names, laws and readouts are the type's (KIT.TYPES: the faces read them), so the controls carry neutral labels.
+// The display name is the rig's name + the kit's word on its one line below — never a second literal. No `maker`: ours. Appended last
+// (MODELS[18]), so every index before it is unchanged.
+const KIT_TYPE = ['–', ...KIT.TYPES.slice(1).map(t => t.label)], KIT_CHOKE = ['–', '1', '2', '3', '4'];
+const kitDef = KIT.KITS[0].v;
+const kit = {
+  id: KIT.ID, model: 'Drum machine', year: 2026, family: 'drums',
+  name: RIG.NAME + ' ' + KIT.WORD,
+  tag: 'Step sequencer · a module per drum · kick, snare, hi-hat, clap, tom and perc, synthesized · eight patterns, swing, choke groups',
+  about: 'Our own drum machine: a step grid with one row per drum, and one small module per drum to shape its sound. Every drum is synthesized here — a swept sine for the kick, tuned modes and noise for the snare, six square waves and noise for the hi-hat, noise bursts for the clap, a bending sine for the toms and two struck resonators for the percussion — so nothing is recorded. Tap steps to set them, drag a step up or down for its loudness, and press play: it follows the song’s tempo and plays with it. Eight patterns of up to 16 steps, swing, mute and solo per row, and choke groups so a closed hat cuts the open one. The piano roll, MIDI, the keyboard and a Pads module play the same drums by their notes.',
+  theme: { ctl: 'knob', knob: 'serum', panel: '#17181a', face: '#1f2023', ink: '#ebe6d8', label: '#9c978a', accent: '#e8a33d' },
+  sections: KIT.CODES.map((s, j) => ({ title: 'Drum ' + (j + 1), c: KIT.FIELDS.map(f => f === 't' ? S(s + f, 'Type', KIT_TYPE, kitDef[s + f])
+    : f === 'c' ? S(s + f, 'Choke', KIT_CHOKE, kitDef[s + f])
+    : K(s + f, f === 'u' ? 'Tune' : f === 'd' ? 'Decay' : f === 'l' ? 'Level' : 'Character ' + f, 0, 10, kitDef[s + f])) })),
+  presets: KIT.KITS,
+  map(P, v) {
+    const d = {};
+    for (const s of this.sections) for (const c of s.c) d[c.id] = c.t === 'k' ? v[c.id] / 10 : v[c.id];
+    return { engine: 'drums', machine: 'kit', drum: d, level: 1 };
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, tr808, tr606, tr909, sdsv, m900, rig, kit]; // ((SX0) the bundled wavetable model left canvas: every index past dx7 one lower — no site code reads them; (DM) the kit last)
 // a classic keyboard synth: not Serum (custom), not a family (drums, patch, rig) — the Hardware / Simple views and the classic modulation list (IMPL-9 §1.2)
 export const classicOf = m => !!m && !m.custom && !m.family;
 // (WC, IMPL-WC §2.2, §8.1) the Serum-engine models (the engine, the state, the kit, the presets, the own FX rack) — (SX0) the rig alone
 // since the bundled model left canvas —, the rig; the device-level twins are main.js's isSxRec / isSxDev / sxIds (the engine) and isRigDev (the rig)
 export const isSxModel = m => !!m && !!m.custom;
 export const isRigModel = m => !!m && m.family === RIG.ID;
+// (DM, IMPL-DM §5.1) our drum machine (a drum family member: its own faces, record and dispatch)
+export const isKitModel = m => !!m && m.id === KIT.ID;
 // (WC) the same question for a model ID — a device record holds `model: 'rig'`, not the model (cv-*.js, main.js's isSxRec; midi.js lists them itself, a leaf): the Serum-engine ids
 // ((SX0) + 'serum', main's id: an old project's device holds it until cv-migrate's serumOut — the STEPS before that pass read the engine
 // by id (trackToV2: its FX stay inside) — and toV1 writes it for main; no MODELS entry has it on canvas)

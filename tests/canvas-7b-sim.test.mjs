@@ -21,7 +21,7 @@ import { wavFile } from './smp-files.mjs';
 import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once (canvas-3-sim's rule)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrKit', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog', 'MASTERDSP']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1500, bottom: 1300 };
 function scriptedWorld(root) {
   const L = {};
@@ -74,7 +74,7 @@ test('the lead\'s fixture check (§11 phase 2): a 606 from the Sources tray\'s D
   const tiles = sh.shell.tiles;
   tiles.setView('drums');
   const shown = tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  assert.deepEqual(shown, ['tr808', 'tr606', 'tr909', 'sdsv'], 'the Drums view lists the four machines (7c: the TR-909 too; 8: the SDS-V)');
+  assert.deepEqual(shown, ['tr808', 'tr606', 'tr909', 'sdsv', 'kit'], 'the Drums view lists the four machines (7c: the TR-909 too; 8: the SDS-V) and (DM) the kit');
   sh.srcPick('tr606', 'replace'); sim.raf(); await settle();
   const t = T(), d = I(t);
   assert.equal(d.model, 'tr606');

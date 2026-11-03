@@ -54,10 +54,12 @@ const noteName = n => NAMES[n % 12] + (Math.floor(n / 12) - 1);
 const NN = Array.from({ length: 128 }, (_, n) => noteName(n)), NUMS = Array.from({ length: 128 }, (_, n) => String(n));
 /** (7a) The drum rows of an instrument device ({ model, drum }): a drum machine's mapped primaries, kick first, as
  * host.drumRows wants them ([{ n, name }]); null for any other model. (7b) The TR-606's are its seven (Kick, Snare, Low tom,
- * Hi tom, Cymbal, Open hat, Closed hat); a map without a `drum` record is the machine's default. */
+ * Hi tom, Cymbal, Open hat, Closed hat); a map without a `drum` record is the machine's default. (DM) The record rides along as drum-core
+ * drumRows' D: a kit's rows are its present voices named from it (the four machines ignore it). */
 export function drumRowsOf(dev) {
   if (!dev || typeof dev !== 'object' || typeof dev.model !== 'string' || !Object.prototype.hasOwnProperty.call(PERS, dev.model)) return null;
-  return drumRows(dev.drum && typeof dev.drum === 'object' ? dev.drum.map : undefined, dev.model).map(e => ({ n: e.n, name: e.name })); // (7b: by the machine — the 606's seven sounds, the 808's sixteen)
+  const D = dev.drum && typeof dev.drum === 'object' ? dev.drum : undefined;
+  return drumRows(D ? D.map : undefined, dev.model, D).map(e => ({ n: e.n, name: e.name })); // (7b: by the machine — the 606's seven sounds, the 808's sixteen; (DM) a kit's present voices, named from its record)
 }
 const isBlk = n => BLK[((n % 12) + 12) % 12] === 1;
 const rgb = s => {

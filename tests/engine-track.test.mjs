@@ -17,7 +17,11 @@
 // d9p / d9x / d9m and d9i. Stage 9 (IMPL-9 §3.1, §8.3, lane E9): the patch family — Inst kind 'patch' over patch-dsp.js and
 // moog-dsp.js: {t: patch} + the graph payload, live = offline, the warm-up's machine left fresh and what it covered, pmPend, kind
 // changes and their tails, the OS fade, panic, power (P-1), Play from a stop (P-2), the restart's fade-in, idle, zones, drift,
-// the presets' headroom, the scripts missing, no allocation, and the bench rows m9p / m9x / m9d.
+// the presets' headroom, the scripts missing, no allocation, and the bench rows m9p / m9x / m9d. Stage DM (IMPL-DM §7.1, §8 G1 / G3 /
+// G12, lane V): our drum machine — PatchP's KitP (one Float64Array in KIT.IDS order) beside DrumP (its shape pinned at ⟨B⟩), the
+// factory by machine id (DrKit missing: drumsErr), patch / processorOptions / the warm-up's restore (its kit round), the 808 ↔ kit ↔
+// 909 switches mid-ring, panic and power, the loudness of the fixture groove against the 808's d8p, each type's level and DC, live =
+// offline, no allocation, the warm-up's time, and the bench rows dkp / dkx and dki.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,6 +34,9 @@ import { RIG } from '../rig-core.js?v=9';
 import * as CPU from './cpu-gate.mjs';
 import * as DC from '../drum-core.js?v=9';
 import { songV, DRUM_PATTERNS } from './bench-scenarios.mjs';
+import * as BS from './bench-scenarios.mjs'; // ((DM) drumTrack / kitTrack / scenarios)
+import * as KC from '../kit-core.js?v=9';
+import { GROOVE } from './kit-fixtures.mjs';
 import * as MG from '../moog-core.js?v=9';
 import * as PT from '../patch-core.js?v=9';
 
@@ -1400,7 +1407,7 @@ test('7c: a 909 Inst from {t: patch} + {t: seq} on the warmed first Track, on a 
   const z = play(D, c, 300, ev);
   assert.deepEqual([a.p.i0.kind, machOf(a.p.i0), isDrSeq(a.p.i0.sq), b.p.i0.drPend === null, machOf(c.i0), isDrSeq(c.i0.sq)], ['drums', 'tr909', true, true, 'tr909', true]);
   assert.deepEqual([P.machine, S.m], ['tr909', 'tr909']);
-  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv', 'the warm-up built every machine on Inst 0 (kept, reset; 8: the SDS-V\'s round after the 909\'s)');
+  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv,kit', 'the warm-up built every machine on Inst 0 (kept, reset; 8: the SDS-V\'s round after the 909\'s; DM: the kit\'s last)');
   assert.ok(peakOf(a.o.L) > 0.05, 'the pattern sounds');
   assert.ok(sameBits(a.o.L, b.o.L) && sameBits(a.o.R, b.o.R), 'the warmed-up first Track = a later one (restore leaves a fresh 909)');
   assert.ok(sameBits(a.o.L, z.L) && sameBits(a.o.R, z.R), 'live = offline (processorOptions)');
@@ -1675,7 +1682,7 @@ test('8: an SDS-V Inst from {t: patch} + {t: seq} (trims, cards on memories 3 / 
   const { p: c } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: S });
   const z = play(D, c, 300, ev);
   assert.deepEqual([a.p.i0.kind, machOf(a.p.i0), isDrSeq(a.p.i0.sq), machOf(c.i0), isDrSeq(c.i0.sq), S.m, S.plan.n, P.machine], ['drums', 'sdsv', true, 'sdsv', true, 'sdsv', 0, 'sdsv']);
-  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv', 'the warm-up built every machine on Inst 0 (kept, reset)');
+  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv,kit', 'the warm-up built every machine on Inst 0 (kept, reset; DM: the kit\'s round last)');
   assert.equal(D.global('SxBase').assets.size, 0, 'the warm-up\'s stand-in sample dropped');
   for (const I of [a.p.i0, b.p.i0, c.i0]) assert.deepEqual([...I.dm._trv], flatTr(TRV1), 'the payload\'s trims in the machine');
   assert.ok(peakOf(a.o.L) > 0.05, 'it sounds');
@@ -2954,4 +2961,286 @@ test('9c warm-up time: the scope\'s warm-up ≤ 1.22 × stage 9b\'s (ref-9b, alt
     if (!best || r.ratio < best.ratio) best = r;
   }
   assert.ok(best.ratio <= 1.22, `warm-up × ${best.ratio.toFixed(3)} of stage 9b's (cap 1.22)`);
+});
+
+/* ------------------------------------------------------------------ stage DM: our drum machine (IMPL-DM §7.1, §8 G1 / G3 / G12, lane V) */
+const KITM = MODELS.find(x => x.id === 'kit'), KIT = KC.KIT, KNOTE = KIT.STARTER.map(e => e.n), lawVal = KC.lawVal;
+const kitVals = o => Object.assign(Object.fromEntries(KITM.controls.map(c => [c.id, c.def])), o || {});
+const kitPatch = (o, fx, sr = SR) => patchFor(KITM, kitVals(o), fx || core.defaultFx2(), { sr, bpm: 120 });
+// slot 0 of type t at its defaults (positions → the model's units), the other fifteen empty
+const kitOne = t => { const T = KIT.TYPES[t], o = { kat: t, kau: 10 * T.u.def, kad: 10 * T.d.def, kal: 7, kac: 0 }; T.k.forEach((q, i) => { o['ka' + (i + 1)] = 10 * q.def; }); for (const c of KIT.CODES.slice(1)) o[c + 't'] = 0; return o; };
+// the Starter's record (its notes, its types) and its payload — the record's map by hand while lane S's payload is phase 0's stub
+const kitRec = () => KC.normKit({ ty: KIT.STARTER.map(e => e.t).concat(new Array(8).fill(0)), map: Object.fromEntries(KIT.CODES.map((c, j) => [c, j < 8 ? [KNOTE[j]] : []])) });
+function kitPay(d = kitRec()) {
+  const p = DC.payload(d, DC.initState('kit'), 'now');
+  if (p.map && Array.prototype.some.call(p.map, v => v >= 0)) return p;
+  const map = new Int8Array(128).fill(-1), prim = new Int8Array(16).fill(-1);
+  KIT.CODES.forEach((c, j) => { for (const n of d.map[c]) map[n] = j; if (d.map[c].length) prim[j] = d.map[c][0]; });
+  return Object.assign({}, p, { map, prim });
+}
+// a graph build (bench-scenarios' kind 'track') on a node: its graph, patches, chains, payloads (the transport / song by the caller)
+function trackNode(D, B, po) {
+  const p = new D.Proc({ processorOptions: Object.assign({ os: 4, hostOS: 4, offline: true }, po) });
+  p.port.postMessage = () => {};
+  p.msg(B.graph);
+  for (const [id, patch] of Object.entries(B.patches)) p.msg({ t: 'patch', i: id, p: patch });
+  for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+  for (const [id, s] of Object.entries(B.seqs)) p.msg({ t: 'seq', i: id, s });
+  return p;
+}
+const kitGrooveEv = (F, bpm = 120, sr = SR) => [{ t: 'song', notes: GROOVE.cells.flatMap(c => [240 * c.s, 120, KNOTE[c.l], c.v]), cc: [] },
+  { t: 'transport', play: true, frame: F, tick: 0, fpt: sr * 60 / (bpm * 960), seek: true, loop: true, ls: 0, le: 3840 }];
+
+test('DM §7.1 (D2): PatchP builds a KitP for machine \'kit\' — one Float64Array in KIT.IDS order (a missing id NaN: the machine\'s default), a fixed shape; every other machine\'s DrumP keeps its shape (pinned at ⟨B⟩)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const d = Object.fromEntries(KIT.IDS.map((id, i) => [id, i / 1000]));
+  delete d.kpd;
+  const { p } = mk(D, { offline: true, os: 4, hostOS: 4 }, { engine: 'drums', machine: 'kit', level: 1, drum: d });
+  const K = p.i0.p.drum;
+  assert.equal(K.constructor.name, 'KitP');
+  assert.deepEqual(Object.keys(K), ['v']);
+  assert.ok(Object.prototype.toString.call(K.v) === '[object Float64Array]' && K.v.length === 144);
+  assert.ok(KIT.IDS.every((id, i) => (id === 'kpd' ? Number.isNaN(K.v[i]) : K.v[i] === i / 1000)), 'KIT.IDS order');
+  const { p: q } = mk(D, { offline: true, os: 4, hostOS: 4 }, drPatch());
+  assert.equal(q.i0.p.drum.constructor.name, 'DrumP');
+  assert.deepEqual(Object.keys(q.i0.p.drum), ['htl', 'mtt', 'mtl', 'ltt', 'ltl', 'sds', 'sdt', 'sdl', 'bdd', 'bdt', 'bdl', 'ac', 'vol', 'chl', 'ohd', 'ohl', 'cyd', 'cyt', 'cyl', 'cbl', 'cpl',
+    'rsl', 'htt', 'cps', 'rss', 'hts', 'mts', 'lts', 'chd', 'htd', 'htu', 'ltd', 'ltu', 'sdd', 'sdu', 'bdu', 'hhl', 'tml', 'rdu', 'cru', 'rdl', 'crl', 'mtd', 'mtu', 'bda', 'xbp', 'xbl', 'xbs',
+    'xbc', 'xbm', 'xbd', 'xbb', 'xbt', 'xbn', 'xsp', 'xsl', 'xss', 'xsc', 'xsm', 'xsd', 'xsb', 'xst', 'xsn', 'x1p', 'x1l', 'x1s', 'x1c', 'x1m', 'x1d', 'x1b', 'x1t', 'x1n', 'x2p', 'x2l', 'x2s',
+    'x2c', 'x2m', 'x2d', 'x2b', 'x2t', 'x2n', 'x3p', 'x3l', 'x3s', 'x3c', 'x3m', 'x3d', 'x3b', 'x3t', 'x3n'], 'DrumP\'s shape at ⟨B⟩ (JSC tiers on shapes)');
+  const { p: r } = mk(D, { offline: true }, kitPatch());
+  assert.ok(KIT.IDS.every((id, i) => r.i0.p.drum.v[i] === kitPatch().drum[id]), 'the model\'s map: knobs / 10, TYPE / CHOKE as indices');
+});
+
+test('DM: a kit Inst from {t: patch} + {t: seq} on the warmed first Track, on a later Track and from processorOptions offline — bit for bit (its own machine, DrKit); the warm-up\'s kit round leaves a fresh one', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), P = kitPatch({ kad: 8, ke1: 2 }), S = kitPay();
+  const ev = [[2, { t: 'on', n: 36, v: 0.9 }], [30, { t: 'on', n: 42, v: 0.5 }], [40, { t: 'on', n: 46, v: 1 }], [60, { t: 'on', n: 42, v: 0.8 }], [90, { t: 'on', n: 38, v: 1 }], [91, { t: 'on', n: 39, v: 1 }],
+    [120, { t: 'on', n: 45, v: 0.7 }], [140, { t: 'on', n: 50, v: 0.7 }], [160, { t: 'on', n: 37, v: 1 }]];
+  const live = () => { D.ctx.currentFrame = 0; const { p } = mk(D, { os: 4, hostOS: 4 }, P); p.msg({ t: 'seq', s: S }); return { p, o: play(D, p, 300, ev) }; };
+  const a = live(), b = live();
+  D.ctx.currentFrame = 0;
+  const { p: c } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: S });
+  const z = play(D, c, 300, ev);
+  assert.deepEqual([a.p.i0.kind, P.machine, S.m, isDrSeq(a.p.i0.sq), isDrSeq(c.i0.sq)], ['drums', 'kit', 'kit', true, true]);
+  assert.ok(a.p.i0.dm === a.p.i0.dmL.find(r => r.id === 'kit').dm && Array.isArray(a.p.i0.dm._v) && a.p.i0.dm._v.length === 32, 'DrKit\'s machine, its _v');
+  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv,kit', 'the warm-up built every machine on Inst 0 (kept, reset)');
+  assert.ok(peakOf(a.o.L) > 0.05, 'it sounds');
+  assert.ok(sameBits(a.o.L, b.o.L) && sameBits(a.o.R, b.o.R), 'the warmed-up first Track = a later one (restore leaves a fresh kit)');
+  assert.ok(sameBits(a.o.L, z.L) && sameBits(a.o.R, z.R), 'live = offline (processorOptions)');
+  assert.ok(sameBits(a.o.L, a.o.R), 'mono (decision f): L = R');
+  // the CPU count reads _v's .on: two voices ringing → act 2
+  const { p: q } = mk(D, { os: 4, hostOS: 4, offline: true }, kitPatch({ kad: 9, kfd: 9 }));
+  q.msg({ t: 'seq', s: S }); q.msg({ t: 'on', n: 36, v: 1 }); q.msg({ t: 'on', n: 45, v: 1 }); run(D, q, 8);
+  assert.equal(q.i0.act, 2, 'the Inst\'s act counts the kit\'s sounding instances');
+});
+
+test('DM: the factory by machine id — DrKit missing: the kit Inst is silent and posts drumsErr once (the 808 unaffected); Dr808 missing: the kit still plays', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet, overrides: { 'kit-dsp.js': null } }), { p, sent } = mk(D, { os: 4, hostOS: 4, offline: true }, kitPatch());
+  p.msg({ t: 'on', n: 36, v: 1 });
+  const a = play(D, p, 20);
+  assert.ok(peakOf(a.L) === 0 && sent.filter(m => m.t === 'drumsErr').length === 1 && p.i0.dm === null, 'silent, one drumsErr');
+  const { p: q } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch());
+  q.msg({ t: 'on', n: 36, v: 1 });
+  assert.ok(peakOf(play(D, q, 20).L) > 0.05, 'the 808 plays');
+  const E = dspScope({ engine: true, fast: true, console: quiet, overrides: { 'dr-808.js': null } }), { p: r } = mk(E, { os: 4, hostOS: 4, offline: true }, kitPatch());
+  r.msg({ t: 'on', n: 36, v: 1 });
+  assert.ok(peakOf(play(E, r, 20).L) > 0.05, 'the kit without dr-808.js');
+});
+
+// G3: the machine switches mid-ring on one Inst (each machine kept, its tail through the family's paths), panic, power — the click
+// bound of IMPL-WC G3 on the output (max step ≤ 1.05 × (the steady signal's own max step + peak / (0.003·fs))) over each switch's
+// tail before the new machine's hits: 808 → kit, kit → 909, kit → 808 gated; 909 → kit is the 909's own switch tail (× 3.1 the
+// bound into the 808 or the 606 as well: the family's, recorded — the classic ↔ drums step is ROADMAP's known issue, :129)
+test('DM G3: 808 → kit → 909 → kit → 808 mid-ring on one Inst — each machine kept, the old one\'s 3 ms tail, click-bound; panic and power off silent after the fade', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch({ bdd: 10 }));
+  const P9 = patchFor(MODELS.find(x => x.id === 'tr909'), Object.fromEntries(MODELS.find(x => x.id === 'tr909').controls.map(c => [c.id, c.def])), core.defaultFx2(), { sr: SR, bpm: 120 });
+  const K = kitPatch({ kad: 9, kfd: 9 });
+  const step = (a, i0, i1) => { let m = 0; for (let i = Math.max(1, i0); i < i1; i++) m = Math.max(m, Math.abs(a[i] - a[i - 1])); return m; };
+  // (each switch's new hits 3 quanta later: the window [switch, new hit) holds the old machine's 3 ms tail alone)
+  const ev = [[0, { t: 'on', n: 36, v: 1 }], [40, { t: 'patch', p: K }], [40, { t: 'seq', s: kitPay() }], [43, { t: 'on', n: 36, v: 1 }], [43, { t: 'on', n: 45, v: 1 }],
+    [80, { t: 'patch', p: P9 }], [83, { t: 'on', n: 36, v: 1 }], [120, { t: 'patch', p: K }], [120, { t: 'seq', s: kitPay() }], [123, { t: 'on', n: 45, v: 1 }],
+    [160, { t: 'patch', p: drPatch({ bdd: 10 }) }], [163, { t: 'on', n: 36, v: 1 }]];
+  const o = play(D, p, 200, ev), I = p.i0;
+  assert.equal(I.dmL.map(r => r.id).join(), 'tr808,kit,tr909', 'each machine built once, kept (an offline Track: no warm-up)');
+  const pk = peakOf(o.L), steady = step(o.L, 10 * 128, 38 * 128), rep = [];
+  let worst = 0;
+  for (const q of [40, 80, 160]) { // (808 → kit, kit → 909, kit → 808)
+    const old = step(o.L, (q - 10) * 128, (q - 1) * 128), s = step(o.L, q * 128 - 8, (q + 3) * 128), b = 1.05 * (Math.max(steady, old) + pk / (0.003 * SR));
+    rep.push(`${q}: ${s.toFixed(4)} (bound ${b.toFixed(4)})`); worst = Math.max(worst, s / b);
+  }
+  // 909 → kit: the 909's own switch tail (the family's path: 909 → 808 / 606 step the same, recorded — not the kit's) — the kit adds nothing
+  const sw = to => { const F = D.ctx.currentFrame; D.ctx.currentFrame = 0; const { p: w } = mk(D, { os: 4, hostOS: 4, offline: true }, P9); const r = play(D, w, 50, [[0, { t: 'on', n: 36, v: 1 }], [40, { t: 'patch', p: to }]]); D.ctx.currentFrame = F; return step(r.L, 40 * 128 - 8, 43 * 128); };
+  const s9k = sw(K), s98 = sw(drPatch({ bdd: 10 }));
+  rep.push(`909 → kit ${s9k.toFixed(4)} vs 909 → 808 ${s98.toFixed(4)} (the family's)`);
+  assert.ok(s9k <= s98 * 1.02, 'the 909\'s switch tail into the kit ≤ into the 808 (its output stage aside)');
+  t.diagnostic(`switch steps (the old machine's tail, before the new hits) ${rep.join(' · ')}; worst × ${worst.toFixed(2)}`);
+  assert.ok(o.L.every(Number.isFinite) && peakOf(o.L.subarray(43 * 128, 80 * 128)) > 0.05 && peakOf(o.L.subarray(123 * 128, 160 * 128)) > 0.05, 'the kit plays after each switch');
+  assert.ok(worst <= 1, 'the switches within the click bound');
+  // panic while the kit rings: silent after the fade, the machine reset
+  const { p: z } = mk(D, { os: 4, hostOS: 4, offline: true }, K);
+  z.msg({ t: 'seq', s: kitPay() }); z.msg({ t: 'on', n: 36, v: 1 }); z.msg({ t: 'on', n: 46, v: 1 });
+  const b = play(D, z, 20);
+  assert.ok(peakOf(b.L.subarray(10 * 128)) > 0.05, 'ringing');
+  z.msg({ t: 'panic' });
+  // (the output stage's input after the fade, the 7a panic test's way: its DC block then decays what it held)
+  const os = z.outStage, o2 = out();
+  let after = 0, k = 0, edge = 0, prev = b.L[b.L.length - 1];
+  z.outStage = function (Lo, Ro, off, n) { if (k >= 3) for (let i = 0; i < n; i++) after = Math.max(after, Math.abs(this.Lb[i]), Math.abs(this.Rb[i])); return os.call(this, Lo, Ro, off, n); };
+  for (; k < 40; k++) { run(D, z, 1, o2); const L = o2[0][0]; for (let i = 0; i < 128; i++) { edge = Math.max(edge, Math.abs(L[i] - prev)); prev = L[i]; } }
+  assert.ok(!z.i0.dm.live() && z.pnN === 0 && z.i0.tailN === 0, 'cleared');
+  assert.ok(after < 1e-6, `silent after the fade (${after})`);
+  assert.ok(edge <= 1.05 * (step(b.L, 10 * 128, b.L.length) + peakOf(b.L) / (0.003 * SR)), 'the panic fade within the click bound');
+  // power off (a graph node) while it rings: faded, silent, the machine reset; on again: a hit plays
+  const E = dspScope({ engine: true, fast: true, console: quiet }), KB = BS.kitTrack(GROOVE, null, { song: true }), g = trackNode(E, KB);
+  g.msg(KB.song); g.msg(Object.assign({ t: 'transport' }, KB.transport, { frame: E.ctx.currentFrame }));
+  const c = play(E, g, 60);
+  assert.ok(peakOf(c.L) > 0.05, 'the groove plays');
+  g.msg({ t: 'power', i: 'i1', on: false });
+  const d = play(E, g, 40);
+  let pe = 0; for (let i = 1; i < 6 * 128; i++) pe = Math.max(pe, Math.abs(d.L[i] - d.L[i - 1]));
+  assert.ok(peakOf(d.L.subarray(10 * 128)) < 1e-6, 'power off: silent after the fade');
+  assert.ok(pe <= 1.05 * (step(c.L, 1, c.L.length) + peakOf(c.L) / (0.003 * SR)), 'the power-off fade within the click bound');
+});
+
+// G3 loudness (IMPL-DM §8; the family's rule, models.js:781: the default groove's RMS through the Track within 1 dB of the 808's,
+// the limiter untouched, every sound alone ≤ 0.8 FS, accented ≤ 1.0): the fixture groove on the Starter kit through the whole Track
+// (the song path, the decimators, the output stage, the limiter — its input read) within ± 1 dB RMS of the 808's default groove (the
+// 909's and the SDS-V's reference, 8 §12.4 above: BD on the beats, SD + CP on 2 / 4, CH on the eighths, v 100 — d8p's accents reach
+// the limiter themselves, IMPL-DM §13 lane V); each type alone at its defaults, LEVEL 0.7: ≤ 0.8 FS at v 100, ≤ 1.0 at v 127; DC
+// |mean| ≤ 1e-3 over the hit (its first T60). The RMS half is a todo (IMPL-DM §13 lane V): with the Starter kick (DECAY 0.45, T60
+// 0.37 s: a crest 4 dB above the 808's BD) the groove sits 1.6 dB under the 808's at the loudest trims the peak gates allow; the
+// Kick's default DECAY 0.55 (kit-core's data: lane S / the lead) puts it at −0.4 dB with the same trims and every peak gate kept
+const KIT_RMS = [];
+test('DM G3 loudness: the fixture groove (48 × 4 / 48 × 1 / 44.1 × 1) leaves the limiter untouched; each type alone ≤ 0.8 / 1.0 FS at v 100 / 127; DC ≤ 1e-3', (t) => {
+  const thr = Math.pow(10, -1 / 20), rep = [];
+  const meter = (p, quanta) => {
+    const lim = p.lim, lp = lim.process;
+    let pre = 0, gmin = 1;
+    lim.process = function (A, B, n) { for (let i = 0; i < n; i++) pre = Math.max(pre, Math.abs(A[i]), Math.abs(B[i])); lp.call(this, A, B, n); gmin = Math.min(gmin, this.env); };
+    return { pre: () => pre, gmin: () => gmin };
+  };
+  const rmsDb = (L, sr) => { let e = 0; const a = Math.round(0.1 * sr); for (let i = a; i < L.length; i++) e += L[i] * L[i]; return 10 * Math.log10(e / (L.length - a)); };
+  const go = (sr, os, B) => {
+    const D = dspScope({ engine: true, fast: true, console: quiet, sampleRate: sr }), p = trackNode(D, B, { os, hostOS: os }), m = meter(p);
+    if (B.song) p.msg(B.song);
+    p.msg(Object.assign({ t: 'transport' }, B.transport, { frame: D.ctx.currentFrame, fpt: sr * 60 / (120 * 960) }));
+    const r = play(D, p, Math.ceil(8.2 * sr / 128));
+    return { r: rmsDb(r.L, sr), pre: m.pre(), gmin: m.gmin() };
+  };
+  const g808 = [];
+  for (let k = 0; k < 64; k++) {
+    const q = Math.floor((8 + k * 6000) / 128), on = n => g808.push([q, { t: 'on', n, v: 100 / 127 }]);
+    if (k % 4 === 0) on(36);
+    if (k % 16 === 4 || k % 16 === 12) { on(38); on(39); }
+    if (k % 2 === 0) on(42);
+  }
+  const r8 = (() => { const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch()); return rmsDb(play(D, p, Math.ceil(8.2 * SR / 128), g808).L, SR); })();
+  for (const [sr, os] of [[SR, 4], [SR, 1], [44100, 1]]) {
+    const g = go(sr, os, BS.kitTrack(GROOVE, null, { song: true }));
+    rep.push(`${sr / 1000}k×${os}: RMS ${g.r.toFixed(2)} dBFS (${(g.r - r8).toFixed(2)} dB re the 808's ${r8.toFixed(2)}), pre-limiter peak ${g.pre.toFixed(3)}`);
+    KIT_RMS.push([`${sr} × ${os}`, g.r - r8]);
+    assert.ok(g.pre < thr && g.gmin === 1, `${sr} × ${os}: the groove reaches the limiter (${g.pre.toFixed(4)}, ${g.gmin})`);
+  }
+  t.diagnostic('fixture groove, 4 bars: ' + rep.join(' · '));
+  const D = dspScope({ engine: true, fast: true, console: quiet }), bad = [], al = [];
+  for (let ty = 1; ty <= 6; ty++) for (const v of [100, 127]) {
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, kitPatch(kitOne(ty))), m = meter(p);
+    p.msg({ t: 'seq', s: kitPay() }); p.msg({ t: 'on', n: 36, v: v / 127 });
+    const T60 = lawVal(KIT.TYPES[ty].d, KIT.TYPES[ty].d.def), r = play(D, p, Math.ceil((T60 + 0.2) * SR / 128));
+    let s = 0; const n = Math.max(128, Math.round(T60 * SR)); for (let i = 0; i < n; i++) s += r.L[i];
+    const x = m.pre(), dc = s / n;
+    al.push(`${ty} v ${v} ${x.toFixed(3)} (DC ${dc.toExponential(1)})`);
+    if (!(x > 0.05 && x <= (v === 100 ? 0.8 : 1))) bad.push(`type ${ty} at v ${v}: peak ${x.toFixed(3)}`);
+    if (!(Math.abs(dc) <= 1e-3)) bad.push(`type ${ty} at v ${v}: DC ${dc}`);
+  }
+  t.diagnostic('alone: ' + al.join(' · '));
+  assert.deepEqual(bad, []);
+});
+test('DM G3 loudness, RMS: the fixture groove within ± 1 dB of the 808\'s default groove (the Starter kick\'s DECAY 0.55 — the lead, IMPL-DM §13 lane V: 0.45 measured −1.6 dB)', () => {
+  assert.equal(KIT_RMS.length, 3, 'the loudness test ran');
+  for (const [k, d] of KIT_RMS) assert.ok(Math.abs(d) <= 1, `${k}: the groove's RMS ${d.toFixed(2)} dB re the 808's default groove`);
+});
+
+test('DM D7: the fixture groove as roll notes bounced offline (processorOptions: patch, seq, song, transport) = live (messages), bit for bit', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), P = kitPatch(), S = kitPay();
+  D.ctx.currentFrame = 0;
+  const { p } = mk(D, { os: 4, hostOS: 4 }, P), [song, tr] = kitGrooveEv(1024);
+  p.msg({ t: 'seq', s: S }); p.msg(song); p.msg(tr);
+  const a = play(D, p, 400);
+  D.ctx.currentFrame = 0;
+  const { p: q } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: S, song, transport: tr });
+  const b = play(D, q, 400);
+  assert.ok(peakOf(a.L) > 0.1 && sameBits(a.L, b.L) && sameBits(a.R, b.R));
+});
+
+test('DM: a kit Inst renders without allocating — the groove (roll notes), posted hits, chokes, retriggers', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, kitPatch({ ka4: 5, kf4: 4 }));
+  const [song, tr] = kitGrooveEv(D.ctx.currentFrame);
+  p.msg({ t: 'seq', s: kitPay() }); p.msg(song); p.msg(tr);
+  const o = out();
+  run(D, p, 200, o);
+  let pk = 0;
+  noAlloc(D, () => { for (let k = 0; k < 400; k++) { if (k % 50 === 7) { p.noteOn(46, 1); p.noteOn(42, 0.6); p.noteOn(36, 0.9); } p.process([], o); D.ctx.currentFrame += 128; for (const v of o[0][0]) if (Math.abs(v) > pk) pk = Math.abs(v); } });
+  assert.ok(pk > 0.05, 'it played');
+});
+
+// IMPL-DM §7.2: the warm-up's time ≤ 1.1 × today's — the same scope with kit-dsp.js's DrKit null (the kit round then builds nothing:
+// phase 0's warm-up) against the current files, each in a fresh process, alternating, the median ratio of 5 pairs (again once when above)
+test('DM warm-up time: the scope\'s warm-up ≤ 1.1 × without the kit\'s round (DrKit null: phase 0\'s), alternating fresh processes', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const root = new URL('../', import.meta.url), here = new URL('./', import.meta.url).href;
+  const child = side => `
+    import '${here}v8-guard.mjs';
+    import vm from 'node:vm';
+    import { readFileSync } from 'node:fs';
+    import { DSP_FILES } from '${here}dsp-scope.mjs';
+    const src = f => readFileSync(new URL(f, ${JSON.stringify(root.href)}), 'utf8');
+    const g = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+    let Proc = null;
+    Object.assign(g, { console: { log() {}, info() {}, debug() {}, warn() {}, error() {} }, sampleRate: 48000, currentFrame: 0 });
+    g.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
+    g.registerProcessor = (n, c) => { Proc = c; };
+    for (const f of DSP_FILES) { if (f === 'kit-dsp.js' && ${JSON.stringify(side)} === 'base') { vm.runInContext('globalThis.DrKit = null;', g); continue; } vm.runInContext(src(f), g, { filename: f }); }
+    vm.runInContext(src('engine.js'), g, { filename: 'engine.js' });
+    const t0 = performance.now(); new Proc({ processorOptions: { os: 4, hostOS: 4 } }); console.log(performance.now() - t0);`;
+  const one = side => { const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', child(side)], { encoding: 'utf8', timeout: 60000 }); assert.equal(r.status, 0, r.stderr); return +r.stdout.trim(); };
+  let best = null;
+  for (let a = 0; a < 2 && !(best && best.ratio <= 1.1); a++) {
+    const A = [], B = [], Q = [];
+    for (let k = 0; k < 5; k++) { let x, y; if (k & 1) { y = one('cur'); x = one('base'); } else { x = one('base'); y = one('cur'); } A.push(x); B.push(y); Q.push(y / x); }
+    const med = v => v.slice().sort((p, q) => p - q)[2], r = { a: med(A), b: med(B), ratio: med(Q) };
+    t.diagnostic(`warm-up: without the kit's round ${r.a.toFixed(0)} ms, with it ${r.b.toFixed(0)} ms (× ${r.ratio.toFixed(3)})`);
+    if (!best || r.ratio < best.ratio) best = r;
+  }
+  assert.ok(best.ratio <= 1.1, `warm-up × ${best.ratio.toFixed(3)} (cap 1.1)`);
+});
+
+// IMPL-DM §7.2 / G12: the kit's bench rows through the CPU gate (calibrated, ≤ 1.5 × the node target) and dki — the machine powered,
+// synced, the transport stopped, nothing sounding, past the 2 s quiet window — gated as row p is (7a's method)
+test('DM bench rows (node gate): dkp, dkx ≤ 1.5 × their targets; dki (an idle synced kit) ≤ 1.5 × 0.0005', async (t) => {
+  const { scenarios, kitTrack } = BS;
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const rows = scenarios().filter(s => s.id.startsWith('dk'));
+  assert.deepEqual(rows.map(s => s.id), ['dkp', 'dkx']);
+  for (const S of rows) {
+    const B = S.build(), p = trackNode(D, B);
+    if (B.song) p.msg(B.song);
+    p.msg(Object.assign({ t: 'transport' }, B.transport, { frame: D.ctx.currentFrame }));
+    const o = out(), sec = () => run(D, p, SR / 128, o);
+    let pk = 0;
+    for (let k = 0; k < SR / 128; k++) { run(D, p, 1, o); pk = Math.max(pk, peakOf(o[0][0])); }
+    assert.ok(pk > 0.01 && p.insts[0].kind === 'drums' && machOf(p.insts[0]) === 'kit', S.id + ': audible');
+    assert.deepEqual(CPU.BENCH.targets[S.id], { node: S.node, ipad: S.ipad });
+    const best = await CPU.gateLoad(sec, S.node);
+    t.diagnostic(`row ${S.id}: ${best.load.toFixed(4)} calibrated (raw ${best.raw.toFixed(4)}, t(calib) ${best.calib.toFixed(0)} ms, attempt ${best.attempt})`);
+    assert.ok(best.load <= 1.5 * S.node, `row ${S.id}: ${best.load.toFixed(4)} > 1.5 × ${S.node}`);
+  }
+  // dki: dkp's machine and payload, the transport stopped (no notes)
+  const p = trackNode(D, kitTrack(GROOVE)), o = out(), sec = () => run(D, p, SR / 128, o);
+  sec(); sec(); sec();
+  const x = p.insts[0];
+  assert.ok(x.quietF > 2 * SR && x.act === 0 && isDrSeq(x.sq) && x.sq.sync && o[0][0].every(v => v === 0), 'dki: the skip path, silent');
+  assert.deepEqual(CPU.BENCH.targets.dki, { node: 0.0005, ipad: 0.001 });
+  const best = await CPU.gateLoad(sec, CPU.BENCH.targets.dki.node);
+  t.diagnostic(`row dki: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt})`);
+  assert.ok(best.load <= 1.5 * CPU.BENCH.targets.dki.node, `row dki: ${best.load.toFixed(5)} > 1.5 × 0.0005`);
 });

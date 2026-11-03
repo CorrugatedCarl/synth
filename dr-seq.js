@@ -91,6 +91,11 @@
  * synced, a start / seek / loop wrap — and events() returns 1e9 / the span's end: nothing is due) and `trim` (its memories 3 / 4,
  * 5 × 2 × 6 numbers): set() keeps it as `smp` (null until a payload brings one, `s.trim || null`) for the Inst's adoption (engine.js
  * drOn / drSeqMsg hand it to the machine); the other machines' payloads have none: inert, their every line as 7a / 7b / 7c.
+ * IMPL-DM §3.6 (lane S): our drum machine's plan carries `vl` (a Uint8Array, 16 velocities a step: slot j's at vl[16 o + j]) — its
+ * st are 16-bit lane masks, lane j = slot j, no accent bit. valid() checks vl (a Uint8Array of ≥ 16 · mOff[n]); fire() takes the
+ * kit branch (fireK) on `vl` before the family's & 0xFFF / & 0xFFE (P1-1: a slot-0-only step and slots 12–15 fire): dm.trig(mask,
+ * vl, 16 o), drStep / drNote by slot. Every other plan has no vl: its every line as 7a / 7b / 7c / 8 (ref-7a…7d render the frozen
+ * DrSeq against this one).
  */
 (function () {
   'use strict';
@@ -116,6 +121,7 @@
     const INF = Infinity, V_LO = 100 / 127;
     const fin = x => typeof x === 'number' && x - x === 0;
     const len = a => (a && typeof a.length === 'number' ? a.length : -1);
+    const TAG = Object.prototype.toString;              // (DM) a typed array's own kind — any realm (a plan built in another one)
 
     // a plan as compilePlan makes it, checked without allocating (the audio thread never trusts a payload's shape)
     function valid(p) {
@@ -142,6 +148,8 @@
         if (len(A) < O[n] || len(Fl) < O[n] || len(Sh) < n || len(Fm) < n) return false;
         for (let i = 0; i < n; i++) { const T = STEP_T[P[i]]; if (!(Sh[i] >= 0 && Sh[i] < T && Fm[i] >= 0 && Fm[i] < T)) return false; }
       }
+      const Vl = p.vl;                                   // (DM) a kit plan's velocities: a Uint8Array, 16 a step
+      if (Vl != null && !(TAG.call(Vl) === '[object Uint8Array]' && Vl.length >= 16 * O[n])) return false;
       return true;
     }
     function sameShape(a, b) {
@@ -323,13 +331,14 @@
         this.cs = s; this.ct = this.tickOf(s);            // (= b2: beat-2 steps are even or unswung)
       }
       fire(F) {
-        const I = this.inst, f = this.fl, s = this.cs, pl = this.pl;
-        const mask = f !== null ? f.st[s] & 0xFFF : pl.st[this.cOff + s] & 0xFFF;
+        const I = this.inst, f = this.fl, s = this.cs, pl = this.pl, vl = f === null ? pl.vl : null; // (DM: a kit plan's 16 lanes, slot 0 = bit 0)
+        const mask = f !== null ? f.st[s] & 0xFFF : vl ? pl.st[this.cOff + s] : pl.st[this.cOff + s] & 0xFFF;
         const k = f !== null ? f.k : pl.mKey[this.cm], v = f !== null ? f.v : pl.mVar[this.cm];
         const a9 = f === null && pl.ac ? pl.ac[this.cOff + s] & mask & AC9 : -1; // (7c: a 909 step's per-voice accents; −1 an 808 / 606 plan)
         this.lf = this.ct;
         if (s === 0) this.c0F = F;                        // (7b: a measure's, a fill's or a restart's step 1 — STEP RESET's rstF reads it)
-        if (a9 >= 0) this.fire9(mask, a9);
+        if (vl) { if (mask) this.fireK(mask, vl, 16 * (this.cOff + s)); }
+        else if (a9 >= 0) this.fire9(mask, a9);
         else if (mask & 0xFFE) {
           const dm = I.dm;
           if (dm) dm.trig(mask);
@@ -366,6 +375,26 @@
           this.hook(mask, a9);
         }
         if (gd && dm) dm.trig(gd, 0);
+      }
+      // (DM) a kit step: dm.trig(mask, vl, o) — lane j = slot j at velocity vl[o + j], no accent bit; the #34 hook's lastNote the
+      // lowest primary of its slots, v their highest velocity / 127; IMPL-SC §2.1: drNote once per sounding slot (its primary, its
+      // velocity / 127 — a Ducker keyed by the kick's note ducks on each kick step)
+      fireK(mask, vl, o) {
+        const I = this.inst, dm = I.dm;
+        if (dm) dm.trig(mask, vl, o);
+        const ds = typeof I.drStep === 'function', dn = typeof I.drNote === 'function';
+        if (!ds && !dn) return;
+        let n = 128, w = 0;
+        for (let j = 0; j < 16; j++) {
+          if (!(mask & (1 << j))) continue;
+          const q = this.prim[j], u = vl[o + j];
+          if (q >= 0 && q < n) n = q;
+          if (u > w) w = u;
+          if (dn && q >= 0) I.drNote(q, u / 127);
+        }
+        if (!ds) return;
+        this.gate = 1;
+        I.drStep(n < 128 ? n : -1, w / 127);
       }
       // (7c) a flammed step's second hit (at its tick: the lanes, their accents, the step's TOTAL ACCENT); no post
       flam() {

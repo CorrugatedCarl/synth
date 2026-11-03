@@ -19,14 +19,14 @@ const fxOne = () => { const fx = defaultFx2(); newInstance(fx, 'rev', { rack: 0 
 const MDEV = () => ({ l1: S.normModDev({ kind: 'lfo', lfo: { mono: 1 } }), m1: S.normModDev({ kind: 'macro' }) });
 
 test('schema 17: STEPS[16] is the identity (a copy with the number, the input untouched); a 16 with a master holding modulators opens as 17 byte for byte; older ones go through every step; an 18 is read-only here', () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [17, 17]);
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [18, 18]);
   const p16 = deepFreeze({ name: 'MM', schema: 16, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [], master: { fx: fxOne(), lay: { mfx: { x: 0, y: 0 }, l1: { x: -512, y: 0 } }, mdev: MDEV(), mods: [ROW], mid: 2 } });
   assert.deepEqual(M.STEPS[16](p16, []), Object.assign(jclone(p16), { schema: 17 }), 'nothing converted');
   const up = M.upgrade(p16);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid, up.notes], [16, false, 17, 'p_abc123xyz0', []]);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid, up.notes], [16, false, 18, 'p_abc123xyz0', []]);
   assert.deepEqual(up.p.master, jclone(p16.master), 'the master as it was');
-  assert.deepEqual([0, 14, 16, 17, 18].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, false, true]);
-  assert.deepEqual([M.upgrade({ schema: 14, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [17, 17]);
+  assert.deepEqual([0, 14, 16, 17, 19].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, false, true]);
+  assert.deepEqual([M.upgrade({ schema: 14, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [18, 18]);
 });
 
 test('normMaster: mdev — lfo / macro / cc / chaos under their prefixes (lfo.mono and chaos.mono forced to 1: the master has no notes), env / note / a wrong prefix / mfx / out dropped; mods normalised (normMods); mid as a track\'s; fx and lay as before; nothing valid → undefined', () => {
