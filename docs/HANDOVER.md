@@ -1,8 +1,54 @@
-# SYNTH — handover briefing (2026-10-18, updated after stages 1f, 1g, 2a, 1h and 2b)
+# SYNTH — handover briefing (2026-10-18; §0 rewritten 2026-11-02 for the next session)
 
 Written for the next agent taking over this project. Read it fully, then `docs/canvas/ROADMAP.md`. Project-wide rules are in `CLAUDE.md`
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
 concrete UX feedback, and expect finished work to be pushed live.
+
+## 0. Handover 2026-11-02 (Opus lead → a new session) — START HERE
+
+**Live**: canvas.domlavin.com = branch `canvas` (see `git log -1 canvas`). Shipped this session, in order: FR Cut A, skinned popups, cords
+still on a track switch, Ivory + glass skins, display skins, **FR Cut B** (per-frame LFO / ENV / knob-ring motion at the heard frame;
+WebKit / iPad lane OFF until measured), **MOD1** (ROADMAP 27: every modulator in the Wavecraft look, its own Modulators view), **glass
+skin neutral** (no Serum blue), **SX0** (ROADMAP 28: Serum complete and the parts machinery gone from canvas; old Serums open as
+Wavecrafts, same sound). `main` (synth.domlavin.com) untouched since 2026-10-17 — the user's brother uses it; never change it.
+
+**In flight — ROADMAP 26, the LFO combiner** (contract `docs/canvas/IMPL-LC.md`, §18 the skeptic, the user's answers Q1–Q4 in it):
+- Holding branch `wt-LC` = phase 0 (1c99d07: the `comb` kind's data, registries, tray tile, model checks; sweep LC-0).
+- Lanes E (engine: mod-core / sx-mod / engine / cv-graph), F (face + `lc-view.js` + style.css), H (host: main / cv-module /
+  cv-modlayer / cv-cables) were built from 1c99d07 on branches listed in §0.1 below (filled in when they report).
+- Next: merge E → F → H into `wt-LC`, `node tools/precache.mjs --write`, record `tests/ref-LC` once (lane E's recorder), the sweep
+  (`tools/sweep.sh`), two reviewers (one real engine + node sims; one Chrome for Testing incl. a contact sheet for the user), fixers
+  (failing test first), sweep, squash onto `canvas`, `tools/deploy-canvas.sh`, update ROADMAP 26 + this file.
+- Known: an old build (before LC) drops a track's combiners and their rows on load (accepted: canvas saves need no care).
+
+**Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — a new direct cable from a lower-numbered LFO can push
+another LFO's cable out of its slot with no message (cv-graph.js ~659–681, main.js ~10578; found by the LC skeptic); (2) ROADMAP 19
+**drum machine** (contract `IMPL-DM.md` on branch `worktree-agent-a8225cd7a2f7be32d`, b0b3b0b + answers 2735554: grid + one module per
+drum, no cables at first, an EMPTY grid, our own synth drums first; name `RIG.NAME + ' Drums'`) — a skeptic first; (3) later: the
+light-show skin (Cut B's meters exist now), the iPad pass, renaming Serum-like names before any sale (ROADMAP 15, incl. the dead code
+SX0 kept: renderLast, savePresetUI / stepPresetUI / authorDialog, the C1 folds, alignPhase, swing, the lay flag `ui: 'parts'`, the
+`voice` part sizes).
+
+**Small open items**: glass leftovers drawn in JS (the XY dot `.sxo-dot` red, the FX Splitter's blue band fx-ui.js ~2362, `--sx-on`
+green, a lit CC "Learn" text invisible in glass); knob menus don't open inside drawer dialogs (sx-host `onCtx` skips `.sx-ov`: Voice
+control's LFO scaling mode unreachable); docs/canvas/IMPL-WC.md quotes the old glass values; G9′ (Cut B on the real 120 Hz panel, the
+user watching — the built-in pane only renders while the Claude window is on screen) and G8i (the fast lane in the iOS Simulator,
+`tests/ui-bench.html?fps=1&fast=60`; needs the user's OK for the simulator) are not done.
+**Asked, no answer yet**: move ROADMAP 21 (automation recording) up the queue?; add an API-credit preset-library job to the roadmap?;
+reword CLAUDE.md's "a full Serum 2 recreation" (true only of `main` now)? Don't act on these unasked.
+**The user's API credits**: $200 / month on the Console org ("Carl's Individual Org"). Best use: Claude Code's overflow when the weekly
+limit runs out; never paste a key into chat; don't turn on auto-reload.
+
+**How this lead worked** (keep it): contract → skeptic → the user's questions (≤ 4, short, plain words, a first guess each) → phase 0 →
+lanes in worktrees (each brief: `git reset --hard <base>` + check `git log -1` — worktree isolation once started on `main`) → merge into a
+holding branch `wt-<stage>` (a worktree in the scratchpad) → `tools/sweep.sh` → two reviewers → one fixer → sweep → squash onto `canvas`
+→ deploy → ROADMAP / HANDOVER / memory. Opus for judgment lanes, Sonnet for mechanical ones, no Fable lanes. Lanes don't commit sw.js
+by the contracts, but briefs asked them to — regenerate it at every merge. The user reads little: answer in a few plain words, no
+"still running" updates, no memories they didn't ask for.
+
+### 0.1 Branches at handover
+- `wt-LC` — the combiner's holding branch (phase 0). Lane branches: filled in below when they report.
+- `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only).
 
 ## 1. What exists
 
