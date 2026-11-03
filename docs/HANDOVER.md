@@ -47,7 +47,11 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 "still running" updates, no memories they didn't ask for.
 
 ### 0.1 Branches at handover
-- `wt-LC` — the combiner's holding branch (phase 0). Lane branches: filled in below when they report.
+- `wt-LC` — the combiner's holding branch: phase 0 (1c99d07, sweep 164 files green) + lane E (ed7aabd, branch
+  `worktree-agent-aa3b001edf7e989a3`) + lane F (5cc26e3, branch `worktree-agent-abe30ec082954e4ce`) merged at 7ab6653 (their tests green).
+  Lane H: see below. E's and F's notes (payload / message shapes, F's stand-in tests/lc-stub.mjs) are in IMPL-LC §17.
+  `tests/golden-lc.test.mjs` fails ON PURPOSE until `node --max-old-space-size=2048 tests/ref-LC/record.mjs --write` is run once on the
+  fully merged tree (E + F + H).
 - `wt-FRB`, `wt-MOD1`, `wt-SX0` — squashed and live (history only).
 
 ## 1. What exists
