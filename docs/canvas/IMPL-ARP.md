@@ -237,6 +237,8 @@ accent keep dark ink in every skin (ivory 2.29 → 6.41). 10 (R2 P3-4) 280b1c5: 
 
 **Left (recorded, §8).** 12 (R2 P3-5) EDIT PATTERN under the open panel; the bar's ⋯ / ▾ at 32 px and the 28-wide ⚙ (grid-wide).
 
+**After the fix round (the lead, 2026-11-08):** the sweep's two reds were pins this stage moves by design — kit-ui's byte-pin of rig-grid's cssText (the face's rules joined it; gridVars and layoutOf unchanged) and mod1-model's RIG_TILES (arp cut 1) — re-pinned. Sweep 182 files / 4776 green, peak 2.27 GB. Squashed onto canvas as 5f13968.
+
 ## 11. The skeptic (2026-11-08, Opus; 20 items, read-only)
 
 P1: knob row 1 odd (grid starts at ⌊(n − S) / 2⌋, rig-ui.test:110) → §2 every S even; the PatternEditor appends to `page.el` = the face

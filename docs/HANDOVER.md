@@ -4,7 +4,7 @@ Written for the next agent taking over this project. Read it fully, then `docs/c
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
 concrete UX feedback, and expect finished work to be pushed live.
 
-## 0. Handover 2026-11-03 (Fable lead → a new session) — START HERE
+## 0. Handover 2026-11-08 (Fable lead → a new session) — START HERE
 
 **Live**: canvas.domlavin.com = branch `canvas` (see `git log -1 canvas`). Shipped this session, in order: FR Cut A, skinned popups, cords
 still on a track switch, Ivory + glass skins, display skins, **FR Cut B** (per-frame LFO / ENV / knob-ring motion at the heard frame;
@@ -45,6 +45,17 @@ lane editor) → H1 (the host) ∥ the §7.0 probe (suspend + post holds in Chro
 → one fixer (15 items; the lead then un-commented a swallowed `autoChanged` and named shared classic labels by section) → sweep. Everything is in IMPL-AUTO §12 (known limits), §13 (every note, "Fix round" last), §14. **Tell the user**: ●, play,
 grab a knob; the roll's ▾ Vel chooser shows the curve; ↺ re-enables after a grab; WebKit (the iPad) is untested for the bounce.
 
+**Done — the Arpeggiator module (WC-2's first face)** (contract `docs/canvas/IMPL-ARP.md`; the lead's four guesses in its header —
+the pattern editor over the canvas, MIDI OUT in the drawer, our words, the drop on a non-Wavecraft instrument starts the starter rig
+with the Arpeggiator — stand until the user answers; the skeptic §11): squashed onto `canvas` as **5f13968** "ARP" and deployed
+2026-11-08 (Fable lead; Opus lane / reviewers / fixer). The round: the map (the lead) → the contract → the skeptic (20 items folded in)
+→ one builder lane F in two gated steps (the face + the tile, then the editor) → reviewer 1 (engine + sims) ∥ reviewer 2 (Chrome for
+Testing) → one fixer → sweep. The engine's arpeggiator (sx-seq.js) and its page view (sx-ui-seq.js ArpPage) existed since Serum; this
+stage gave it a grid face (rig-ui FACE.arp over an ArpPage donor), the tile (MODULES.arp cut 1) and a top-layer pattern editor.
+**Tell the user**: Sources → Wavecraft → Note tools → Arpeggiator (on a Wavecraft it plugs into NOTE; on a Juno it starts a rig with it);
+hold a chord, tap a slot's ▶; SHAPE → Pattern, EDIT PATTERN. Left (IMPL-ARP §8 / §9): the Clip sequencer face, the engine names in
+tooltips ("Arp Rate") until the renaming pass.
+
 **Queue after LC** (the user's order): (1) the pre-existing **cable-slot bug** — **fixed and deployed 2026-11-03** (main.js `modLeftIds` /
 `modPushed` in `modConnect`: the rows left before and after the drop compared, a cable that would push another LFO's cable out of its slot
 is refused with the 11th cable's words, no step; tests/canvas-2b-sim "P3-10"; the slot order itself (cv-graph `take`, module-id order)
@@ -73,6 +84,7 @@ by the contracts, but briefs asked them to — regenerate it at every merge. The
 ### 0.1 Branches at handover
 - `wt-LC` (0b03be8) — the combiner, squashed onto canvas as 480bb3f (history only; lane branches E `worktree-agent-aa3b001edf7e989a3`, F
   `worktree-agent-abe30ec082954e4ce`, H `worktree-agent-af2e05f8b64da5342`, G6 `lc-g6`).
+- `wt-ARP` — the Arpeggiator module, squashed onto canvas as 5f13968 (history only; lane branch arp-F; worktrees removed after the deploy).
 - `wt-AUTO` — automation, squashed onto canvas as 0bdf773 (history only; lane branches auto-p0m / auto-p0h / auto-W / auto-L / auto-H1 /
   auto-H2a / auto-H2 / auto-G / auto-X; worktrees removed after the deploy).
 - `wt-DM` (6659cb3) — the drum machine, squashed onto canvas as e676abb (history only; lane branches dm-V / dm-S / dm-F / dm-U / dm-P / dm-H /
