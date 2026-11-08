@@ -33,7 +33,7 @@ const D = await import('./serum-ui-stubs/dom.js');
 const assert = D.safeAssert(assertBase);
 const { GRID, FACE, layoutOf } = RU;
 
-const KINDS = ['amp', 'osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros'];
+const KINDS = ['amp', 'osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp'];
 const ITEM = /^(<|>)[a-z][a-zA-Z0-9]*$|^((#[a-zA-Z][a-zA-Z0-9]*)|(@?\.?[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)?))(\|((#[a-zA-Z][a-zA-Z0-9]*)|(@?\.?[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)?)))*(:[1-9])?\*?$/;
 const ids = el => new Set(el.querySelectorAll('[data-dest]').map(e => e.getAttribute('data-dest')));
 // the fake DOM's selectors are compound only: a descendant query in two steps
@@ -79,7 +79,7 @@ test('GRID: the §3.8 numbers — unit 8, column 64, padding 16 (12 top, 16 bott
 
 test('FACE: the eight WC-1 kinds and the variants, (MOD1 §4.1) and the Chaos; columns = MODULES\' (the Chaos: cv-mods MOD_COLS); a head first (the Chaos: its scope screen), the jack row last (Macros: its tiles are its jacks); every height GRID\'s; no pixel in a recipe (items are names, ids, spans)', () => {
   assert.deepEqual(RU.KINDS, KINDS);
-  assert.deepEqual(Object.keys(FACE).sort(), ['amp', 'chaos', 'env', 'env.amp', 'filter', 'lfo', 'macros', 'noise', 'osc', 'osc.kit', 'osc.sample', 'sub'].sort());
+  assert.deepEqual(Object.keys(FACE).sort(), ['amp', 'arp', 'chaos', 'env', 'env.amp', 'filter', 'lfo', 'macros', 'noise', 'osc', 'osc.kit', 'osc.sample', 'sub'].sort());
   assert.deepEqual(FACE.chaos.rows.map(r => r.t + ':' + r.items.join(' ')), ['screen:#scope', 'knobs:@.bpm @.rate #mono', 'jacks:>out']);
   assert.equal(FACE.chaos.rows[0].h, GRID.rows.screenL);
   for (const [k, F] of Object.entries(FACE)) {
@@ -128,6 +128,7 @@ test('layoutOf: widths 64·n + 32 on the dots; row tops cumulative (12 + rows + 
   const h = k => layoutOf(FACE[k]).h;
   assert.deepEqual([h('osc'), h('osc.sample'), h('filter'), h('amp'), h('sub'), h('noise'), h('env'), h('env.amp'), h('lfo'), h('macros'), h('chaos')], [532, 620, 472, 348, 392, 392, 428, 428, 400, 236, 312]);
   assert.deepEqual(RU.sizeOf('chaos', 'chaos1'), { w: 224, h: 312 });
+  assert.deepEqual([h('arp'), RU.sizeOf('arp', 'arp').w], [620, 544], '(ARP §2) the Arpeggiator: 544 × 620 (§2 counted 8 gaps for 8 rows: 7)');
   assert.equal(h('env') - h('lfo'), GRID.rows.knobs - GRID.rows.switches + GRID.rows.screen - GRID.rows.screenL, 'Envelope vs LFO: one row kind and the screen differ');
   assert.equal(h('sub'), h('noise'), 'the same rows: the same height');
   // the Amplifier: its four inputs fill its four columns (its OUT is cv-module's edge jack: the line to the FX panel)
@@ -163,7 +164,7 @@ test('(WC, fixer K; review P2-3 and its skeptics; the user\'s stacked plugs, 202
 
 /* ================================================================ the faces */
 const RECIPE_IDS = (v, prefix) => FACE[v].rows.flatMap(r => r.items).filter(s => !/^[<>#]/.test(s)).flatMap(s => s.replace(/\*$/, '').replace(/:\d$/, '').split('|')).filter(x => x[0] !== '#').map(x => x.replace(/^@/, prefix));
-for (const [kind, part, prefix, variant] of [['osc', 'oscA', 'a', 'osc'], ['sub', 'sub', 's', 'sub'], ['noise', 'noise', 'n', 'noise'], ['filter', 'filter2', 'f2.', 'filter'], ['env', 'env3', 'e3', 'env'], ['env', 'env1', 'e1', 'env.amp'], ['lfo', 'lfo7', 'l7', 'lfo'], ['macros', 'macros', '', 'macros'], ['amp', 'voice', '', 'amp']]) {
+for (const [kind, part, prefix, variant] of [['osc', 'oscA', 'a', 'osc'], ['sub', 'sub', 's', 'sub'], ['noise', 'noise', 'n', 'noise'], ['filter', 'filter2', 'f2.', 'filter'], ['env', 'env3', 'e3', 'env'], ['env', 'env1', 'e1', 'env.amp'], ['lfo', 'lfo7', 'l7', 'lfo'], ['macros', 'macros', '', 'macros'], ['amp', 'voice', '', 'amp'], ['arp', 'arp', '', 'arp']]) {
   test('face ' + kind + ' (' + part + '): its rows and cells as the recipe says, every id of the recipe on it, ⊇ the stage-3 panel\'s data-dest ids, the jacks and their labels, the drawer kept on the face', async () => {
     const R = await both(kind, part);
     const V = R.V, el = V.el;
@@ -191,7 +192,7 @@ for (const [kind, part, prefix, variant] of [['osc', 'oscA', 'a', 'osc'], ['sub'
     for (const j of js) assert.equal(V.jacks.get(j.getAttribute('data-jack')) === j, true);
     if (kind === 'filter') assert.equal(el.querySelectorAll('.rig-jl')[0].textContent, 'IN Σ');
     // the ⏻ is the bar's, with its data-dest
-    const pw = { osc: 'a.on', sub: 's.on', noise: 'n.on', filter: 'f2.on' }[kind];
+    const pw = { osc: 'a.on', sub: 's.on', noise: 'n.on', filter: 'f2.on', arp: 'arp.on' }[kind];
     if (pw) assert.equal(V.power && V.power.getAttribute('data-dest'), pw); else assert.equal(V.power, null);
     // the drawer's controls are on the face (hidden), its parked widgets too
     if (V.drawer && V.drawer.el.firstChild) assert.equal(el.contains(V.drawer.el), true);
@@ -305,6 +306,150 @@ test('the Filter: its display in a screen, our words on the input switches (data
   R.V.destroy();
 });
 
+/* ================================================================ (ARP §2–§3, G1 / G2) the Arpeggiator's face */
+test('(ARP G1) FACE.arp: 8 columns, the rows of §2 (PRE beside CHANCE: §2\'s first switch row summed 7), every short row\'s span even, 544 × 620 (§2 summed 8 gaps: 7); MODULES.arp.rows = FACE.arp\'s row types, cut 1 (the Clip sequencer: cut 2, no face)', () => {
+  const F = FACE.arp, L = layoutOf(F);
+  assert.deepEqual(F.rows.map(r => r.t + ':' + r.items.join(' ')), ['head:#bank* #editall #gear', 'screen:#slots', 'knobs:#shape:2 arp.rate arp.gate arp.chance #pre #edit:2',
+    'knobs:arp.shift arp.range #rshape:2 arp.trans arp.offset arp.repeats arp.rrate', 'switches:#latch #thru #bpmhz:2 #trip #dot', 'switches:#rlaunch #rrate #rnote #rfirst #vel #vretrig',
+    'knobs:#quant arp.vdecay arp.vtarget #ratefield', 'jacks:>out']);
+  assert.equal(F.rows[1].h, GRID.rows.screenL, 'the slot strip: a large screen (128)');
+  assert.deepEqual(L.rows.filter(r => r.t === 'knobs' || r.t === 'switches').map(r => r.cells.reduce((a, c) => a + c.span, 0)), [8, 8, 6, 6, 4]);
+  assert.deepEqual([L.w, L.h], [544, 620]);
+  assert.deepEqual(RC.MODULES.arp.rows, F.rows.map(r => r.t), 'MODULES.arp.rows = FACE.arp\'s row types');
+  assert.deepEqual([RC.MODULES.arp.cut, RC.MODULES.clip.cut, !!FACE.clip], [1, 2, false]);
+  assert.equal(RC.MODULES.arp.jacks.out[0].tip, 'plug into the Amplifier\u2019s NOTE to play');
+});
+
+test('(ARP G2) the Arpeggiator\'s face over the ARP page (face: true): every piece placed (none null, the park empty), the knobs by data-dest ⊇ the 11 ids, #ratefield the numBox (the knob is RATE\'s cell), the captions and our labels, the slot strip\'s words and note names, ⏻ "Arpeggiator on" on the bar, ⋯ the shell\'s (one Lock), MIDI OUT in the drawer, OUT\'s tip, EDIT PATTERN dimmed but tappable (it says why), no "Arp" / Serum / Xfer on the face', async () => {
+  const R = await both('arp', 'arp'), V = R.V, el = V.el;
+  assert.deepEqual([V.face.variant, V.face.w, V.face.h, el.getAttribute('aria-label')], ['arp', 544, 620, 'Arpeggiator']);
+  const rows = el.children.filter(e => e.classList.contains('rig-row'));
+  rows.forEach((re, i) => { if (re.classList.contains('rig-head') || re.classList.contains('rig-screen')) assert.ok(re.children.length >= 1, 'row ' + i); else assert.ok(re.children.every(c => c.children.length >= 1), 'row ' + i + ': every cell holds its control'); });
+  assert.equal(el.querySelector('.rig-park').children.length, 0, 'nothing parked');
+  assert.deepEqual(rows[0].children.map(e => e.className.split(' ').filter(c => /^(sx-bankbtn|wk-tog|rig-gear|rig-grow)$/.test(c)).join('+')), ['sx-bankbtn+rig-grow', 'wk-tog', 'rig-gear']);
+  assert.ok(/^Bank: /.test(rows[0].children[0].getAttribute('aria-label')), 'BANK: "Bank: <name>"');
+  { // ((ARP fix round, R2 P2-4) BANK's touch hit is the grid's 44 px: the button never clips (its ::after reaches into the row gaps) — its
+    // name ellipsizes in an inner span
+    const bk = rows[0].children[0], t = bk.querySelector('.sx-bankt'), css = RU.cssText().replace(/\/\*[\s\S]*?\*\//g, '');
+    const onBtn = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => m[1].split(',').some(x => /\.sx-bankbtn\s*$/.test(x.trim()))).map(m => m[2]).join(';');
+    assert.deepEqual([!!t, t && t.textContent, /overflow\s*:\s*hidden/.test(onBtn), /(^|;)\s*overflow\s*:\s*visible/.test(onBtn), /text-overflow\s*:\s*ellipsis/.test(css.match(/[^{}]*\.sx-bankt\s*\{[^}]*\}/) ? css.match(/[^{}]*\.sx-bankt\s*\{[^}]*\}/)[0] : '')],
+      [true, bk.textContent, false, true, true], 'the name in .sx-bankt (ellipsis), the button visible (the page\'s .sx-bankbtn clips: overridden)');
+  }
+  assert.equal(rows[1].querySelectorAll('.sx-slots').length, 1, 'the slot strip in the screen');
+  const mine = ids(el);
+  for (const id of DESTS3.parts.rig.arp) assert.ok(mine.has(id), id);
+  assert.equal(DESTS3.parts.rig.arp.length, 11);
+  const rate = el.querySelectorAll('[data-dest="arp.rate"]');
+  assert.deepEqual(rate.map(e => e.classList.contains('wk-knob') ? 'knob' : e.classList.contains('wk-nb') ? 'field' : '?'), ['knob', 'field'], 'RATE: the knob in row 1, the field in the last row');
+  assert.equal(rows[6].children[3].children[0].classList.contains('wk-nb'), true, '#ratefield = the numBox');
+  assert.equal(rows[6].children[3].querySelector('.wk-lab').textContent, 'RATE');
+  assert.deepEqual(el.querySelectorAll('.rig-cap').map(c => c.textContent), ['SHAPE', 'RANGE SHAPE', 'LAUNCH']);
+  assert.ok(['SHAPE', 'RANGE SHAPE', 'LAUNCH'].every((_, i) => el.querySelectorAll('.rig-cap')[i].parentNode.children[0].classList.contains('rig-noarr')), 'the menus without arrows');
+  const tl = row => row.children.map(c => { const t = c.children[0].querySelector('.wk-tl'); return t ? t.textContent : c.children[0].classList.contains('wk-seg') || c.children[0].classList.contains('sx-seg') ? 'SEG' : '?'; });
+  assert.deepEqual(tl(rows[4]), ['LATCH', 'THRU', 'SEG', 'TRIP', 'DOT']);
+  assert.deepEqual(tl(rows[5]), ['ON PLAY', 'ON RATE', 'ON NOTE', 'FIRST', 'VEL', 'VEL RST']);
+  assert.ok([...tl(rows[4]), ...tl(rows[5])].every(t => t.length <= 7), 'every switch word ≤ 7 characters');
+  assert.deepEqual(rows[5].children.map(c => c.children[0].getAttribute('aria-label')), ['LAUNCH', 'RATE', 'NOTE', 'FIRST', 'ENABLE', 'RETRIG'], 'the aria names: the page\'s, kept');
+  assert.deepEqual(['arp.vdecay', 'arp.vtarget', 'arp.rrate'].map(id => { const l = el.querySelector('[data-dest="' + id + '"]').querySelector('.wk-lab'); return l.getAttribute('data-l') || l.textContent; }), ['VEL DEC', 'VEL TGT', 'EVERY']);
+  assert.deepEqual(rows[2].children.map(c => c.style.gridColumn), ['1 / span 2', '3 / span 1', '4 / span 1', '5 / span 1', '6 / span 1', '7 / span 2']);
+  assert.equal(rows[2].children[4].children[0].querySelector('.wk-tl').textContent, 'PRE');
+  // the slot strip: its words, the note names (Show Pattern Names off on the face)
+  const strip = el.querySelector('.sx-slots'), slots = strip.querySelectorAll('.sx-slot');
+  assert.equal(strip.getAttribute('aria-label'), 'Arpeggiator slots');
+  assert.deepEqual([slots.length, slots[0].getAttribute('aria-label'), slots[1].getAttribute('aria-label')], [12, 'Arpeggiator slot C', 'Arpeggiator slot C#']);
+  assert.deepEqual(slots.map(sl => sl.querySelector('.sx-slotname').textContent).join(' '), 'C C# D D# E F F# G G# A A# B');
+  assert.ok(/^Arpeggiator slot C — /.test(slots[0].querySelector('.sx-slotname').getAttribute('aria-label')));
+  assert.equal(el.querySelector('.rig-slotsd') !== null, true);
+  { // ((ARP fix round, R2 P3-2) a knob's tooltip names it as the face prints it ("RATE: 1/16"), never destLabel's "Arp Rate"
+    const WK = await import('../wk.js?v=9'), tip = id => WK.tooltip.textOf(el.querySelector('.wk-knob[data-dest="' + id + '"]'));
+    const T = ['arp.rate', 'arp.vdecay', 'arp.rrate', 'arp.gate'].map(tip);
+    assert.deepEqual([T.map(t => t.slice(0, t.indexOf(':'))), T.some(t => /\bArp\b|\bARP\b/.test(t))], [['RATE', 'VEL DEC', 'EVERY', 'GATE'], false], T.join(' | '));
+  }
+  // ((ARP fix round, R2 P2-2) the whole key one hit: no ▶ button on the face (the page keeps it); the selected key's ▶ glyph a hint
+  // (aria-hidden, never a target); its name's title says a tap plays it
+  const hints = slots.map(sl => sl.querySelector('.sx-slothint'));
+  assert.deepEqual([strip.querySelectorAll('.sx-slotplay').length, hints.filter(Boolean).length, hints.filter(h => h && !h.hidden).map(h => h.textContent), hints[0] && hints[0].getAttribute('aria-hidden')], [0, 12, ['▶'], 'true']);
+  assert.ok(/tap again to play$/.test(slots[0].querySelector('.sx-slotname').title), slots[0].querySelector('.sx-slotname').title);
+  assert.deepEqual(V.donor.slotItems(0).slice(0, 2).map(i => i.label || '|'), ['Launch', '|'], 'the slot menu opens with Launch');
+  // ⏻ on the bar, ⋯ the shell's module menu
+  assert.deepEqual([V.power && V.power.getAttribute('data-dest'), V.power && V.power.getAttribute('aria-label')], ['arp.on', 'Arpeggiator on']);
+  const L = V.menuItems().map(i => (i.sep ? '|' : i.label));
+  assert.deepEqual([L.filter(x => x === 'Lock Module').length, L.includes('Init Module'), L.includes('Show Pattern Names'), L.includes('MIDI Input Trigger Octave')], [1, true, true, true], L.join(' '));
+  // the drawer: MIDI OUT (its seg and TARGET)
+  const D = V.drawer.el;
+  // ((ARP fix round, R2 P3-6) "MIDI OUT" printed once: the seg carries the words, the drawer's section has no title of its own
+  const words = []; (function w(n) { for (const c of n.children || []) { if (!c.children || !c.children.length) words.push(String(c.textContent || '')); else w(c); } })(D);
+  assert.deepEqual([el.contains(D), D.querySelectorAll('.rig-dt').length, words.filter(t => /^MIDI OUT$/i.test(t.trim())).length], [true, 0, 1], words.join(' | '));
+  assert.equal(D.querySelectorAll('.wk-seg').length + D.querySelectorAll('.sx-seg').length, 1, 'the MIDI OUT seg');
+  assert.equal(D.querySelectorAll('.wk-menu').length, 1, 'its TARGET menu');
+  // OUT and its tip
+  assert.equal(V.jacks.get('out').title, 'Arpeggiator · OUT — plug into the Amplifier\u2019s NOTE to play');
+  assert.equal(V.jacks.get('out').getAttribute('data-rig-sig'), 'note');
+  // EDIT PATTERN: dimmed (aria-disabled) while SHAPE is not Pattern, a tap says why
+  const ed = rows[2].children[5].children[0];
+  assert.deepEqual([ed.textContent, ed.getAttribute('aria-disabled'), !!ed.disabled, ed.classList.contains('rig-wide')], ['EDIT PATTERN', 'true', false, true]);
+  D_fire(ed);
+  assert.deepEqual(R.host.log.filter(x => x[0] === 'notify').map(x => x[1]), ['Set SHAPE to Pattern to edit a pattern']);
+  // the words (§5): the face's text, every aria-label and title ∌ ARP / Arp / Serum / Xfer
+  const bad = /\bARP\b|\bArp\b|Serum|Xfer/, hits = [];
+  const all = n => [n].concat(...n.children.map(all));
+  for (const e of all(el)) for (const v of [e.getAttribute('aria-label'), e.getAttribute('title'), e.children.length ? '' : e.textContent]) if (v && bad.test(v)) hits.push(v);
+  assert.deepEqual(hits, []);
+  V.destroy();
+});
+const D_fire = el => D.fire(el, 'click');
+
+test('(ARP §4, G4) the pattern editor: EDIT PATTERN (SHAPE = Pattern) opens it in a panel in the top layer (rig-seqpanel sx-arp, the world\'s skin, data-dev) — never in the face — at screen size; s.ui.arpEd neither read nor written (a state holding 1 mounts closed); EDIT PATTERN pressed while open; ✕, Escape, a tap outside, a camera move (closeTransient), EDIT PATTERN again close it; a tap in the panel or in a menu (.wk-ctx) keeps it; SHAPE leaving Pattern closes it; the face\'s destroy takes it; no "Arp" in it', async () => {
+  const WK = await import('../wk.js?v=9');
+  const R = rig(s => { s.arp.slots[0].shape = 1; s.ui.arpEd = 1; }), doc = R.doc;
+  const world = doc.createElement('div'), box = doc.createElement('div'), layer = doc.createElement('div'), outside = doc.createElement('div'), menu = doc.createElement('div'), item = doc.createElement('button');
+  world.setAttribute('data-cv-world', ''); world.setAttribute('data-cv-skin', 'ivory');
+  menu.className = 'wk-ctx'; menu.appendChild(item);
+  world.appendChild(box); doc.body.append(world, layer, outside, menu);
+  WK.setLayer(layer);
+  try {
+    const V = RU.rigHost({ doc }).face('arp', box, { host: R.X, part: 'arp', dev: 'i1' });
+    await D.flush(doc);
+    const panel = () => layer.querySelectorAll('.rig-seqpanel')[0] || null, ed = V.el.querySelector('.sx-pated'), edits0 = R.host.log.filter(x => x[0] === 'edit').length;
+    assert.deepEqual([panel(), V.el.querySelectorAll('.sx-seqov').length, ed.getAttribute('aria-pressed')], [null, 0, 'false'], 'ui.arpEd 1 in the state: the face mounts closed');
+    const open = () => { D.fire(ed, 'click'); return panel(); };
+    const P = open();
+    assert.ok(P, 'open: a panel in the top layer');
+    assert.deepEqual([P.classList.contains('sx-arp'), P.getAttribute('data-cv-skin'), P.getAttribute('data-dev'), P.querySelectorAll('.sx-seqov').length, V.el.querySelectorAll('.sx-seqov').length, ed.getAttribute('aria-pressed')],
+      [true, 'ivory', 'i1', 1, 0, 'true'], 'the editor in the panel, not in the face');
+    const win = doc.defaultView || globalThis, vw = +win.innerWidth || 1024, vh = +win.innerHeight || 768;
+    assert.deepEqual([P.style.width, P.style.height], [Math.min(1024, vw - 32) + 'px', Math.min(640, vh - 32) + 'px'], 'min(1024, vw − 32) × min(640, vh − 32)');
+    assert.equal(R.host.log.filter(x => x[0] === 'edit').length, edits0, 'nothing stored is written (no "View" edit)');
+    const bad = /\bARP\b|\bArp\b|Serum|Xfer/, all = n => [n].concat(...n.children.map(all)), hits = [];
+    for (const e of all(P)) for (const v of [e.getAttribute('aria-label'), e.getAttribute('title'), e.children.length ? '' : e.textContent]) if (v && bad.test(v)) hits.push(v);
+    assert.deepEqual(hits, [], 'the panel\'s words (§5)');
+    D.fire(P.querySelector('button[aria-label="Close the pattern editor"]'), 'click');
+    assert.deepEqual([panel(), ed.getAttribute('aria-pressed')], [null, 'false'], '✕ closes');
+    D.fire(open().querySelector('.sx-seqov'), 'keydown', { key: 'Escape' });
+    assert.equal(panel(), null, 'Escape closes');
+    const P2 = open();
+    D.fire(item, 'pointerdown');
+    assert.equal(panel(), P2, 'a tap in a menu keeps it');
+    D.fire(P2.querySelector('.sx-seqov'), 'pointerdown');
+    assert.equal(panel(), P2, 'a tap in the panel keeps it');
+    D.fire(outside, 'pointerdown');
+    assert.equal(panel(), null, 'a tap outside closes');
+    open(); WK.closeTransient();
+    assert.equal(panel(), null, 'a camera move closes');
+    open(); D.fire(ed, 'click');
+    assert.equal(panel(), null, 'EDIT PATTERN again closes');
+    open();
+    R.host.st.s.arp.slots[0].shape = 0; R.X.paint(true);
+    assert.deepEqual([panel(), ed.getAttribute('aria-disabled')], [null, 'true'], 'SHAPE leaving Pattern closes it');
+    R.host.st.s.arp.slots[0].shape = 1; R.X.paint(true);
+    assert.equal(panel(), null, 'and it stays closed');
+    open();
+    V.destroy();
+    assert.equal(panel(), null, 'the face\'s destroy takes it');
+    assert.equal(R.s().ui.arpEd, 1, 's.ui.arpEd untouched');
+  } finally { WK.setLayer(null); }
+});
+
 test('Envelope 1 (the amp slot): its curves row centred on columns 2–4, ENV 2\'s START / END parked as the kit keeps them; a free Envelope has five', async () => {
   const A = await both('env', 'env1');
   const r1 = A.V.el.children.filter(e => e.classList.contains('rig-knobs'))[1];
@@ -331,7 +476,7 @@ test('rigHost.face refuses without a host or for an unknown kind; the Macros\' t
   assert.throws(() => rh.face('osc', null, {}), /createHost/);
   const R = rig(), box = R.doc.createElement('div');
   R.doc.body.appendChild(box);
-  assert.throws(() => rh.face('arp', box, { host: R.X }), /no face/);
+  assert.throws(() => rh.face('clip', box, { host: R.X }), /no face/); // ((ARP) the Clip sequencer keeps its page: WC-2)
   const V = rh.face('macros', box, { host: R.X, part: 'macros', dev: 'i1' });
   await D.flush(R.doc);
   assert.deepEqual(V.el.querySelectorAll('[data-jack]').map(e => e.getAttribute('data-jack')), ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']);

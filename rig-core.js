@@ -13,7 +13,7 @@
 //   rigStarter(p)  RIG.STARTER on the blank, the GLOBAL preferences applied as serum.defaults does (what defaults() returns) → { s }
 //   rigInit()      ⋯ → Init: the blank + Oscillator 1 into the Amplifier (route Main) — "the raw oscillator"              → s
 //   adopt(s)       a Serum state entering a Wavecraft (§2.5): every AMP ENV switch on, a note per switch that was off → { s, notes }
-//   MODULES        the catalogue (§3.1): kind → { label, labelN(i), cols, max, slots, power, jacks, rows, cut }
+//   MODULES        the catalogue (§3.1): kind → { label, labelN(i), cols, max, slots, power, jacks (J: id, label, kind, sum?, normal?, ro?, tip?), rows, cut }
 //   AUTOPLUG       the add rules (§3.5): kind → its targets in preference order (data)
 //   SKINS, SKIN_DEFAULT   §5.1 — a skin is a CSS-variable block in style.css; here its id, label and face font
 //   normRig(r)     the bounded `dev.rig` record { v: 1, cc, n } (song.normDev; §2.1)
@@ -31,6 +31,8 @@
 //   plug / pull / repatch          the cord edits; pull / repatch take an edges() id ('x:<dev>:<edge id>' or the edge id)
 //   envToAmp(s, k, o) / envFromAmp(s, o)   §3.4: the ENV slot moves over serum-core swapModules (+ the sources, s.midi /
 //                                  s.locks, the lay rename, the gate back); o = { held, shown, used, rig } (or `held` alone)
+//   arpInit(s)                     (ARP fix round, R1 P2-1) ⋯ → Init on the Arpeggiator: serum-core initModule 'arp' (its slots and
+//                                  settings, arp.on 0: the note cord pulls) as field writes — one History step, the module stays
 //   partKeys(s, lay, dev, used, rig)   sx-edges' I1 / I2 + env1 by the amp-slot rule + I1' (a fed-but-off Filter: by a
 //                                  powered source or the other Filter carrying sound)
 //   nameOf(rig, key) / labelOf(part, rig) / ordinalOf / nextOrdinal   the bar titles from the fixed ordinals (dev.rig.n); (MOD1 §2.2)
@@ -120,7 +122,9 @@ export function rigInit() {
 
 /* ---------------------------------------------------------------- the catalogue (§3.1) and the add rules (§3.5) */
 // a jack of a face's jack row (§3.2): sx-edges' port id, the printed label; sum: a Σ input (any number of cords); normal: the printed
-// normal when nothing is plugged (the Amplifier's LEVEL: KEYS); ro: a target read-only cords land on; kind: the cord's signal
+// normal when nothing is plugged (the Amplifier's LEVEL: KEYS); ro: a target read-only cords land on; kind: the cord's signal; (ARP §3)
+// tip: what the jack's tooltip adds (rig-ui jackOf)
+const NOTE_TIP = 'plug into the Amplifier\u2019s NOTE to play';
 const J = (id, label, o) => Object.assign({ id, label, kind: 'audio' }, o || {});
 const SLOTS = (pre, n) => Array.from({ length: n }, (_, i) => pre + (i + 1));
 /** The modules: kind → label (the bar), labelN(i) (a numbered kind), cols (the RIG grid's columns, §3.8: width 64·cols + 32), max per rig,
@@ -142,8 +146,10 @@ export const MODULES = deepFreeze({
     jacks: { in: [], out: [J('out', 'OUT', { kind: 'mod' })] }, rows: ['head', 'screen', 'knobs', 'switches', 'jacks'], cut: 1 },
   macros: { label: 'Macros', labelN: i => 'Macros ' + i, cols: 4, max: 1, slots: ['macros'], power: false, // ((MOD1 §2.2) numbered as a track's: "Macros 1")
     jacks: { in: [], out: SLOTS('k', 8).map((id, i) => J(id, 'Macro ' + (i + 1), { kind: 'mod', inline: true })) }, rows: ['head', 'knobs', 'knobs'], cut: 1 },
-  arp: { label: 'Arpeggiator', cols: 8, max: 1, slots: ['arp'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note' })] }, rows: ['head', 'screen', 'jacks'], cut: 2 },
-  clip: { label: 'Clip sequencer', cols: 8, max: 1, slots: ['clip'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note' })] }, rows: ['head', 'screen', 'jacks'], cut: 2 },
+  // ((ARP §2) the Arpeggiator's face is live (cut 1): its rows rig-ui FACE.arp's row types; the Clip sequencer's stays WC-2)
+  arp: { label: 'Arpeggiator', cols: 8, max: 1, slots: ['arp'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note', tip: NOTE_TIP })] },
+    rows: ['head', 'screen', 'knobs', 'knobs', 'switches', 'switches', 'knobs', 'jacks'], cut: 1 },
+  clip: { label: 'Clip sequencer', cols: 8, max: 1, slots: ['clip'], power: true, jacks: { in: [], out: [J('out', 'OUT', { kind: 'note', tip: NOTE_TIP })] }, rows: ['head', 'screen', 'jacks'], cut: 2 },
 });
 /** The add rules (§3.5), data: kind → its OUT's targets in preference order, sx-edges' ends — the first whose module stands on the canvas
  * wins ('filter.in' = the first Filter module, its IN sums; 'voice.main' = the Amplifier's IN); [] = unplugged (a knob is its destination:
@@ -556,6 +562,15 @@ export function envToAmp(s, k, o) {
   const lay = [[m, 'env1']];
   if (read1) lay.push(['env1', m]);
   return done(diff(s, T), notes, { lay, links: [[m + '.out', 'env1.out'], ['env1.out', m + '.out']], ids: idMap(m, 'env1').concat(idMap('env1', m)) });
+}
+/** (ARP fix round, R1 P2-1) ⋯ → Init on the Arpeggiator, the Envelope 1 way: the module's values back to the defaults (serum-core
+ * initModule 'arp': the twelve slots, the bank, the settings, the rows into its virtual ids, arp.on 0 → its note cord pulls) as `f` —
+ * the host's one History step (rigEdit), undo exact; the module keeps its place (laid). Nothing to reset: refused (WORDS.same). */
+export function arpInit(s) {
+  if (!isObj(s)) return refuse(WORDS.bad);
+  const T = clone(s);
+  if (!initModule(T, 'arp')) return refuse(WORDS.bad);
+  return done(diff(s, T));
 }
 /** Pulls the amp Envelope's cord: ENV 1 moves to the first free slot k of 2–4 — free = read by nothing (slotsUsed with the link rows
  * `used`), not laid on the canvas (`shown`: an unplugged Envelope module keeps its slot) and not held by a canvas-modulator injection

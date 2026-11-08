@@ -53,13 +53,14 @@ html, body { margin: 0; background: #0c0d0f; }
 export async function page(o) {
   const O = o || {}, d = document, v = '?v=9';
   window.__wcStep = 'imports'; window.__wcTouch = !!O.touch;
-  const [core, wt, SU, MOD, RU, RC, wk, OSC] = await Promise.all(['../serum-core.js', '../wt.js', '../sx-host.js', '../sx-ui-mod.js', '../rig-ui.js', '../rig-core.js', '../wk.js', '../sx-ui-osc.js'].map(p => import(p + v)));
+  const [core, wt, SU, MOD, RU, RC, wk, OSC, SEQ] = await Promise.all(['../serum-core.js', '../wt.js', '../sx-host.js', '../sx-ui-mod.js', '../rig-ui.js', '../rig-core.js', '../wk.js', '../sx-ui-osc.js', '../sx-ui-seq.js'].map(p => import(p + v)));
   // (SX0) the stage-3 panels' frozen data-dest ids (tests/ref-SX0/dests.mjs) and the donors their views were (bare, as the registration
   // built them; their ⏻ in the shell)
   const DESTS3 = await fetch(new URL('./fixtures/sx0-dests.json', import.meta.url)).then(r => r.json());
   const DONOR = { oscA: (r, K) => new OSC.OscPanel(r, K, 0), oscB: (r, K) => new OSC.OscPanel(r, K, 1), oscC: (r, K) => new OSC.OscPanel(r, K, 2), filter: (r, K) => new OSC.FilterPanel(r, K, 0),
     sub: (r, K) => new OSC.SubPanel(r, K), noise: (r, K) => new OSC.NoisePanel(r, K), env1: (r, K) => new MOD.EnvPanel(r, K, 0), env2: (r, K) => new MOD.EnvPanel(r, K, 1),
-    lfo1: (r, K) => new MOD.LfoPanel(r, K, 0), macros: (r, K) => new MOD.MacrosPanel(r, K),
+    lfo1: (r, K) => new MOD.LfoPanel(r, K, 0), macros: (r, K) => new MOD.MacrosPanel(r, K), arp: (r, K) => new SEQ.ArpPage(r, K), // ((ARP G3) the ARP page, as mountPart built it
+
     'slot:lfo': (r, K) => new MOD.LfoPanel(r, K, 0), 'slot:env': (r, K) => new MOD.EnvPanel(r, K, 1), 'slot:macro': (r, K) => new MOD.MacrosPanel(r, K), 'slot:chaos': (r, K) => new MOD.ChaosRow(r, K, 0, {}) };
   const donorView = (Hx, key, root, A) => Hx.mount((r, K) => { const P = DONOR[key](r, K); return { el: P.el, panel: P, power: (P.shell || {}).power || null, destroy: () => P.destroy() }; }, root, Object.assign({ bare: true }, A));
   window.__wcStep = 'skin';
@@ -89,7 +90,7 @@ export async function page(o) {
   const FACES = [['osc1', 'osc', 'oscA', 'Oscillator 1', 'oscA'], ['filter1', 'filter', 'filter', 'Filter 1', 'filter'], ['amp', 'amp', 'voice', 'Amplifier', 'voice'],
     ['env1', 'env', 'env1', 'Envelope 1', 'env1'], ['sub', 'sub', 'sub', 'Sub oscillator', 'sub'], ['noise', 'noise', 'noise', 'Noise', 'noise'],
     ['env2', 'env', 'env2', 'Envelope 2', 'env2'], ['lfo1', 'lfo', 'lfo1', 'LFO 1', 'lfo1'], ['macros', 'macros', 'macros', 'Macros 1', 'macros'], // ((MOD1 §2.2) "Macros 1"
-    ['osc2', 'osc', 'oscB', 'Oscillator 2', 'oscB'], ['osc3', 'osc', 'oscC', 'Oscillator 3', 'oscC']];
+    ['osc2', 'osc', 'oscB', 'Oscillator 2', 'oscB'], ['osc3', 'osc', 'oscC', 'Oscillator 3', 'oscC'], ['arp', 'arp', 'arp', 'Arpeggiator', 'arp']]; // ((ARP G3) the Arpeggiator
   const views = [];
   for (const [key, kind, part, ttl, p3] of FACES) {
     const mod = d.createElement('div'); mod.className = 'cv-mod'; mod.setAttribute('data-cv-rig', ''); mod.setAttribute('data-cv-mod', key);
@@ -268,6 +269,31 @@ export async function page(o) {
       const lab = F.V.el.querySelector('.wk-knob > .wk-lab, .rig-mlab, .rig-jl'), bg = getComputedStyle(F.V.el).backgroundColor;
       return { key: F.key, contrast: lab ? +(contrast(getComputedStyle(lab).color, bg) || 0).toFixed(2) : null };
     });
+    // ((ARP fix round, R2 P2-3) the Arpeggiator's slot keys in each skin: every name (and the selected key's hint) on its own key's ground
+    // ≥ 4.5 : 1 — ivory's dark ink on the black keys read 1.1 : 1
+    const AF = views.find(x => x.key === 'arp');
+    if (AF) {
+      let lo = Infinity, at = '';
+      for (const e of AF.V.el.querySelectorAll('.sx-slotname, .sx-slothint:not([hidden])')) { const c = contrast(getComputedStyle(e).color, groundOf(e, AF.V.el)) || 0; if (c < lo) { lo = c; at = e.textContent; } }
+      res.skins[sk].push({ key: 'arp slots', contrast: +lo.toFixed(2) });
+      if (!(lo >= 4.5)) res.fails.push('arp: the ' + sk + ' skin\'s slot names ' + lo.toFixed(2) + ' : 1 (' + at + ')');
+    }
+  }
+  // (ARP G3) the pattern editor, open: the page gets a top layer (wk.setLayer) and its #world a [data-cv-world], as the canvas has them —
+  // after every face is measured (inWorld changes nothing they measured); the panel in the layer (not the face), inside the viewport, its
+  // roll not clipped, its texts ≥ 10 px and unclipped, its words; then closed (window.__arpEd() opens it again for the driver's shot)
+  const arpF = views.find(x => x.key === 'arp');
+  if (arpF) {
+    const ov = d.createElement('div'); ov.id = 'wcLayer'; ov.style.cssText = 'position: fixed; left: 0; top: 0; width: 0; height: 0; z-index: 40;';
+    d.body.appendChild(ov); world.setAttribute('data-cv-world', ''); wk.setLayer(ov);
+    arpF.V.donor.editSlots(x => { x.shape = 1; }, { label: 'Arp Shape' }); H.paint(true);
+    const ed = arpF.V.el.querySelector('.sx-pated'), open = async () => { if (!ov.querySelector('.rig-seqpanel')) ed.click(); for (let i = 0; i < 3; i++) { await new Promise(r => requestAnimationFrame(r)); H.paint(true); } };
+    await open();
+    res.editor = measureEditor(ov, arpF.V.el, ed);
+    for (const m of res.editor.fails) res.fails.push('arp editor: ' + m);
+    ed.click(); H.paint(true);
+    if (ov.querySelector('.rig-seqpanel')) res.fails.push('arp editor: EDIT PATTERN again did not close it');
+    window.__arpEd = open;
   }
   for (const f of res.faces) for (const m of f.fails) res.fails.push(f.key + ': ' + m);
   if (res.drawer) for (const m of res.drawer.fails) res.fails.push('amp drawer: ' + m);
@@ -437,8 +463,39 @@ function measure(F, RU, d) {
   if (modf && F.V.menuItems) for (const i of F.V.menuItems()) if (i && i.label && /Serum|Xfer|\bENV\b|\bMacro\b(?! [1-8]\b)/.test(i.label)) mw.add('⋯ ' + i.label);
   out.words = Array.from(words);
   if (mw.size) fails.push('words: ' + Array.from(mw).join(' | '));
+  if (F.kind === 'arp') slotChecks(face, out, fails);
   out.fails = fails;
   return out;
+}
+// (ARP G3) the Arpeggiator's slot strip: 12 keys in the screen. (ARP fix round, R2 P2-2: the whole key is one hit — a tap selects, a tap
+// on the selected key launches / stops; no ▶ button on the face) On touch each key's select (its name button) as hit-tested — across the
+// key's centre row and down its centre column, ½ px steps — ≥ 44 × 44, ≥ half the key's area (a 2 px grid), the key's CENTRE point the
+// select (the old ▶ corner's 44 px hit took the centre: it fails here) and its name point (its text) too; a ▶ button on the face fails
+function slotChecks(face, out, fails) {
+  const keys = Array.from(face.querySelectorAll('.sx-slot')), d = face.ownerDocument, k = face.getBoundingClientRect().width / face.offsetWidth || 1;
+  if (keys.length !== 12) fails.push('slots: ' + keys.length + ' keys');
+  if (face.querySelector('.sx-slotplay')) fails.push('slots: a ▶ button on the face (the key is one hit)');
+  if (!out.touch) { out.slots = keys.length; return; }
+  const sx = scrollX, sy = scrollY;
+  face.querySelector('.sx-slots').scrollIntoView({ block: 'center', inline: 'center' });
+  const sel = [];
+  for (const key of keys) {
+    const nm = key.querySelector('.sx-slotname'), kb = key.getBoundingClientRect(), nb = nm.getBoundingClientRect(), own = e => !!e && (e === nm || nm.contains(e));
+    const cx = (kb.left + kb.right) / 2, cy = (kb.top + kb.bottom) / 2;
+    let w = 0, h = 0, n = 0, m = 0;
+    for (let X = kb.left - 20 * k; X < kb.right + 20 * k; X += 0.5) if (own(d.elementFromPoint(X, cy))) w += 0.5;
+    for (let Y = kb.top - 20 * k; Y < kb.bottom + 20 * k; Y += 0.5) if (own(d.elementFromPoint(cx, Y))) h += 0.5;
+    for (let X = kb.left + 1; X < kb.right - 1; X += 2) for (let Y = kb.top + 1; Y < kb.bottom - 1; Y += 2) { n++; if (own(d.elementFromPoint(X, Y))) m++; }
+    const centre = own(d.elementFromPoint(cx, cy)), txt = own(d.elementFromPoint(nb.left + 10 * k, nb.top + 10 * k));
+    w /= k; h /= k;
+    const frac = n ? m / n : 0, label = key.getAttribute('aria-label');
+    sel.push(w.toFixed(0) + '×' + h.toFixed(0) + ' ' + Math.round(frac * 100) + '%' + (centre ? ' c' : ' ✗c'));
+    if (w < 44 - 0.5 || h < 44 - 0.5 || frac < 0.5) fails.push(label + ': select hit ' + w.toFixed(1) + ' × ' + h.toFixed(1) + ', ' + Math.round(frac * 100) + '% of the key');
+    if (!centre) fails.push(label + ': its centre point is not the select');
+    if (!txt) fails.push(label + ': its name point is not the select');
+  }
+  scrollTo(sx, sy);
+  out.slots = keys.length; out.slotSel = sel;
 }
 // (LC G7) the Combiner's own: each text against its own ground (the nearest opaque background: a lit pick, a box, the screen, the face)
 // ≥ 4.5 : 1; its list's lines 32 px (the grid's head row) with no gap, each line's controls in their columns (name 3 · amount 2 · mute 1);
@@ -496,6 +553,52 @@ function combChecks(F, face, texts, out, fails) {
     scrollTo(sx, sy);
   }
   out.lines = lines.length;
+}
+// (ARP G3) the open editor's panel
+function measureEditor(ov, face, ed) {
+  const fails = [], P = ov.querySelector('.rig-seqpanel');
+  if (!P) return { fails: ['no panel in the top layer'] };
+  const r = P.getBoundingClientRect(), out = { w: r.width, h: r.height, left: r.left, top: r.top, fails };
+  if (face.contains(P) || face.querySelector('.sx-seqov')) fails.push('the editor is in the face');
+  if (!P.classList.contains('sx-arp') || P.getAttribute('data-cv-skin') !== 'charcoal') fails.push('panel class / skin');
+  if (ed.getAttribute('aria-pressed') !== 'true') fails.push('EDIT PATTERN not pressed');
+  if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) fails.push('outside the viewport (' + [r.left, r.top, r.right, r.bottom].map(v => v.toFixed(1)).join(' ') + ')');
+  if (Math.abs(r.width - Math.min(1024, innerWidth - 32)) > 0.5 || Math.abs(r.height - Math.min(640, innerHeight - 32)) > 0.5) fails.push('size ' + r.width + ' × ' + r.height);
+  const ov2 = P.querySelector('.sx-seqov');
+  if (!ov2 || getComputedStyle(ov2).position !== 'static') fails.push('the overlay keeps its own position (' + (ov2 && getComputedStyle(ov2).position) + ')');
+  const roll = P.querySelector('.sx-roll'), rr = roll ? roll.getBoundingClientRect() : null;
+  out.roll = rr ? [Math.round(rr.width), Math.round(rr.height)] : null;
+  if (!rr || rr.height < 200) fails.push('roll ' + (rr ? rr.width + ' × ' + rr.height : 'missing'));
+  else if (rr.top < r.top - 0.5 || rr.bottom > r.bottom + 0.5 || rr.left < r.left - 0.5 || rr.right > r.right + 0.5) fails.push('the roll is clipped by the panel');
+  out.scroll = Math.max(0, P.scrollHeight - P.clientHeight); // (px it scrolls: > 0 only on a viewport too short for the editor)
+  // ((ARP fix round, R2 P3-4) the roll fills the panel's free height: no empty band > 24 px under the lanes (d had 170 px under a 300 px
+  // roll), the roll ≥ 360 whenever the panel has its full 640
+  const ln = P.querySelector('.sx-lanes'), lb = ln ? ln.getBoundingClientRect().bottom : r.bottom, band = r.bottom - parseFloat(getComputedStyle(P).borderBottomWidth || 0) - lb;
+  out.band = Math.round(band);
+  if (!out.scroll && band > 24) fails.push('an empty band of ' + band.toFixed(1) + ' px under the lanes');
+  if (rr && r.height >= 640 - 0.5 && rr.height < 360 - 0.5) fails.push('roll ' + rr.height.toFixed(1) + ' px tall (< 360) in a 640 px panel');
+  let minFont = Infinity;
+  for (const e of P.querySelectorAll('.wk-lab, .wk-num, .wk-mtxt, .sx-ttl, .sx-seqbtn, .sx-lanetab, .wk-nbv')) {
+    if (!e.getClientRects().length || !e.textContent.trim()) continue;
+    const fs = parseFloat(getComputedStyle(e).fontSize) || 0; minFont = Math.min(minFont, fs);
+    if (fs < 10 - 0.01) fails.push('text "' + e.textContent.trim().slice(0, 16) + '" ' + fs + ' px');
+    if (!e.matches('.wk-mtxt, .sx-bankbtn') && e.scrollWidth > e.clientWidth + 1 && e.clientWidth > 0 && textW(e) > e.clientWidth + 1) fails.push('text "' + e.textContent.trim().slice(0, 16) + '" clipped');
+  }
+  out.minFont = minFont;
+  // ((ARP fix round, R2 P3-3) the lit controls — the active lane tab, a pressed button — on the violet accent: their text ≥ 4.5 : 1 in every
+  // skin (ivory's light --sx-bg read 2.29 : 1 on it); the panel carries the skin itself (the world's, copied at open)
+  out.lit = {};
+  const sk0 = P.getAttribute('data-cv-skin');
+  for (const sk of ['charcoal', 'ivory', 'glass']) {
+    P.setAttribute('data-cv-skin', sk);
+    let lo = Infinity, at = '';
+    for (const e of P.querySelectorAll('.sx-lanetab[aria-selected="true"], .sx-seqbtn[aria-pressed="true"]')) { if (!e.getClientRects().length || !e.textContent.trim()) continue; const c = contrast(getComputedStyle(e).color, groundOf(e, P)) || 0; if (c < lo) { lo = c; at = e.textContent.trim(); } }
+    out.lit[sk] = lo === Infinity ? null : +lo.toFixed(2);
+    if (lo === Infinity) fails.push(sk + ': no lit lane tab measured'); else if (lo < 4.5) fails.push(sk + ': the lit "' + at + '" ' + lo.toFixed(2) + ' : 1');
+  }
+  P.setAttribute('data-cv-skin', sk0);
+  for (const e of [P].concat(Array.from(P.querySelectorAll('*')))) for (const v of [e.getAttribute('aria-label'), e.getAttribute('title'), e.children.length ? '' : e.textContent]) if (v && /\bARP\b|\bArp\b|Serum|Xfer/.test(v)) fails.push('word: ' + v.slice(0, 40));
+  return out;
 }
 function measureDrawer(D, d) {
   const fails = [], r0 = D.getBoundingClientRect(), out = { w: r0.width, h: r0.height };
@@ -604,7 +707,10 @@ async function main() {
           console.log('  face        variant     w×h        fill  strict edge  ctl  text font knobs jacks contrast  parity(dests)   els / stage-3');
           for (const f of R.faces) console.log('  ' + f.key.padEnd(10) + ' ' + String(f.variant).padEnd(11) + ' ' + (f.w + '×' + f.h).padEnd(10) + ' ' + String(f.fill).padEnd(5) + ' ' + String(f.strict).padEnd(6) + ' ' + String(f.minEdge).padEnd(5) + ' ' + String(f.minCtl).padEnd(4) + ' ' + String(f.minText).padEnd(4) + ' ' + String(f.minFont).padEnd(4) + ' ' + String(f.knobs).padEnd(5) + ' ' + String(f.jacks).padEnd(5) + ' ' + (f.contrast + '/' + f.contrastVal).padEnd(9) + ' ' + (f.missing.length ? '✗ ' + f.missing.length : '✓') + ' ' + f.dests + '⊇' + f.dests3 + '      ' + f.count + ' / ' + f.count3 + ' (' + f.ratio + ') painted ' + f.painted + ' / ' + f.painted3 + ' (' + f.pratio + ')');
           for (const f of R.faces) if (f.words && f.words.length) console.log('  words ' + f.key + ': ' + f.words.join(' | '));
+          for (const f of R.faces) if (f.slotSel) console.log('  ' + f.key + ' slots (touch): selects ' + Array.from(new Set(f.slotSel)).join(' / ')); // ((ARP G3; fix round R2 P2-2: one hit a key)
           if (R.drawer) console.log('  amp drawer ' + R.drawer.w + '×' + R.drawer.h + ' edge ' + R.drawer.minEdge);
+          if (R.skins) console.log('  arp slots contrast ' + Object.entries(R.skins).map(([k, v]) => k + ' ' + ((v.find(x => x.key === 'arp slots') || {}).contrast)).join(' · ')); // ((ARP fix round, R2 P2-3)
+          if (R.editor) console.log('  arp editor ' + R.editor.w + '×' + R.editor.h + ' at ' + R.editor.left + ',' + R.editor.top + ' · roll ' + (R.editor.roll || []).join('×') + ' · scrolls ' + R.editor.scroll + ' px · band ' + R.editor.band + ' px' + ' · font ≥ ' + R.editor.minFont + ' · lit ' + JSON.stringify(R.editor.lit || {})); // ((ARP G3)
           for (const m of R.fails) console.log('    · ' + m);
           failed += R.fails.length;
           if (OUT) {
@@ -614,6 +720,13 @@ async function main() {
             const file = path.join(OUT, 'wc1-faces-' + R.name + '.png');
             fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
             sheets.push(file);
+            if (R.editor) { // ((ARP G3) the pattern editor open over the sheet: the viewport as the user sees it
+              await s('Runtime.evaluate', { expression: 'window.__arpEd ? window.__arpEd().then(() => 1) : 0', awaitPromise: true, returnByValue: true });
+              await new Promise(r => setTimeout(r, 400));
+              const es = await s('Page.captureScreenshot', { format: 'png' }), ef = path.join(OUT, 'arp-editor-' + R.name + '.png');
+              fs.writeFileSync(ef, Buffer.from(es.data, 'base64'));
+              sheets.push(ef);
+            }
             if (process.argv.includes('--lc')) { // ((LC, lane F) the Combiner's face (4 inputs) in each skin, 2 × — its screens repainted in the skin
               for (const sk of ['charcoal', 'ivory', 'glass']) {
                 await s('Runtime.evaluate', { expression: "document.getElementById('world').setAttribute('data-cv-skin', '" + sk + "'); window.__lcSync(); 1", returnByValue: true });

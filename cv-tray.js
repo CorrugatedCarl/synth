@@ -20,7 +20,8 @@
 // Stage WC (IMPL-WC §7; lane U): the rig's view (RIG.VIEW, after Serum, named by the display constant RIG.NAME — every word of it here
 // reads the constant): the rig tile ("<year> · modular synth", no maker), the module tiles (RIG_TILES: milestone 3's part tiles became
 // the rig's — Oscillator, Sub oscillator, Noise, Filter, Envelope, LFO, Macros; Arpeggiator and Clip sequencer arrive with the next cut,
-// RIG_CUT, so WC-1's Note tools section is a placeholder), their headings written from the constant into the host's sections, rigFull's
+// RIG_CUT, so WC-1's Note tools section is a placeholder; (ARP §1.3) the Arpeggiator's is live — its section's note, the Clip sequencer's
+// "later", sits under its tile), their headings written from the constant into the host's sections, rigFull's
 // "full" texts for setPartPlaced; the Serum view keeps its tile and the modulators.
 // Stage MM (IMPL-MM §7.3; lane U): the Sources tray on the master canvas (sourcesTray setMaster(on)): the master has no notes, so the tray shows
 // the Modulators section alone with the four tiles it takes (MASTER_MODS: LFO, Macros, CC, Chaos) and a short note (MASTER_NOTE); the view
@@ -604,7 +605,7 @@ export const SRC_VIEWS = [
   // cut's — a placeholder until RIG_CUT reaches them), the modulators; no layout of its own (the classics' kept)
   { id: RIG.VIEW, label: RIG.NAME, tip: 'Our own modular synth, patched with cords', // (the menu shows the label above the tip: the name once)
     note: `Drop a ${RIG.NAME} module onto the canvas: on a ${RIG.NAME} it adds itself and plugs in; on any other instrument it starts a ${RIG.NAME} with it.`, // ((MOD1 §5) its own modules only: the Modulators below it go on any instrument)
-    sections: [{ id: 'rig', models: isRigModel }, { id: 'rigmods', head: RIG.NAME + ' modules' }, { id: 'rignotes', head: 'Note tools', note: `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.` }, { id: 'mods' }] }, // ((WC, integration fixer L — review WC-int P3-8) our words, not the plan's "next cut"
+    sections: [{ id: 'rig', models: isRigModel }, { id: 'rigmods', head: RIG.NAME + ' modules' }, { id: 'rignotes', head: 'Note tools', note: `The ${RIG.NAME}’s Clip sequencer arrives in a later update.` }, { id: 'mods' }] }, // ((WC, integration fixer L — review WC-int P3-8) our words, not the plan's "next cut"
   // (MOD1 §5, Q5 — the user: "Own Modulators menu") the Modulators' view: the one section (o.mods, every tile of MOD_TILES), no layout of its own (the
   // classics' kept); the section also closes the rig view and the Serum view. A tap or a drop: on a rig track the module joins its rig, on any other
   // instrument a track module, on the master a master module — never a replacement (the host's, main.js modAdd / rigAdd)
@@ -1030,6 +1031,15 @@ export function sourcesTray(el, o) {
       boxOf(g).box.appendChild(b);
       ptiles.set(id, { b, rs, tip, name, group: g });
       offs.push(() => b.remove());
+    }
+    // ((ARP §1.3) a group with a live tile and a later cut's one still to come: its section's note under the tiles — the placeholder's
+    // line, never its cv-tsoon look)
+    for (const [g, B] of pbox) {
+      const S = secOf(g);
+      if (!S || !S.note || !PT.some(m => m && m.group === g && (m.cut | 0) > RIG_CUT)) continue;
+      const p = mk(d, 'p', 'cv-tnote', S.note);
+      (B.sec || B.box).appendChild(p);
+      offs.push(() => p.remove());
     }
   }
   // (DM, IMPL-DM §4.7) the drum modules: one button.cv-tile.cv-mtile.cv-ktile[data-kit][data-scope] per o.kit item (KIT_TILES: cv-art's glyph, the name,

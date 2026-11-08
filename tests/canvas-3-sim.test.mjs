@@ -634,7 +634,7 @@ test('S0 notice (IMPL-3 §9.9; WC: the rig\'s modules, its words): on a touch de
   assert.equal(note() === HEAVY, true, 'after the undo notice');
 });
 
-test('review 1 P2-1 (SX0, Q1): a rig whose state has the Arpeggiator / the Clip sequencer on mounts their views through main.js sxViews (sx-ui-mod mountPart: bare, 1184 wide, column P) — rec.views holds i1/arp and i1/clip with a built panel; off, no view', async () => {
+test('review 1 P2-1 (SX0, Q1): a rig whose state has the Clip sequencer on mounts its view through main.js sxViews (sx-ui-mod mountPart: bare, 1184 wide, column P) — rec.views holds i1/clip with a built panel; off, no view; ((ARP §1.3) the Arpeggiator is rig-ui\'s face now — rig:arp, 544 wide — never the page)', async () => {
   await serumIn();
   for (const k of ['i1/arp', 'i1/clip']) if (partKeys().split(',').includes(k)) assert.equal(PT.remove(k), true, 'start without ' + k); // (the S0 case above opened every part: its places stay)
   await settle(); await settle();
@@ -643,10 +643,10 @@ test('review 1 P2-1 (SX0, Q1): a rig whose state has the Arpeggiator / the Clip 
   host().edit(s => { s.p['arp.on'] = 1; s.p['clip.on'] = 1; }, { label: 'arp' }); await settle(); await settle();
   cv.renderViews(); await settle(); await settle();
   assert.deepEqual(['i1/arp', 'i1/clip'].map(k => partKeys().split(',').includes(k)), [true, true], 'the two modules stand: ' + partKeys());
-  assert.deepEqual(kinds(), ['arp', 'clip'], 'sxViews mounts them: ' + [...rec().views.keys()].sort());
-  for (const k of ['i1/arp', 'i1/clip']) {
-    const V = rec().views.get(k).V, a = V.args, r = V.root;
-    assert.deepEqual([V.dead, V.panel !== null, a.bare, a.width, a.col, a.part, a.phase, a.k, a.dev], [false, true, true, 1184, 'P', k.slice(3), null, 0, 'i1'], k + ' mountPart\'s args');
-    assert.deepEqual([r.attrs['data-col'], r.style.width, r.attrs['data-dev']], ['P', '1184px', 'i1'], k + ' root');
-  }
+  assert.deepEqual(kinds(), ['rig:arp', 'clip'], 'sxViews mounts them: ' + [...rec().views.keys()].sort());
+  const V = rec().views.get('i1/clip').V, a = V.args, r = V.root;
+  assert.deepEqual([V.dead, V.panel !== null, a.bare, a.width, a.col, a.part, a.phase, a.k, a.dev], [false, true, true, 1184, 'P', 'clip', null, 0, 'i1'], 'i1/clip mountPart\'s args');
+  assert.deepEqual([r.attrs['data-col'], r.style.width, r.attrs['data-dev']], ['P', '1184px', 'i1'], 'i1/clip root');
+  const A = rec().views.get('i1/arp').V;
+  assert.deepEqual([A.dead, A.args.bare, A.args.width, A.args.part, A.face && A.face.w, A.face && A.face.h], [false, true, 544, 'arp', 544, 620], 'i1/arp: the Arpeggiator\'s face (544 × 620)');
 });

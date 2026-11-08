@@ -98,15 +98,20 @@ row thin — then that row is ['arp.vdecay', 'arp.vtarget'] (S 2, even).
   (`wrapDisp(P.slots.el)`), `shape`, `rshape`, `quant` (menus, §2), `bpmhz` (seg), `trip`, `dot`, `edit` (EDIT PATTERN: `sx-hbtn`,
   `aria-pressed` while the editor is open), `latch`, `thru`, `pre`, `rlaunch`, `rrate`, `rnote`, `rfirst`, `vel`, `vretrig`, `ratefield`.
   Knob cells resolve by data-dest.
-- Drawer `ctx.drawerItems`: [{ title: 'MIDI out', items: the MIDI OUT seg and its TARGET menu }].
+- Drawer `ctx.drawerItems`: [{ items: the MIDI OUT seg and its TARGET menu }] (fix round: no title — the seg says MIDI OUT).
 - ⋯ `ctx.menuItems = shellItems(P)` (one Lock Module; Init resets `arp.on` → the cord pulls: G4 records it).
 - Labels (RELABEL, aria names kept in full): switches S1 LATCH · THRU · PRE · BPM | HZ · TRIP · DOT; S2 **ON PLAY** (retrigger on launch) ·
   **ON RATE** · **ON NOTE** · **FIRST** · **VEL** (velocity enable) · **VEL RST** (velocity retrigger); knobs RATE · GATE · CHANCE · SHIFT ·
   RANGE · TRANS · OFFSET · REPEATS · **EVERY** (retrigger every) · **VEL DEC** · **VEL TGT**; captions SHAPE · RANGE SHAPE · LAUNCH · RATE.
   Every label ≤ 7 characters at 11 px in a 56 px switch; the disabled rules stay the page's (TRIP / DOT in BPM mode, EVERY with ON RATE,
   the VEL knobs with VEL): the dim policy shows them, never hides.
-- Slots on the face: **tap anywhere on a key selects it**; ▶ a corner button whose hit is ≥ 44 × 44 on touch without eating the key
-  (the lane measures; G3); `showNames` **off by default on the face** (note names fit 70 px; Show Pattern Names stays in ⋯).
+- Slots on the face: **the whole key is one hit** (the fix round, the lead's decision on R2 P2-2 — Ableton's clip-slot idiom): a tap
+  selects the slot, a tap on the **already-selected** slot launches it (stops it while it plays); a tap on another key while one plays
+  selects it, never launches; long-press / right-click = the slot menu, which opens with **Launch / Stop**. No ▶ button on the face
+  (`SlotStrip`'s `face` option; the page keeps its ▶); the selected key shows a ▶ (■ while playing) glyph at its bottom-right as the
+  hint — aria-hidden, no target — and its name's title ends "· tap again to play" / "· tap again to stop". G3: every key's select hit
+  ≥ 44 × 44 and the key's centre point is the select. `showNames` **off by default on the face** (note names fit 70 px; Show Pattern
+  Names stays in ⋯).
 - OUT tooltip: a `tip` option on rig-core's `J('out', …)` that `jackOf` appends to the title: "plug into the Amplifier's NOTE to play".
 - Destroy: the donor's `destroy()` (the editor closes with it).
 
@@ -164,6 +169,13 @@ phase 0: nothing in the model moves.
 - The editor is one panel for every size (no phone layout: the app's floor is a tablet); on a short viewport it scrolls inside.
 - MIDI OUT's TARGET lists tracks by name as the page did; `destLabel` names ("Arp Rate") are the engine's until the renaming pass.
 - A camera move closes the editor (the drawer's rule).
+- (fix round, R2 P3-5, recorded) The face's EDIT PATTERN sits under the centred editor panel while it is open (the panel is centred over
+  the module): ✕, Escape and a tap outside close it; the button is not needed while the editor is up.
+- (fix round) The bar's ⋯ / ▾ at 32 px and the 28-wide ⚙ are grid-wide (every face), not this stage's: left to a grid pass.
+- (fix round, R2 P3-2) "The tooltip lingers onto OUT" is no bug: pointerleave fires and wk hideTip drops `wk-show`; the `.wk-tip` keeps
+  its box at `visibility: hidden`, which a width > 0 probe counts. The jack's own tip is its native `title`.
+- (fix round) The face's slot keys launch by a second tap on the selected key (or the slot menu's Launch): no one-tap launch of an
+  unselected slot — a performer who wants that uses the page (the Clip sequencer's face takes the same idiom).
 
 ## 9. Left for later
 
@@ -171,6 +183,59 @@ The **Clip sequencer** face (the same recipe shape; its editor in the top layer 
 stage of its own when the user asks. The oscillator interiors, the Amplifier drawer, the light-show and glass skins, the renaming pass.
 
 ## 10. Notes (filled by the lanes)
+
+### Lane F (2026-11-08; `rig-ui.js`, `rig-grid.js`, `rig-core.js`, `sx-ui-seq.js`, `cv-tray.js`, `main.js`, `style.css`; tests rig-ui, rig-model, cv-tray, canvas-WC-sim, canvas-3-sim, ui-layout-wc)
+
+**Built.** (a) 9394b09: `FACE.arp` + `BUILDERS.arp` over `new ArpPage(null, K, { title: 'Arpeggiator', face: true })` (pieces by section
+index, knobs by data-dest, #ratefield the page's numBox labelled RATE on the face, menus `rig-noarr` with `boxCell` captions, `rig-wide`
+for the two-column menus and EDIT PATTERN, toggles re-worded through their `.wk-tl` with the page's aria names kept, VEL DEC / VEL TGT in
+RELABEL); MIDI OUT in the ⚙ drawer; ⋯ = `shellItems`; ⏻ "Arpeggiator on"; the slot strip fills the L screen (`.rig-slotsd`: a key's name
+button covers the key, ▶ a 28 px corner box with a 44 px `::after` hit growing into the inter-key / row gaps); `MODULES.arp` cut 1, its rows
+the face's, OUT's `tip` (J option, jackOf appends " — plug into the Amplifier’s NOTE to play"); the tray's Note tools show the Arpeggiator
+tile with the note "The <NAME>’s Clip sequencer arrives in a later update." under it (not the cv-tsoon placeholder); a note-tool tile on
+another instrument or as a new track starts from `rigStarter` (main.js `rigBase`), the notice "Replaced X with <NAME> · starter rig +
+Arpeggiator · tap to undo". (b) 2606efc: the page's `edOpen` under face: true, the one-line `edHost` hook, rig-ui `edPanel` (the panel in
+`H.layerEl()`, wrapped `openPattern` / `closePattern`, a K.custom sync for SHAPE leaving Pattern, EDIT PATTERN `aria-pressed`), the
+`.rig-seqpanel` CSS in rig-grid, the three skin blocks in style.css carry `.rig-seqpanel[data-cv-skin]`.
+
+**Deviations.** (1) §2's first switch row sums 7 (odd; G1's parity fails): PRE moved beside CHANCE in knob row 1 and EDIT PATTERN spans 2
+(`['#shape:2', 'arp.rate', 'arp.gate', 'arp.chance', '#pre', '#edit:2']`); switches row 1 = LATCH · THRU · BPM|HZ:2 · TRIP · DOT (S 6).
+(2) §2's height counted 8 gaps for 8 rows: the face is **544 × 620** (7 gaps). (3) EDIT PATTERN on the face is dimmed with
+`aria-disabled` but not `disabled` while SHAPE ≠ Pattern, so a tap gives the page's notice (G4). (4) "Init pulls the cord (recorded)":
+the record is the rig's panel undo ("Init Arp"), not an app History step — the kit's module menu edits through the host's undo, as every
+module's Init does. (5) The ▶-plays-then-stops G4 row feeds the host one monitor message (`seq[0]` = the slot): the sim's engine posts
+no sequencer state. (6) The sim's DOM has no `closest()` / bubbling / world: "a menu inside does not close it" and the layer mount are
+asserted in rig-ui.test (its fake DOM, `wk.setLayer` + `[data-cv-world]`); the sim asserts the panel in `H.layerEl()`, not in the face.
+(7) The editor's kit labels (8–9 px) are lifted to the grid's 10 px inside the panel; its overlay padding is half a unit vertically so
+640 px holds roll 360 + lanes 96 + head / row / tabs without scrolling at l / p.
+
+**G3 (ui-layout-wc, Chrome for Testing, d / l / p, Inter pass): green.** The face: 544 × 620, fill 0.613 (strict 0.515), min text-to-edge
+20, text-to-control 6, text-to-text 10.5, min font 10, label / value contrast 13.07 / 5.59, parity 11 ⊇ 11, 319 elements vs the page's 297
+(1.07). Touch slots: every ▶ hit 44.5 × 44.5 (hit-tested, never on a neighbour), every select 68 × 60 holding 59–61 % of its key, its
+name point the select. The editor: d 1024 × 640 (roll 990 × 300), l 1024 × 640 (roll 990 × 360), p 992 × 640 (roll 958 × 360), inside the
+viewport, no scroll, font ≥ 10, no "Arp" word. Contact sheets: wc1-faces-<size>.png and arp-editor-<size>.png.
+
+**Left.** The narrow-face pass (`--narrow`) and the ivory / glass skins on the editor were not shot (charcoal only); the slot strip's
+select gives up its ▶ corner (two disjoint 44 × 44 hits cannot fit a 70 × 62 key — the reviewers' call); the Clip sequencer (§9).
+
+### Fix round (2026-11-08, the fixer; branch arp-X from 852b7eb; two reviews, 12 items, the lead's decisions)
+
+**Fixed.** 1 (R1 P2-1) 0625bb7: ⋯ → Init on the Arpeggiator is one History step "Init Arpeggiator" + "· tap to undo" (rig-core
+`arpInit` → main `rigArpInit` → `rigEdit`; the kit's Init asks `host.arpInit` first, as `envInit`), undo exact (the cord back, the module
+kept) — R1 P3-1's "Init Arp" label falls with it. 2 (R1 P2-2) 2bed648: G4's "it sounds" drives the key at 0.8 (`api.noteOn`'s 0…1;
+levelOf's 100 was refused by `arpAccept`) and counts the engine's generated onsets (gen 1 ≥ 4 a second; 0 unplugged). 3 (R2 P2-2)
+404bdad: the whole key one hit (§3: select, then a tap on the selected key launches / stops; the menu's Launch / Stop; no ▶ on the face,
+the selected key's ▶ / ■ hint); G3 measures every key's select ≥ 44 × 44 across the key and its centre point the select (the old ▶
+corner failed: 25 failures at l). 4 (R2 P2-1) ab4f49a: `.cv-psec > .cv-tnote` wears the placeholder's look. 5 (R2 P2-3) 6ff6731: the
+black keys keep their dark ground in every skin, their words the light engraving (ivory 1.10 → 13.29 : 1; G3's skin pass measures the
+slot names). 6 (R2 P2-4) 218fd18: BANK's name in `span.sx-bankt` (ellipsis), the button `overflow: visible` (its hit 44 px again).
+7 (R2 P3-1) f5611a1: the heads re-render when an edit turns arp.on / clip.on over (`sxSeqKey` / `sxSeqHeads` in the host's edit and
+sxApply's direct path): "· Arp" right after a tap / drag add, gone on ⏻ off. 8 (R2 P3-2) 7c1766b: a face knob's tooltip uses the
+face's label ("RATE: 1/16"); the lingering tip onto OUT is a probe artifact (§8). 9 (R2 P3-3) 6915c1c: lit controls on the violet
+accent keep dark ink in every skin (ivory 2.29 → 6.41). 10 (R2 P3-4) 280b1c5: the roll fills the panel's free height (d 990 × 423, band
+4 px; G3: no band > 24 px under the lanes, roll ≥ 360 in a 640 panel). 11 (R2 P3-6) 43cb290: the drawer prints MIDI OUT once.
+
+**Left (recorded, §8).** 12 (R2 P3-5) EDIT PATTERN under the open panel; the bar's ⋯ / ▾ at 32 px and the 28-wide ⚙ (grid-wide).
 
 ## 11. The skeptic (2026-11-08, Opus; 20 items, read-only)
 

@@ -28,7 +28,7 @@ const TO_MODS = 'Modulators: the Modulators view (the menu above).'; // ((SX0) i
 // ((SX0) the Serum view left with the bundled model: a stored 'serum' is an unknown view now — Hardware, as any)
 const VIEW_IDS = ['hw', 'flow', 'rig', 'mods', 'drums', 'ctl', 'moog'];
 // (integration fixer L, review WC-int P3-8: our own words through RIG.NAME — the old "Arrive with the next cut." was the plan's jargon)
-const RIG_SOON = `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.`;
+const RIG_SOON = `The ${RIG.NAME}’s Clip sequencer arrives in a later update.`; // ((ARP §1.3) the Arpeggiator is live: the Clip sequencer's note, beside its tile
 const RIG_TIP = n => `${n} — tap to add it to this track's ${RIG.NAME} (or start one with it), or drag it onto the canvas`;
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -1179,7 +1179,7 @@ test('sourcesTray (WC): the rig view — SRC_VIEWS\'s third ((SX0) after Simple 
 
 test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise, Filter ((MOD1 §5) the Envelope, LFO and Macros: the Modulators\' tiles); Arpeggiator and Clip sequencer the next cut\'s) in the host\'s sections, headed from RIG.NAME, shown in the rig view only; Note tools a placeholder; a tap → partPick, a drag → partDrag (info.part, the world point); setPartPlaced greys one with rigFull\'s text', () => {
   assert.deepEqual(T.RIG_TILES.map(p => [p.id, p.name, p.group, p.cut]), [['osc', 'Oscillator', 'rigmods', 1], ['sub', 'Sub oscillator', 'rigmods', 1], ['noise', 'Noise', 'rigmods', 1],
-    ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
+    ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 1], ['clip', 'Clip sequencer', 'rignotes', 2]]); // ((ARP §1.3) the Arpeggiator's tile is live
   assert.ok(T.RIG_TILES.every(p => p.name === MODULES[p.id].label && p.cut === MODULES[p.id].cut && Object.isFrozen(p)) && Object.isFrozen(T.RIG_TILES), 'names and cuts: rig-core MODULES');
   assert.equal(T.RIG_CUT, 1, 'WC-1: the tiles of cut 1 are live');
   assert.equal(T.PART_TILES, undefined, 'PART_TILES became RIG_TILES');
@@ -1188,11 +1188,21 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   const picks = [], log = [];
   const R = modRig({ view: 'rig', parts: T.RIG_TILES, partsEl: pe, partsSec: ps, notesEl: ne, notesSec: ns, partPick: (id, mode) => picks.push('part ' + id + ':' + mode),
     partDrag: { begin: (id, i) => log.push('begin ' + id + (i.part ? ' part' : '')), move() {}, drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.part ? ' part' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => log.push('cancel ' + id) } });
-  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.length, R.S.partTiles().length, R.S.partTile('arp')], [['osc', 'sub', 'noise', 'filter'], 0, 4, null], 'four live tiles; ARP / CLIP not yet');
-  // the host's sections, headed by the tray (index.html holds no name): the modules' heading from RIG.NAME; Note tools a placeholder (cv-tsoon: its heading, the note)
+  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.map(b => b.getAttribute('data-part')), R.S.partTiles().length, !!R.S.partTile('arp'), R.S.partTile('clip')], [['osc', 'sub', 'noise', 'filter'], ['arp'], 5, true, null], '(ARP §1.3) five live tiles: the Arpeggiator in Note tools; CLIP not yet');
+  // the host's sections, headed by the tray (index.html holds no name): the modules' heading from RIG.NAME; (ARP §1.3) Note tools its live tile with the note
+  // under it (the Clip sequencer still to come) — never the cv-tsoon placeholder
   const kids = s => s.children.map(c => c.tagName + (c.className ? '.' + c.className.replace(/ /g, '.') : '') + (c.tagName === 'H3' || c.tagName === 'P' ? ':' + c.textContent : ''));
   assert.deepEqual([kids(ps), ps.getAttribute('aria-label'), ps.className], [['H3.cv-tgrp:' + RIG.NAME + ' modules', 'DIV'], RIG.NAME + ' modules', '']);
-  assert.deepEqual([kids(ns), ns.getAttribute('aria-label'), ns.classList.contains('cv-tsoon'), ne.hidden], [['H3.cv-tgrp:Note tools', 'DIV', 'P.cv-tnote:' + RIG_SOON], 'Note tools', true, true]);
+  assert.deepEqual([kids(ns), ns.getAttribute('aria-label'), ns.classList.contains('cv-tsoon'), ne.hidden], [['H3.cv-tgrp:Note tools', 'DIV', 'P.cv-tnote:' + RIG_SOON], 'Note tools', false, false]);
+  { // ((ARP fix round, R2 P2-1) the note under the live tile wears the placeholder's look (11 px, muted, the section's margins): the rule
+    // declares it for a .cv-psec section's note too (it rendered 16 px full ink at x 0)
+    const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const r = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(m => m[1].split(',').map(x => x.trim().replace(/\s+/g, ' ')).includes('.cv-psec > .cv-tnote'));
+    const D = r ? Object.fromEntries(r[2].split(';').map(x => x.trim()).filter(Boolean).map(x => [x.slice(0, x.indexOf(':')).trim(), x.slice(x.indexOf(':') + 1).trim()])) : {};
+    assert.deepEqual([!!r, D.margin, D['font-size'], D.color], [true, '0 12px 10px', '11px', 'var(--mute)'], 'the .cv-psec note\'s rule');
+  }
+  const arp = R.S.partTile('arp');
+  assert.deepEqual([arp.getAttribute('data-group'), arp.children[1].textContent, arp.title], ['rignotes', 'Arpeggiator', RIG_TIP('Arpeggiator')]);
   assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the rig view');
   for (const v of ['hw', 'flow', 'mods', 'drums', 'ctl', 'moog']) { R.S.setView(v); assert.deepEqual([ps.hidden, ns.hidden], [true, true], v + ': none'); }
   R.S.setView('rig');
@@ -1201,7 +1211,7 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
     ['cv-tile cv-ptile', 'rigmods', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'Oscillator', RIG_TIP('Oscillator')]);
   // glyphs: one original each ((MOD1 §5) the Envelope's and the LFO's, with the editor's handles, go to the Modulators' tiles: lane U pins them there)
   const G = Object.fromEntries(R.S.partTiles().map(b => [b.getAttribute('data-part'), b.children[0].innerHTML]));
-  assert.equal(new Set(Object.values(G)).size, 4, 'one original glyph each');
+  assert.equal(new Set(Object.values(G)).size, 5, 'one original glyph each ((ARP) the Arpeggiator\'s steps)');
   assert.ok(Object.values(G).every(g => /<svg /.test(g) && !/<text|<image|href/.test(g)));
   osc.click(); R.S.setMode('track'); R.S.partTile('noise').click();
   assert.deepEqual([picks, R.picks], [['part osc:replace', 'part noise:track'], []], 'partPick, not the synth pick');
@@ -1219,28 +1229,28 @@ test('sourcesTray (WC): o.parts — RIG_TILES (Oscillator, Sub oscillator, Noise
   TS += 150;
   ptr(f, 'pointermove', 201, 50, at(tp)); ptr(f, 'pointerup', 201, 50, at(tp));
   assert.deepEqual(log, ['begin filter part', 'drop filter tracks part @402,-50'], 'the track list: a new track (the host\'s)');
-  // setPartPlaced: greyed with the host's reason (rigFull's texts), no pick; ARP / CLIP: no tile, nothing to grey
+  // setPartPlaced: greyed with the host's reason (rigFull's texts), no pick; ((ARP) the Arpeggiator greys as any tile ("Arpeggiator is on"); CLIP: no tile, nothing to grey
   assert.deepEqual(['osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp', 'clip', 'nope'].map(T.rigFull), [`This ${RIG.NAME} already has 3 oscillators`, 'Sub oscillator is on the canvas',
     'Noise is on the canvas', `This ${RIG.NAME} already has 2 filters`, `This ${RIG.NAME} already has 4 envelopes`, `This ${RIG.NAME} already has 10 LFOs`, 'Macros is on the canvas', 'Arpeggiator is on', 'Clip sequencer is on', null]);
-  R.S.setPartPlaced('osc', T.rigFull('osc')); R.S.setPartPlaced('arp', T.rigFull('arp'));
-  osc.click();
-  assert.deepEqual([osc.classList.contains('cv-placed'), osc.getAttribute('aria-disabled'), osc.children[2].textContent, R.S.partPlaced('osc'), osc.title, picks.length, R.S.partPlaced('arp')],
-    [true, 'true', T.rigFull('osc'), T.rigFull('osc'), 'Oscillator — ' + T.rigFull('osc'), 2, null]);
+  R.S.setPartPlaced('osc', T.rigFull('osc')); R.S.setPartPlaced('arp', T.rigFull('arp')); R.S.setPartPlaced('clip', T.rigFull('clip'));
+  osc.click(); arp.click();
+  assert.deepEqual([osc.classList.contains('cv-placed'), osc.getAttribute('aria-disabled'), osc.children[2].textContent, R.S.partPlaced('osc'), osc.title, picks.length, R.S.partPlaced('arp'), arp.children[2].textContent, R.S.partPlaced('clip')],
+    [true, 'true', T.rigFull('osc'), T.rigFull('osc'), 'Oscillator — ' + T.rigFull('osc'), 2, 'Arpeggiator is on', 'Arpeggiator is on', null]);
   R.S.setPartPlaced('osc', null);
   assert.deepEqual([osc.classList.contains('cv-placed'), R.S.partPlaced('osc'), osc.title], [false, null, RIG_TIP('Oscillator')]);
   R.S.destroy();
   assert.deepEqual([pe.children.length + ne.children.length, kids(ps), kids(ns), ns.classList.contains('cv-tsoon'), ne.hidden], [0, ['DIV'], ['DIV'], false, false], 'destroy takes the tiles and what it put in the host\'s sections');
   // ((MOD1 §5) no Envelope / LFO part tile beside the Modulators' any more: one tile per type)
   const M2 = modRig({ mods: T.MOD_TILES, parts: T.RIG_TILES, view: 'rig' });
-  assert.deepEqual([M2.S.partTiles().map(b => b.getAttribute('data-part')), ['lfo', 'env', 'macro'].map(id => M2.S.modTile(id).hidden)], [['osc', 'sub', 'noise', 'filter'], [false, false, false]],
+  assert.deepEqual([M2.S.partTiles().map(b => b.getAttribute('data-part')), ['lfo', 'env', 'macro'].map(id => M2.S.modTile(id).hidden)], [['osc', 'sub', 'noise', 'filter', 'arp'], [false, false, false]],
     'the Modulators\' tiles are the rig view\'s LFO / Envelope / Macros');
-  assert.equal(new Set([...M2.S.partTiles(), ...M2.S.modTiles()].map(b => b.children[0].innerHTML)).size, 15, 'the Wavecraft view\'s fifteen tiles, fifteen glyphs ((LC) the Combiner\'s)');
+  assert.equal(new Set([...M2.S.partTiles(), ...M2.S.modTiles()].map(b => b.children[0].innerHTML)).size, 16, 'the Wavecraft view\'s sixteen tiles, sixteen glyphs ((LC) the Combiner\'s; (ARP) the Arpeggiator\'s)');
   M2.S.destroy();
-  // in o.secEl when the host gives no elements: the modules' section with its four tiles, Note tools a placeholder; without o.parts: both placeholders
+  // in o.secEl when the host gives no elements: the modules' section with its four tiles, Note tools its tile and the note under it; without o.parts: both placeholders
   const d = fresh(), list = d.createElement('div'), sec = d.createElement('div');
   const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec, parts: true, view: 'rig' });
   assert.deepEqual(sec.children.map(s => s.getAttribute('data-sec') + ':' + s.className + ':' + s.children.map(c => (c.tagName === 'DIV' ? c.children.length : c.textContent)).join('/')),
-    ['rigmods:cv-tsec cv-psec:' + RIG.NAME + ' modules/4', 'rignotes:cv-tsec cv-tsoon:Note tools/' + RIG_SOON]);
+    ['rigmods:cv-tsec cv-psec:' + RIG.NAME + ' modules/4', 'rignotes:cv-tsec cv-psec:Note tools/1/' + RIG_SOON]);
   S2.setView('flow');
   assert.deepEqual(sec.children.map(s => s.hidden), [true, true]);
   S2.destroy();
@@ -1696,7 +1706,7 @@ test('style.css (WC, IMPL-WC §5): the rig chrome — case, bar, the title in th
   const tail = rules.filter(r => r.sel.includes('[data-cv-skin=')), skins = tail.filter(r => decls(r.body).every(([k]) => k.startsWith('--')));
   // ((the FX look, 2026-10-26: moved by design) every FX module and its rack's root — where the kit declares its tokens — wear the skin too;
   // (MOD1 §4.4) and every modulator's face: the module, its host's root (.sx-root) and the .rig-face, in the same order in every skin)
-  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root', ' ' + FACE, ' ' + FACE + ' .sx-root', ' ' + FACE + ' .rig-face'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself; (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
+  assert.deepEqual(skins.map(r => r.sel), SKINS.map(S => [' .cv-mod[data-cv-rig]', ' .cv-mod[data-cv-rig] .sx-root', ' .cv-mod[data-cv-rig] .rig-face', ' .cv-mod[data-cv-fx]', ' .cv-mod[data-cv-fx] .fxr-root', ' ' + FACE, ' ' + FACE + ' .sx-root', ' ' + FACE + ' .rig-face'].map(x => `#world[data-cv-skin="${S.id}"]` + x).concat(`.rig-drawer[data-cv-skin="${S.id}"]`, `.rig-seqpanel[data-cv-skin="${S.id}"]`, `.cv-jn[data-cv-skin="${S.id}"]`, `.wk-ctx[data-cv-skin="${S.id}"]`, `.wk-pop[data-cv-skin="${S.id}"]`).join(', ')), '(WC, lane F → H) the ⚙ drawer in the top layer carries the skin itself ((ARP §4) the pattern editor\'s panel too); (the user, 2026-10-26) a stacked jack\'s count in the cord layer\'s top too');
   assert.equal(SKIN_DEFAULT, 'charcoal');
   // ((WC-2, the user) two more: Ivory (light: cream faces, dark engraving) and Frosted glass (translucent: the cords seen through it)
   assert.deepEqual(SKINS.map(S => [S.id, S.label, S.font, !!S.glass]), [['charcoal', 'Charcoal', 'narrow', false], ['ivory', 'Ivory', 'narrow', false], ['glass', 'Frosted glass', 'narrow', true]]);
@@ -1870,7 +1880,7 @@ test('style.css (WC-2): the glass skin\'s own rules after the blocks — the pan
   const W = '#world[data-cv-skin="glass"]', MODS = `:is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], ${FACE})`; // ((MOD1 §4.4) the modulators' panes too)
   assert.deepEqual(glass.map(r => r.sel), [
     `${W} ${MODS} :is(.cv-body, .inst.custom, .fxtab, .fxr-root)`,
-    `${W} .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"]`,
+    `${W} .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"], .rig-seqpanel[data-cv-skin="glass"]`, // ((ARP §4) the editor's panel
     `#viewport:not([data-cv-perf="low"]) ${W} ${MODS}`]);
   // ((the user, 2026-11-02: the glass neutral; moved by design) the frost a blur alone: no saturate() boost — the pane shifts no hue (the
   // canvas's faint cool cast, every cord seen through it as it is)

@@ -44,6 +44,7 @@ import * as wk from './wk.js?v=9';
 import * as core from './serum-core.js?v=9';
 import * as OSC from './sx-ui-osc.js?v=9';
 import * as MOD from './sx-ui-mod.js?v=9';
+import * as SEQ from './sx-ui-seq.js?v=9';
 import * as RC from './rig-core.js?v=9';
 import { GRID, rowH, faceW, layoutOf, cssText, CSS_ID, ensureRigCSS, gridVars, deepFreeze } from './rig-grid.js?v=9';
 export { GRID, rowH, faceW, layoutOf, cssText, CSS_ID, ensureRigCSS, gridVars };
@@ -83,11 +84,17 @@ const RECIPES = {
   // ((MOD1 §4.1) a canvas Chaos: four controls on three columns fill the grid's band only with a screen — its scope, S&H on it (the switch
   // that shapes what it draws); no head: the face stays ≤ 1.2 × the old panel's elements (G5)
   chaos: { cols: 3, rows: [R('screen', ['#scope'], 'L'), R('knobs', ['@.bpm', '@.rate', '#mono']), R('jacks', ['>out'])] },
+  // (ARP §2) the Arpeggiator (8 columns, 544 × 620): the slot strip in a large screen; every row's span has the parity of 8 (a short row
+  // centres on the column pitch); the menus in knob cells captioned (SHAPE · RANGE SHAPE · LAUNCH), the RATE field the page's numBox;
+  // (lane F) PRE beside CHANCE (§2's first switch row summed 7: odd), EDIT PATTERN two columns
+  arp: { cols: 8, rows: [R('head', ['#bank*', '#editall', '#gear']), R('screen', ['#slots'], 'L'), R('knobs', ['#shape:2', 'arp.rate', 'arp.gate', 'arp.chance', '#pre', '#edit:2']),
+    R('knobs', ['arp.shift', 'arp.range', '#rshape:2', 'arp.trans', 'arp.offset', 'arp.repeats', 'arp.rrate']), R('switches', ['#latch', '#thru', '#bpmhz:2', '#trip', '#dot']),
+    R('switches', ['#rlaunch', '#rrate', '#rnote', '#rfirst', '#vel', '#vretrig']), R('knobs', ['#quant', 'arp.vdecay', 'arp.vtarget', '#ratefield']), R('jacks', ['>out'])] },
 };
 /** The recipes with their row heights (data; frozen): FACE[kind] = { cols, rows: [{ t, h, items }] }. */
 export const FACE = deepFreeze(Object.fromEntries(Object.entries(RECIPES).map(([k, r]) => [k, { cols: r.cols, rows: r.rows.map(x => ({ t: x.t, h: x.h === 'K' ? null : rowH(x.t, x.h), items: x.items.slice() })) }])));
-/** The face kinds (MODULES' WC-1 kinds) and the recipe of a kind / part / oscillator type. */
-export const KINDS = Object.freeze(['amp', 'osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros']);
+/** The face kinds (MODULES' cut-1 kinds: WC-1's, (ARP) the Arpeggiator) and the recipe of a kind / part / oscillator type. */
+export const KINDS = Object.freeze(['amp', 'osc', 'sub', 'noise', 'filter', 'env', 'lfo', 'macros', 'arp']);
 export function variantOf(kind, o) {
   const O = o || {};
   if (kind === 'osc') return O.type === 'sample' ? 'osc.sample' : O.type && O.type !== 'wt' ? 'osc.kit' : 'osc';
@@ -151,7 +158,7 @@ const UNDO = [['path', { d: 'M5.5 4.5 2.5 7.5l3 3' }], ['path', { d: 'M2.5 7.5h7
 const REDO = [['path', { d: 'M10.5 4.5l3 3-3 3' }], ['path', { d: 'M13.5 7.5h-7a3.5 3.5 0 0 0 0 7H8' }]];
 // the knob labels the grid prints in our words (the kit's own label stays the widget's aria name); a kit label function (SEM's
 // HARM / STEP, the Filter's VAR) is never relabelled
-const RELABEL = { '@.semi': 'SEMI', '@.fine': 'FINE', '@.crs': 'COARSE', 'g.porta': 'GLIDE' };
+const RELABEL = { '@.semi': 'SEMI', '@.fine': 'FINE', '@.crs': 'COARSE', 'g.porta': 'GLIDE', 'arp.vdecay': 'VEL DEC', 'arp.vtarget': 'VEL TGT' }; // ((ARP §3) the velocity knobs keep their section's word)
 function relabel(el, text) {
   const lab = q(el, '.wk-lab');
   if (lab && lab.setAttribute && lab.getAttribute('data-l') !== text) lab.setAttribute('data-l', text);
@@ -286,7 +293,7 @@ function jackOf(ctx, J, rowEl) {
   je.setAttribute('data-jack', J.port);
   je.setAttribute('data-rig-dir', J.dir);
   je.setAttribute('aria-label', name);
-  je.title = name + (spec.sum ? ' (any number of cords)' : '') + (spec.ro ? ' (shows the oscillators that warp or modulate this one)' : '');
+  je.title = name + (spec.sum ? ' (any number of cords)' : '') + (spec.ro ? ' (shows the oscillators that warp or modulate this one)' : '') + (spec.tip ? ' — ' + spec.tip : ''); // ((ARP §3) a jack's tip, rig-core J's
   if (spec.ro) je.setAttribute('data-ro', '');
   if (spec.sum) je.setAttribute('data-sum', '');
   je.setAttribute('data-rig-sig', spec.kind || 'audio'); // (audio | mod | note | warp: the glue's, whatever kind cv-module gives the jack)
@@ -367,6 +374,46 @@ function closeDrawer(ctx, focus) {
   if (ctx.gear) { ctx.gear.setAttribute('aria-expanded', 'false'); if (focus && ctx.gear.focus) ctx.gear.focus(); }
 }
 
+/* ---------------------------------------------------------------- (ARP §4) the pattern editor's panel */
+// The ARP page (face: true) mounts its editor where P.edHost() says: a panel made here, shown in the host's top layer (H.layerEl(); its
+// root when no layer is set) at screen size — min(1024, vw − 32) × min(640, vh − 32), centred over the module, scrolling inside on a
+// short viewport — carrying the world's skin, the device and the --sx-seqc colour (.sx-arp); open while the page holds an editor
+// (EDIT PATTERN opens it and reads pressed; a tap on it again closes it); it closes on ✕ / Escape (the editor's), a tap outside (its
+// menus, knob menus and prompts excepted: .wk-ctx, .wk-pop, .sx-pop, .sx-ov) and a camera move (addTransient, as the drawer)
+function edPanel(ctx, P, btn) {
+  const H = ctx.host, d = ctx.d, E = { el: null, offs: null };
+  ctx.edPanel = E;
+  P.edHost = () => { if (!E.el) E.el = mk(d, 'div', 'rig-seqpanel sx-arp'); return E.el; };
+  const hide = () => { if (!E.offs) return; for (const f of E.offs) call(f); E.offs = null; if (E.el) E.el.remove(); };
+  function show() {
+    const D = E.el, L = typeof H.layerEl === 'function' ? H.layerEl() : ctx.el, win = d.defaultView || globalThis;
+    const sk = ctx.el.closest ? ctx.el.closest('[data-cv-skin]') : null; // (the top layer is outside #world: the panel carries the skin itself)
+    if (sk) D.setAttribute('data-cv-skin', sk.getAttribute('data-cv-skin')); else D.removeAttribute('data-cv-skin');
+    D.setAttribute('data-dev', String(ctx.A.dev || ''));
+    const vw = +win.innerWidth || 1024, vh = +win.innerHeight || 768, w = Math.max(0, Math.min(1024, vw - 32)), h = Math.max(0, Math.min(640, vh - 32));
+    const r = ctx.el.getBoundingClientRect ? ctx.el.getBoundingClientRect() : null, cx = r && r.width ? r.left + r.width / 2 : vw / 2, cy = r && r.height ? r.top + r.height / 2 : vh / 2;
+    const cl = (v, a, b) => Math.max(a, Math.min(b, v));
+    Object.assign(D.style, { width: w + 'px', height: h + 'px', left: Math.round(cl(cx - w / 2, 16, vw - 16 - w)) + 'px', top: Math.round(cl(cy - h / 2, 16, vh - 16 - h)) + 'px' });
+    L.appendChild(D);
+    const out = e => { const t = e.target; if (D.contains(t) || (btn && btn.contains(t)) || (t && t.closest && t.closest('.wk-ctx, .wk-pop, .sx-pop, .sx-ov'))) return; P.closePattern(); };
+    const key = e => { if (e.key === 'Escape' && !e.defaultPrevented) { if (e.preventDefault) e.preventDefault(); P.closePattern(); } };
+    E.offs = [listen(d, 'pointerdown', out, true), listen(d, 'keydown', key), typeof wk.addTransient === 'function' ? wk.addTransient(() => P.closePattern()) : () => {}];
+    if (typeof H.scanMods === 'function') call(() => H.scanMods()); // (the PITCH / RANGE knobs' halos)
+    const ro = P.patEd && P.patEd.roll && P.patEd.roll.el;
+    if (ro && ro.focus) call(() => ro.focus({ preventScroll: true }));
+  }
+  const sync = () => {
+    const on = !!P.patEd && !P.dead;
+    if (on && !E.offs) show(); else if (!on && E.offs) hide();
+    if (btn && btn.getAttribute('aria-pressed') !== (on ? 'true' : 'false')) btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  };
+  const op = P.openPattern, cl = P.closePattern;
+  P.openPattern = function () { if (this.patEd) { this.closePattern(); return false; } const r = op.call(this); sync(); return r; };
+  P.closePattern = function () { cl.call(this); sync(); };
+  ctx.K.custom(sync); // (SHAPE leaving Pattern closes the editor in the page's paint: the panel follows)
+  ctx.destroyers.push(hide);
+}
+
 /* ================================================================ the builders, per kind */
 const OSC_P = ['a', 'b', 'c'];
 // the bar title of a numbered kind: its fixed display ordinal (args.n: dev.rig.n, §3.4; a slot face: its module id's number), else the
@@ -382,6 +429,8 @@ const boxCell = (d, el, cap) => (el ? (cap ? [el, mk(d, 'span', 'rig-cap', cap)]
 function wrapDisp(d, el) { if (!el) return null; const w = mk(d, 'div', 'rig-disp'); w.appendChild(el); return w; }
 const isTog = (e, re) => hasCls(e, 'wk-tog') && re.test(((e.getAttribute('aria-label') || '') + ' ' + e.textContent).trim());
 const shellItems = P => () => (P && P.shell && typeof P.shell.menuItems === 'function' ? P.shell.menuItems() : []);
+// (ARP §3) a toggle's printed word on the grid (its aria name, the page's, kept in full)
+const retext = (el, text) => { const t = q(el, '.wk-tl'); if (t && t.textContent !== text) t.textContent = text; return el; };
 
 const BUILDERS = {
   /* ---- the Amplifier: VOICE's keys and outputs, the LEVEL normal; bends, buses and the GLOBAL fold-outs in the drawer */
@@ -620,6 +669,33 @@ const BUILDERS = {
         ctx.pieces['m' + (i + 1)] = kids(box);
       });
       ctx.pieces.hint = mk(d, 'span', 'rig-hint', 'Drag a name onto a knob to modulate it');
+    },
+  },
+  /* ---- (ARP §3) the Arpeggiator: the ARP page's widgets on the grid (the page built with face: true — its words, the note names on the
+     slots, the editor's local flag); the slot strip in the screen (a tap anywhere on a key selects it, its ▶ a corner); MIDI OUT in the drawer */
+  arp: {
+    title: () => RC.MODULES.arp.label,
+    build(ctx) {
+      const { K, d } = ctx, P = new SEQ.ArpPage(null, K, { title: ctx.title, face: true }), S = P.sec, bodies = Object.values(S);
+      ctx.prefix = '';
+      ctx.donors.push(P);
+      ctx.shell = P.shell;
+      ctx.roots.push(...bodies);
+      ctx.inline = bodies;
+      ctx.destroyers.push(() => P.destroy()); // (its editor, its listeners: the face is the page's root, so the donors' loop skips it)
+      const at = (b, i) => kids(b)[i] || null, cap = (el, text, wide) => { if (el) { el.classList.add('rig-noarr'); if (wide) el.classList.add('rig-wide'); } return boxCell(d, el, text); };
+      const bank = at(S.global, 0), edit = at(S.pattern, 6), slots = wrapDisp(d, P.slots.el);
+      if (bank) bank.classList.add('sx-hbtn');
+      if (edit) edit.classList.add('sx-hbtn', 'rig-wide');
+      if (slots) slots.classList.add('rig-slotsd');
+      Object.assign(ctx.pieces, { bank, quant: cap(at(S.global, 1), 'LAUNCH'), editall: at(S.global, 2), gear: () => gearBtn(ctx), slots,
+        shape: cap(at(S.pattern, 0), 'SHAPE', true), bpmhz: at(S.pattern, 1), ratefield: at(S.pattern, 3), trip: at(S.pattern, 4), dot: at(S.pattern, 5), edit,
+        rshape: cap(at(S.transpose, 2), 'RANGE SHAPE', true), latch: at(S.playback, 0), thru: at(S.playback, 1), pre: at(S.playback, 6),
+        rlaunch: retext(at(S.retrigger, 0), 'ON PLAY'), rrate: retext(at(S.retrigger, 1), 'ON RATE'), rnote: retext(at(S.retrigger, 3), 'ON NOTE'), rfirst: at(S.retrigger, 4),
+        vel: retext(at(S.velocity, 0), 'VEL'), vretrig: retext(at(S.velocity, 1), 'VEL RST') });
+      ctx.drawerItems = [{ items: () => kids(S.midiout) }]; // ((ARP fix round, R2 P3-6) no title: the seg says MIDI OUT (it printed twice)
+      ctx.menuItems = shellItems(P);
+      edPanel(ctx, P, edit); // (§4: the pattern editor over the canvas, in the top layer — never inside the 544 px face)
     },
   },
   /* ---- (MOD1 §4.1) a canvas Chaos (its slot host's chaos 1): the ChaosRow's RATE, BPM, MONO, S&H; the scope — the monitor's value

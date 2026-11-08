@@ -137,7 +137,7 @@ test('MODULES (§3.1): the eight WC-1 kinds + the two WC-2 ones, generic names, 
   assert.deepEqual(Object.values(M).map(m => m.label), ['Amplifier', 'Oscillator', 'Sub oscillator', 'Noise', 'Filter', 'Envelope', 'LFO', 'Macros', 'Arpeggiator', 'Clip sequencer']);
   assert.deepEqual([M.osc.labelN(2), M.filter.labelN(1), M.env.labelN(4), M.lfo.labelN(10)], ['Oscillator 2', 'Filter 1', 'Envelope 4', 'LFO 10']);
   assert.deepEqual(Object.values(M).map(m => m.cols), [4, 5, 3, 3, 5, 5, 5, 4, 8, 8]);
-  assert.deepEqual(Object.values(M).map(m => m.cut), [1, 1, 1, 1, 1, 1, 1, 1, 2, 2]);
+  assert.deepEqual(Object.values(M).map(m => m.cut), [1, 1, 1, 1, 1, 1, 1, 1, 1, 2]); // ((ARP §1.3) the Arpeggiator's face is live
   for (const [k, m] of Object.entries(M)) {
     assert.equal(m.max, m.slots.length, k + ': max = its slots');
     for (const sl of m.slots) assert.ok(sl === 'voice' || CMOD.PARTS.includes(sl), k + ': ' + sl + ' is a module key');

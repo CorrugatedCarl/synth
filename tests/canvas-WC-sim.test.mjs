@@ -1248,7 +1248,7 @@ test('integration fixer L, review WC-int P3-8: the tray\'s words in the <NAME> v
     sh.cvOpenSources('replace');
   } finally { tiles.setView(v0); }
   const S = TRAY.SRC_VIEWS.find(v => v.id === RIG.VIEW).sections.find(s => s.id === 'rignotes');
-  assert.equal(S.note, `The ${RIG.NAME}’s Arpeggiator and Clip sequencer arrive in a later update.`);
+  assert.equal(S.note, `The ${RIG.NAME}’s Clip sequencer arrives in a later update.`); // ((ARP §1.3) the Arpeggiator is live
   assert.ok(!/\bcut\b/i.test(S.note));
 });
 
@@ -1590,4 +1590,201 @@ test('(MOD1 §5) the Modulators\' Macros tile on a rig adds its Macros (one step
   await fresh('juno60');
   RG.drop('lfo'); await settle(3);
   assert.deepEqual([I().model, own(), cv.hist.u.at(-1).label], ['juno60', 'l1', 'Add LFO 1'], 'never a replace: a track LFO');
+});
+
+/* ================================================================ (ARP, IMPL-ARP §6 G4) the Arpeggiator: its tile, its face, the cord as its power, the drop on another instrument */
+const walk = (n, f, out = []) => { for (const c of (n && n.children) || []) if (c && typeof c === 'object') { if (f(c)) out.push(c); walk(c, f, out); } return out; };
+const hasC = (e, k) => !!e && ((e.classList && typeof e.classList.contains === 'function' && e.classList.contains(k)) || (typeof e.className === 'string' && e.className.split(/\s+/).includes(k)));
+const arpView = () => { const r = cv.parts.rec('i1'), v = r && r.views ? r.views.get('i1/arp') : null; return v ? v.V : null; };
+const click = e => e.dispatchEvent({ type: 'click', defaultPrevented: false, stopPropagation() {}, preventDefault() {} });
+const arpOn = () => C.destBase(S(), null, 'arp.on') >= 0.5;
+const ARP_BAD = /\bARP\b|\bArp\b|Serum|Xfer/;
+// ((ARP fix round, R1 P2-2) a held key through the Arpeggiator: api.noteOn's velocity is 0…1 (levelOf's 100 is 12700 to the sequencer,
+// which refuses it: the key passed straight and the old test heard the plain voice) — 0.8 here; the notes the sequencer GENERATES counted
+// on the engine instance's sxNote (its `gen` argument 1, reviewer 1's probe), the peak over the second
+const arpLevel = async n => {
+  await settle(2);
+  const pr = node().proc, seen = new Set(), found = [];
+  const scan = (o, d) => { if (!o || typeof o !== 'object' || seen.has(o) || d > 4 || ArrayBuffer.isView(o)) return; seen.add(o); if ('sxSeq' in o && typeof o.sxNote === 'function') found.push(o); for (const k of Object.keys(o)) { try { scan(o[k], d + 1); } catch (e) { /* a getter */ } } };
+  scan(pr, 0);
+  const E = found.find(o => o !== pr) || found[0], f = E ? E.sxNote : null, mine = !!E && Object.prototype.hasOwnProperty.call(E, 'sxNote'), log = [];
+  if (E) E.sxNote = function (on, nn, v, ch, x, y, z, gen) { if (on) log.push(gen); return f.apply(this, arguments); };
+  try {
+    api.noteOn(n, 0.8, 0);
+    const r = sim.run(48000).get(node()), lv = peak(r.L, 4800);
+    api.noteOff(n, 0); await settle(); sim.run(4800);
+    return { lv, gen: log.filter(g => g === 1).length };
+  } finally { if (E) { if (mine) E.sxNote = f; else delete E.sxNote; } }
+};
+const wordHits = root => { const hits = []; for (const e of [root].concat(walk(root, () => true))) for (const v of [e.getAttribute && e.getAttribute('aria-label'), e.getAttribute && e.getAttribute('title'), e.children && e.children.length ? '' : e.textContent]) if (v && ARP_BAD.test(v)) hits.push(String(v).slice(0, 60)); return hits; };
+
+test('(ARP G4) the Arpeggiator tile on a <NAME>: one step "Add Arpeggiator", OUT → NOTE (arp.on 1: the cord is its power), the track\'s "· Arp", its face mounted (rig:arp 544 × 620 — never the 1184 page), no "Arp" / Serum / Xfer on it; undo takes it away (arp.on 0), redo brings it back', async () => {
+  await fresh(RIG.ID);
+  const u0 = cv.hist.u.at(-1);
+  assert.equal(arpOn(), false);
+  await tile('arp');
+  assert.deepEqual([keys().includes('i1/arp'), since(u0), cv.hist.u.at(-1).label, note(), arpOn(), ends().includes('arp.out>voice.note')], [true, 1, 'Add Arpeggiator', 'Added Arpeggiator · tap to undo', true, true]);
+  assert.match(sim.$('#tabTrack').textContent, / · Arp$/, 'the track\'s voice label: "· Arp"');
+  const V = arpView();
+  assert.equal(!!V, true, 'the face is mounted');
+  assert.deepEqual([V.kind, V.args.width, V.face && V.face.w, V.face && V.face.h, RG.width('arp'), RG.height('arp') - CVM.BAR_H], ['rig:arp', 544, 544, 620, 544, 620]);
+  assert.equal(hasC(V.el, 'rig-face') && V.el.getAttribute('data-rig-kind'), 'arp');
+  assert.deepEqual(wordHits(V.el), [], 'the face\'s words (§5)');
+  assert.deepEqual([V.power.getAttribute('aria-label'), V.jacks.get('out').getAttribute('data-cv-jack')], ['Arpeggiator on', 'i1/arp.out']);
+  cv.undo(); await settle(3);
+  assert.deepEqual([keys().includes('i1/arp'), arpOn()], [false, false], 'undo: gone, ⏻ off');
+  cv.redo(); await settle(3);
+  assert.deepEqual([keys().includes('i1/arp'), arpOn(), !!arpView()], [true, true, true], 'redo');
+});
+
+test('(ARP G4) the cord is the Arpeggiator\'s power both ways: pulling it turns ⏻ off, plugging OUT → NOTE turns it on, ⏻ on with no cord draws it; ⋯ → Init Module pulls the cord (one History step "Init Arpeggiator", undo exact: R1 P2-1); ⋯ → Remove pulls it', async () => {
+  const cord = () => rigRec('arp.out', 'voice.note');
+  assert.ok(cord() && arpOn());
+  let u0 = cv.hist.u.at(-1);
+  cv.mod.opts.onPull(cord().id); await settle(3);
+  assert.deepEqual([arpOn(), !!cord(), since(u0)], [false, false, 1], 'pulled: ⏻ off');
+  RG.plug(null, 'arp.out', 'voice.note'); await settle(3);
+  assert.deepEqual([arpOn(), !!cord()], [true, true], 'plugged: ⏻ on');
+  cv.mod.opts.onPull(cord().id); await settle(3);
+  const V = arpView();
+  assert.equal(!!(V && V.power), true, 'the module stands, its ⏻ on the bar');
+  click(V.power); await settle(3);
+  assert.deepEqual([arpOn(), !!cord()], [true, true], '⏻ on with no cord: the cord drawn');
+  // ((ARP fix round, R1 P2-1) Init is the Envelope 1 way: ONE History step "Init Arpeggiator" + its "· tap to undo" notice; undo exact —
+  // the cord back, the module kept (no longer the rig's panel undo alone)
+  const init = cv.menu('i1/arp').find(i => i.label === 'Init Module');
+  assert.equal(!!init, true, '⋯ → Init Module');
+  V.donor.editSlots(x => { x.n.gate = 0.3; }, { label: 'Arp Gate' }); await settle(2); // (a slot off its default: Init resets it too)
+  const s0 = JSON.stringify(S()), u1 = cv.hist.u.at(-1); // (since(): History is capped — its length stops growing late in this file)
+  init.action(); await settle(3);
+  assert.deepEqual([arpOn(), !!cord(), since(u1), cv.hist.u.at(-1).label, note(), keys().includes('i1/arp')], [false, false, 1, 'Init Arpeggiator', 'Init Arpeggiator · tap to undo', true], 'Init: the cord pulled, one History step, the module kept');
+  cv.undo(); await settle(3);
+  assert.deepEqual([JSON.stringify(S()) === s0, arpOn(), !!cord(), keys().includes('i1/arp')], [true, true, true, true], 'undo exact: the cord back, the module kept');
+  cv.menu('i1/arp').find(i => i.label === 'Remove').action(); await settle(3);
+  assert.deepEqual([arpOn(), !!cord(), keys().includes('i1/arp')], [false, false, false], 'Remove: the cord pulled, the module gone');
+  cv.undo(); await settle(3);
+  assert.deepEqual([arpOn(), keys().includes('i1/arp')], [true, true]);
+});
+
+test('(ARP G4; fix round R2 P2-2) a slot key is one hit (the clip-slot idiom): a tap selects it, a tap on the selected key posts seqcmd arpLaunch, again (it plays) arpStop; a tap on another key while one plays selects it, never launches; the slot menu has Launch / Stop; no ▶ button on the face — the selected key\'s ▶ / ■ glyph a hint; EDIT PATTERN while SHAPE is not Pattern says "Set SHAPE to Pattern to edit a pattern"', async () => {
+  const V = arpView(), names = walk(V.el, e => hasC(e, 'sx-slotname')), cmds = () => node().posted.map(x => x.m).filter(m => m && m.t === 'seqcmd').map(m => m.cmd + ' ' + m.arg);
+  const hint = j => { const h = walk(names[j].parentNode, e => hasC(e, 'sx-slothint'))[0]; return h && !h.hidden ? h.textContent : ''; };
+  assert.deepEqual([names.length, walk(V.el, e => hasC(e, 'sx-slotplay')).length], [12, 0], 'twelve keys, no ▶ button');
+  const n0 = cmds().length, sel = () => S().arp.sel, H = cv.parts.rec('i1').ui;
+  assert.notEqual(sel(), 4);
+  click(names[4]); await settle(2);
+  assert.deepEqual([sel(), cmds().slice(n0), hint(4), hint(0)], [4, [], '▶', ''], 'a tap selects: the ▶ hint on the selected key only');
+  click(names[4]); await settle(2);
+  assert.deepEqual(cmds().slice(n0), ['arpLaunch 4'], 'a tap on the selected key launches it');
+  const q = new Array(11).fill(0); q[0] = 4; // (the engine's monitor message: slot 4 playing — seq[0] the slot)
+  H.setSnapshot({ s: { seq: q } }); H.paint(true); await settle(2);
+  assert.equal(hint(4), '■', 'the playing selected key\'s hint reads ■');
+  assert.deepEqual(V.donor.slotItems(4).filter(i => i.label === 'Launch' || i.label === 'Stop').map(i => i.label), ['Stop'], 'the slot menu: Stop on the playing slot');
+  assert.deepEqual(V.donor.slotItems(7).filter(i => i.label === 'Launch' || i.label === 'Stop').map(i => i.label), ['Launch'], 'Launch on another');
+  click(names[7]); await settle(2);
+  assert.deepEqual([sel(), cmds().slice(n0)], [7, ['arpLaunch 4']], 'another key while one plays: selected, never launched');
+  click(names[4]); await settle(2);
+  assert.deepEqual([sel(), cmds().slice(n0)], [4, ['arpLaunch 4']], 'back to the playing key: selected');
+  click(names[4]); await settle(2);
+  assert.deepEqual(cmds().slice(n0), ['arpLaunch 4', 'arpStop 4'], 'the selected key playing: a tap stops it');
+  V.donor.slotItems(7).find(i => i.label === 'Launch').action(); await settle(2);
+  assert.deepEqual(cmds().slice(n0), ['arpLaunch 4', 'arpStop 4', 'arpLaunch 7'], 'the menu\'s Launch');
+  const ed = walk(V.el, e => hasC(e, 'sx-pated'))[0];
+  assert.equal(!!ed, true, 'EDIT PATTERN on the face');
+  click(ed); await settle(2);
+  assert.equal(note(), 'Set SHAPE to Pattern to edit a pattern');
+});
+
+test('(ARP G4, guess 4) the Arpeggiator tile on a Juno-60: the starter rig PLUS the Arpeggiator plugged into NOTE — one step "Replace Juno-60", the notice naming both, it sounds (a held key renders); a new track from the tile likewise; the Clip sequencer\'s tile stays hidden, the Note tools note beside the live tile', async () => {
+  await fresh('juno60');
+  const u0 = cv.hist.u.at(-1);
+  await tile('arp');
+  assert.deepEqual([I().model, since(u0), cv.hist.u.at(-1).label], [RIG.ID, 1, 'Replace Juno-60']);
+  assert.equal(note(), 'Replaced Juno-60 with ' + RIG.NAME + ' · starter rig + Arpeggiator · tap to undo');
+  for (const e of ['arp.out>voice.note', 'oscA.out>filter.in', 'filter.out>voice.main', 'env1.out>voice.level']) assert.ok(ends().includes(e), e + ' in ' + ends());
+  assert.ok(keys().includes('i1/arp') && arpOn() && !!arpView(), 'the Arpeggiator stands, on, with its face');
+  const { lv, gen } = await arpLevel(60);
+  assert.ok(gen >= 4, 'the Arpeggiator plays: ' + gen + ' generated notes in a second (120 bpm, 1/16)'); // ((ARP fix round, R1 P2-2)
+  assert.ok(lv > 0.01, 'it sounds (' + lv.toFixed(4) + ')');
+  cv.undo(); await settle(3);
+  assert.equal(I().model, 'juno60', 'undo: the Juno back');
+  // the tray: the Arpeggiator's tile live, the Clip sequencer's hidden; the note under the live tile
+  const tiles = sh.shell.tiles;
+  assert.deepEqual([!!tiles.partTile('arp'), !!tiles.partTile('clip')], [true, false]);
+  const sec = sim.$('#srcNoteSec'), notes = walk(sec, e => hasC(e, 'cv-tnote'));
+  assert.deepEqual([notes.map(e => e.textContent), hasC(sec, 'cv-tsoon'), sim.$('#srcNotes').hidden], [[`The ${RIG.NAME}’s Clip sequencer arrives in a later update.`], false, false]);
+  const n1 = P().tracks.length;
+  sh.cvOpenSources('track');
+  click(tiles.partTile('arp')); await settle(3);
+  sh.cvOpenSources('replace');
+  assert.deepEqual([P().tracks.length, I().model, keys().includes('i1/arp'), ends().includes('filter.out>voice.main')], [n1 + 1, RIG.ID, true, true], 'a new track: the starter + the Arpeggiator');
+  cv.undo(); await settle(3);
+});
+
+test('(ARP G4) a schema-16 file with the Arpeggiator on opens with its face (rig:arp)', async () => {
+  const t = await fresh(RIG.ID);
+  const j = JSON.parse(await acc.projectFile());
+  j.schema = 16;
+  const tr = j.tracks.find(x => x.id === t.id);
+  tr.dev.i1.vals.s.p['arp.on'] = 1;
+  const p = cv.loadProject(JSON.stringify(j));
+  cv.applyRestore(p); await settle(4);
+  api.selectTrack(t.id); await settle(4);
+  const V = arpView();
+  assert.deepEqual([arpOn(), !!V, V && V.kind, V && V.face.h], [true, true, 'rig:arp', 620]);
+});
+
+test('(ARP §4, G4) the pattern editor on the canvas: EDIT PATTERN (SHAPE = Pattern) opens it in a panel in the host\'s top layer — not in the face —, pressed while open; ✕, Escape, a tap outside and a camera move close it (a menu inside keeping it: rig-ui.test, whose DOM has closest()); a file with ui.arpEd 1 and SHAPE = Pattern mounts with it closed', async () => {
+  const V = arpView(), H = cv.parts.rec('i1').ui, P = V.donor;
+  assert.equal(!!(V && P && typeof P.editSlots === 'function'), true, 'the face over its ARP page');
+  P.editSlots(x => { x.shape = 1; }, { label: 'Arp Shape' }); await settle(2);
+  const DOC = P.doc, add0 = DOC.addEventListener, DL = {}; // (the document listeners the panel adds, recorded: the sim's document dispatches none)
+  DOC.addEventListener = function (t, fn, o) { (DL[t] || (DL[t] = [])).push(fn); return add0.call(this, t, fn, o); };
+  const ed = walk(V.el, e => hasC(e, 'sx-pated'))[0], L = () => H.layerEl(), panel = () => walk(L(), e => hasC(e, 'rig-seqpanel'))[0] || null;
+  const open = async () => { click(ed); await settle(2); }; // (an async function never returns a stub node: the sim's nodes answer any property, `then` too) // (never a node into assert: !!panel())
+  await open();
+  const Pn = panel();
+  assert.equal(!!Pn, true, 'open: the panel in the top layer');
+  assert.deepEqual([walk(V.el, e => hasC(e, 'rig-seqpanel') || hasC(e, 'sx-seqov')).length, walk(Pn, e => hasC(e, 'sx-seqov')).length, ed.getAttribute('aria-pressed'), Pn.parentNode === L()], [0, 1, 'true', true], 'in H.layerEl() (the top layer in the app; this sim\'s DOM has no world, so the host root: rig-ui.test sets one), not in the face');
+  assert.equal(S().ui.arpEd | 0, 0, 'nothing stored');
+  assert.deepEqual(wordHits(Pn), [], 'its words');
+  click(walk(Pn, e => e.getAttribute && e.getAttribute('aria-label') === 'Close the pattern editor')[0]); await settle(2);
+  assert.deepEqual([!!panel(), ed.getAttribute('aria-pressed')], [false, 'false'], '✕');
+  await open();
+  walk(panel(), e => hasC(e, 'sx-seqov'))[0].dispatchEvent({ type: 'keydown', key: 'Escape', defaultPrevented: false, preventDefault() {}, stopPropagation() {} }); await settle(2); // (the focus is in the editor's roll)
+  assert.equal(!!panel(), false, 'Escape');
+  await open();
+  for (const f of DL.pointerdown || []) f({ type: 'pointerdown', target: V.el, preventDefault() {}, stopPropagation() {} }); await settle(2); // (the sim's document keeps its listeners to itself: the ones added since the test began)
+  assert.equal(!!panel(), false, 'a tap outside');
+  await open();
+  WK.closeTransient(); await settle(2);
+  assert.equal(!!panel(), false, 'a camera move');
+  DOC.addEventListener = add0;
+  // a file holding the page's stored flag: the face never reads it
+  const t = T(), j = JSON.parse(await acc.projectFile()), tr = j.tracks.find(x => x.id === t.id);
+  tr.dev.i1.vals.s.ui.arpEd = 1;
+  const p = cv.loadProject(JSON.stringify(j));
+  cv.applyRestore(p); await settle(4);
+  api.selectTrack(t.id); await settle(4);
+  const V2 = arpView(), H2 = cv.parts.rec('i1').ui;
+  assert.deepEqual([S().ui.arpEd, S().arp.slots[S().arp.sel].shape, !!V2], [1, 1, true]);
+  assert.deepEqual([walk(H2.layerEl(), e => hasC(e, 'rig-seqpanel')).length, walk(V2.el, e => hasC(e, 'sx-seqov')).length], [0, 0], 'mounted closed');
+});
+
+test('(ARP fix round, R2 P3-1) the track\'s "· Arp" follows the Arpeggiator: right after its tile on a <NAME> (the chip and the tab), gone after ⏻ off, back after ⏻ on, gone after undo — the heads re-render on a note-cord change (the Replace path did; the add and ⏻ did not)', async () => {
+  await fresh(RIG.ID);
+  const has = () => [/ · Arp$/.test(sim.$('#trkChip .cv-cv').textContent), / · Arp$/.test(sim.$('#tabTrack').textContent)];
+  assert.deepEqual(has(), [false, false]);
+  RG.drop('arp', null);
+  assert.deepEqual([arpOn(), ...has()], [true, true, true], 'right after the add (no frame between)');
+  await settle(3);
+  const V = arpView();
+  click(V.power);
+  assert.deepEqual([arpOn(), ...has()], [false, false, false], '⏻ off');
+  await settle(3);
+  click(V.power);
+  assert.deepEqual([arpOn(), ...has()], [true, true, true], '⏻ on');
+  await settle(3);
+  cv.undo(); cv.undo(); cv.undo(); await settle(3);
+  assert.deepEqual([keys().includes('i1/arp'), ...has()], [false, false, false], 'undo: gone');
 });

@@ -96,7 +96,7 @@ test('MOD1 §5 the tray\'s data: MOD_TILES — LFO · Envelope · Macros first, 
   assert.ok(T.MOD_TILES.every(m => m.name === V.MOD_LABEL[m.id] && Object.isFrozen(m)) && Object.isFrozen(T.MOD_TILES), 'one wording: MOD_LABEL');
   assert.deepEqual(T.MOD_TILES.filter(m => m.multi).map(m => m.id).sort(), [...V.MOD_MULTI].sort(), 'multi = MOD_MULTI');
   assert.deepEqual(T.RIG_TILES.map(p => [p.id, p.name, p.group, p.cut]), [['osc', 'Oscillator', 'rigmods', 1], ['sub', 'Sub oscillator', 'rigmods', 1], ['noise', 'Noise', 'rigmods', 1],
-    ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 2], ['clip', 'Clip sequencer', 'rignotes', 2]]);
+    ['filter', 'Filter', 'rigmods', 1], ['arp', 'Arpeggiator', 'rignotes', 1], ['clip', 'Clip sequencer', 'rignotes', 2]]); // ((ARP) the Arpeggiator's tile live: cut 1
   assert.ok(T.RIG_TILES.every(p => !['env', 'lfo', 'macros'].includes(p.id)), 'one tile per type: the modulators are the Modulators\' tiles');
   assert.ok(T.RIG_TILES.every(p => p.name === R.MODULES[p.id].label && Object.isFrozen(p)) && Object.isFrozen(T.RIG_TILES));
   assert.deepEqual([...T.MASTER_MODS], ['lfo', 'macro', 'cc', 'chaos', 'comb']); // ((LC §2.1) + the Combiner; MOD1 left the four as they were)

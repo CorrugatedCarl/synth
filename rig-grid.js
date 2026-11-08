@@ -190,6 +190,36 @@ function cssText() {
 /* touch: the kit's 44 px minimum heights would break the rows — the hit grows invisibly instead (≥ 44 px, inside the row gaps) */
 .rig-face .rig-head .sx-hbtn, .rig-face .rig-screen .sx-hbtn, .rig-face .rig-cell > .sx-hbtn, .rig-face .wk-tog, .rig-face .wk-mbtn, .rig-face .rig-switches button { position: relative; min-height: 0; }
 .rig-face .rig-head .sx-hbtn::after, .rig-face .rig-screen .sx-hbtn::after, .rig-face .rig-cell > .sx-hbtn::after, .rig-face .wk-tog::after, .rig-face .wk-mbtn::after, .rig-face .rig-switches button::after { ${HIT} width: 100%; height: var(--rig-hit); }
+/* (ARP §3) the Arpeggiator: a wide menu / button spans its cells; the head's bank name gives way; the slot strip fills its screen — two rows
+   of keys; (ARP fix round, R2 P2-2) the whole key one hit (its name button covers it: a tap selects, a tap on the selected key plays /
+   stops), the selected key's ▶ / ■ a hint glyph at its bottom-right that takes no tap */
+.rig-face .rig-cell > .wk-menu.rig-wide, .rig-face .rig-cell > .sx-hbtn.rig-wide { width: calc(100% - var(--rig-u)); }
+.rig-face .rig-head .sx-bankbtn { max-width: none; min-width: 0; overflow: visible; justify-content: flex-start; }
+.rig-face .rig-head .sx-bankt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* ((ARP fix round, R2 P2-4) the name clips, never the button: its 44 px ::after stays */
+.rig-face .rig-screen > .rig-disp.rig-slotsd { overflow: visible; background: none; }
+.rig-face .rig-slotsd > .sx-slots { height: 100%; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; }
+.rig-face .rig-slotsd .sx-slot { display: block; min-height: 0; padding: 0; }
+.rig-face .rig-slotsd .sx-slotname { position: absolute; inset: 0; display: flex; align-items: flex-start; padding: var(--rig-margin) var(--rig-u); ${LAB} text-transform: none; }
+.rig-face .rig-slotsd .sx-slothint { position: absolute; right: var(--rig-u); bottom: var(--rig-margin); pointer-events: none; ${LAB} line-height: 1; color: var(--sx-ink, #ebe6d8); }
+.rig-face .rig-slotsd .sx-slothint[hidden] { display: none; }
+/* (ARP fix round, R2 P2-3) a black key keeps its dark ground in every skin (playing: the violet wash over it, never the screen through it),
+   so its words take the light engraving — ivory's dark ink read 1.1 : 1 on it */
+.rig-face .rig-slotsd .sx-blk { background: #0f1317; }
+.rig-face .rig-slotsd .sx-blk.sx-play { background: linear-gradient(rgba(176, 124, 255, 0.18), rgba(176, 124, 255, 0.18)), #0f1317; }
+.rig-face .rig-slotsd .sx-blk .sx-slotname, .rig-face .rig-slotsd .sx-blk .sx-slothint { color: #ebe6d8; }
+/* (ARP §4) the pattern editor's panel: in the top layer at screen size (rig-ui edPanel sets its box), the editor's overlay reset to the
+   panel's flow (no absolute inset, no fixed sheet: the page's 1099 px rule is scoped out of it) */
+.rig-seqpanel { ${vars} }
+.rig-seqpanel { position: fixed; z-index: 46; box-sizing: border-box; display: flex; flex-direction: column; overflow: auto; color: var(--sx-ink, #ebe6d8);
+  background: var(--rig-face, var(--sx-panel, #1f2023)); border: 1px solid var(--sx-line, #2c2e32); border-radius: 10px; box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6); }
+.rig-seqpanel .wk-lab, .rig-seqpanel .wk-num, .rig-seqpanel .wk-mtxt { font-size: max(var(--rig-f-val), 1em); } /* (the kit's 8–9 px labels at the grid's 10 px minimum) */
+/* (ARP fix round, R2 P3-3) a lit control on the violet accent (the active lane tab, a pressed button) keeps dark ink in every skin: ivory's
+   light ground colour read 2.29 : 1 on it */
+.rig-seqpanel .sx-lanetab[aria-selected="true"], .rig-seqpanel .sx-seqbtn[aria-pressed="true"], .rig-face .sx-seqbtn[aria-pressed="true"] { color: #0f1216; } /* (the face's EDIT PATTERN pressed too) */
+.rig-seqpanel .sx-seqov { position: static; inset: auto; z-index: auto; flex: 1 0 auto; min-height: 0; padding: calc(var(--rig-u) / 2) var(--rig-pad); gap: var(--rig-u); background: none; border-radius: 0; overflow: visible; }
+/* (ARP fix round, R2 P3-4) the roll fills the panel's free height (its 300 / 360 px the floor): the head, the row, the lanes and their tabs keep theirs */
+.rig-seqpanel .sx-patroll { flex: 1 0 auto; display: flex; flex-direction: column; min-height: 0; }
+.rig-seqpanel .sx-patroll > .sx-roll { flex: 1 0 auto; }
 /* the ⚙ drawer: the face's overflow controls in a sheet at the button (the grid's cells, its padding) */
 .rig-drawer { position: fixed; z-index: 45; display: flex; flex-wrap: wrap; align-content: flex-start; gap: var(--rig-gap) 0; width: calc(var(--rig-col) * var(--rig-dn, 5) + 2 * var(--rig-pad)); max-height: calc(100vh - 16px); overflow: auto;
   padding: var(--rig-top) var(--rig-pad) var(--rig-bottom); color: var(--sx-ink, #ebe6d8); background: var(--rig-face, var(--sx-panel, #1f2023)); border: 1px solid var(--sx-line, #2c2e32); border-radius: 10px; box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6); }

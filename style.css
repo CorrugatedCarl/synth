@@ -336,7 +336,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-vitem[aria-checked="true"] .cv-vname { color: var(--hot); }
 .cv-vitem[aria-checked="true"] .cv-vname::after { content: ' ✓'; }
 .cv-tile[hidden] { display: none; }
-.cv-tsoon > .cv-tnote { margin: 0 12px 10px; font-size: 11px; line-height: 1.4; color: var(--mute); }
+.cv-psec > .cv-tnote, .cv-tsoon > .cv-tnote { margin: 0 12px 10px; font-size: 11px; line-height: 1.4; color: var(--mute); } /* ((ARP fix round, R2 P2-1) the note under a live tile too */
 @media (pointer: coarse) { .cv-vbtn { min-height: 44px; font-size: 12.5px; } }
 .cv-tbadge { display: none; position: absolute; top: 5px; left: 5px; padding: 1px 4px; border-radius: 4px; background: #2a2418; color: var(--hot); font: 700 8.5px/1.3 var(--ui); letter-spacing: 0.08em; }
 .cv-tiles[data-layout="flow"] .cv-tbadge { display: block; }
@@ -1705,6 +1705,7 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
 #world[data-cv-skin="charcoal"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="charcoal"],
+.rig-seqpanel[data-cv-skin="charcoal"],
 .cv-jn[data-cv-skin="charcoal"],
 .wk-ctx[data-cv-skin="charcoal"],
 .wk-pop[data-cv-skin="charcoal"] {
@@ -1729,6 +1730,7 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
 #world[data-cv-skin="ivory"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="ivory"],
+.rig-seqpanel[data-cv-skin="ivory"],
 .cv-jn[data-cv-skin="ivory"],
 .wk-ctx[data-cv-skin="ivory"],
 .wk-pop[data-cv-skin="ivory"] {
@@ -1758,6 +1760,7 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
 #world[data-cv-skin="glass"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .sx-root,
 #world[data-cv-skin="glass"] .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"])) .rig-face,
 .rig-drawer[data-cv-skin="glass"],
+.rig-seqpanel[data-cv-skin="glass"],
 .cv-jn[data-cv-skin="glass"],
 .wk-ctx[data-cv-skin="glass"],
 .wk-pop[data-cv-skin="glass"] {
@@ -1779,5 +1782,5 @@ svg.cv-cable-ends .cv-cable-g[data-cord] .cv-cable-lab { font: 600 11px var(--ui
    and every cord seen through it as they are). With the cables behind, the world draws the ropes under the panes (cv-cords behind(fn,
    true)): seen frosted */
 #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) :is(.cv-body, .inst.custom, .fxtab, .fxr-root) { background-color: transparent; }
-#world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"] { background-color: var(--sx-panel); }
+#world[data-cv-skin="glass"] .cv-mod[data-cv-fx] .fxr-xpop, .rig-drawer[data-cv-skin="glass"], .rig-seqpanel[data-cv-skin="glass"] { background-color: var(--sx-panel); }
 #viewport:not([data-cv-perf="low"]) #world[data-cv-skin="glass"] :is(.cv-mod[data-cv-rig], .cv-mod[data-cv-fx], .cv-mod[data-cv-face]:where(:not([data-cv-face="gl"], [data-cv-face="dom"], [data-cv-face="svg"]))) { -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }

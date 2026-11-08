@@ -3206,7 +3206,7 @@ function setTrackModel(tr0, id, o = null) {
   const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev), wasRig = isRigDev(tr, dev), wasKit = isKitDev(tr, dev);
   if (wasPatch) { PATCH.cancel(); PATCH.lamps(tr, dev, null); } // ((9b) its lamps' queue goes with it)
   const rigM = isRigModel(m), keep = rigM && !!o && !!o.keepLay && !!o.vals;
-  const sm = CMOD.setModel(tr, dev, id, keep ? { vals: o.vals, preset: o.preset == null ? null : o.preset } : { vals: rigM && o && o.module ? { s: RC.rigBlank() } : loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
+  const sm = CMOD.setModel(tr, dev, id, keep ? { vals: o.vals, preset: o.preset == null ? null : o.preset } : { vals: rigM && o && o.module ? { s: rigBase(o.module) } : loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   if (sm && sm.ok === false) { tr.name = name0; hist.prune(project); notice(sm.why, 4000); updateUndoUI(); renderHeads(); return sm.why; } // ((P) refused: nothing changed, no step)
   autoDevGone(tr, dev); // ((AUTO §4.3) a Replace: its keys' overrides go
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
@@ -4812,7 +4812,7 @@ function sxHost(t0, dv) {
   const V = () => instView(T(), dev);
   return {
     state: () => V().vals.s,
-    edit: (fn, o) => { sxEdit(V(), fn, o); if (!(o && o.ui)) peerRefresh(id, 2, dev); else cvRemeasure(id, dev); cvChipSync(); }, // (the FX module follows: peerRefresh; (2a) a page switch: the knob ends re-measured)
+    edit: (fn, o) => { const q0 = sxSeqKey(V().vals.s); sxEdit(V(), fn, o); if (!(o && o.ui)) peerRefresh(id, 2, dev); else cvRemeasure(id, dev); cvChipSync(); sxSeqHeads(q0, V().vals.s); }, // (the FX module follows: peerRefresh; (2a) a page switch: the knob ends re-measured)
     fx: () => fxOfDev(T(), dev),
     editFx: (fn, o) => { fxEdit(V(), fn, o); peerRefresh(id, 2, dev); },
     v2Fx: true, // the FX state may become a v2 state in place (fx-ui / sx-ui-mix conversion, §2.6.3)
@@ -4877,6 +4877,7 @@ function sxHost(t0, dv) {
     scSources: () => scSources(id), // ((SC §6.1, the lead's (d)) the Serum panel's FX page: serum-ui's adapter forwards it to its rack's source menus
     envSwap: (a, b) => rigEnvSwap(T(), dev, a, b), // ((WC, §3.4) the kit's Swap / label drag with ENV 1 a party on a rig: rig-core's slot move, one step
     envInit: () => (isRigDev(T(), dev) ? (rigEnvInit(T(), dev), true) : false), // ((WC, §3.4; review 1 P3-1) the kit's Init Module on ENV 1 of a rig (a knob's menu too): envFromAmp
+    arpInit: () => (isRigDev(T(), dev) ? (rigArpInit(T(), dev), true) : false), // ((ARP fix round, R1 P2-1) the kit's Init Module on a rig's Arpeggiator: one History step
     get words() { return isRigDev(T(), dev) ? RIG_KIT_WORDS : null; }, // ((WC, G13) the kit's own texts a rig's dialogs show: rig-core's words
   };
 }
@@ -9253,8 +9254,12 @@ function sxRemovePart(key) { return rigRemove(key); } // ((WC) the rig's rules: 
 function sxApply(t, dev, f, label) {
   const rec = sxRecOf(t.id, dev), fn = s => { for (const x of f) sxFieldSet(s, x[0], x[2]); };
   if (rec && rec.ui && rec.trackId === t.id && !rec.ui.dead) rec.ui.edit(fn, { label });
-  else { sxEdit(instView(t, dev), fn); peerRefresh(t.id, 2, dev); }
+  else { const q0 = sxSeqKey(instView(t, dev).vals.s); sxEdit(instView(t, dev), fn); peerRefresh(t.id, 2, dev); sxSeqHeads(q0, instView(t, dev).vals.s); }
 }
+// ((ARP fix round, R2 P3-1) a Serum edit that turns its Arpeggiator / Clip player on or off changes the track's voice label ("· Arp"): the
+// heads re-render — a Replace did, but an add, a cord, ⏻ rebuild no patch that would name it (voiceSeen)
+const sxSeqKey = s => (s && s.p ? (+s.p['arp.on'] >= 0.5 ? 'a' : '') + (+s.p['clip.on'] >= 0.5 ? 'c' : '') : '');
+function sxSeqHeads(q0, s) { if (sxSeqKey(s) !== q0) renderHeads(); }
 // a field of a Serum state as sx-edges reads it: ['p', id] its base value; a route its value, else sx-ui-mix's default (OSC A
 // Filter, the rest Main); anything else the value at its path
 function sxField(s, path) {
@@ -9421,8 +9426,12 @@ function sxPartPick(kind, mode) {
 function rigNewTrack(kind) {
   const m = modelById(RIG.ID);
   if (!m || !RC.MODULES[kind]) return null;
-  return addTrack(m, { s: RC.rigBlank() }, { module: kind });
+  return addTrack(m, { s: rigBase(kind) }, { module: kind });
 }
+// (ARP §1.3, the lead's guess 4) what a module tile's new <NAME> starts from: the blank (every source off), but a note tool (the
+// Arpeggiator, the Clip sequencer: a note OUT) the starter rig — plugged into NOTE it must sound, never a silent rig
+const rigNoteKind = kind => !!RC.MODULES[kind] && RC.MODULES[kind].jacks.out.some(j => j.kind === 'note');
+const rigBase = kind => (rigNoteKind(kind) ? RC.rigStarter(prefs).s : RC.rigBlank());
 function sxPartDrop(kind, at) {
   if (cvMaster) { notice(MASTER_SRC, 4000); return null; } // ((M) refused on the master canvas
   const t = trk(), dev = curOf(t), mk = Object.keys(RIG_MOD).find(k => RIG_MOD[k] === kind);
@@ -9868,7 +9877,8 @@ function rigReplace(kind, at) {
   const why = setTrackModel(iv, RIG.ID, { module: kind, at });
   const nd = CMOD.instOf(trOf(iv), dev);
   if (!nd || nd.model !== RIG.ID) return null;
-  const step = hist.u[hist.u.length - 1], P = rigFirstPart || { part: null, label: RC.MODULES[kind] ? RC.MODULES[kind].label : kind };
+  const step = hist.u[hist.u.length - 1], P0 = rigFirstPart || { part: null, label: RC.MODULES[kind] ? RC.MODULES[kind].label : kind };
+  const P = rigNoteKind(kind) ? { part: P0.part, label: 'starter rig + ' + P0.label } : P0; // ((ARP §1.3) the notice names both
   cvUndoNotice(RC.WORDS.replaced(old.name, P.label).replace(/ · tap to undo$/, '') + (why ? ' · ' + why : '') + ' · tap to undo', step, () => {
     const tr = project.tracks.find(x => x.id === tid), d = tr && CMOD.instOf(tr, dev);
     return d && d.model === RIG.ID ? () => setTrackModel(instView(tr, dev), old.id) : null;
@@ -10502,6 +10512,12 @@ function rigEnvInit(t, dev) {
   const d = t.dev[dev], s = d.vals.s;
   if (RC.isGate(s)) { notice(RC.WORDS.gate, 4000); return false; }
   return rigEdit(t, dev, 'Init ' + rigLabel(t, dev, 'env1'), RC.envFromAmp(s, rigOpts(t, dev)));
+}
+// (ARP fix round, R1 P2-1) ⋯ → Init on the Arpeggiator, the Envelope 1 way: rig-core arpInit's writes as ONE History step "Init
+// Arpeggiator" (its "· tap to undo" notice; undo exact — the cord back, the module kept), never the panel undo alone
+function rigArpInit(t, dev) {
+  if (!isRigDev(t, dev)) return false;
+  return rigEdit(t, dev, 'Init ' + rigLabel(t, dev, 'arp'), RC.arpInit(t.dev[dev].vals.s));
 }
 
 /* ---------------------------------------------- cv MODULATION (stage 2a, IMPL-2a §5): modulator modules, mod cables, the mod layer */
@@ -12483,7 +12499,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     gate: dev => { const R = rigT(dev); return R ? RC.isGate(R.dv.vals.s) : null; },
     wires: mode => { if (mode !== undefined) { rigWiresOv = wiresOk(mode) ? mode : null; cvRender(); ptShow(); } return drawMode(trk()); },
     mode: () => drawMode(trk()), cordOf, toCord: c => toCord(c, trk()), layer: () => rigLast, cordsOn: () => rigCordsOn, ui: () => RIGUI, setUi: v => { RIGUI = v; },
-    width: part => rigW(part), height: part => rigHt(part), opts: dev => { const R = rigT(dev); return R ? rigOpts(R.t, R.d) : null; }, envSwap: (dev, a, b) => rigEnvSwap(trk(), dev || curOf(trk()), a, b), envInit: dev => rigEnvInit(trk(), dev || curOf(trk())),
+    width: part => rigW(part), height: part => rigHt(part), opts: dev => { const R = rigT(dev); return R ? rigOpts(R.t, R.d) : null; }, envSwap: (dev, a, b) => rigEnvSwap(trk(), dev || curOf(trk()), a, b), envInit: dev => rigEnvInit(trk(), dev || curOf(trk())), arpInit: dev => rigArpInit(trk(), dev || curOf(trk())),
     aim: rigAim, spread: rigSpread, jackAt: rigJackAt, ringCss: rigRingCss, menuLast: () => rigMenuLast, HEAVY: SX_HEAVY,
   };
   globalThis.__synthTest.cv.cordsOf = () => cvCords(); // (the world's cord layer: list / anchors / stats / hit through it)

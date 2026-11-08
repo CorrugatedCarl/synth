@@ -3412,6 +3412,7 @@ export class SerumHost {
         case 'paste': a.action = () => this.pasteModuleUI(module); break;
         case 'init': a.action = () => {
           if (module === 'env1' && typeof this.host.envInit === 'function' && this.host.envInit()) return; // ((WC, IMPL-WC §3.4) a rig's amp Envelope: Init = envFromAmp, the host's
+          if (module === 'arp' && typeof this.host.arpInit === 'function' && this.host.arpInit()) return; // ((ARP fix round, R1 P2-1) a rig's Arpeggiator: the host's one History step
           this.edit(s => initModule(s, module), { label: 'Init ' + noun }); this.edDirty = true; this.oscd.forget();
         }; break;
         case 'swap': a.sub = it.sub.map(x => ({ label: x.label, action: () => this.swapModuleUI(module, x.m) })); break;

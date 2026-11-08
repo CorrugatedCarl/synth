@@ -92,7 +92,7 @@ test('(§4.1) GRID.steps — the step row 48, the ruler 24 (a sibling of GRID.ro
   assert.deepEqual(GRID.rows, { head: 32, screen: 112, screenL: 128, knobs: 76, switches: 32, jacks: 56 });
   const h = s => createHash('sha256').update(s).digest('hex').slice(0, 16);
   const recs = [...Object.values(CM.MOD_FACE), ...[0, 1, 4, 12].map(n => CM.combRecipe(n)), { cols: 5, mid: true, rows: [{ t: 'knobs', items: ['a', 'b', 'c'] }, { t: 'switches', items: ['x:2', 'y'] }, { t: 'screen', h: 'S', items: ['#s'] }, { t: 'jacks', items: ['<i', '>o', '>p'] }] }];
-  assert.deepEqual({ css: h(RG.cssText()), vars: h(RG.gridVars()), lay: h(JSON.stringify(recs.map(r => RG.layoutOf(r)))) }, { css: '0ae244e443d020b1', vars: '8e1589f4574ecc46', lay: '92c691e6e469eb22' });
+  assert.deepEqual({ css: h(RG.cssText()), vars: h(RG.gridVars()), lay: h(JSON.stringify(recs.map(r => RG.layoutOf(r)))) }, { css: '72411c62ce0decc8', vars: '8e1589f4574ecc46', lay: '92c691e6e469eb22' }); // ((ARP) cssText re-pinned: the Arpeggiator face's rules joined it — gridVars and layoutOf as at phase 0
 });
 
 /* ================================================================ §4.2–§4.3 the recipes */

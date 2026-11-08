@@ -26,10 +26,14 @@
 //   kit.snapTime()     † (U1) receive time of the current snapshot, performance.now ms; absent → the first live() call
 //                        that sees the snapshot
 //
-//   new ArpPage(root, kit)          ARP page (§13.7): GLOBAL · slots · PATTERN · TRANSPOSE · PLAYBACK · RETRIGGER ·
+//   new ArpPage(root, kit, o?)      ARP page (§13.7): GLOBAL · slots · PATTERN · TRANSPOSE · PLAYBACK · RETRIGGER ·
 //                                   VELOCITY · MIDI OUT, the ⋯ menu (Lock Module, MIDI Input Trigger Octave, Show
 //                                   Pattern Names) and the pattern editor overlay (openPattern / closePattern; open while
-//                                   s.ui.arpEd and SHAPE = Pattern). Members: el, sec, slots, patEd (open editor or null)
+//                                   s.ui.arpEd and SHAPE = Pattern). Members: el, sec, slots, patEd (open editor or null).
+//                                   (ARP §3) o.title: the shell's name (default 'ARP'; ⏻ "<title> on"); o.face: the page
+//                                   is the donor of rig-ui's Arpeggiator face — its own words (no "Arp"), the note names on
+//                                   the slots (Show Pattern Names off), the editor's open flag page-local (edOpen, never
+//                                   s.ui.arpEd) and mounted where page.edHost() says (else in page.el)
 //   new ClipPage(root, kit)         CLIP page (§13.8): GLOBAL · slots · CLIP SETTINGS · piano roll (+ tool bar) · lanes ·
 //                                   RECORD · MIDI OUT · MACROS pane (hidden until toggled). Members: el, sec, slots,
 //                                   roll (PianoRoll on the selected clip), lanes, rec (recording state or null),
@@ -293,7 +297,7 @@ const CSS = `
   background-image: linear-gradient(90deg, transparent 8.33%, rgba(0, 0, 0, 0.45) 8.33% 16.67%, transparent 16.67% 25%, rgba(0, 0, 0, 0.45) 25% 33.33%,
     transparent 33.33% 50%, rgba(0, 0, 0, 0.45) 50% 58.33%, transparent 58.33% 66.67%, rgba(0, 0, 0, 0.45) 66.67% 75%, transparent 75% 83.33%,
     rgba(0, 0, 0, 0.45) 83.33% 91.67%, transparent 91.67%); }
-@media (max-width: 1099px) { .sx-seqov:where(:not([data-cv-world] *)) { position: fixed; z-index: 1000; border-radius: 0; } } /* (not in the canvas world: fixed would be the world's) */
+@media (max-width: 1099px) { .sx-seqov:where(:not([data-cv-world] *)):where(:not(.rig-seqpanel *)) { position: fixed; z-index: 1000; border-radius: 0; } } /* (not in the canvas world: fixed would be the world's) */
 .sx-recbtn[aria-pressed="true"] { color: #0f1216; background: #ff5b5b; border-color: transparent; }
 .sx-macpane { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 4px; width: 100%; }
 @media (pointer: coarse) {
@@ -609,7 +613,9 @@ class SeqPage {
     const w = wk.knob({ dest: id, label, size: O.size || 'md', get: () => clamp01(+get() || 0), set: (n, ph) => set(snapN(id, n), ph),
       def: O.def !== undefined ? O.def : () => d.def, fmt: n => core.fmtParam(id, n, this.fctx()), parse: t => core.parseParam(id, t, this.fctx()), steps,
       bipolar: d.ctr === 1, disabled: O.disabled });
-    if (wk.tooltip) wk.tooltip(w.el, () => core.destLabel(id, this.kit.s(), this.kit.fx ? this.kit.fx() : null) + ': ' + core.fmtParam(id, get(), this.fctx()));
+    // ((ARP fix round, R2 P3-2) on rig-ui's face the knob is named as the face prints it (its relabel's data-l, else its label): "RATE: 1/16"
+    const faceName = () => { const l = this.face && w.el.querySelector ? w.el.querySelector('.wk-lab') : null; return l ? (l.getAttribute && l.getAttribute('data-l')) || l.textContent : ''; };
+    if (wk.tooltip) wk.tooltip(w.el, () => (faceName() || core.destLabel(id, this.kit.s(), this.kit.fx ? this.kit.fx() : null)) + ': ' + core.fmtParam(id, get(), this.fctx()));
     return this.own(w);
   }
   tog(label, get, set, o) {
@@ -667,7 +673,10 @@ class SeqPage {
 
 // 12 slots laid out like a keyboard octave (white keys below, black keys above, §13.7 / §13.8), slot j = key j of the
 // trigger octave. o = { kind, name(j), title(j), sel(), select(j), play(j), playing(j), menu(j, x, y, anchor),
-// rhythm?(j) → {len, start, notes} (CLIP: green onset strip), drag?(j, e) (desktop dragstart of a slot) }
+// rhythm?(j) → {len, start, notes} (CLIP: green onset strip), drag?(j, e) (desktop dragstart of a slot), noun? (ARP §5: the
+// slots' word — 'Arpeggiator' on the face; default 'Arp' / 'Clip'), face? ((ARP fix round, R2 P2-2) rig-ui's face: the whole key is
+// one hit — a tap selects, a tap on the selected key plays / stops it (Ableton's clip slot); no ▶ button, the selected key's ▶ / ■
+// glyph a hint (aria-hidden, no target); the slot menu carries Launch / Stop) }
 class SlotStrip {
   constructor(page, root, o) {
     this.page = page;
@@ -675,7 +684,8 @@ class SlotStrip {
     const d = page.doc;
     this.el = mk(d, 'div', 'sx-slots');
     this.el.setAttribute('role', 'group');
-    this.el.setAttribute('aria-label', (o.kind === 'arp' ? 'Arp' : 'Clip') + ' slots');
+    const noun = o.noun || (o.kind === 'arp' ? 'Arp' : 'Clip');
+    this.el.setAttribute('aria-label', noun + ' slots');
     // desktop drag of a slot (deviation 21) only from a mouse press and outside touch mode: a touch long-press is the
     // slot menu (decided per gesture — an iPad with a trackpad reports a fine pointer, §13.1)
     const touchy = () => typeof wk.touchMode === 'function' && !!wk.touchMode();
@@ -696,13 +706,15 @@ class SlotStrip {
       const black = !!BLACK[j], s = mk(d, 'div', 'sx-slot ' + (black ? 'sx-blk' : 'sx-wht'));
       s.setAttribute('data-slot', String(j));
       s.setAttribute('role', 'group');
-      s.setAttribute('aria-label', (o.kind === 'arp' ? 'Arp slot ' : 'Clip ') + NOTE_NAMES[j]);
+      s.setAttribute('aria-label', (o.kind === 'arp' ? noun + ' slot ' : noun + ' ') + NOTE_NAMES[j]);
       s.style.gridColumn = (black ? 2 * w : 2 * w + 1) + ' / span 2';
       s.style.gridRow = black ? '1' : '2';
       if (!black) w++;
-      const name = btn(d, 'sx-slotname', '', null, () => o.select(j));
-      const play = btn(d, 'sx-slotplay', '▶', null, () => o.play(j));
-      s.append(name, play);
+      const name = btn(d, 'sx-slotname', '', null, () => (o.face && o.sel() === j ? o.play(j) : o.select(j)));
+      const play = o.face ? null : btn(d, 'sx-slotplay', '▶', null, () => o.play(j));
+      let hint = null;
+      if (o.face) { hint = mk(d, 'span', 'sx-slothint', '▶'); hint.setAttribute('aria-hidden', 'true'); hint.hidden = true; }
+      s.append(name, play || hint);
       let cv = null;
       if (o.rhythm) {
         cv = mk(d, 'canvas', 'sx-rhythm');
@@ -724,7 +736,7 @@ class SlotStrip {
         page.offs.push(() => { s.removeEventListener('pointerdown', pd, true); s.removeEventListener('dragstart', h); });
       }
       this.el.appendChild(s);
-      this.slots.push({ el: s, name, play, cv, txt: null, rk: null, on: null });
+      this.slots.push({ el: s, name, play, hint, cv, txt: null, rk: null, on: null, hk: null });
     }
     root.appendChild(this.el);
   }
@@ -735,9 +747,7 @@ class SlotStrip {
       if (t !== S.txt) {
         S.txt = t;
         S.name.textContent = t;
-        const tt = this.o.title(j);
-        S.name.setAttribute('aria-label', tt);
-        S.name.title = tt;
+        if (!this.o.face) { const tt = this.o.title(j); S.name.setAttribute('aria-label', tt); S.name.title = tt; }
       }
       S.el.classList.toggle('sx-sel', j === sel);
       S.name.setAttribute('aria-pressed', j === sel ? 'true' : 'false');
@@ -746,16 +756,29 @@ class SlotStrip {
     this.live();
   }
   live() {
+    const sel = this.o.face ? this.o.sel() : -1;
     this.slots.forEach((S, j) => {
       const on = !!this.o.playing(j);
+      if (this.o.face) this.hint(S, j, j === sel, on);
       if (on === S.on) return;
       S.on = on;
       S.el.classList.toggle('sx-play', on);
+      if (!S.play) return;
       S.play.textContent = on ? '■' : '▶';
       const t = (on ? 'Stop ' : 'Play ') + this.o.title(j);
       S.play.setAttribute('aria-label', t);
       S.play.title = t;
     });
+  }
+  // ((ARP fix round, R2 P2-2) the face's key: the selected one shows ▶ (■ while it plays) and its name says what a tap again does
+  hint(S, j, sel, on) {
+    const tt = this.o.title(j) + (sel ? (on ? ' · tap again to stop' : ' · tap again to play') : ''), k = tt + (sel ? (on ? '■' : '▶') : '');
+    if (k === S.hk) return;
+    S.hk = k;
+    S.name.setAttribute('aria-label', tt);
+    S.name.title = tt;
+    S.hint.hidden = !sel;
+    S.hint.textContent = on ? '■' : '▶';
   }
   // the strip's size: the ResizeObserver's, else measured once (when laid out) and kept
   stripSize(cv) {
@@ -810,10 +833,15 @@ const ARP_N = { 'arp.shift': 'shift', 'arp.range': 'range', 'arp.offset': 'offse
 let SLOT_CB = { arp: null, clip: null };   // slot clipboards (Copy / Paste Pattern, Copy / Paste Clip), shared by every panel
 
 export class ArpPage extends SeqPage {
-  constructor(root, kit) {
+  constructor(root, kit, o) {
     super(kit);
-    this.showNames = true;       // ✓ Show Pattern Names (view state)
+    this.o = o || {};
+    this.face = !!this.o.face;   // (ARP §3) rig-ui's Arpeggiator face is built over this page
+    this.title = this.o.title || 'ARP';
+    this.noun = this.face ? this.title : 'Arp';   // (ARP §5) the face's words: never "Arp"
+    this.showNames = !this.face; // ✓ Show Pattern Names (view state; (ARP §3) off on the face: the note names fit a key)
     this.patEd = null;
+    this.edOpen = false;         // ((ARP §4) the face's editor flag: page-local, never s.ui.arpEd)
     this.slots = null;
     this.el = this.build();
     if (root) root.appendChild(this.el);
@@ -828,11 +856,11 @@ export class ArpPage extends SeqPage {
   build() {
     const K = this.kit, d = this.doc;
     injectSeqStyles(d);
-    const shell = K.panel('ARP', 'arp', 'arp.on', 'sx-seqpage sx-arp', { items: () => this.moduleItems() }), { el, head, body } = shell;
+    const shell = K.panel(this.title, 'arp', 'arp.on', 'sx-seqpage sx-arp', { items: () => this.moduleItems() }), { el, head, body } = shell;
     this.shell = shell;   // (a bare part view hands its power and module menu to the canvas bar: IMPL-3 §2.2)
     this.el = el;
     this.sec = sections(d, body, ARP_SECS);
-    const more = btn(d, 'sx-hbtn sx-seqmenu', '⋯', 'ARP menu', () => menuAt(more, this.menuItems()));
+    const more = btn(d, 'sx-hbtn sx-seqmenu', '⋯', this.title + ' menu', () => menuAt(more, this.menuItems()));
     more.setAttribute('aria-haspopup', 'menu');
     head.appendChild(more);
     this.watchAlt(el);
@@ -858,10 +886,13 @@ export class ArpPage extends SeqPage {
   /* GLOBAL: BANK · LAUNCH QUANT · EDIT ALL */
   buildGlobal() {
     const K = this.kit, d = this.doc, B = this.sec.global;
-    const bank = btn(d, 'sx-seqbtn sx-bankbtn', '', 'Arp bank', () => menuAt(bank, this.bankItems()));
+    const bw = this.face ? 'Bank' : 'Arp bank';   // (ARP §5)
+    const bank = btn(d, 'sx-seqbtn sx-bankbtn', '', bw, () => menuAt(bank, this.bankItems()));
     bank.setAttribute('aria-haspopup', 'menu');
     B.appendChild(bank);
-    this.fn(() => { const A = this.A(), t = A.bank + (A.dirty ? ' *' : ''); if (bank.textContent !== t) { bank.textContent = t; bank.setAttribute('aria-label', 'Arp bank: ' + t); } });
+    const bt = this.face ? mk(d, 'span', 'sx-bankt') : bank;   // ((ARP fix round, R2 P2-4) the face's name in a span that ellipsizes: the button never clips its hit
+    if (bt !== bank) bank.appendChild(bt);
+    this.fn(() => { const A = this.A(), t = A.bank + (A.dirty ? ' *' : ''); if (bt.textContent !== t) { bt.textContent = t; bank.setAttribute('aria-label', bw + ': ' + t); } });
     B.appendChild(this.menu('LAUNCH QUANT', core.LAUNCH_QUANT.map((e, i) => ({ v: i, label: e.label })), () => this.A().quant,
       v => K.edit(s => { s.arp.quant = v; }, { label: 'Launch Quant' })).el);
     B.appendChild(this.tog('EDIT ALL', () => this.A().editAll, v => K.edit(s => { s.arp.editAll = v; }, { label: 'Edit All', ui: true })).el);
@@ -893,9 +924,9 @@ export class ArpPage extends SeqPage {
   buildSlots() {
     const K = this.kit;
     this.slots = new SlotStrip(this, this.sec.slots, {
-      kind: 'arp',
+      kind: 'arp', noun: this.noun, face: this.face,
       name: j => (this.showNames ? core.slotName(this.A().slots[j]) : NOTE_NAMES[j]),
-      title: j => 'Arp slot ' + NOTE_NAMES[j] + ' — ' + core.slotName(this.A().slots[j]),
+      title: j => this.noun + ' slot ' + NOTE_NAMES[j] + ' — ' + core.slotName(this.A().slots[j]),
       sel: () => this.A().sel,
       select: j => { if (this.A().sel !== j) K.edit(s => { s.arp.sel = j; }, { label: 'Select Arp Slot' }); },
       play: j => { const q = seqOf(K, true); this.cmd(q && q[0] === j ? 'arpStop' : 'arpLaunch', j); },
@@ -906,14 +937,15 @@ export class ArpPage extends SeqPage {
   }
   slotItems(j) {
     const K = this.kit, put = (fn, label) => K.edit(s => { fn(s.arp.slots, s.arp); s.arp.dirty = 1; }, { label });
-    return [
+    const go = this.face ? [{ label: this.slots.o.playing(j) ? 'Stop' : 'Launch', action: () => this.slots.o.play(j) }, { sep: true }] : []; // ((ARP fix round, R2 P2-2) the face's keys have no ▶
+    return go.concat([
       { label: 'Rename Pattern…', action: () => K.prompt('Rename Pattern', 'Name', this.A().slots[j].name, t => { const n = String(t || '').trim().slice(0, 32); put(S => { S[j].name = n; }, 'Rename Pattern'); return true; }) },
       { label: 'Copy Pattern', action: () => { SLOT_CB.arp = clone(this.A().slots[j]); } },
       { label: 'Paste Pattern', disabled: !SLOT_CB.arp, action: () => { const c = clone(SLOT_CB.arp); if (c) put(S => { S[j] = core.normalizeArpSlot(c); }, 'Paste Pattern'); } },
       { label: 'Erase Pattern', action: () => put(S => { S[j] = core.defaultArpSlot(); }, 'Erase Pattern') },
       { sep: true },
       { label: 'Show Pattern Names', checked: this.showNames, action: () => { this.showNames = !this.showNames; this.update(); } },
-    ];
+    ]);
   }
   // knob of an arp virtual destination bound to the selected slot's n.* (arp.rate: n.rate in BPM mode, n.hz in Hz mode)
   arpKnob(id, label, o) {
@@ -929,7 +961,7 @@ export class ArpPage extends SeqPage {
     const rateSteps = () => { const x = sl(); return x.bpm ? core.arpLadder(x.dot, x.trip).length - 1 : 0; };
     B.appendChild(this.arpKnob('arp.rate', 'RATE', { steps: rateSteps, def: () => (sl().bpm ? core.ARP_N.rate : core.ARP_N.hz) }).el);
     const key = x => (x.bpm ? 'rate' : 'hz');
-    const field = this.own(wk.numBox({ dest: 'arp.rate', label: '', get: () => clamp01(sl().n[key(sl())]), set: (n, ph) => this.editSlots(x => { x.n[key(x)] = snapN('arp.rate', n); }, { label: 'Arp Rate', phase: ph }),
+    const field = this.own(wk.numBox({ dest: 'arp.rate', label: this.face ? 'RATE' : '', get: () => clamp01(sl().n[key(sl())]), set: (n, ph) => this.editSlots(x => { x.n[key(x)] = snapN('arp.rate', n); }, { label: 'Arp Rate', phase: ph }),
       def: () => (sl().bpm ? core.ARP_N.rate : core.ARP_N.hz), fmt: n => core.fmtParam('arp.rate', n, this.fctx()), parse: t => core.parseParam('arp.rate', t, this.fctx()), steps: () => rateSteps() || 1000 }));
     B.appendChild(field.el);
     const dt = (k, label) => this.tog(label, () => sl()[k], v => this.editSlots(x => {
@@ -942,7 +974,8 @@ export class ArpPage extends SeqPage {
     const ed = btn(d, 'sx-seqbtn sx-pated', 'EDIT PATTERN', 'Open the pattern editor (SHAPE = Pattern)', () => this.openPattern());
     ed.setAttribute('aria-haspopup', 'dialog');
     B.appendChild(ed);
-    this.fn(() => { const on = sl().shape === 1; ed.disabled = !on; ed.setAttribute('aria-disabled', on ? 'false' : 'true'); });
+    // ((ARP §4) on the face it stays tappable while dimmed: a tap says why — "Set SHAPE to Pattern…")
+    this.fn(() => { const on = sl().shape === 1; ed.disabled = !on && !this.face; ed.setAttribute('aria-disabled', on ? 'false' : 'true'); });
   }
   buildTranspose() {
     const B = this.sec.transpose, sl = () => this.slot();
@@ -979,18 +1012,21 @@ export class ArpPage extends SeqPage {
   /* pattern editor overlay: open while s.ui.arpEd and SHAPE = Pattern */
   openPattern() {
     if (this.slot().shape !== 1) { this.notify('Set SHAPE to Pattern to edit a pattern'); return false; }
-    if (!this.kit.s().ui.arpEd) this.kit.edit(s => { s.ui.arpEd = 1; }, { label: 'View', ui: true });
+    if (this.face) this.edOpen = true;
+    else if (!this.kit.s().ui.arpEd) this.kit.edit(s => { s.ui.arpEd = 1; }, { label: 'View', ui: true });
     this.syncPattern();
     if (this.patEd && this.patEd.roll.el.focus) this.patEd.roll.el.focus({ preventScroll: true });
     return !!this.patEd;
   }
   closePattern() {
-    if (this.kit.s().ui.arpEd) this.kit.edit(s => { s.ui.arpEd = 0; }, { label: 'View', ui: true });
+    if (this.face) this.edOpen = false;
+    else if (this.kit.s().ui.arpEd) this.kit.edit(s => { s.ui.arpEd = 0; }, { label: 'View', ui: true });
     this.syncPattern();
   }
   syncPattern() {
     if (this.dead) return;
-    const want = !!this.kit.s().ui.arpEd && this.slot().shape === 1;
+    if (this.face && this.slot().shape !== 1) this.edOpen = false;   // ((ARP §4) SHAPE left Pattern: the face's editor stays closed
+    const want = (this.face ? this.edOpen : !!this.kit.s().ui.arpEd) && this.slot().shape === 1;
     if (want && !this.patEd) this.patEd = new PatternEditor(this);
     else if (!want && this.patEd) { this.patEd.destroy(); this.patEd = null; }
     if (this.patEd) this.patEd.refresh();
@@ -1084,7 +1120,7 @@ class PatternEditor {
     });
     el.append(head, row, box, this.lanes.el);
     el.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); page.closePattern(); } });
-    page.el.appendChild(el);
+    (page.edHost ? page.edHost() : page.el).appendChild(el);   // ((ARP §4) the face's: a panel in the top layer
     this.refresh();
   }
   nameItems() {
